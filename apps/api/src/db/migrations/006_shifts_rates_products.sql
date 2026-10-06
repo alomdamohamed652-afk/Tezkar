@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
   crosses_midnight BOOLEAN NOT NULL DEFAULT FALSE,
-  rate_group_id UUID NOT NULL REFERENCES rate_groups(id),
+  rate_group_id UUID REFERENCES rate_groups(id),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
