@@ -45,13 +45,15 @@ export async function employeeRoutes(app: FastifyInstance) {
       );
       const row = result.rows[0];
       await writeAudit(client, {
-        actorUserId: null,
-        actorEmployeeId: null,
+        actorUserId: request.user!.userId,
+        actorEmployeeId: request.user!.employeeId,
         action: "create",
         module: "employees",
         entityType: "employee",
         entityId: row.id,
-        afterData: row
+        afterData: row,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
       });
       return row;
     });
