@@ -6,6 +6,7 @@ import { healthRoutes } from "./modules/health/health.routes.js";
 import { employeeRoutes } from "./modules/employees/employees.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { masterDataRoutes } from "./modules/master-data/master-data.routes.js";
+import { userRoutes } from "./modules/users/users.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -32,5 +33,6 @@ await app.register(healthRoutes);
 await app.register(authRoutes);
 await app.register(employeeRoutes);
 await app.register(masterDataRoutes);
+await app.register(userRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });
