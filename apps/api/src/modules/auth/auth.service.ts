@@ -20,13 +20,8 @@ function verifyPassword(password: string, stored: string): boolean {
 
 export { hashPassword };
 
-export async function authenticate(
-  client: pg.PoolClient,
-  username: string,
-  password: string
-): Promise<SessionUser> {
+export async function authenticate(client: pg.PoolClient, username: string, password: string): Promise<SessionUser> {
   const user = await findUserForLogin(client, username);
-
   if (!user || !user.is_active || !verifyPassword(password, user.password_hash)) {
     throw new AppError("INVALID_CREDENTIALS", "اسم المستخدم أو كلمة المرور غير صحيحة", 401);
   }
@@ -37,6 +32,8 @@ export async function authenticate(
     userId: user.id,
     employeeId: user.employee_id,
     username: user.username,
-    roleCodes: user.role_codes ?? []
+    roleCodes: user.role_codes ?? [],
+    isBootstrap: user.is_bootstrap,
+    mustCompleteSetup: user.must_complete_setup
   };
 }
