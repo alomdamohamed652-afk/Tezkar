@@ -8,66 +8,43 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(
-  client: pg.PoolClient,
-  user: SessionUser
-): Promise<{ token: string; expiresAt: Date }> {
+export async function createSession(client: pg.PoolClient, user: SessionUser) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-
   await client.query(
     `INSERT INTO user_sessions (user_id, token_hash, expires_at)
      VALUES ($1, $2, $3)`,
     [user.userId, hashToken(token), expiresAt]
   );
-
   return { token, expiresAt };
 }
 
-export async function getSessionUser(
-  client: pg.PoolClient,
-  token: string
-): Promise<SessionUser | null> {
+export async function getSessionUser(client: pg.PoolClient, token: string): Promise<SessionUser | null> {
+  const tokenHash = hashToken(token);
   const result = await client.query(
-    `SELECT
-       u.id AS user_id,
-       u.employee_id,
-       u.username,
-       COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL), '{}') AS role_codes
+    `SELECT u.id AS user_id, u.employee_id, u.username, u.is_bootstrap, u.must_complete_setup,
+            COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL), '{}') AS role_codes
      FROM user_sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      LEFT JOIN roles r ON r.id = ur.role_id
-     WHERE s.token_hash = $1
-       AND s.revoked_at IS NULL
-       AND s.expires_at > now()
-       AND u.is_active = TRUE
-     GROUP BY u.id, u.employee_id, u.username`,
-    [hashToken(token)]
+     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active = TRUE
+     GROUP BY u.id, u.employee_id, u.username, u.is_bootstrap, u.must_complete_setup`,
+    [tokenHash]
   );
-
   const row = result.rows[0];
   if (!row) return null;
-
-  await client.query(
-    "UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1",
-    [hashToken(token)]
-  );
-
+  await client.query("UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1", [tokenHash]);
   return {
     userId: row.user_id,
     employeeId: row.employee_id,
     username: row.username,
-    roleCodes: row.role_codes ?? []
+    roleCodes: row.role_codes ?? [],
+    isBootstrap: row.is_bootstrap,
+    mustCompleteSetup: row.must_complete_setup
   };
 }
 
-export async function revokeSession(
-  client: pg.PoolClient,
-  token: string
-): Promise<void> {
-  await client.query(
-    "UPDATE user_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL",
-    [hashToken(token)]
-  );
+export async function revokeSession(client: pg.PoolClient, token: string): Promise<void> {
+  await client.query("UPDATE user_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL", [hashToken(token)]);
 }
