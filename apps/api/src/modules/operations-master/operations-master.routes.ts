@@ -8,7 +8,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 const code=z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/);
 const name=z.string().trim().min(2).max(120);
-const createRate=z.object({productId:z.string().uuid().nullable().optional(),stageId:z.string().uuid(),rateGroupId:z.string().uuid(),wageTypeId:z.string().uuid(),unitId:z.string().uuid(),rate:z.number().nonnegative(),effectiveFrom:z.string().date(),effectiveTo:z.string().date().nullable().optional()});
+const createRate=z.object({productId:z.string().uuid().nullable().optional(),stageId:z.string().uuid(),rateGroupId:z.string().uuid().nullable().optional(),wageTypeId:z.string().uuid(),unitId:z.string().uuid(),rate:z.number().nonnegative(),effectiveFrom:z.string().date(),effectiveTo:z.string().date().nullable().optional()});
 
 async function audit(client:any,request:any,action:string,type:string,id:string,after:any){await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action,module:"master",entityType:type,entityId:id,afterData:after,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});}
 
