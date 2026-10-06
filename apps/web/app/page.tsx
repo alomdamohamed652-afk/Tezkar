@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const nav = [
   ["▦", "لوحة التحكم", true],
@@ -11,6 +11,16 @@ const nav = [
 
 export default function HomePage() {
   const [open, setOpen] = useState(false);
+  const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  useEffect(() => {
+    fetch(`${API}/api/auth/me`, { credentials: "include" })
+      .then(async (res) => ({ ok: res.ok, data: await res.json() }))
+      .then(({ ok, data }) => {
+        if (!ok) window.location.replace("/login");
+        else if (data.data?.mustCompleteSetup) window.location.replace("/setup");
+      })
+      .catch(() => window.location.replace("/login"));
+  }, [API]);
   return <div className="app">
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><div className="brand-mark">ت</div><div><strong>TEZKAR</strong><span>Factory Management</span></div></div>
