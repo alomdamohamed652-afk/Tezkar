@@ -25,7 +25,7 @@ export default function HomePage() {
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><div className="brand-mark">ت</div><div><strong>TEZKAR</strong><span>Factory Management</span></div></div>
       <nav className="nav"><p className="nav-title">الإدارة</p>
-        {nav.map(([icon,label,active]) => <button key={label} className={`nav-item ${active ? "active" : ""}`} onClick={()=>setOpen(false)}><span className="icon">{icon}</span><span>{label}</span></button>)}
+        {nav.map(([icon,label,active]) => <button key={label} className={`nav-item ${active ? "active" : ""}`} onClick={()=>{setOpen(false);if(label==="الإعدادات")window.location.href="/settings"}}><span className="icon">{icon}</span><span>{label}</span></button>)}
       </nav>
     </aside>
     {open && <div className="sidebar-backdrop show" onClick={()=>setOpen(false)}/>}
