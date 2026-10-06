@@ -15,7 +15,7 @@ export function requirePermission(permissionCode: string) {
     try {
       const allowed = await hasPermission(client, request.user.userId, permissionCode);
       if (!allowed) {
-        reply.code(403).send({
+        return reply.code(403).send({
           error: { code: "FORBIDDEN", message: "ليس لديك صلاحية لتنفيذ هذا الإجراء" }
         });
       }
