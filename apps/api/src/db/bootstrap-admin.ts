@@ -7,7 +7,6 @@ const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
 if (!username || !password) {
   throw new Error("BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD are required");
 }
-
 if (password.length < 12) {
   throw new Error("BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters");
 }
@@ -20,8 +19,8 @@ await withTransaction(async (client) => {
   }
 
   const user = await client.query(
-    `INSERT INTO users (username, password_hash)
-     VALUES ($1, $2)
+    `INSERT INTO users (username, password_hash, is_bootstrap, must_complete_setup)
+     VALUES ($1, $2, TRUE, TRUE)
      RETURNING id, username`,
     [username, hashPassword(password)]
   );
@@ -33,7 +32,7 @@ await withTransaction(async (client) => {
     [user.rows[0].id]
   );
 
-  console.log(`Bootstrap manager created: ${user.rows[0].username}`);
+  console.log(`Bootstrap manager created: ${user.rows[0].username}. First login must complete admin setup.`);
 });
 
 await pool.end();
