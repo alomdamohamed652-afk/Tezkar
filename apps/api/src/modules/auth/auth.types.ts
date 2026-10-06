@@ -3,4 +3,6 @@ export type SessionUser = {
   employeeId: string | null;
   username: string;
   roleCodes: string[];
+  isBootstrap: boolean;
+  mustCompleteSetup: boolean;
 };
