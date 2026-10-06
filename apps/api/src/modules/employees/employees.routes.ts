@@ -3,6 +3,8 @@ import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { authenticateRequest } from "../auth/auth.middleware.js";
+import { requirePermission } from "../rbac/permission.guard.js";
 
 const createEmployeeSchema = z.object({
   fullName: z.string().trim().min(2).max(200),
@@ -13,7 +15,7 @@ const createEmployeeSchema = z.object({
 });
 
 export async function employeeRoutes(app: FastifyInstance) {
-  app.get("/api/employees", async () => {
+  app.get("/api/employees", { preHandler: [authenticateRequest, requirePermission("employees.view")] }, async () => {
     const result = await pool.query(
       `SELECT e.id, e.code, e.full_name, e.phone,
               d.code AS department_code, d.name AS department_name,
@@ -27,7 +29,7 @@ export async function employeeRoutes(app: FastifyInstance) {
     return { data: result.rows };
   });
 
-  app.post("/api/employees", async (request, reply) => {
+  app.post("/api/employees", { preHandler: [authenticateRequest, requirePermission("employees.create")] }, async (request, reply) => {
     const parsed = createEmployeeSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات الموظف غير صحيحة", 422);
 
