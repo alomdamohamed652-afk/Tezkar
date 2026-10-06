@@ -4,6 +4,7 @@ import cookie from "@fastify/cookie";
 import { env } from "./config.js";
 import { healthRoutes } from "./modules/health/health.routes.js";
 import { employeeRoutes } from "./modules/employees/employees.routes.js";
+import { authRoutes } from "./modules/auth/auth.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -27,6 +28,7 @@ app.setErrorHandler((error, _request, reply) => {
 });
 
 await app.register(healthRoutes);
+await app.register(authRoutes);
 await app.register(employeeRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });
