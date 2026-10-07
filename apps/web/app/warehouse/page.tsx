@@ -1,72 +1,46 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import { api } from "../../lib/api";
-import { Sidebar, usePermissions } from "../../components/sidebar";
+import {FormEvent,useEffect,useMemo,useState} from "react";
+import {api} from "../../lib/api";
+import {Sidebar,usePermissions} from "../../components/sidebar";
+import {SearchableSelect} from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
-type Warehouse=Item & {address:string|null;location_count:number};
-type Location=Item & {warehouse_id:string;warehouse_name:string};
-type Product=Item & {unit_name?:string};
-type Stock={product_code:string;product_name:string;warehouse_name:string;location_name:string;quantity:number;unit_name:string};
-type Movement={code:string;movement_type:string;quantity:number;product_name:string;warehouse_name:string;location_name:string;carton_code:string|null;created_at:string;unit_name:string};
-
+type Warehouse=Item&{address:string|null;location_count:number;warehouse_type:string};
+type Location=Item&{warehouse_id:string;warehouse_name:string};
+type Product=Item&{unit_name?:string};
+type Order=Item&{order_name:string};
+type Stock={product_name:string;warehouse_name:string;location_name:string;quantity:number;unit_name:string;avg_unit_cost:number;inventory_value:number};
+type Movement={code:string;movement_type:string;quantity:number;unit_cost:number|null;total_cost:number|null;product_name:string;warehouse_name:string;location_name:string;created_at:string};
+type Cost={total_in:string;total_out:string;net:string;current_value:string;stock_lines:number};
 const labels:Record<string,string>={IN:"وارد",OUT:"صرف",RETURN:"مرتجع",ADJUSTMENT:"تسوية",TRANSFER_OUT:"تحويل"};
+const warehouseTypes:Record<string,string>={GENERAL:"عام",RAW_MATERIAL:"خامات",WIP:"تحت التشغيل",FINISHED_GOODS:"منتجات جاهزة",SCRAP:"هالك"};
 
 export default function WarehousePage(){
- const { has } = usePermissions();
- const [warehouses,setWarehouses]=useState<Warehouse[]>([]);
- const [locations,setLocations]=useState<Location[]>([]);
- const [products,setProducts]=useState<Product[]>([]);
- const [stock,setStock]=useState<Stock[]>([]);
- const [movements,setMovements]=useState<Movement[]>([]);
- const [warehouseId,setWarehouseId]=useState("");
- const [locationId,setLocationId]=useState("");
- const [productId,setProductId]=useState("");
- const [movementType,setMovementType]=useState("IN"),[adjustmentDirection,setAdjustmentDirection]=useState("IN");
- const [quantity,setQuantity]=useState("");
- const [cartonCode,setCartonCode]=useState("");
- const [notes,setNotes]=useState("");
- const [newWarehouse,setNewWarehouse]=useState("");
- const [newLocation,setNewLocation]=useState("");
- const [error,setError]=useState("");
- const [saving,setSaving]=useState(false);
+ const {has}=usePermissions();const [warehouses,setWarehouses]=useState<Warehouse[]>([]),[locations,setLocations]=useState<Location[]>([]),[products,setProducts]=useState<Product[]>([]),[orders,setOrders]=useState<Order[]>([]),[stock,setStock]=useState<Stock[]>([]),[movements,setMovements]=useState<Movement[]>([]),[cost,setCost]=useState<Cost|null>(null);
+ const [warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[movementType,setMovementType]=useState("IN"),[adjustmentDirection,setAdjustmentDirection]=useState("IN"),[quantity,setQuantity]=useState(""),[unitCost,setUnitCost]=useState(""),[cartonCode,setCartonCode]=useState(""),[notes,setNotes]=useState(""),[from,setFrom]=useState(""),[to,setTo]=useState(""),[newWarehouse,setNewWarehouse]=useState(""),[warehouseType,setWarehouseType]=useState("GENERAL"),[newLocation,setNewLocation]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
 
  async function load(){
   setError("");
-  try{
-   const [w,l,p,s,m]=await Promise.all([api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Product[]}>("/api/products"),api<{data:Stock[]}>("/api/warehouse/stock"),api<{data:Movement[]}>("/api/warehouse/movements")]);
-   setWarehouses(w.data);setLocations(l.data);setProducts(p.data);setStock(s.data);setMovements(m.data);
-   if(!warehouseId&&w.data[0])setWarehouseId(w.data[0].id);
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن");}
- }
- useEffect(()=>{void load()},[]);
+  try{const qs=warehouseId?"?warehouseId="+warehouseId:"";const [w,l,p,o,s,m,c]=await Promise.all([api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Product[]}>("/api/products"),api<{data:Order[]}>("/api/orders"),api<{data:Stock[]}>("/api/warehouse/stock"+qs),api<{data:Movement[]}>("/api/warehouse/movements"+qs),api<{data:Cost}>("/api/warehouse/dashboard"+qs+(qs?"&":"?")+"from="+(from||"")+"&to="+(to||""))]);setWarehouses(w.data);setLocations(l.data);setProducts(p.data);setOrders(o.data);setStock(s.data);setMovements(m.data);setCost(c.data);if(!warehouseId&&w.data[0])setWarehouseId(w.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
+ useEffect(()=>{void load()},[from,to]);
+ useEffect(()=>{if(warehouseId)void load()},[warehouseId]);
 
- async function addWarehouse(e:FormEvent){e.preventDefault();if(!newWarehouse.trim())return;try{await api("/api/warehouses",{method:"POST",body:JSON.stringify({name:newWarehouse})});setNewWarehouse("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المخزن")}}
- async function addLocation(e:FormEvent){e.preventDefault();if(!warehouseId||!newLocation.trim())return;try{await api("/api/warehouse/locations",{method:"POST",body:JSON.stringify({warehouseId,code:newLocation.toUpperCase(),name:newLocation})});setNewLocation("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المكان")}}
- async function addMovement(e:FormEvent){e.preventDefault();if(!productId||!warehouseId||!locationId||!quantity)return;setSaving(true);setError("");try{await api("/api/warehouse/movements",{method:"POST",body:JSON.stringify({movementType,productId,warehouseId,locationId,quantity:Number(quantity),cartonCode:cartonCode||null,notes:notes||null,adjustmentDirection})});setQuantity("");setCartonCode("");setNotes("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الحركة")}finally{setSaving(false)}}
- const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId);
+ const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId),productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]),warehouseOptions=useMemo(()=>warehouses.map(x=>({value:x.id,label:x.name,meta:warehouseTypes[x.warehouse_type]})),[warehouses]),locationOptions=useMemo(()=>currentLocations.map(x=>({value:x.id,label:x.name})),[currentLocations]),orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
 
- return <div className="app-shell">
-  <Sidebar active="/warehouse" />
-  <main className="main"><header className="topbar"><div><h1 className="page-title">المخزن</h1><p className="page-subtitle">الأرصدة وحركات الوارد والصرف والتسويات</p></div></header><section className="content">
-   {error&&<div className="alert error">{error}</div>}
-   <div className="stats"><article className="card stat"><div className="stat-label">المخازن</div><div className="stat-value">{warehouses.length}</div><div className="stat-note">المخازن النشطة</div></article><article className="card stat accent"><div className="stat-label">أرصدة بها مخزون</div><div className="stat-value">{stock.length}</div><div className="stat-note">حسب المنتج والمكان</div></article><article className="card stat warning"><div className="stat-label">حركات مسجلة</div><div className="stat-value">{movements.length}</div><div className="stat-note">آخر 100 حركة</div></article></div>
-   {has("warehouse.move") && <section className="card form-card"><div className="card-header"><h2 className="card-title">تسجيل حركة</h2></div><form className="production-grid" onSubmit={addMovement}>
-    <label>نوع الحركة<select value={movementType} onChange={e=>setMovementType(e.target.value)}>{Object.entries(labels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label>
-    <label>المنتج<select value={productId} onChange={e=>setProductId(e.target.value)}><option value="">اختر المنتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.name} — {x.code}</option>)}</select></label>
-    <label>المخزن<select value={warehouseId} onChange={e=>{setWarehouseId(e.target.value);setLocationId("")}}><option value="">اختر المخزن</option>{warehouses.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-    <label>المكان<select value={locationId} onChange={e=>setLocationId(e.target.value)}><option value="">اختر المكان</option>{currentLocations.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
-    <label>الكمية<input type="number" min="0.001" step="0.001" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>
-    <label>اتجاه التسوية <span className="optional">للتسوية فقط</span><select value={adjustmentDirection} onChange={e=>setAdjustmentDirection(e.target.value)} disabled={movementType!=="ADJUSTMENT"}><option value="IN">زيادة</option><option value="OUT">نقص</option></select></label><label>كود الكرتونة <span className="optional">اختياري الآن</span><input value={cartonCode} onChange={e=>setCartonCode(e.target.value)} placeholder="مثال CTN-000123"/></label>
-    <label>ملاحظات<input value={notes} onChange={e=>setNotes(e.target.value)}/></label>
-    <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تسجيل الحركة"}</button></div>
-   </form></section>}
-   <div className="grid">
-    <section className="card"><div className="card-header"><h2 className="card-title">الأرصدة الحالية</h2></div><div className="table-wrap"><table><thead><tr><th>المنتج</th><th>المخزن</th><th>المكان</th><th>الرصيد</th></tr></thead><tbody>{stock.map((x,i)=><tr key={i}><td className="strong">{x.product_name}<div className="form-hint">{x.product_code}</div></td><td>{x.warehouse_name}</td><td>{x.location_name}</td><td className="money">{x.quantity} {x.unit_name}</td></tr>)}{!stock.length&&<tr><td colSpan={4}>لا يوجد مخزون مسجل.</td></tr>}</tbody></table></div></section>
-    <section className="card"><div className="card-header"><h2 className="card-title">آخر الحركات</h2></div><div className="table-wrap"><table><thead><tr><th>الكود</th><th>النوع</th><th>المنتج</th><th>الكمية</th><th>التاريخ</th></tr></thead><tbody>{movements.map(x=><tr key={x.code}><td className="mono">{x.code}</td><td>{labels[x.movement_type]||x.movement_type}</td><td>{x.product_name}</td><td>{x.quantity} {x.unit_name}</td><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td></tr>)}{!movements.length&&<tr><td colSpan={5}>لا توجد حركات.</td></tr>}</tbody></table></div></section>
-   </div>
-   {has("warehouse.manage") && <div className="grid" style={{marginTop:16}}><section className="card"><div className="card-header"><h2 className="card-title">إضافة مخزن</h2></div><form className="inline-form" onSubmit={addWarehouse}><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} placeholder="اسم المخزن"/><button className="primary-button">إضافة</button></form></section><section className="card"><div className="card-header"><h2 className="card-title">إضافة مكان للمخزن الحالي</h2></div><form className="inline-form" onSubmit={addLocation}><input value={newLocation} onChange={e=>setNewLocation(e.target.value)} placeholder="مثال A-01"/><button className="primary-button" disabled={!warehouseId}>إضافة</button></form></section></div>}
-  </section></main>
- </div>
+ async function addWarehouse(e:FormEvent){e.preventDefault();try{await api("/api/warehouses",{method:"POST",body:JSON.stringify({name:newWarehouse,warehouseType})});setNewWarehouse("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المخزن")}}
+ async function addLocation(e:FormEvent){e.preventDefault();try{await api("/api/warehouse/locations",{method:"POST",body:JSON.stringify({warehouseId,code:newLocation.toUpperCase(),name:newLocation})});setNewLocation("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المكان")}}
+ async function addMovement(e:FormEvent){e.preventDefault();setSaving(true);try{await api("/api/warehouse/movements",{method:"POST",body:JSON.stringify({movementType,productId,warehouseId,locationId,quantity:Number(quantity),unitCost:unitCost?Number(unitCost):null,orderId:orderId||null,cartonCode:cartonCode||null,notes:notes||null,adjustmentDirection})});setQuantity("");setUnitCost("");setOrderId("");setCartonCode("");setNotes("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الحركة")}finally{setSaving(false)}}
+
+ return <div className="app-shell"><Sidebar active="/warehouse"/><main className="main"><header className="topbar"><div><h1 className="page-title">المخزن والتكلفة</h1><p className="page-subtitle">الرصيد الحالي، تكلفة الداخل والخارج، وربط مسحوبات المخزن مباشرة بالطلبية.</p></div></header><section className="content">
+  {error&&<div className="alert error">{error}</div>}
+  <div className="stats"><article className="card stat"><div className="stat-label">قيمة المخزون الحالية</div><div className="stat-value">{Number(cost?.current_value||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</div><div className="stat-note">تكلفة الرصيد الحالي</div></article><article className="card stat accent"><div className="stat-label">تكلفة الداخل</div><div className="stat-value">{Number(cost?.total_in||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</div><div className="stat-note">حسب الفترة المحددة</div></article><article className="card stat warning"><div className="stat-label">تكلفة الخارج</div><div className="stat-value">{Number(cost?.total_out||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</div><div className="stat-note">الصرف والتحويلات</div></article><article className="card stat neutral"><div className="stat-label">صافي حركة التكلفة</div><div className="stat-value">{Number(cost?.net||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</div><div className="stat-note">داخل ناقص خارج</div></article></div>
+  <section className="card" style={{marginBottom:16}}><div className="card-header"><div><h2 className="card-title">فلترة التكلفة</h2><div className="form-hint">اترك التاريخ فارغًا لعرض كل الفترة المسجلة.</div></div></div><div className="toolbar-grid"><label>من تاريخ<input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></label><label>إلى تاريخ<input type="date" value={to} onChange={e=>setTo(e.target.value)}/></label><label>المخزن<SearchableSelect value={warehouseId} onChange={setWarehouseId} options={warehouseOptions} placeholder="كل المخازن"/></label></div></section>
+  {has("warehouse.move")&&<section className="card form-card"><div className="card-header"><div><h2 className="card-title">تسجيل حركة مخزن</h2><div className="form-hint">لو الحركة خاصة بطلبية، اختارها هنا عشان تتسجل تكلفة المسحوب عليها تلقائيًا.</div></div></div><form className="production-grid" onSubmit={addMovement}>
+   <label>نوع الحركة<select value={movementType} onChange={e=>setMovementType(e.target.value)}>{Object.entries(labels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label><label>المنتج<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختر المنتج"/></label><label>المخزن<SearchableSelect value={warehouseId} onChange={v=>{setWarehouseId(v);setLocationId("")}} options={warehouseOptions} placeholder="اختر المخزن"/></label><label>المكان<SearchableSelect value={locationId} onChange={setLocationId} options={locationOptions} placeholder="اختر المكان"/></label><label>الطلبية<SearchableSelect value={orderId} onChange={setOrderId} options={orderOptions} placeholder="اختياري — ربط بالطلب"/></label><label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label><label>تكلفة الوحدة <span className="optional">(للوارد؛ الخارج يأخذ متوسط التكلفة)</span><input inputMode="decimal" value={unitCost} onChange={e=>setUnitCost(e.target.value)}/></label><label>كود الكرتونة<input value={cartonCode} onChange={e=>setCartonCode(e.target.value)}/></label><label>اتجاه التسوية<select value={adjustmentDirection} onChange={e=>setAdjustmentDirection(e.target.value)} disabled={movementType!=="ADJUSTMENT"}><option value="IN">زيادة</option><option value="OUT">نقص</option></select></label><label style={{gridColumn:"1/-1"}}>ملاحظات<input value={notes} onChange={e=>setNotes(e.target.value)}/></label><div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تسجيل الحركة"}</button></div>
+  </form></section>}
+  <div className="grid"><section className="card"><div className="card-header"><h2 className="card-title">الأرصدة الحالية</h2></div><div className="table-wrap"><table><thead><tr><th>المنتج</th><th>المخزن</th><th>المكان</th><th>الرصيد</th><th>متوسط التكلفة</th><th>قيمة الرصيد</th></tr></thead><tbody>{stock.map((x,i)=><tr key={i}><td className="strong">{x.product_name}</td><td>{x.warehouse_name}</td><td>{x.location_name}</td><td>{Number(x.quantity).toLocaleString("ar-EG")} {x.unit_name}</td><td>{Number(x.avg_unit_cost||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td className="money">{Number(x.inventory_value||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td></tr>)}{!stock.length&&<tr><td colSpan={6}>لا يوجد مخزون.</td></tr>}</tbody></table></div></section>
+  <section className="card"><div className="card-header"><h2 className="card-title">آخر الحركات</h2></div><div className="table-wrap"><table><thead><tr><th>النوع</th><th>المنتج</th><th>الكمية</th><th>تكلفة الوحدة</th><th>التكلفة</th><th>التاريخ</th></tr></thead><tbody>{movements.map(x=><tr key={x.code}><td>{labels[x.movement_type]||x.movement_type}</td><td>{x.product_name}</td><td>{x.quantity}</td><td>{x.unit_cost??"—"}</td><td className="money">{x.total_cost??"—"}</td><td>{new Date(x.created_at).toLocaleDateString("ar-EG")}</td></tr>)}{!movements.length&&<tr><td colSpan={6}>لا توجد حركات.</td></tr>}</tbody></table></div></section></div>
+  {has("warehouse.manage")&&<div className="grid" style={{marginTop:16}}><section className="card"><div className="card-header"><h2 className="card-title">إضافة مخزن</h2></div><form className="inline-form" onSubmit={addWarehouse}><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} placeholder="اسم المخزن" required/><select value={warehouseType} onChange={e=>setWarehouseType(e.target.value)}>{Object.entries(warehouseTypes).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select><button className="primary-button">إضافة</button></form></section><section className="card"><div className="card-header"><h2 className="card-title">إضافة مكان للمخزن</h2></div><form className="inline-form" onSubmit={addLocation}><input value={newLocation} onChange={e=>setNewLocation(e.target.value)} placeholder="مثال A-01" required/><button className="primary-button" disabled={!warehouseId}>إضافة</button></form></section></div>}
+ </section></main></div>;
 }
