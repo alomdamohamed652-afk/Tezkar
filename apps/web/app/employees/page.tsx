@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import { Sidebar, usePermissions } from "../../components/sidebar";
 
 type Employee = {
   id: string;
@@ -20,6 +21,7 @@ type Department = { id: string; code: string; name: string };
 type JobTitle = { id: string; code: string; name: string; department_id: string | null };
 
 export default function EmployeesPage() {
+  const { has } = usePermissions();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([]);
@@ -90,26 +92,7 @@ export default function EmployeesPage() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden="true" />
-          <div className="brand-copy">
-            <div className="brand-name">تيزكار</div>
-            <div className="brand-sub">إدارة المصنع</div>
-          </div>
-        </div>
-        <div className="nav-title">النظام</div>
-        <nav className="nav">
-          <a className="nav-item" href="/"><span className="nav-icon">⌂</span><span>الرئيسية</span></a>
-          <a className="nav-item active" href="/employees"><span className="nav-icon">▣</span><span>الموظفون</span></a>
-          <a className="nav-item" href="/production"><span className="nav-icon">▤</span><span>الإنتاج</span></a>
-          <a className="nav-item" href="#"><span className="nav-icon">▥</span><span>المخزن</span></a>
-          <a className="nav-item" href="#"><span className="nav-icon">◫</span><span>المشتريات</span></a>
-          <a className="nav-item" href="#"><span className="nav-icon">◇</span><span>الطلبات</span></a>
-          <a className="nav-item" href="#"><span className="nav-icon">₤</span><span>المالية</span></a>
-          <a className="nav-item" href="#"><span className="nav-icon">▦</span><span>التقارير</span></a>
-        </nav>
-      </aside>
+      <Sidebar active="/employees" />
 
       <main className="main">
         <header className="topbar">
@@ -117,15 +100,15 @@ export default function EmployeesPage() {
             <h1 className="page-title">الموظفون</h1>
             <p className="page-subtitle">ملفات العاملين والبيانات الإدارية الأساسية</p>
           </div>
-          <button className="primary-button" onClick={() => setShowForm((v) => !v)}>
+          {has("employees.create") && <button className="primary-button" onClick={() => setShowForm((v) => !v)}>
             {showForm ? "إلغاء" : "+ إضافة موظف"}
-          </button>
+          </button>}
         </header>
 
         <section className="content">
           {error && <div className="alert error">{error}</div>}
 
-          {showForm && (
+          {showForm && has("employees.create") && (
             <form className="card form-card" onSubmit={submit}>
               <div className="card-header"><h2 className="card-title">موظف جديد</h2></div>
               <div className="form-grid">
