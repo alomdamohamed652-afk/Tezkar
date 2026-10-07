@@ -55,7 +55,7 @@ export default function MasterDataPage(){
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]),stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]),unitOptions=useMemo(()=>units.map(x=>({value:x.id,label:x.name})),[units]),typeOptions=useMemo(()=>types.map(x=>({value:x.id,label:x.name})),[types]);
 
  return <div className="app-shell"><Sidebar active="/master-data"/><main className="main"><header className="topbar"><div><h1 className="page-title">البيانات الأساسية</h1><p className="page-subtitle">تعريف المنتجات والخامات والمراحل وأنواع الإنتاج وأسعار التشغيل.</p></div></header><section className="content">
-  {error&&<div className="alert error">{error}}
+  {error&&<div className="alert error">{error}</div>}
   <div className="tabs"><button className={"tab "+(tab==="products"?"active":"")} onClick={()=>setTab("products")}>المنتجات والتصنيفات</button><button className={"tab "+(tab==="production"?"active":"")} onClick={()=>setTab("production")}>المراحل وأنواع الإنتاج</button><button className={"tab "+(tab==="rates"?"active":"")} onClick={()=>setTab("rates")}>أسعار المراحل</button><button className={"tab "+(tab==="organization"?"active":"")} onClick={()=>setTab("organization")}>الهيكل الإداري</button></div>
 
   {tab==="products"&&<div className="master-grid">
