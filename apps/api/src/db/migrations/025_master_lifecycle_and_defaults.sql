@@ -17,6 +17,12 @@ ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+WHERE r.code='worker'
+  AND p.code IN ('production.view_own','earnings.view_own','account.change_password')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code='manager'
   AND p.code IN (
     'departments.delete','job_titles.delete','products.delete','product_categories.delete',
