@@ -51,7 +51,9 @@ ALTER TABLE advance_requests
   ADD COLUMN IF NOT EXISTS repayment_method TEXT NOT NULL DEFAULT 'CUSTOM'
     CHECK (repayment_method IN ('FIXED_INSTALLMENT','PRODUCTION_PERCENTAGE','CUSTOM')),
   ADD COLUMN IF NOT EXISTS installment_amount NUMERIC(18,4),
-  ADD COLUMN IF NOT EXISTS production_percentage NUMERIC(7,4);
+  ADD COLUMN IF NOT EXISTS production_percentage NUMERIC(7,4),
+  ADD COLUMN IF NOT EXISTS repayment_status TEXT NOT NULL DEFAULT 'OPEN'
+    CHECK (repayment_status IN ('OPEN','SETTLED'));
 
 CREATE TABLE IF NOT EXISTS advance_repayments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
