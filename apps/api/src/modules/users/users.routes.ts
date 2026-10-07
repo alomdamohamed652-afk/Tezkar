@@ -28,6 +28,28 @@ export async function userRoutes(app: FastifyInstance){
   const result=await pool.query("SELECT id,code,name,is_system,is_active FROM roles WHERE is_active=TRUE ORDER BY name");
   return {data:result.rows};
  });
+ app.get("/api/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async()=>{
+  const r=await pool.query("SELECT id,code,module,entity,action,scope FROM permissions ORDER BY module,entity,action,code");
+  return {data:r.rows};
+ });
+ app.get("/api/roles/:id/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("SELECT p.id,p.code FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=$1 ORDER BY p.code",[id]);
+  return {data:r.rows};
+ });
+ app.put("/api/roles/:id/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const parsed=z.object({permissionIds:z.array(z.string().uuid())}).safeParse(req.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","قائمة الصلاحيات غير صحيحة",422);
+  await withTransaction(async client=>{
+    const role=await client.query("SELECT id,is_system FROM roles WHERE id=$1 AND is_active=TRUE FOR UPDATE",[id]);
+    if(!role.rowCount)throw new AppError("ROLE_NOT_FOUND","الدور غير موجود",404);
+    await client.query("DELETE FROM role_permissions WHERE role_id=$1",[id]);
+    if(parsed.data.permissionIds.length) await client.query("INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE id=ANY($2::uuid[]) ON CONFLICT DO NOTHING",[id,parsed.data.permissionIds]);
+    await writeAudit(client,{actorUserId:req.user!.userId,actorEmployeeId:req.user!.employeeId,action:"edit_permissions",module:"iam",entityType:"role",entityId:id,metadata:{permissionIds:parsed.data.permissionIds},ipAddress:req.ip,userAgent:req.headers["user-agent"]??null});
+  });
+  return {data:{success:true}};
+ });
  app.post("/api/users",{preHandler:[authenticateRequest,requirePermission("users.create")]},async(request,reply)=>{
   const parsed=createUserSchema.safeParse(request.body);
   if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المستخدم غير صحيحة",422);
