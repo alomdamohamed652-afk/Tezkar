@@ -1,6 +1,7 @@
 {
   "name": "@tezkar/web",
   "private": true,
+  "engines": { "node": ">=24 <25" },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
