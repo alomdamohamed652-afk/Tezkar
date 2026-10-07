@@ -6,7 +6,7 @@ import {Sidebar,usePermissions} from "../../components/sidebar";
 import {SearchableSelect} from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
-type Warehouse=Item&{address:string|null;location_count:number;warehouse_type:string};
+type Warehouse=Item&{address:string|null;location_count:number;warehouse_type:string;is_active:boolean};
 type Location=Item&{warehouse_id:string;warehouse_name:string};
 type Product=Item&{unit_name?:string};
 type Order=Item&{order_name:string};
