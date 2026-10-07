@@ -817,7 +817,7 @@ tbody tr:last-child td{border-bottom:0}
 .coding-print-meta{display:flex;justify-content:space-between;gap:2mm;font-size:2.2mm;margin-top:.2mm}
 .coding-print-address{text-align:center;border-top:.2mm solid #9ca3af;margin-top:.7mm;padding-top:.6mm;font-size:2.1mm}
 @media (max-width:900px){.detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:640px){.coding-form-grid{grid-template-columns:1fr}.detail-grid{grid-template-columns:1fr}}
+@media (max-width:640px){.coding-form-grid,.coding-settings-grid{grid-template-columns:1fr}.detail-grid{grid-template-columns:1fr}}
 @media print{
  @page{size:auto;margin:0}
  body:has(.coding-print-sheet) *{visibility:hidden!important}
