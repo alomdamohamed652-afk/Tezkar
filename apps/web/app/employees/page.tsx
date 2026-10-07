@@ -47,6 +47,29 @@ export default function EmployeesPage(){
     finally{setSaving(false);}
   }
 
+  async function editEmployee(employee:Employee){
+    const fullName=window.prompt("اسم الموظف",employee.full_name);
+    if(fullName===null)return;
+    const phone=window.prompt("رقم الهاتف",employee.phone??"");
+    if(phone===null)return;
+    const departmentName=window.prompt("اسم القسم (اتركه فارغًا لبدون قسم)",employee.department_name??"");
+    if(departmentName===null)return;
+    const department=departments.find(x=>x.name.trim().toLowerCase()===departmentName.trim().toLowerCase());
+    if(departmentName.trim()&& !department){setError("القسم المكتوب غير موجود. اختر قسمًا من شاشة الإضافة.");return;}
+    const jobName=window.prompt("اسم الوظيفة (اتركه فارغًا لبدون وظيفة)",employee.job_title_name??"");
+    if(jobName===null)return;
+    const job=jobs.find(x=>x.name.trim().toLowerCase()===jobName.trim().toLowerCase());
+    if(jobName.trim()&&!job){setError("الوظيفة المكتوبة غير موجودة. اختر وظيفة من شاشة الإضافة.");return;}
+    const role=window.prompt("كود دور النظام (مثال: worker / supervisor / manager)",roles.find(x=>x.name===employee.job_title_name)?.code??"worker");
+    if(role===null)return;
+    try{
+      await api("/api/employees/"+employee.id,{method:"PATCH",body:JSON.stringify({
+        fullName:fullName.trim(),phone:phone.trim()||null,departmentId:department?.id??null,jobTitleId:job?.id??null,roleCode:role.trim()
+      })});
+      await load();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تعديل الموظف");}
+  }
+
   const filteredJobs=jobs.filter(x=>!departmentId||x.department_id===departmentId);
 
   return <div className="app-shell"><Sidebar active="/employees"/><main className="main">
@@ -66,7 +89,7 @@ export default function EmployeesPage(){
         </div><div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ إنشاء الموظف والحساب...":"حفظ الموظف وإنشاء الحساب"}</button></div>
       </form>}
       <section className="card"><div className="card-header"><h2 className="card-title">قائمة الموظفين</h2><span className="count-badge">{employees.length}</span></div>
-        {loading?<div className="empty">جارٍ تحميل البيانات...</div>:!employees.length?<div className="empty">لا يوجد موظفون مسجلون.</div>:<div className="table-wrap"><table><thead><tr><th>الاسم</th><th>الكود</th><th>القسم</th><th>الوظيفة</th><th>الهاتف</th><th>الحالة</th></tr></thead><tbody>{employees.map(x=><tr key={x.id}><td className="strong">{x.full_name}</td><td className="mono">{x.code}</td><td>{x.department_name??"—"}</td><td>{x.job_title_name??"—"}</td><td>{x.phone??"—"}</td><td><span className={"status "+(x.is_active?"success":"muted")}>{x.is_active?"نشط":"غير نشط"}</span></td></tr>)}</tbody></table></div>}
+        {loading?<div className="empty">جارٍ تحميل البيانات...</div>:!employees.length?<div className="empty">لا يوجد موظفون مسجلون.</div>:<div className="table-wrap"><table><thead><tr><th>الاسم</th><th>الكود</th><th>القسم</th><th>الوظيفة</th><th>الهاتف</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{employees.map(x=><tr key={x.id}><td className="strong">{x.full_name}</td><td className="mono">{x.code}</td><td>{x.department_name??"—"}</td><td>{x.job_title_name??"—"}</td><td>{x.phone??"—"}</td><td><span className={"status "+(x.is_active?"success":"muted")}>{x.is_active?"نشط":"غير نشط"}</span></td><td><div className="row-actions">{has("employees.edit")&&x.is_active&&<button className="secondary-btn" onClick={()=>editEmployee(x)}>تعديل</button>}{has("employees.delete")&&x.is_active&&<button className="danger-button" onClick={()=>deactivate(x.id)}>تعطيل</button>}</div></td></tr>)}</tbody></table></div>}
       </section>
     </section></main></div>;
 }
