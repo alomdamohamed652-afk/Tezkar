@@ -14,7 +14,9 @@ const createSchema = z.object({
   workDate: z.string().date(),
   quantity: z.number().positive(),
   baseAmount: z.number().nonnegative().nullable().optional(),
-  hoursWorked: z.number().positive().nullable().optional()
+  hoursWorked: z.number().positive().nullable().optional(),
+  warehouseId: z.string().uuid(),
+  locationId: z.string().uuid()
 });
 
 const rejectSchema = z.object({
@@ -54,6 +56,19 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
 }
 
 export async function productionRoutes(app: FastifyInstance) {
+  app.get("/api/production/destinations", {
+    preHandler: [authenticateRequest, requirePermission("production.create")]
+  }, async () => {
+    const result = await pool.query(
+      `SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
+         FROM warehouse_locations l
+         JOIN warehouses w ON w.id=l.warehouse_id
+        WHERE l.is_active=TRUE AND w.is_active=TRUE
+        ORDER BY w.name,l.code`
+    );
+    return { data: result.rows };
+  });
+
   app.get("/api/production", {
     preHandler: [authenticateRequest, requirePermission("production.view")]
   }, async (request) => {
@@ -136,6 +151,17 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
 
+      const destination = await client.query(
+        `SELECT l.id,l.warehouse_id
+           FROM warehouse_locations l
+           JOIN warehouses w ON w.id=l.warehouse_id
+          WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE`,
+        [parsed.data.locationId, parsed.data.warehouseId]
+      );
+      if (!destination.rowCount) {
+        throw new AppError("DESTINATION_NOT_FOUND", "مخزن أو مكان تخزين الإنتاج غير موجود أو غير نشط", 422);
+      }
+
       const product = await client.query(
         "SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",
         [parsed.data.productId]
@@ -214,19 +240,19 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const inserted = await client.query(
         `INSERT INTO production_entries(
-           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,
            rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
            wage_type_method_snapshot,percentage_base_snapshot,base_amount,earning_amount,
            submitted_by
          )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          RETURNING id,code,employee_id,product_id,stage_id,shift_id,work_date,quantity,
                    unit_id,rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
                    wage_type_method_snapshot,percentage_base_snapshot,base_amount,
                    earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
-          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, rate.id, rate.rate,
+          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, parsed.data.warehouseId, parsed.data.locationId, rate.id, rate.rate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
           parsed.data.baseAmount ?? null, earning, request.user!.userId
         ]
@@ -265,6 +291,47 @@ export async function productionRoutes(app: FastifyInstance) {
       if (current.submitted_by === request.user!.userId) {
         throw new AppError("SELF_APPROVAL", "لا يمكنك اعتماد سجل إنتاج قمت بتسجيله بنفسك", 409);
       }
+
+      if (!current.warehouse_id || !current.location_id) {
+        throw new AppError("PRODUCTION_DESTINATION_REQUIRED", "الإنتاج القديم لا يحتوي على وجهة مخزنية؛ لا يمكن إدخاله للمخزن قبل تحديد الوجهة", 409);
+      }
+
+      const destination = await client.query(
+        "SELECT l.id,l.warehouse_id FROM warehouse_locations l JOIN warehouses w ON w.id=l.warehouse_id WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE",
+        [current.location_id, current.warehouse_id]
+      );
+      if (!destination.rowCount) throw new AppError("DESTINATION_NOT_FOUND", "وجهة الإنتاج غير موجودة أو غير نشطة", 409);
+
+      const lockedBalance = await client.query(
+        "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+        [current.product_id, current.warehouse_id, current.location_id]
+      );
+      const currentBalance = Number(lockedBalance.rows[0]?.quantity ?? 0);
+      const nextBalance = currentBalance + Number(current.quantity);
+      if (lockedBalance.rowCount) {
+        await client.query(
+          "UPDATE stock_balances SET quantity=$1,updated_at=now() WHERE product_id=$2 AND warehouse_id=$3 AND location_id=$4",
+          [nextBalance,current.product_id,current.warehouse_id,current.location_id]
+        );
+      } else {
+        await client.query(
+          "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity) VALUES($1,$2,$3,$4)",
+          [current.product_id,current.warehouse_id,current.location_id,current.quantity]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO stock_movements(
+           movement_type,product_id,warehouse_id,location_id,quantity,unit_id,
+           notes,created_by,reference_type,reference_id
+         )
+         VALUES('IN',$1,$2,$3,$4,$5,$6,$7,'PRODUCTION',$8)
+         ON CONFLICT DO NOTHING`,
+        [
+          current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,
+          "إدخال إنتاج معتمد "+current.code,request.user!.userId,id
+        ]
+      );
 
       const updated = await client.query(
         `UPDATE production_entries
