@@ -43,6 +43,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
             e.code AS employee_code, e.full_name AS employee_name,
             pr.code AS product_code, pr.name AS product_name,
             st.code AS stage_code, st.name AS stage_name,
+            os.order_id AS order_id,
             sh.code AS shift_code, sh.name AS shift_name,
             u.code AS unit_code, u.name AS unit_name
        FROM production_entries p
