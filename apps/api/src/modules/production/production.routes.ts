@@ -262,6 +262,15 @@ export async function productionRoutes(app: FastifyInstance) {
         [request.user!.userId, id]
       );
 
+      await client.query(
+        `INSERT INTO employee_earnings_ledger(
+           employee_id,entry_type,credit_amount,production_entry_id,created_by,notes
+         )
+         VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
+         ON CONFLICT (production_entry_id) DO NOTHING`,
+        [current.employee_id, current.earning_amount, id, request.user!.userId]
+      );
+
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
