@@ -32,9 +32,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await assertLocation(client,parsed.data.warehouseId,parsed.data.locationId);
    const quantity=Number(parsed.data.quantity);
    if(quantity<=0)throw new AppError("INVALID_QUANTITY","كمية الكرتونة يجب أن تكون أكبر من صفر",422);
-   await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,-quantity);
+   const stock=await client.query("SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+   if(Number(stock.rows[0]?.quantity??0)<quantity)throw new AppError("INSUFFICIENT_STOCK","الرصيد المتاح أقل من كمية الكرتونة",409);
    const r=await client.query("INSERT INTO cartons(barcode,product_id,warehouse_id,location_id,quantity,unit_id,weight,batch_code,status,sealed_at,sealed_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",[parsed.data.barcode??null,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,quantity,product.rows[0].unit_id,parsed.data.weight??null,parsed.data.batchCode??null,parsed.data.status,parsed.data.status==="SEALED"?new Date():null,parsed.data.status==="SEALED"?request.user!.userId:null]);
-   await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,reference_type,reference_id,notes,created_by) VALUES('OUT',$1,$2,$3,$4,$5,$6,'CARTON',$7,$8,$9)",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,quantity,product.rows[0].unit_id,r.rows[0].code,r.rows[0].id,"تعبئة كرتونة",request.user!.userId]);
    return r.rows[0];
   });
   return reply.code(201).send({data:row});
