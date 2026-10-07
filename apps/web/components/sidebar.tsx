@@ -23,7 +23,7 @@ const nav: NavItem[] = [
   { icon: "▦", label: "التقارير", href: "/reports", permissions: ["reports.view"] }
 ];
 
-export function Sidebar({ active }: { active: string }) {
+export function usePermissions() {\n  const [permissions, setPermissions] = useState<string[] | null>(null);\n  useEffect(() => {\n    api<{ data: Session }>("/api/auth/me")\n      .then((result) => setPermissions(result.data.permissions))\n      .catch(() => setPermissions([]));\n  }, []);\n  return { permissions, has: (code: string) => permissions?.includes(code) ?? false };\n}\n\nexport function Sidebar({ active }: { active: string }) {
   const [permissions, setPermissions] = useState<string[] | null>(null);
 
   useEffect(() => {
