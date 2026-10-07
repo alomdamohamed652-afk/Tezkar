@@ -21,7 +21,7 @@ export default function WarehousePage(){
  const [warehouseId,setWarehouseId]=useState("");
  const [locationId,setLocationId]=useState("");
  const [productId,setProductId]=useState("");
- const [movementType,setMovementType]=useState("IN");
+ const [movementType,setMovementType]=useState("IN"),[adjustmentDirection,setAdjustmentDirection]=useState("IN");
  const [quantity,setQuantity]=useState("");
  const [cartonCode,setCartonCode]=useState("");
  const [notes,setNotes]=useState("");
@@ -42,7 +42,7 @@ export default function WarehousePage(){
 
  async function addWarehouse(e:FormEvent){e.preventDefault();if(!newWarehouse.trim())return;try{await api("/api/warehouses",{method:"POST",body:JSON.stringify({name:newWarehouse})});setNewWarehouse("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المخزن")}}
  async function addLocation(e:FormEvent){e.preventDefault();if(!warehouseId||!newLocation.trim())return;try{await api("/api/warehouse/locations",{method:"POST",body:JSON.stringify({warehouseId,code:newLocation.toUpperCase(),name:newLocation})});setNewLocation("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المكان")}}
- async function addMovement(e:FormEvent){e.preventDefault();if(!productId||!warehouseId||!locationId||!quantity)return;setSaving(true);setError("");try{await api("/api/warehouse/movements",{method:"POST",body:JSON.stringify({movementType,productId,warehouseId,locationId,quantity:Number(quantity),cartonCode:cartonCode||null,notes:notes||null})});setQuantity("");setCartonCode("");setNotes("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الحركة")}finally{setSaving(false)}}
+ async function addMovement(e:FormEvent){e.preventDefault();if(!productId||!warehouseId||!locationId||!quantity)return;setSaving(true);setError("");try{await api("/api/warehouse/movements",{method:"POST",body:JSON.stringify({movementType,productId,warehouseId,locationId,quantity:Number(quantity),cartonCode:cartonCode||null,notes:notes||null,adjustmentDirection})});setQuantity("");setCartonCode("");setNotes("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الحركة")}finally{setSaving(false)}}
  const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId);
 
  return <div className="app-shell">
@@ -58,7 +58,7 @@ export default function WarehousePage(){
     <label>المخزن<select value={warehouseId} onChange={e=>{setWarehouseId(e.target.value);setLocationId("")}}><option value="">اختر المخزن</option>{warehouses.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
     <label>المكان<select value={locationId} onChange={e=>setLocationId(e.target.value)}><option value="">اختر المكان</option>{currentLocations.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
     <label>الكمية<input type="number" min="0.001" step="0.001" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>
-    <label>كود الكرتونة <span className="optional">اختياري الآن</span><input value={cartonCode} onChange={e=>setCartonCode(e.target.value)} placeholder="مثال CTN-000123"/></label>
+    <label>اتجاه التسوية <span className="optional">للتسوية فقط</span><select value={adjustmentDirection} onChange={e=>setAdjustmentDirection(e.target.value)} disabled={movementType!=="ADJUSTMENT"}><option value="IN">زيادة</option><option value="OUT">نقص</option></select></label><label>كود الكرتونة <span className="optional">اختياري الآن</span><input value={cartonCode} onChange={e=>setCartonCode(e.target.value)} placeholder="مثال CTN-000123"/></label>
     <label>ملاحظات<input value={notes} onChange={e=>setNotes(e.target.value)}/></label>
     <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تسجيل الحركة"}</button></div>
    </form></section>
