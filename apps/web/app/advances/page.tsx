@@ -2,7 +2,8 @@
 import {FormEvent,useEffect,useState} from "react";
 import {api} from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
-type Advance={id:string;code:string;employee_name:string;amount:number;reason:string;status:string;created_at:string;rejection_reason:string|null};\nconst normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
+type Advance={id:string;code:string;employee_name:string;amount:number;reason:string;status:string;created_at:string;rejection_reason:string|null};
+const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={PENDING:"قيد المراجعة",APPROVED:"معتمدة",REJECTED:"مرفوضة",PAID:"تم الصرف",CANCELLED:"ملغاة"};
 export default function AdvancesPage(){
  const { has } = usePermissions();
