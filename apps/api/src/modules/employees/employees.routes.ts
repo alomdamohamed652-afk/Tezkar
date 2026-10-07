@@ -77,4 +77,15 @@ export async function employeeRoutes(app: FastifyInstance) {
 
     return reply.code(201).send({ data: employee });
   });
+  app.delete("/api/employees/:id",{preHandler:[authenticateRequest,requirePermission("employees.delete")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const r=await withTransaction(async client=>{
+      const e=await client.query("UPDATE employees SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
+      if(!e.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+      await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE employee_id=$1",[id]);
+      return e.rows[0];
+    });
+    return {data:r};
+  });
+
 }
