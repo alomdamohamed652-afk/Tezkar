@@ -4,7 +4,8 @@ import { FormEvent, useEffect, useState } from "react";
 const API=process.env.NEXT_PUBLIC_API_URL??"http://localhost:4000";
 type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string};
-type User={id:string;code:string;username:string;full_name:string|null;role_codes:string[];is_active:boolean};\ntype Permission={id:string;code:string;module:string;entity:string;action:string;scope:string|null};
+type User={id:string;code:string;username:string;full_name:string|null;role_codes:string[];is_active:boolean};
+type Permission={id:string;code:string;module:string;entity:string;action:string;scope:string|null};
 
 export default function SettingsPage(){
  const [departments,setDepartments]=useState<Item[]>([]),[roles,setRoles]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[users,setUsers]=useState<User[]>([]),[methods,setMethods]=useState<{code:string;name:string}[]>([]),[permissions,setPermissions]=useState<Permission[]>([]),[roleForPermissions,setRoleForPermissions]=useState(""),[rolePermissionIds,setRolePermissionIds]=useState<string[]>([]);
@@ -15,9 +16,12 @@ export default function SettingsPage(){
  async function load(){
   const [d,j,r,u,e,m]=await Promise.all(["/api/departments","/api/job-titles","/api/roles","/api/users","/api/employees","/api/payment-methods"].map(p=>fetch(API+p,{credentials:"include"}).then(async x=>({ok:x.ok,b:await x.json()}))));
   if([d,j,r,u,e].some(x=>!x.ok)){window.location.replace("/login");return;}
-  setDepartments(d.b.data);setRoles(r.b.data);setUsers(u.b.data);setEmployees(e.b.data);if(m.ok)setMethods(m.b.data);\n  if(r.ok){const pr=await fetch(API+"/api/permissions",{credentials:"include"});if(pr.ok){const pb=await pr.json();setPermissions(pb.data);}}
+  setDepartments(d.b.data);setRoles(r.b.data);setUsers(u.b.data);setEmployees(e.b.data);if(m.ok)setMethods(m.b.data);
+  if(r.ok){const pr=await fetch(API+"/api/permissions",{credentials:"include"});if(pr.ok){const pb=await pr.json();setPermissions(pb.data);}}
  }
- useEffect(()=>{load().catch(()=>window.location.replace("/login"));},[]);\n useEffect(()=>{if(!roleForPermissions&&roles[0])setRoleForPermissions(roles[0].id);},[roles,roleForPermissions]);\n useEffect(()=>{if(!roleForPermissions)return;fetch(API+"/api/roles/"+roleForPermissions+"/permissions",{credentials:"include"}).then(r=>r.json()).then(b=>setRolePermissionIds((b.data??[]).map((x:Permission)=>x.id))).catch(()=>setRolePermissionIds([]));},[roleForPermissions]);
+ useEffect(()=>{load().catch(()=>window.location.replace("/login"));},[]);
+ useEffect(()=>{if(!roleForPermissions&&roles[0])setRoleForPermissions(roles[0].id);},[roles,roleForPermissions]);
+ useEffect(()=>{if(!roleForPermissions)return;fetch(API+"/api/roles/"+roleForPermissions+"/permissions",{credentials:"include"}).then(r=>r.json()).then(b=>setRolePermissionIds((b.data??[]).map((x:Permission)=>x.id))).catch(()=>setRolePermissionIds([]));},[roleForPermissions]);
  async function post(path:string,body:unknown){
   setError("");setMessage("");const res=await fetch(API+path,{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify(body)});const b=await res.json();if(!res.ok)throw new Error(b?.error?.message??"تعذر تنفيذ العملية");return b;
  }
