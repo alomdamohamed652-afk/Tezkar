@@ -48,14 +48,17 @@ export async function codingRoutes(app: FastifyInstance) {
       companyAddress:z.string().trim().max(250).optional()
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات قالب الطباعة غير صحيحة",422);
-    const p=parsed.data;
-    const current=await pool.query("SELECT * FROM coding_templates WHERE id=$1 AND is_active=TRUE",[id]);
-    if(!current.rowCount)throw new AppError("TEMPLATE_NOT_FOUND","قالب الطباعة غير موجود",404);
-    const oldConfig=current.rows[0].config||{};
-    const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة"};
-    const updated=await pool.query("UPDATE coding_templates SET width_mm=$1,height_mm=$2,orientation=$3,config=$4,created_at=created_at WHERE id=$5 RETURNING *",[p.widthMm,p.heightMm,p.orientation,JSON.stringify(config),id]);
-    await writeAudit(pool as never,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"coding",entityType:"coding_template",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-    return {data:updated.rows[0]};
+    const updated=await withTransaction(async(client)=>{
+      const current=await client.query("SELECT * FROM coding_templates WHERE id=$1 AND is_active=TRUE FOR UPDATE",[id]);
+      if(!current.rowCount)throw new AppError("TEMPLATE_NOT_FOUND","قالب الطباعة غير موجود",404);
+      const p=parsed.data;
+      const oldConfig=current.rows[0].config||{};
+      const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة"};
+      const row=await client.query("UPDATE coding_templates SET width_mm=$1,height_mm=$2,orientation=$3,config=$4 WHERE id=$5 RETURNING *",[p.widthMm,p.heightMm,p.orientation,JSON.stringify(config),id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"coding",entityType:"coding_template",entityId:id,beforeData:current.rows[0],afterData:row.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return row.rows[0];
+    });
+    return {data:updated};
   });
 
   app.get("/api/coding/units",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{
