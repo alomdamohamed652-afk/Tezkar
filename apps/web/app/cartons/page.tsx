@@ -13,6 +13,7 @@ const labels:Record<string,string>={OPEN:"مفتوحة",SEALED:"مغلقة",PART
 
 export default function CartonsPage(){
  const {has}=usePermissions();
+ const [printItem,setPrintItem]=useState<Carton|null>(null);
  const [products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Item[]>([]),[locations,setLocations]=useState<Location[]>([]),[items,setItems]=useState<Carton[]>([]);
  const [printItem,setPrintItem]=useState<Carton|null>(null);\n const [productId,setProductId]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState(""),[barcode,setBarcode]=useState(""),[status,setStatus]=useState("OPEN"),[error,setError]=useState(""),[saving,setSaving]=useState(false);
 
@@ -61,6 +62,7 @@ export default function CartonsPage(){
       <tbody>{items.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="mono">{x.barcode||"—"}</td><td className="strong">{x.product_name}<div className="form-hint">{x.product_code}</div></td><td>{x.warehouse_name} / {x.location_name}</td><td>{x.quantity} {x.unit_name}</td><td>{x.weight??"—"}</td><td><span className={"status "+x.status.toLowerCase()}>{labels[x.status]||x.status}</span></td><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td><td><button className="approve-button" onClick={()=>{setPrintItem(x);setTimeout(()=>window.print(),50)}}>طباعة</button></td></tr>)}{!items.length&&<tr><td colSpan={9}>لا توجد كرتونات.</td></tr>}</tbody>
      </table></div>
     </section>
+    {printItem&&<div className="print-sheet"><div className="print-brand">TEZKAR</div><h1>بيانات الكرتونة</h1><Code39Barcode value={printItem.barcode||printItem.code} height={72}/><div className="print-code">{printItem.code}</div><div className="print-grid"><div><b>المنتج</b><span>{printItem.product_name}</span><small>{printItem.product_code}</small></div><div><b>الكمية</b><span>{printItem.quantity} {printItem.unit_name}</span></div><div><b>الوزن</b><span>{printItem.weight??"—"}</span></div><div><b>المخزن</b><span>{printItem.warehouse_name}</span></div><div><b>المكان</b><span>{printItem.location_name}</span></div><div><b>الحالة</b><span>{labels[printItem.status]||printItem.status}</span></div></div><p>تاريخ الإنشاء: {new Date(printItem.created_at).toLocaleString("ar-EG")}</p></div>}
    </section>
   </main>
  </div>
