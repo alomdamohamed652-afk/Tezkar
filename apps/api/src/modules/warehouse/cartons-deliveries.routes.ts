@@ -95,21 +95,29 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
       throw new AppError("DELIVERY_EXCEEDS_ORDER","كمية التسليم تتجاوز الكمية المتبقية في الطلبية",409);
     }
     if(line.carton_code){
-     const carton=await client.query(
-      "SELECT * FROM cartons WHERE (code=$1 OR barcode=$1) FOR UPDATE",
-      [line.carton_code]
-     );
-     if(!carton.rowCount) throw new AppError("CARTON_NOT_FOUND","الكرتونة المحددة في إذن التسليم غير موجودة",422);
-     const c=carton.rows[0];
-     if(c.product_id!==line.product_id || c.warehouse_id!==line.warehouse_id || c.location_id!==line.location_id){
-      throw new AppError("CARTON_MISMATCH","بيانات الكرتونة لا تطابق صنف أو مخزن أو مكان التخزين في الإذن",409);
+     const coding=await client.query("SELECT * FROM coding_units WHERE (code=$1 OR barcode=$1) FOR UPDATE",[line.carton_code]);
+     if(coding.rowCount){
+      const unit=coding.rows[0];
+      if(unit.product_id!==line.product_id || unit.warehouse_id!==line.warehouse_id || unit.location_id!==line.location_id){
+       throw new AppError("CODING_UNIT_MISMATCH","بيانات وحدة التكويد لا تطابق الصنف أو المخزن أو مكان التخزين في الإذن",409);
+      }
+      if(["CANCELLED","OUT","DELIVERED"].includes(unit.status)) throw new AppError("CODING_UNIT_UNAVAILABLE","وحدة التكويد غير متاحة للخروج",409);
+      const remaining=Number(unit.quantity)-Number(line.quantity);
+      if(remaining<0) throw new AppError("CODING_UNIT_INSUFFICIENT","كمية وحدة التكويد أقل من الكمية المطلوبة",409);
+      const nextStatus=remaining===0?"OUT":"IN_STOCK";
+      await client.query("UPDATE coding_units SET quantity=$1,status=$2,updated_at=now() WHERE id=$3",[remaining,nextStatus,unit.id]);
+      await client.query("INSERT INTO coding_unit_movements(coding_unit_id,movement_type,from_warehouse_id,from_location_id,reference_type,reference_id,notes,created_by) VALUES($1,'OUT',$2,$3,'DELIVERY',$4,$5,$6)",[unit.id,unit.warehouse_id,unit.location_id,id,"خروج وحدة التكويد عبر إذن التسليم "+d.rows[0].code,request.user!.userId]);
+     } else {
+      const carton=await client.query("SELECT * FROM cartons WHERE (code=$1 OR barcode=$1) FOR UPDATE",[line.carton_code]);
+      if(!carton.rowCount) throw new AppError("CARTON_NOT_FOUND","الكرتونة المحددة في إذن التسليم غير موجودة",422);
+      const c=carton.rows[0];
+      if(c.product_id!==line.product_id || c.warehouse_id!==line.warehouse_id || c.location_id!==line.location_id){
+       throw new AppError("CARTON_MISMATCH","بيانات الكرتونة لا تطابق صنف أو مخزن أو مكان التخزين في الإذن",409);
+      }
+      const remaining=Number(c.quantity)-Number(line.quantity);
+      if(remaining<0) throw new AppError("CARTON_INSUFFICIENT","كمية الكرتونة أقل من الكمية المطلوبة في الإذن",409);
+      await client.query("UPDATE cartons SET quantity=$1,status=$2,updated_at=now() WHERE id=$3",[remaining,remaining===0?"EMPTY":"PARTIAL",c.id]);
      }
-     const remaining=Number(c.quantity)-Number(line.quantity);
-     if(remaining<0) throw new AppError("CARTON_INSUFFICIENT","كمية الكرتونة أقل من الكمية المطلوبة في الإذن",409);
-     await client.query(
-      "UPDATE cartons SET quantity=$1,status=$2,updated_at=now() WHERE id=$3",
-      [remaining,remaining===0?"EMPTY":"PARTIAL",c.id]
-     );
     }
     const movementCost=await changeBalance(client,line.product_id,line.warehouse_id,line.location_id,-Number(line.quantity));
     await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,carton_code,reference_type,reference_id,notes,created_by) VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,'DELIVERY',$10,$11,$12)",[line.product_id,line.warehouse_id,line.location_id,line.quantity,line.unit_id,movementCost.unitCost,movementCost.totalCost,d.rows[0].order_id,line.carton_code,id,"Delivery permission "+d.rows[0].code,request.user!.userId]);
