@@ -17,6 +17,8 @@ const nav: NavItem[] = [
   { icon: "▣", label: "الموظفون", href: "/employees", permissions: ["employees.view"] },
   { icon: "▤", label: "الإنتاج", href: "/production", permissions: ["production.view"] },
   { icon: "▥", label: "المخزن", href: "/warehouse", permissions: ["warehouse.view"] },
+  { icon: "▣", label: "الكرتونات", href: "/cartons", permissions: ["cartons.view"] },
+  { icon: "⇥", label: "التسليمات", href: "/deliveries", permissions: ["deliveries.view"] },
   { icon: "↔", label: "السلف", href: "/advances", permissions: ["advances.view", "advances.view_own"] },
   { icon: "₤", label: "القبض", href: "/payments", permissions: ["payment_requests.view", "worker_payments.view"] },
   { icon: "⚙", label: "الإعدادات", href: "/settings", permissions: ["users.view", "payment_methods.manage"] },
