@@ -24,6 +24,7 @@ export default function ProductionPage(){
   const [workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10));
   const [quantity,setQuantity]=useState("");
   const [baseAmount,setBaseAmount]=useState("");
+  const [hoursWorked,setHoursWorked]=useState("");
   const [status,setStatus]=useState("");
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState(false);
@@ -50,9 +51,9 @@ export default function ProductionPage(){
     try{
       await api("/api/production",{method:"POST",body:JSON.stringify({
         employeeId:employeeId||undefined,productId,stageId,shiftId,workDate,
-        quantity:Number(quantity),baseAmount:baseAmount?Number(baseAmount):undefined
+        quantity:Number(quantity),baseAmount:baseAmount?Number(baseAmount):undefined,hoursWorked:hoursWorked?Number(hoursWorked):undefined
       })});
-      setQuantity("");setBaseAmount("");await load();
+      setQuantity("");setBaseAmount("");setHoursWorked("");await load();
     }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإنتاج");}
     finally{setSaving(false);}
   }
@@ -84,7 +85,7 @@ export default function ProductionPage(){
             <label>الوردية<select value={shiftId} onChange={e=>setShiftId(e.target.value)} required><option value="">اختر الوردية</option>{shifts.map(x=><option key={x.id} value={x.id}>{x.name} — {x.rate_group_name}</option>)}</select></label>
             <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
             <label>الكمية<input type="number" min="0.001" step="0.001" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>
-            <label>قيمة الأساس <span className="optional">(لأجر النسبة فقط)</span><input type="number" min="0" step="0.01" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} /></label>
+            <label>قيمة الأساس <span className="optional">(لأجر النسبة فقط)</span><input type="number" min="0" step="0.01" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} /></label>\n            <label>عدد الساعات <span className="optional">(لأجر الساعة فقط)</span><input type="number" min="0.01" step="0.01" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} /></label>
           </div>
           <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ التسجيل...":"تسجيل الإنتاج"}</button></div>
         </form>}
