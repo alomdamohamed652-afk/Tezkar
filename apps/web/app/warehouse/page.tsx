@@ -67,7 +67,6 @@ export default function WarehousePage(){
     <section className="card"><div className="card-header"><h2 className="card-title">آخر الحركات</h2></div><div className="table-wrap"><table><thead><tr><th>الكود</th><th>النوع</th><th>المنتج</th><th>الكمية</th><th>التاريخ</th></tr></thead><tbody>{movements.map(x=><tr key={x.code}><td className="mono">{x.code}</td><td>{labels[x.movement_type]||x.movement_type}</td><td>{x.product_name}</td><td>{x.quantity} {x.unit_name}</td><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td></tr>)}{!movements.length&&<tr><td colSpan={5}>لا توجد حركات.</td></tr>}</tbody></table></div></section>
    </div>
    {has("warehouse.manage") && <div className="grid" style={{marginTop:16}}><section className="card"><div className="card-header"><h2 className="card-title">إضافة مخزن</h2></div><form className="inline-form" onSubmit={addWarehouse}><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} placeholder="اسم المخزن"/><button className="primary-button">إضافة</button></form></section><section className="card"><div className="card-header"><h2 className="card-title">إضافة مكان للمخزن الحالي</h2></div><form className="inline-form" onSubmit={addLocation}><input value={newLocation} onChange={e=>setNewLocation(e.target.value)} placeholder="مثال A-01"/><button className="primary-button" disabled={!warehouseId}>إضافة</button></form></section></div>
-  </div>}
   </section></main>
  </div>
 }
