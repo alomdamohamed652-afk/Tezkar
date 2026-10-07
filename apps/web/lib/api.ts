@@ -1,5 +1,12 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
+export class ApiError extends Error {
+  constructor(public code: string, message: string, public status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function api<T>(
   path: string,
   options: RequestInit = {}
@@ -18,7 +25,7 @@ export async function api<T>(
 
   if (!response.ok) {
     const message = body?.error?.message ?? "حدث خطأ أثناء الاتصال بالنظام";
-    throw new Error(message);
+    throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
   }
 
   return body as T;
