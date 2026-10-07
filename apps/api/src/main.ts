@@ -27,13 +27,16 @@ await app.register(cors, {
 await app.register(cookie, { secret: env.SESSION_SECRET });
 
 app.setErrorHandler((error, _request, reply) => {
-  if ("statusCode" in error && typeof error.statusCode === "number" && error.statusCode < 500) {
-    return reply.code(error.statusCode).send({
-      error: {
-        code: "code" in error ? String(error.code) : "REQUEST_ERROR",
-        message: error.message
-      }
-    });
+  const statusCode = typeof error === "object" && error !== null && "statusCode" in error
+    ? (error as { statusCode?: unknown }).statusCode
+    : undefined;
+
+  if (typeof statusCode === "number" && statusCode < 500) {
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "REQUEST_ERROR";
+    const message = error instanceof Error ? error.message : "حدث خطأ في الطلب";
+    return reply.code(statusCode).send({ error: { code, message } });
   }
 
   app.log.error(error);
