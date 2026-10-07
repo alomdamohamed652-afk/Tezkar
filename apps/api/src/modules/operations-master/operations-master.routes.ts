@@ -44,6 +44,29 @@ export async function operationsMasterRoutes(app:FastifyInstance){
  app.post("/api/products",{preHandler:[authenticateRequest,requirePermission("products.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(1000).optional(),categoryId:z.string().uuid().nullable().optional(),productType:z.enum(["RAW_MATERIAL","COMPONENT","FINISHED_GOOD","SERVICE","CONSUMABLE"]),unitId:z.string().uuid(),sku:z.string().trim().max(100).nullable().optional(),barcode:z.string().trim().max(100).nullable().optional(),color:z.string().trim().max(80).nullable().optional(),thickness:z.number().nonnegative().nullable().optional(),size:z.string().trim().max(80).nullable().optional(),minimumStock:z.number().nonnegative().default(0),trackInventory:z.boolean().default(true)}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المنتج غير صحيحة",422);const r=await withTransaction(async c=>{const u=await c.query("SELECT 1 FROM units WHERE id=$1 AND is_active=TRUE",[p.data.unitId]);if(!u.rowCount)throw new AppError("UNIT_NOT_FOUND","وحدة القياس غير موجودة",422);const x=await c.query("INSERT INTO products(name,description,category_id,product_type,unit_id,sku,barcode,color,thickness,size,minimum_stock,track_inventory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,code,name,product_type,unit_id,sku,barcode,minimum_stock,track_inventory,is_active",[p.data.name,p.data.description??null,p.data.categoryId??null,p.data.productType,p.data.unitId,p.data.sku??null,p.data.barcode??null,p.data.color??null,p.data.thickness??null,p.data.size??null,p.data.minimumStock,p.data.trackInventory]);await audit(c,req,"create","product",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 
 
+ app.delete("/api/rate-groups/:id",{preHandler:[authenticateRequest,requirePermission("rate_groups.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const used=await pool.query("SELECT COUNT(*)::int AS n FROM shifts WHERE rate_group_id=$1 AND is_active=TRUE",[id]);
+  if(Number(used.rows[0].n)>0)throw new AppError("RATE_GROUP_IN_USE","لا يمكن تعطيل مجموعة أجر مرتبطة بورديات نشطة",409);
+  const r=await pool.query("UPDATE rate_groups SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("RATE_GROUP_NOT_FOUND","مجموعة الأجر غير موجودة",404);return {data:r.rows[0]};
+ });
+ app.delete("/api/shifts/:id",{preHandler:[authenticateRequest,requirePermission("shifts.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE shifts SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة",404);return {data:r.rows[0]};
+ });
+ app.delete("/api/production-types/:id",{preHandler:[authenticateRequest,requirePermission("production_types.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE production_types SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود",404);return {data:r.rows[0]};
+ });
+ app.delete("/api/rates/:id",{preHandler:[authenticateRequest,requirePermission("rates.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE rates SET is_active=FALSE WHERE id=$1 RETURNING id,code,is_active",[id]);
+  if(!r.rowCount)throw new AppError("RATE_NOT_FOUND","السعر غير موجود",404);return {data:r.rows[0]};
+ });
+
  app.get("/api/rates",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{
   const r=await pool.query("SELECT r.id,r.code,r.rate,r.effective_range,r.is_active,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name,g.name AS rate_group_name,wt.name AS wage_type_name,u.name AS unit_name FROM rates r LEFT JOIN products p ON p.id=r.product_id JOIN stages s ON s.id=r.stage_id LEFT JOIN production_types pt ON pt.id=r.production_type_id LEFT JOIN rate_groups g ON g.id=r.rate_group_id JOIN wage_types wt ON wt.id=r.wage_type_id JOIN units u ON u.id=r.unit_id ORDER BY s.name,p.name,pt.name,r.created_at DESC LIMIT 500");
   return {data:r.rows};
