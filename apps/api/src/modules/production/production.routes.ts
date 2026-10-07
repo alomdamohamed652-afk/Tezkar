@@ -185,9 +185,13 @@ export async function productionRoutes(app: FastifyInstance) {
       const method = rate.method as string;
       let earning: number;
 
-      if (method === "PER_UNIT") {
+      if (method === "PER_PIECE") {
         earning = parsed.data.quantity * Number(rate.rate);
-      } else if (method === "FIXED") {
+      } else if (method === "PER_1000") {
+        earning = (parsed.data.quantity / 1000) * Number(rate.rate);
+      } else if (method === "PER_HOUR") {
+        earning = parsed.data.quantity * Number(rate.rate);
+      } else if (method === "PER_DAY") {
         earning = Number(rate.rate);
       } else if (method === "PERCENTAGE") {
         if (parsed.data.baseAmount == null) {
@@ -196,6 +200,10 @@ export async function productionRoutes(app: FastifyInstance) {
         earning = parsed.data.baseAmount * Number(rate.rate) / 100;
       } else {
         throw new AppError("WAGE_METHOD_UNSUPPORTED", "طريقة حساب الأجر غير مدعومة", 422);
+      }
+
+      if (!Number.isFinite(earning) || earning < 0) {
+        throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج بشكل صحيح", 422);
       }
 
       const unitId = rate.unit_id ?? product.rows[0].unit_id;
