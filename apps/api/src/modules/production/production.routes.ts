@@ -331,28 +331,34 @@ export async function productionRoutes(app: FastifyInstance) {
         [current.product_id, current.warehouse_id, current.location_id]
       );
       const currentBalance = Number(lockedBalance.rows[0]?.quantity ?? 0);
+      const currentValue = Number(lockedBalance.rows[0]?.inventory_value ?? 0);
+      const currentAvg = Number(lockedBalance.rows[0]?.avg_unit_cost ?? 0);
+      const productionUnitCost = Number(current.quantity) > 0 ? Number(current.earning_amount) / Number(current.quantity) : 0;
       const nextBalance = currentBalance + Number(current.quantity);
+      const nextValue = currentValue + Number(current.quantity) * productionUnitCost;
+      const nextAvg = nextBalance > 0 ? nextValue / nextBalance : currentAvg;
       if (lockedBalance.rowCount) {
         await client.query(
-          "UPDATE stock_balances SET quantity=$1,updated_at=now() WHERE product_id=$2 AND warehouse_id=$3 AND location_id=$4",
-          [nextBalance,current.product_id,current.warehouse_id,current.location_id]
+          "UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
+          [nextBalance,nextAvg,nextValue,current.product_id,current.warehouse_id,current.location_id]
         );
       } else {
         await client.query(
-          "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity) VALUES($1,$2,$3,$4)",
-          [current.product_id,current.warehouse_id,current.location_id,current.quantity]
+          "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,avg_unit_cost,inventory_value) VALUES($1,$2,$3,$4,$5,$6)",
+          [current.product_id,current.warehouse_id,current.location_id,current.quantity,productionUnitCost,Number(current.earning_amount)]
         );
       }
 
       await client.query(
         `INSERT INTO stock_movements(
-           movement_type,product_id,warehouse_id,location_id,quantity,unit_id,
+           movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,
            notes,created_by,reference_type,reference_id
          )
-         VALUES('IN',$1,$2,$3,$4,$5,$6,$7,'PRODUCTION',$8)
+         VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION',$12)
          ON CONFLICT DO NOTHING`,
         [
           current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,
+          productionUnitCost,Number(current.earning_amount),current.order_stage_id??null,current.order_stage_id??null,
           "إدخال إنتاج معتمد "+current.code,request.user!.userId,id
         ]
       );
