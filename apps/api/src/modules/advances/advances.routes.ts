@@ -4,7 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -27,7 +27,7 @@ const repaySchema=z.object({
 });
 
 export async function advanceRoutes(app:FastifyInstance){
-  app.get("/api/advances",{preHandler:[authenticateRequest,requirePermission("advances.view","own")]},async(request)=>{
+  app.get("/api/advances",{preHandler:[requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
     const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","PAID","CANCELLED"]).optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
     const user=request.user!;
