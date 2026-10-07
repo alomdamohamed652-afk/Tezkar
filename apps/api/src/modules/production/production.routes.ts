@@ -136,7 +136,7 @@ export async function productionRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/production/my", {
-    preHandler: [authenticateRequest, requirePermission("production.view_own")]
+    preHandler: [authenticateRequest, requirePermission("production.view_own","own")]
   }, async (request) => {
     if (!request.user?.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
     const result = await pool.query(
