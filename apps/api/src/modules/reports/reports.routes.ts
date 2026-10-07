@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pool } from "../../db/pool.js";
+import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
@@ -8,7 +9,7 @@ const range=z.object({from:z.string().date().optional(),to:z.string().date().opt
 
 export async function reportsRoutes(app:FastifyInstance){
  app.get("/api/reports/production",{preHandler:[authenticateRequest,requirePermission("reports.view")]},async(request)=>{
-  const q=range.safeParse(request.query);if(!q.success)throw new Error("INVALID_DATE_RANGE");
+  const q=range.safeParse(request.query);if(!q.success)throw new AppError("INVALID_DATE_RANGE","نطاق التاريخ غير صحيح",422);
   const params=[q.data.from??"1900-01-01",q.data.to??"2999-12-31"];
   const r=await pool.query(`SELECT p.work_date,p.code AS production_code,e.code AS employee_code,e.full_name AS employee_name,pr.code AS product_code,pr.name AS product_name,s.name AS stage_name,sh.name AS shift_name,p.quantity,u.name AS unit_name,p.earning_amount,p.status FROM production_entries p JOIN employees e ON e.id=p.employee_id JOIN products pr ON pr.id=p.product_id JOIN stages s ON s.id=p.stage_id JOIN shifts sh ON sh.id=p.shift_id JOIN units u ON u.id=p.unit_id WHERE p.work_date BETWEEN $1 AND $2 ORDER BY p.work_date DESC,p.created_at DESC LIMIT 1000`,params);
   return {data:r.rows};
@@ -26,7 +27,7 @@ export async function reportsRoutes(app:FastifyInstance){
   return {data:{production:p.rows[0],stock:s.rows[0],earnings:e.rows[0],pendingPayments:pay.rows[0].count,pendingAdvances:a.rows[0].count}};
  });
  app.get("/api/audit-log",{preHandler:[authenticateRequest,requirePermission("audit.view")]},async(request)=>{
-  const q=z.object({limit:z.coerce.number().int().min(1).max(300).default(100)}).safeParse(request.query);if(!q.success)throw new Error("INVALID_LIMIT");
+  const q=z.object({limit:z.coerce.number().int().min(1).max(300).default(100)}).safeParse(request.query);if(!q.success)throw new AppError("INVALID_LIMIT","عدد السجلات غير صحيح",422);
   const r=await pool.query(`SELECT a.id,a.occurred_at,a.action,a.module,a.entity_type,a.entity_id,a.metadata,u.username,e.full_name AS employee_name,a.ip_address FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id LEFT JOIN employees e ON e.id=a.actor_employee_id ORDER BY a.occurred_at DESC LIMIT $1`,[q.data.limit]);
   return {data:r.rows};
  });
