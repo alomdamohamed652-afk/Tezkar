@@ -14,7 +14,11 @@ import { earningsRoutes } from "./modules/earnings/earnings.routes.js";
 
 const app = Fastify({ logger: true });
 
-await app.register(cors, { origin: env.WEB_ORIGIN, credentials: true });
+await app.register(cors, {
+  origin: env.WEB_ORIGIN,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+});
 await app.register(cookie, { secret: env.SESSION_SECRET });
 
 app.setErrorHandler((error, _request, reply) => {
