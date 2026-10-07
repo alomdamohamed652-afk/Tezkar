@@ -38,6 +38,26 @@ export async function codingRoutes(app: FastifyInstance) {
     return {data:r.rows};
   });
 
+  app.patch("/api/coding/templates/:id",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request)=>{
+    const id=String((request.params as {id:string}).id);
+    const parsed=z.object({
+      widthMm:z.number().positive().max(500),
+      heightMm:z.number().positive().max(500),
+      orientation:z.enum(["LANDSCAPE","PORTRAIT"]),
+      companyName:z.string().trim().max(120).optional(),
+      companyAddress:z.string().trim().max(250).optional()
+    }).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات قالب الطباعة غير صحيحة",422);
+    const p=parsed.data;
+    const current=await pool.query("SELECT * FROM coding_templates WHERE id=$1 AND is_active=TRUE",[id]);
+    if(!current.rowCount)throw new AppError("TEMPLATE_NOT_FOUND","قالب الطباعة غير موجود",404);
+    const oldConfig=current.rows[0].config||{};
+    const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة"};
+    const updated=await pool.query("UPDATE coding_templates SET width_mm=$1,height_mm=$2,orientation=$3,config=$4,created_at=created_at WHERE id=$5 RETURNING *",[p.widthMm,p.heightMm,p.orientation,JSON.stringify(config),id]);
+    await writeAudit(pool as never,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"coding",entityType:"coding_template",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    return {data:updated.rows[0]};
+  });
+
   app.get("/api/coding/units",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{
     const r=await pool.query(`
       SELECT c.*, p.name AS product_name,p.code AS product_code,
