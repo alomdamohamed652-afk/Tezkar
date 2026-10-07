@@ -4,7 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -29,7 +29,7 @@ async function workerInfo(userId:string){
 }
 
 export async function custodyRoutes(app:FastifyInstance){
-  app.get("/api/custodies",{preHandler:[authenticateRequest,requirePermission("custody.view","own")]},async(request)=>{
+  app.get("/api/custodies",{preHandler:[requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
     if(user?.is_worker){
