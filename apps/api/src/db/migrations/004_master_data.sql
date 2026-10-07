@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS wage_types (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL UNIQUE DEFAULT ('WGT-' || lpad(nextval('wage_type_code_seq')::TEXT, 4, '0')),
   name TEXT NOT NULL,
-  method TEXT NOT NULL CHECK (method IN ('PER_UNIT','PERCENTAGE','FIXED')),
+  method TEXT NOT NULL CHECK (method IN ('PER_PIECE','PER_1000','PER_HOUR','PER_DAY','PERCENTAGE')),
   percentage_base TEXT,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
