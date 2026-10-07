@@ -65,7 +65,7 @@ export default function MasterDataPage() {
   }
 
   return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تيزكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">
+    <aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">
       <a className="nav-item" href="/"><span className="nav-icon">⌂</span><span>الرئيسية</span></a>
       <a className="nav-item" href="/employees"><span className="nav-icon">▣</span><span>الموظفون</span></a>
       <a className="nav-item active" href="/master-data"><span className="nav-icon">⚙</span><span>البيانات الأساسية</span></a>
