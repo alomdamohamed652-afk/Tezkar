@@ -217,12 +217,32 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
-    const current=await pool.query("SELECT * FROM production_orders WHERE id=$1",[id]);
-    if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
     const p=parsed.data;
-    const r=await pool.query(`UPDATE production_orders SET order_name=COALESCE($1,order_name),customer_name=COALESCE($2,customer_name),delivery_start_date=COALESCE($3,delivery_start_date),due_date=COALESCE($4,due_date),last_delivery_date=COALESCE($5,last_delivery_date),notes=COALESCE($6,notes),status=COALESCE($7,status),updated_at=now() WHERE id=$8 RETURNING *`,
-      [p.orderName ?? null,p.customerName ?? null,p.deliveryStartDate ?? null,p.dueDate ?? null,p.lastDeliveryDate ?? null,p.notes ?? null,p.status ?? null,id]);
-    return { data:r.rows[0] };
+    const result=await withTransaction(async client=>{
+      const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
+      if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(current.rows[0].status==="COMPLETED" && Object.keys(p).length>0){
+        throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن تعديل طلب مكتمل",409);
+      }
+
+      const fields:string[]=[];
+      const values:unknown[]=[];
+      const add=(field:string,value:unknown)=>{values.push(value);fields.push(field+"=$"+values.length);};
+      if(p.orderName!==undefined)add("order_name",p.orderName);
+      if(p.customerName!==undefined)add("customer_name",p.customerName);
+      if(p.deliveryStartDate!==undefined)add("delivery_start_date",p.deliveryStartDate);
+      if(p.dueDate!==undefined)add("due_date",p.dueDate);
+      if(p.lastDeliveryDate!==undefined)add("last_delivery_date",p.lastDeliveryDate);
+      if(p.notes!==undefined)add("notes",p.notes);
+      if(p.status!==undefined)add("status",p.status);
+      if(!fields.length)return current.rows[0];
+
+      values.push(id);
+      const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=${values.length} RETURNING *`,values);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return { data:result };
   });
 
   app.post("/api/orders/:id/stages", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request, reply) => {
