@@ -86,6 +86,12 @@ ON CONFLICT DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+WHERE r.code IN ('manager','finance','accountant')
+  AND p.code IN ('advances.create')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code='worker' AND p.code IN ('custody.view_own','advances.view_own')
 ON CONFLICT DO NOTHING;
 
