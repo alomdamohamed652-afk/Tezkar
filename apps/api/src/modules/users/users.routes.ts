@@ -67,6 +67,20 @@ export async function userRoutes(app: FastifyInstance){
   });
   return reply.code(201).send({data:row});
  });
+ app.delete("/api/users/:id",{preHandler:[authenticateRequest,requirePermission("users.delete")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  if(id===request.user!.userId)throw new AppError("SELF_DEACTIVATE","لا يمكنك تعطيل حسابك بنفسك",409);
+  const row=await withTransaction(async client=>{
+   const before=await client.query("SELECT id,code,username,employee_id,is_active,is_bootstrap FROM users WHERE id=$1 FOR UPDATE",[id]);
+   if(!before.rowCount)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",404);
+   if(before.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","حساب الإعداد الأولي لا يمكن تعطيله",409);
+   const after=await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,username,employee_id,is_active,is_bootstrap",[id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"iam",entityType:"user",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return after.rows[0];
+  });
+  return {data:row};
+ });
+
  app.patch("/api/users/:id",{preHandler:[authenticateRequest,requirePermission("users.edit")]},async(request)=>{
   const id=(request.params as {id:string}).id;
   const parsed=editUserSchema.safeParse(request.body);
