@@ -2,7 +2,7 @@
 import {useEffect,useState} from "react";
 import {api} from "../lib/api";
 type Summary={production:{quantity:string;entries:number};earnings:{balance:string;earned:string;paid:string};stock:{lines:number;quantity:string};pendingPayments:number;pendingAdvances:number};
-const nav=[["⌂","الرئيسية","/"],["▣","الموظفون","/employees"],["▤","الإنتاج","/production"],["▥","المخزن","/warehouse"],["↔","السلف","/advances"],["₤","القبض","/payments"],["⚙","الإعدادات","/settings"],["▦","التقارير","#"]];
+const nav=[["⌂","الرئيسية","/"],["▣","الموظفون","/employees"],["▤","الإنتاج","/production"],["▥","المخزن","/warehouse"],["↔","السلف","/advances"],["₤","القبض","/payments"],["⚙","الإعدادات","/settings"],["▦","التقارير","/reports"]];
 export default function HomePage(){
  const [summary,setSummary]=useState<Summary|null>(null),[error,setError]=useState("");
  useEffect(()=>{api<{data:Summary}>("/api/dashboard/summary").then(x=>setSummary(x.data)).catch(e=>{if(e instanceof Error&&e.message.includes("صلاحية")){window.location.replace("/production");return}setError(e instanceof Error?e.message:"تعذر تحميل لوحة التحكم")})},[]);
