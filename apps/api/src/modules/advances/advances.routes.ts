@@ -55,6 +55,7 @@ export async function advanceRoutes(app:FastifyInstance){
    if(!current.rowCount)throw new AppError("NOT_FOUND","طلب السلفة غير موجود",404);
    if(current.rows[0].status!=="PENDING")throw new AppError("INVALID_STATUS","حالة الطلب لا تسمح بالرفض",409);
    const updated=await client.query("UPDATE advance_requests SET status='REJECTED',rejection_reason=$1,reviewed_by=$2,reviewed_at=now(),updated_at=now() WHERE id=$3 RETURNING *",[parsed.data.reason,request.user!.userId,id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reject",module:"advances",entityType:"advance_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
   return {data:row};
