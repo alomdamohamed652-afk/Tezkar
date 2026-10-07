@@ -7,21 +7,21 @@ import { Code128Barcode } from "../../components/code128-barcode";
 
 type Packaging={id:string;code:string;name:string;default_width_mm:number;default_height_mm:number};
 type Template={id:string;name:string;packaging_type_id:string|null;width_mm:number;height_mm:number;orientation:string;config?:{companyName?:string;companyAddress?:string}};
-type Item={id:string;code:string;name:string};
+type Item={id:string;code:string;name:string};\ntype Location={id:string;code:string;name:string;warehouse_id:string};
 type Unit={id:string;code:string;barcode:string;packaging_type_id:string;template_id:string|null;packaging_type_name:string;product_id:string;product_name:string;product_code:string;production_order_id:string|null;batch_code:string|null;quantity:number;unit_id:string|null;weight:number|null;production_owner_employee_id:string|null;production_owner_name:string|null;packed_by_employee_id:string|null;packed_by_name:string|null;received_by_employee_id:string|null;received_by_name:string|null;packed_at:string|null;coded_at:string;warehouse_name:string|null;location_name:string|null;status:string};
 const statusLabels:Record<string,string>={CODED:"مُكوّدة",IN_STOCK:"بالمخزن",RESERVED:"محجوزة",READY_FOR_DELIVERY:"جاهزة للتسليم",DELIVERED:"تم التسليم",OUT:"خارجة",CANCELLED:"ملغاة"};
 
 export default function CodingPage(){
  const {has}=usePermissions();
- const [types,setTypes]=useState<Packaging[]>([]),[templates,setTemplates]=useState<Template[]>([]),[employees,setEmployees]=useState<Item[]>([]),[products,setProducts]=useState<Item[]>([]),[units,setUnits]=useState<Unit[]>([]);
+ const [types,setTypes]=useState<Packaging[]>([]),[templates,setTemplates]=useState<Template[]>([]),[employees,setEmployees]=useState<Item[]>([]),[products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Item[]>([]),[locations,setLocations]=useState<Location[]>([]),[units,setUnits]=useState<Unit[]>([]);
  const [typeId,setTypeId]=useState(""),[templateId,setTemplateId]=useState(""),[productId,setProductId]=useState(""),[batch,setBatch]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState("");
- const [productionOwner,setProductionOwner]=useState(""),[packedBy,setPackedBy]=useState(""),[receivedBy,setReceivedBy]=useState(""),[packedAt,setPackedAt]=useState("");
+ const [productionOwner,setProductionOwner]=useState(""),[packedBy,setPackedBy]=useState(""),[receivedBy,setReceivedBy]=useState(""),[packedAt,setPackedAt]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState("");
  const [search,setSearch]=useState(""),[selected,setSelected]=useState<Unit|null>(null),[error,setError]=useState(""),[saving,setSaving]=useState(false),[printUnit,setPrintUnit]=useState<Unit|null>(null);\n const [settingsTemplateId,setSettingsTemplateId]=useState(""),[settingsWidth,setSettingsWidth]=useState(""),[settingsHeight,setSettingsHeight]=useState(""),[settingsOrientation,setSettingsOrientation]=useState("LANDSCAPE"),[companyName,setCompanyName]=useState("تذكار"),[companyAddress,setCompanyAddress]=useState("عنوان الشركة"),[settingsSaving,setSettingsSaving]=useState(false);
 
  async function load(){
   try{
-   const [t,tm,e,p,u]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/coding/products"),api<{data:Unit[]}>("/api/coding/units")]);
-   setTypes(t.data);setTemplates(tm.data);setEmployees(e.data);setProducts(p.data);setUnits(u.data);
+   const [t,tm,e,p,w,l,u]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/coding/products"),api<{data:Item[]}>("/api/coding/warehouses"),api<{data:Location[]}>("/api/coding/locations"),api<{data:Unit[]}>("/api/coding/units")]);
+   setTypes(t.data);setTemplates(tm.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setUnits(u.data);
    if(!typeId&&t.data[0])setTypeId(t.data[0].id);\n   if(!settingsTemplateId&&tm.data[0]){setSettingsTemplateId(tm.data[0].id);setSettingsWidth(String(tm.data[0].width_mm));setSettingsHeight(String(tm.data[0].height_mm));setSettingsOrientation(tm.data[0].orientation);setCompanyName(tm.data[0].config?.companyName||"تذكار");setCompanyAddress(tm.data[0].config?.companyAddress||"عنوان الشركة");}
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد")}
  }
@@ -35,8 +35,8 @@ export default function CodingPage(){
  async function create(e:FormEvent){
   e.preventDefault();setSaving(true);setError("");
   try{
-   const result=await api<{data:Unit}>("/api/coding/units",{method:"POST",body:JSON.stringify({packagingTypeId:typeId,templateId:templateId||null,productId,productionOrderId:null,batchCode:batch.trim()||null,quantity:Number(quantity),unitId:null,weight:weight?Number(weight):null,productionOwnerEmployeeId:productionOwner||null,packedByEmployeeId:packedBy||null,receivedByEmployeeId:receivedBy||null,packedAt:packedAt?new Date(packedAt).toISOString():null})});
-   setPrintUnit(result.data);setUnits(prev=>[result.data,...prev]);setQuantity("");setWeight("");setBatch("");setProductionOwner("");setPackedBy("");setReceivedBy("");setPackedAt("");
+   const result=await api<{data:Unit}>("/api/coding/units",{method:"POST",body:JSON.stringify({packagingTypeId:typeId,templateId:templateId||null,productId,productionOrderId:null,batchCode:batch.trim()||null,quantity:Number(quantity),unitId:null,weight:weight?Number(weight):null,productionOwnerEmployeeId:productionOwner||null,packedByEmployeeId:packedBy||null,receivedByEmployeeId:receivedBy||null,packedAt:packedAt?new Date(packedAt).toISOString():null,warehouseId:warehouseId||null,locationId:locationId||null})});
+   setPrintUnit(result.data);setUnits(prev=>[result.data,...prev]);setQuantity("");setWeight("");setBatch("");setProductionOwner("");setPackedBy("");setReceivedBy("");setPackedAt("");setWarehouseId("");setLocationId("");
    setTimeout(()=>window.print(),100);
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء التكويد")}finally{setSaving(false)}
  }
@@ -69,7 +69,7 @@ export default function CodingPage(){
      <label>صاحب الإنتاج<select value={productionOwner} onChange={e=>setProductionOwner(e.target.value)}><option value="">اختياري</option>{employees.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
      <label>قام بالتقفيل<select value={packedBy} onChange={e=>setPackedBy(e.target.value)}><option value="">اختياري</option>{employees.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
      <label>المستلم<select value={receivedBy} onChange={e=>setReceivedBy(e.target.value)}><option value="">اختياري</option>{employees.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-     <label>وقت التقفيل <span className="optional">اختياري</span><input type="datetime-local" value={packedAt} onChange={e=>setPackedAt(e.target.value)}/></label>
+     <label>وقت التقفيل <span className="optional">اختياري</span><input type="datetime-local" value={packedAt} onChange={e=>setPackedAt(e.target.value)}/></label><label>المخزن <span className="optional">اختياري</span><select value={warehouseId} onChange={e=>{setWarehouseId(e.target.value);setLocationId("")}}><option value="">بدون تحديد</option>{warehouses.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label><label>المكان <span className="optional">اختياري</span><select value={locationId} onChange={e=>setLocationId(e.target.value)}><option value="">بدون تحديد</option>{locations.filter(x=>x.warehouse_id===warehouseId).map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
     </div>
     <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ إنشاء الكود...":"إنشاء التكويد وطباعة الكارت"}</button><span className="form-hint">{selectedType?"المقاس الحالي: "+selectedType.default_width_mm+" × "+selectedType.default_height_mm+" مم":"اختر نوع العبوة"}</span></div>
    </form>}
