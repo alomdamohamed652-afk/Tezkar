@@ -8,6 +8,8 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 const createSchema = z.object({
   employeeId: z.string().uuid().optional(),
+  orderStageId: z.string().uuid().nullable().optional(),
+  productionTypeId: z.string().uuid().nullable().optional(),
   productId: z.string().uuid(),
   stageId: z.string().uuid(),
   shiftId: z.string().uuid(),
@@ -111,15 +113,17 @@ export async function productionRoutes(app: FastifyInstance) {
               e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.code AS stage_code,st.name AS stage_name,
+              pt.name AS production_type_name,
               sh.code AS shift_code,sh.name AS shift_name,
               u.code AS unit_code,u.name AS unit_name,
-              p.wage_type_code_snapshot,p.wage_type_method_snapshot
+              p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id
          FROM production_entries p
          JOIN employees e ON e.id=p.employee_id
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
+         LEFT JOIN production_types pt ON pt.id=p.production_type_id
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
         ORDER BY p.work_date DESC,p.created_at DESC
         LIMIT $${params.length}`,
@@ -200,7 +204,7 @@ export async function productionRoutes(app: FastifyInstance) {
       if (!shift.rowCount) throw new AppError("SHIFT_NOT_FOUND", "الوردية غير موجودة أو غير نشطة", 422);
 
       const rateResult = await client.query(
-        `SELECT r.id,r.rate,r.wage_type_id,r.unit_id,
+        `SELECT r.id,r.rate,r.wage_type_id,r.unit_id,r.production_type_id,
                 wt.code AS wage_type_code,wt.name AS wage_type_name,
                 wt.method,wt.percentage_base
            FROM rates r
@@ -209,6 +213,7 @@ export async function productionRoutes(app: FastifyInstance) {
             AND r.stage_id=$2
             AND (r.rate_group_id=$3 OR r.rate_group_id IS NULL)
             AND (r.product_id=$1 OR r.product_id IS NULL)
+            AND ($5::uuid IS NULL OR r.production_type_id=$5 OR r.production_type_id IS NULL)
             AND $4::date <@ r.effective_range
           ORDER BY
             CASE
@@ -220,7 +225,7 @@ export async function productionRoutes(app: FastifyInstance) {
             END,
             r.created_at DESC
           LIMIT 1`,
-        [parsed.data.productId, parsed.data.stageId, shift.rows[0].rate_group_id, parsed.data.workDate]
+        [parsed.data.productId, parsed.data.stageId, shift.rows[0].rate_group_id, parsed.data.workDate, parsed.data.productionTypeId ?? null]
       );
 
       if (!rateResult.rowCount) {
@@ -259,18 +264,18 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const inserted = await client.query(
         `INSERT INTO production_entries(
-           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,
+           employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,
            rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
            wage_type_method_snapshot,percentage_base_snapshot,base_amount,earning_amount,
            submitted_by
          )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-         RETURNING id,code,employee_id,product_id,stage_id,shift_id,work_date,quantity,
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         RETURNING id,code,employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,
                    unit_id,rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
                    wage_type_method_snapshot,percentage_base_snapshot,base_amount,
                    earning_amount,status,submitted_by,created_at`,
         [
-          employeeId, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
+          employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
           parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, parsed.data.warehouseId, parsed.data.locationId, rate.id, rate.rate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
           parsed.data.baseAmount ?? null, earning, request.user!.userId
