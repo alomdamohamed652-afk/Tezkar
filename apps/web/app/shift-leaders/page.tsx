@@ -1,0 +1,14 @@
+"use client";
+import {FormEvent,useEffect,useState} from "react";
+import {api} from "../../lib/api";
+import {Sidebar,usePermissions} from "../../components/sidebar";
+type Item={id:string;code:string;name:string};
+type Leader={id:string;shift_id:string;shift_name:string;employee_id:string;employee_name:string;assignment_type:string;starts_on:string|null;ends_on:string|null};
+export default function ShiftLeadersPage(){
+ const {has}=usePermissions();const [leaders,setLeaders]=useState<Leader[]>([]),[shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]),[shift,setShift]=useState(""),[employee,setEmployee]=useState(""),[error,setError]=useState("");
+ async function load(){try{const [l,s,e]=await Promise.all([api<{data:Leader[]}>("/api/shift-leaders"),api<{data:Item[]}>("/api/shifts"),api<{data:Item[]}>("/api/employees")]);setLeaders(l.data);setShifts(s.data);setEmployees(e.data);if(!shift&&s.data[0])setShift(s.data[0].id);if(!employee&&e.data[0])setEmployee(e.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل رؤساء الورديات")}}
+ useEffect(()=>{void load()},[]);
+ async function add(e:FormEvent){e.preventDefault();try{await api("/api/shifts/"+shift+"/leaders",{method:"POST",body:JSON.stringify({employeeId:employee})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعيين رئيس الوردية")}}
+ async function remove(id:string){if(!confirm("إلغاء تكليف رئيس الوردية؟"))return;try{await api("/api/shift-leaders/"+id,{method:"DELETE"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء التكليف")}}
+ return <div className="app-shell"><Sidebar active="/shift-leaders"/><main className="main"><header className="topbar"><div><h1 className="page-title">رؤساء الورديات</h1><p className="page-subtitle">قائمة مستقلة قابلة للتغيير والتكليف والإلغاء</p></div></header><section className="content">{error&&<div className="alert error">{error}</div>}{has("shifts.assign_leader")&&<form className="card mini-form" onSubmit={add}><select value={shift} onChange={e=>setShift(e.target.value)}>{shifts.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><select value={employee} onChange={e=>setEmployee(e.target.value)}>{employees.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><button className="primary-button">تعيين رئيس وردية</button></form>}<section className="card"><div className="table-wrap"><table><thead><tr><th>الوردية</th><th>رئيس الوردية</th><th>من</th><th>إلى</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{leaders.map(x=><tr key={x.id}><td>{x.shift_name}</td><td className="strong">{x.employee_name}</td><td>{x.starts_on??"—"}</td><td>{x.ends_on??"مفتوح"}</td><td>نشط</td><td>{has("shifts.assign_leader")&&<button className="reject-button" onClick={()=>remove(x.id)}>إلغاء التكليف</button>}</td></tr>)}{!leaders.length&&<tr><td colSpan={6}>لا توجد تكليفات.</td></tr>}</tbody></table></div></section></section></main></div>;
+}
