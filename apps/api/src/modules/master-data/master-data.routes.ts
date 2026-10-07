@@ -30,6 +30,40 @@ export async function masterDataRoutes(app: FastifyInstance) {
     return reply.code(201).send({data:row});
   });
 
+  app.delete("/api/departments/:id",{preHandler:[authenticateRequest,requirePermission("departments.delete")]},async(req)=>{
+    const id=(req.params as {id:string}).id;
+    const used=await pool.query("SELECT COUNT(*)::int AS n FROM employees WHERE department_id=$1 AND is_active=TRUE",[id]);
+    if(Number(used.rows[0].n)>0)throw new AppError("DEPARTMENT_IN_USE","لا يمكن تعطيل قسم عليه موظفون نشطون",409);
+    const r=await pool.query("UPDATE departments SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+    if(!r.rowCount)throw new AppError("DEPARTMENT_NOT_FOUND","القسم غير موجود",404);
+    return {data:r.rows[0]};
+  });
+
+  app.delete("/api/job-titles/:id",{preHandler:[authenticateRequest,requirePermission("job_titles.delete")]},async(req)=>{
+    const id=(req.params as {id:string}).id;
+    const used=await pool.query("SELECT COUNT(*)::int AS n FROM employees WHERE job_title_id=$1 AND is_active=TRUE",[id]);
+    if(Number(used.rows[0].n)>0)throw new AppError("JOB_TITLE_IN_USE","لا يمكن تعطيل وظيفة مرتبطة بموظفين نشطين",409);
+    const r=await pool.query("UPDATE job_titles SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+    if(!r.rowCount)throw new AppError("JOB_TITLE_NOT_FOUND","الوظيفة غير موجودة",404);
+    return {data:r.rows[0]};
+  });
+
+  app.delete("/api/product-categories/:id",{preHandler:[authenticateRequest,requirePermission("product_categories.delete")]},async(req)=>{
+    const id=(req.params as {id:string}).id;
+    const used=await pool.query("SELECT COUNT(*)::int AS n FROM products WHERE category_id=$1 AND is_active=TRUE",[id]);
+    if(Number(used.rows[0].n)>0)throw new AppError("CATEGORY_IN_USE","لا يمكن تعطيل تصنيف عليه منتجات نشطة",409);
+    const r=await pool.query("UPDATE product_categories SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+    if(!r.rowCount)throw new AppError("CATEGORY_NOT_FOUND","التصنيف غير موجود",404);
+    return {data:r.rows[0]};
+  });
+
+  app.delete("/api/products/:id",{preHandler:[authenticateRequest,requirePermission("products.delete")]},async(req)=>{
+    const id=(req.params as {id:string}).id;
+    const r=await pool.query("UPDATE products SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+    if(!r.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود",404);
+    return {data:r.rows[0]};
+  });
+
   app.get("/api/job-titles", { preHandler: [authenticateRequest, requirePermission("job_titles.view")] }, async () => {
     const result = await pool.query("SELECT j.id,j.code,j.name,j.department_id,d.code AS department_code,d.name AS department_name,j.is_active FROM job_titles j LEFT JOIN departments d ON d.id=j.department_id ORDER BY j.code");
     return {data:result.rows};
