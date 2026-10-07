@@ -49,11 +49,11 @@ export default function EmployeesPage(){
 
   return <div className="app-shell"><Sidebar active="/employees"/><main className="main">
     <header className="topbar"><div><h1 className="page-title">الموظفون</h1><p className="page-subtitle">إضافة الموظف تنشئ له حساب دخول تلقائيًا بالدور المحدد</p></div>
-      {has("users.create")&&<button className="primary-button" onClick={()=>setShowForm(v=>!v)}>{showForm?"إلغاء":"+ إضافة موظف"}</button>}</header>
+      {has("employees.create")&&<button className="primary-button" onClick={()=>setShowForm(v=>!v)}>{showForm?"إلغاء":"+ إضافة موظف"}</button>}</header>
     <section className="content">
       {error&&<div className="alert error">{error}</div>}
       {credentials&&<div className="card" style={{border:"1px solid #d9a441",background:"#fffaf0"}}><div className="card-header"><h2 className="card-title">بيانات الدخول الجديدة</h2></div><p>احفظ البيانات وسلمها للموظف. كلمة المرور لن تظهر مرة أخرى.</p><div className="form-grid"><label>اسم المستخدم<input readOnly value={credentials.username}/></label><label>كلمة المرور<input readOnly value={credentials.password}/></label><label>الدور<input readOnly value={credentials.roleCode}/></label></div></div>}
-      {showForm&&has("users.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><h2 className="card-title">موظف جديد + حساب دخول</h2></div>
+      {showForm&&has("employees.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><h2 className="card-title">موظف جديد + حساب دخول</h2></div>
         <div className="form-grid">
           <label>اسم الموظف<input value={fullName} onChange={e=>setFullName(e.target.value)} required/></label>
           <label>رقم الهاتف<input value={phone} onChange={e=>setPhone(e.target.value)}/></label>
