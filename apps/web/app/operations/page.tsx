@@ -1,5 +1,5 @@
 "use client";
-import { FormEvent,useEffect,useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 const API=process.env.NEXT_PUBLIC_API_URL??"http://localhost:4000";
 type O={id:string;code:string;name:string};
 export default function OperationsPage(){
@@ -13,7 +13,8 @@ export default function OperationsPage(){
  async function post(path:string,body:any){setErr("");setMsg("");const r=await fetch(API+path,{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify(body)});const b=await r.json();if(!r.ok)throw new Error(b?.error?.message??"تعذر الحفظ");return b.data;}
  async function addGroup(e:FormEvent){e.preventDefault();try{await post("/api/rate-groups",{name:groupName});setGroupName("");setMsg("تم إنشاء مجموعة الأجر");await load();}catch(x){setErr(x instanceof Error?x.message:"حدث خطأ");}}
  async function addShift(e:FormEvent){e.preventDefault();try{await post("/api/shifts",{name:shiftName,startTime:start,endTime:end,crossesMidnight:night,rateGroupId:group});setShiftName("");setMsg("تم إنشاء الوردية");await load();}catch(x){setErr(x instanceof Error?x.message:"حدث خطأ");}}
- async function addLeader(e:FormEvent){e.preventDefault();try{await post(`/api/shifts/${leaderShift}/leaders`,{employeeId:leaderEmployee});setMsg("تم تعيين قائد الوردية");}catch(x){setErr(x instanceof Error?x.message:"حدث خطأ");}}\n async function addStage(e:FormEvent){e.preventDefault();try{await post("/api/stages",{name:stageName});setStageName("");setMsg("تم إنشاء المرحلة");}catch(x){setErr(x instanceof Error?x.message:"مرحلة التشغيل");}}
+ async function addLeader(e:FormEvent){e.preventDefault();try{await post(`/api/shifts/${leaderShift}/leaders`,{employeeId:leaderEmployee});setMsg("تم تعيين قائد الوردية");}catch(x){setErr(x instanceof Error?x.message:"حدث خطأ");}}
+ async function addStage(e:FormEvent){e.preventDefault();try{await post("/api/stages",{name:stageName});setStageName("");setMsg("تم إنشاء المرحلة");}catch(x){setErr(x instanceof Error?x.message:"حدث خطأ");}}
  async function addProduct(e:FormEvent){e.preventDefault();try{await post("/api/products",{name:productName,productType,unitId:unit,minimumStock:0,trackInventory:true});setProductName("");setMsg("تم إنشاء المنتج");await load();}catch(x){setErr(x instanceof Error?x.message:"حدث خطأ");}}
  return <main className="settings-page"><header className="settings-header"><div><h1>التشغيل والبيانات الأساسية</h1><p>الورديات، مجموعات الأجور، مراحل التشغيل والمنتجات</p></div><button className="secondary-btn" onClick={()=>window.location.replace("/")}>لوحة التحكم</button></header>
  {msg&&<div className="success-box">{msg}</div>}{err&&<div className="auth-error">{err}</div>}
@@ -25,3 +26,4 @@ export default function OperationsPage(){
  {tab==="units"&&<section className="card"><div className="section-title"><h3>وحدات القياس</h3></div><div className="simple-list">{units.map(u=><div key={u.id}><b>{u.code}</b><span>{u.name} — {u.symbol??""}</span></div>)}</div></section>}
  {tab==="wages"&&<section className="card"><div className="section-title"><h3>أنواع الأجر</h3></div><div className="simple-list">{wages.map(w=><div key={w.id}><b>{w.code}</b><span>{w.name} — {w.method}</span></div>)}</div></section>}
  </main>;
+}
