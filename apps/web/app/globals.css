@@ -191,3 +191,28 @@ td.strong { color:var(--brand-ink); font-weight:600; }
   .master-row { grid-template-columns:90px minmax(0,1fr); }
   .master-row > span:last-child { grid-column:2; text-align:right; }
 }
+
+.production-form { margin-bottom:16px; }
+.form-hint { color:var(--brand-muted); font-size:11px; }
+.production-grid { padding:18px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+.production-grid label { display:grid; gap:6px; color:#475467; font-size:12px; font-weight:600; }
+.production-grid input,.production-grid select,.filter-select {
+  width:100%; border:1px solid #d0d5dd; border-radius:9px; background:#fff; padding:10px 11px;
+  outline:none; color:var(--brand-ink);
+}
+.production-grid input:focus,.production-grid select:focus,.filter-select:focus { border-color:var(--brand-primary); box-shadow:0 0 0 3px rgb(46 91 255 / 10%); }
+.production-grid .optional { color:#98a2b3; font-weight:400; font-size:10px; }
+.filter-select { width:auto; min-width:120px; padding:7px 10px; }
+.money { font-weight:700; color:var(--brand-primary); }
+.row-actions { display:flex; gap:6px; }
+.approve-button,.reject-button {
+  border:0; border-radius:8px; padding:6px 9px; font-size:11px; font-weight:600;
+}
+.approve-button { background:#ecfdf3; color:#067647; }
+.reject-button { background:#fef3f2; color:#b42318; }
+.status.pending { color:#b54708; background:#fffaeb; }
+.status.approved { color:#067647; background:#ecfdf3; }
+.status.rejected { color:#b42318; background:#fef3f2; }
+.status.cancelled { color:#667085; background:#f2f4f7; }
+@media (max-width:900px) { .production-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:720px) { .production-grid { grid-template-columns:1fr; } .card-header { gap:10px; align-items:flex-start; } .form-hint { display:none; } }
