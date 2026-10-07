@@ -23,10 +23,14 @@ export async function employeeRoutes(app: FastifyInstance) {
       `SELECT e.id, e.code, e.full_name, e.phone,
               d.code AS department_code, d.name AS department_name,
               j.code AS job_title_code, j.name AS job_title_name,
+              r.code AS role_code,
               e.is_active, e.hired_at
        FROM employees e
        LEFT JOIN departments d ON d.id = e.department_id
        LEFT JOIN job_titles j ON j.id = e.job_title_id
+       LEFT JOIN users u ON u.employee_id = e.id
+       LEFT JOIN user_roles ur ON ur.user_id = u.id
+       LEFT JOIN roles r ON r.id = ur.role_id
        ORDER BY e.code`
     );
     return { data: result.rows };
