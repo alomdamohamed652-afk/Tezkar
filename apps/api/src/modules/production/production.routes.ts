@@ -298,6 +298,45 @@ export async function productionRoutes(app: FastifyInstance) {
     return { data: row };
   });
 
+  app.post("/api/production/:id/cancel", {
+    preHandler: [authenticateRequest, requirePermission("production.cancel")]
+  }, async (request) => {
+    const id = (request.params as { id: string }).id;
+
+    const row = await withTransaction(async (client) => {
+      const current = await getEntry(client, id, true);
+      if (!current) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
+      if (current.status !== "PENDING") {
+        throw new AppError("INVALID_STATUS", "لا يمكن إلغاء الإنتاج بعد المراجعة", 409);
+      }
+
+      const updated = await client.query(
+        `UPDATE production_entries
+            SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now()
+          WHERE id=$2
+          RETURNING *`,
+        [request.user!.userId, id]
+      );
+
+      await writeAudit(client, {
+        actorUserId: request.user!.userId,
+        actorEmployeeId: request.user!.employeeId,
+        action: "cancel",
+        module: "production",
+        entityType: "production_entry",
+        entityId: id,
+        beforeData: current,
+        afterData: updated.rows[0],
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      });
+
+      return updated.rows[0];
+    });
+
+    return { data: row };
+  });
+
   app.post("/api/production/:id/reject", {
     preHandler: [authenticateRequest, requirePermission("production.reject")]
   }, async (request) => {
