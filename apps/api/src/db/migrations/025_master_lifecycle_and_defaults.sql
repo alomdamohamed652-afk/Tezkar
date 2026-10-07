@@ -12,7 +12,8 @@ INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('shifts.delete','production','shift','delete','all'),
  ('warehouses.delete','warehouse','warehouse','delete','all'),
  ('machines.delete','production','machine','delete','all'),
- ('orders.delete','orders','order','delete','all')
+ ('orders.delete','orders','order','delete','all'),
+ ('production.edit','production','production','edit','all')
 ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
@@ -27,7 +28,7 @@ WHERE r.code='manager'
   AND p.code IN (
     'departments.delete','job_titles.delete','products.delete','product_categories.delete',
     'stages.delete','production_types.delete','rates.delete','rate_groups.delete',
-    'shifts.delete','warehouses.delete','machines.delete','orders.delete'
+    'shifts.delete','warehouses.delete','machines.delete','orders.delete','production.edit'
   )
 ON CONFLICT DO NOTHING;
 
