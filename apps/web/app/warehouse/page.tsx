@@ -22,7 +22,7 @@ export default function WarehousePage(){
 
  async function load(){
   setError("");
-  try{const qs=warehouseId?"?warehouseId="+warehouseId:"";const [w,l,p,o,s,m,c]=await Promise.all([api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Product[]}>("/api/products"),api<{data:Order[]}>("/api/orders"),api<{data:Stock[]}>("/api/warehouse/stock"+qs),api<{data:Movement[]}>("/api/warehouse/movements"+qs),api<{data:Cost}>("/api/warehouse/dashboard"+qs+(qs?"&":"?")+"from="+(from||"")+"&to="+(to||""))]);setWarehouses(w.data);setLocations(l.data);setProducts(p.data);setOrders(o.data);setStock(s.data);setMovements(m.data);setCost(c.data);if(!warehouseId&&w.data[0])setWarehouseId(w.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
+  try{const qs=new URLSearchParams();if(warehouseId)qs.set("warehouseId",warehouseId);if(from)qs.set("from",from);if(to)qs.set("to",to);const suffix=qs.toString()?"?"+qs.toString():"";const [w,l,p,o,s,m,c]=await Promise.all([api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Product[]}>("/api/products"),api<{data:Order[]}>("/api/orders"),api<{data:Stock[]}>("/api/warehouse/stock"+suffix),api<{data:Movement[]}>("/api/warehouse/movements"+suffix),api<{data:Cost}>("/api/warehouse/dashboard"+suffix)]);setWarehouses(w.data);setLocations(l.data);setProducts(p.data);setOrders(o.data);setStock(s.data);setMovements(m.data);setCost(c.data);if(!warehouseId&&w.data[0])setWarehouseId(w.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
  useEffect(()=>{void load()},[from,to]);
  useEffect(()=>{if(warehouseId)void load()},[warehouseId]);
 
