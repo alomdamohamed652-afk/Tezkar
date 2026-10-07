@@ -9,6 +9,11 @@ import { requirePermission } from "../rbac/permission.guard.js";
 const createSchema=z.object({amount:z.number().positive(),reason:z.string().trim().min(2).max(500)});
 const rejectSchema=z.object({reason:z.string().trim().min(2).max(500)});
 
+function isUniqueViolation(error: unknown): boolean {
+ const code=typeof error==="object"&&error!==null&&"code" in error?(error as {code?:unknown}).code:null;
+ return code==="23505";
+}
+
 async function workerInfo(userId:string){
  const r=await pool.query("SELECT u.employee_id,EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1 AND r.code='worker' AND r.is_active=TRUE) AS is_worker FROM users u WHERE u.id=$1",[userId]);
  return r.rows[0]??null;
@@ -30,8 +35,13 @@ export async function advanceRoutes(app:FastifyInstance){
   const user=await workerInfo(request.user!.userId);if(!user?.is_worker||!user.employee_id)throw new AppError("WORKER_ONLY","طلب السلفة متاح للعامل فقط",403);
   const open=await pool.query("SELECT id FROM advance_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED') LIMIT 1",[user.employee_id]);
   if(open.rowCount)throw new AppError("OPEN_ADVANCE_EXISTS","يوجد طلب سلفة مفتوح بالفعل",409);
-  const r=await pool.query("INSERT INTO advance_requests(employee_id,amount,reason,requested_by) VALUES($1,$2,$3,$4) RETURNING *",[user.employee_id,parsed.data.amount,parsed.data.reason,request.user!.userId]);
-  return reply.code(201).send({data:r.rows[0]});
+  try {
+   const r=await pool.query("INSERT INTO advance_requests(employee_id,amount,reason,requested_by) VALUES($1,$2,$3,$4) RETURNING *",[user.employee_id,parsed.data.amount,parsed.data.reason,request.user!.userId]);
+   return reply.code(201).send({data:r.rows[0]});
+  } catch(error) {
+   if(isUniqueViolation(error)) throw new AppError("OPEN_ADVANCE_EXISTS","يوجد طلب سلفة مفتوح بالفعل",409);
+   throw error;
+  }
  });
 
  app.post("/api/advances/:id/approve",{preHandler:[authenticateRequest,requirePermission("advances.approve")]},async(request)=>{
