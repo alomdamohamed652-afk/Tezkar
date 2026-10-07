@@ -308,6 +308,25 @@ export async function productionRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: row });
   });
 
+  app.patch("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({quantity:z.number().positive(),workDate:z.string().date().optional()}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل الإنتاج غير صحيحة",422);
+    const row=await withTransaction(async client=>{
+      const current=await getEntry(client,id,true);
+      if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه",409);
+      const method=current.wage_type_method_snapshot as string;
+      let earning=Number(current.earning_amount);
+      if(method==="PER_PIECE")earning=parsed.data.quantity*Number(current.rate_snapshot);
+      else if(method==="PER_1000")earning=parsed.data.quantity/1000*Number(current.rate_snapshot);
+      const r=await client.query("UPDATE production_entries SET quantity=$1,work_date=COALESCE($2,work_date),earning_amount=$3,updated_at=now() WHERE id=$4 RETURNING id,code,quantity,work_date,earning_amount,status",[parsed.data.quantity,parsed.data.workDate??null,earning,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:{quantity:current.quantity,work_date:current.work_date,earning_amount:current.earning_amount},afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return r.rows[0];
+    });
+    return {data:row};
+  });
+
   app.post("/api/production/:id/approve", {
     preHandler: [authenticateRequest, requirePermission("production.approve")]
   }, async (request) => {
