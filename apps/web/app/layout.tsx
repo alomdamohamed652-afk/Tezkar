@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "تيزكار | إدارة المصنع",
-  description: "منصة تيزكار الخاصة لإدارة المصنع"
+  title: "تذكار | إدارة وتشغيل المصنع",
+  description: "نظام تذكار لإدارة وتشغيل المصنع والمخازن والإنتاج والحسابات",
+  icons: { icon: "/tezkar-mark.svg" }
 };
 
 export default function RootLayout({
