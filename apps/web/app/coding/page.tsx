@@ -20,7 +20,7 @@ export default function CodingPage(){
 
  async function load(){
   try{
-   const [t,tm,e,p,u]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/products"),api<{data:Unit[]}>("/api/coding/units")]);
+   const [t,tm,e,p,u]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/coding/products"),api<{data:Unit[]}>("/api/coding/units")]);
    setTypes(t.data);setTemplates(tm.data);setEmployees(e.data);setProducts(p.data);setUnits(u.data);
    if(!typeId&&t.data[0])setTypeId(t.data[0].id);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد")}
