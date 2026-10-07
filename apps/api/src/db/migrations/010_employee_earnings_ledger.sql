@@ -50,7 +50,7 @@ SELECT
 FROM production_entries p
 WHERE p.status = 'APPROVED'
   AND p.approved_by IS NOT NULL
-ON CONFLICT (production_entry_id) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 INSERT INTO employee_earnings_ledger (
   employee_id, entry_type, debit_amount, worker_payment_id, created_by, notes
@@ -63,7 +63,7 @@ SELECT
   w.paid_by,
   'Backfilled from worker payment'
 FROM worker_payments w
-ON CONFLICT (worker_payment_id) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
   ('earnings.view','payroll','employee_earnings','view','all'),
