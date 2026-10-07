@@ -14,6 +14,45 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200)
 });
 
+const loginAttempts = new Map<string, { count: number; firstAt: number; blockedUntil: number }>();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8;
+
+function loginKey(request: { ip: string }, username: string) {
+  return request.ip + ":" + username.toLowerCase();
+}
+
+function assertLoginAllowed(request: { ip: string }, username: string) {
+  const key = loginKey(request, username);
+  const current = loginAttempts.get(key);
+  if (!current) return;
+  const now = Date.now();
+  if (current.blockedUntil > now) {
+    throw new AppError("LOGIN_RATE_LIMITED", "محاولات تسجيل الدخول كثيرة. حاول مرة أخرى بعد قليل.", 429);
+  }
+  if (now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
+}
+
+function recordLoginFailure(request: { ip: string }, username: string) {
+  const key = loginKey(request, username);
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  if (!current || now - current.firstAt >= LOGIN_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, firstAt: now, blockedUntil: 0 });
+    return;
+  }
+  const count = current.count + 1;
+  loginAttempts.set(key, {
+    count,
+    firstAt: current.firstAt,
+    blockedUntil: count >= LOGIN_MAX_FAILURES ? now + LOGIN_WINDOW_MS : 0
+  });
+}
+
+function clearLoginFailures(request: { ip: string }, username: string) {
+  loginAttempts.delete(loginKey(request, username));
+}
+
 const setupSchema = z.object({
   username: z.string().trim().min(3).max(100).regex(/^[a-zA-Z0-9._-]+$/, "اسم المستخدم يجب أن يحتوي على حروف إنجليزية وأرقام فقط"),
   password: z.string().min(12).max(200),
@@ -37,7 +76,11 @@ export async function authRoutes(app: FastifyInstance) {
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات تسجيل الدخول غير صحيحة", 422);
 
-    const result = await withTransaction(async (client) => {
+    assertLoginAllowed(request, parsed.data.username);
+
+    let result;
+    try {
+      result = await withTransaction(async (client) => {
       const user = await authenticate(client, parsed.data.username, parsed.data.password);
       const session = await createSession(client, user);
       await writeAudit(client, {
