@@ -7,16 +7,20 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const cartonSchema=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().nonnegative(),barcode:z.string().trim().max(120).nullable().optional(),weight:z.number().nonnegative().nullable().optional(),batchCode:z.string().trim().max(100).nullable().optional(),status:z.enum(["OPEN","SEALED","PARTIAL"]).default("OPEN")});
-const deliverySchema=z.object({destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),lines:z.array(z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional()})).min(1).max(100)});
+const deliverySchema=z.object({orderId:z.string().uuid().nullable().optional(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),lines:z.array(z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional()})).min(1).max(100)});
 const releaseSchema=z.object({scanCode:z.string().trim().min(4).max(100)});
 
 async function assertLocation(client:import("pg").PoolClient,w:string,l:string){const r=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[l,w]);if(!r.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);}
 async function changeBalance(client:import("pg").PoolClient,p:string,w:string,l:string,delta:number){
- const r=await client.query("SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[p,w,l]);
- const current=Number(r.rows[0]?.quantity??0),next=current+delta;
+ const r=await client.query("SELECT quantity,avg_unit_cost,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[p,w,l]);
+ const current=Number(r.rows[0]?.quantity??0),avg=Number(r.rows[0]?.avg_unit_cost??0),value=Number(r.rows[0]?.inventory_value??0),next=current+delta;
  if(next<0)throw new AppError("INSUFFICIENT_STOCK","الرصيد غير كافٍ لتنفيذ إذن التسليم",409);
- if(r.rowCount)await client.query("UPDATE stock_balances SET quantity=$1,updated_at=now() WHERE product_id=$2 AND warehouse_id=$3 AND location_id=$4",[next,p,w,l]);
- else if(delta>0)await client.query("INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity) VALUES($1,$2,$3,$4)",[p,w,l,next]);
+ const totalCost=Math.abs(delta)*avg;
+ const nextValue=delta<0?Math.max(0,value-totalCost):value+totalCost;
+ const nextAvg=next>0?nextValue/next:0;
+ if(r.rowCount)await client.query("UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[next,nextAvg,nextValue,p,w,l]);
+ else if(delta>0)await client.query("INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,avg_unit_cost,inventory_value) VALUES($1,$2,$3,$4,$5,$6)",[p,w,l,next,avg,nextValue]);
+ return {unitCost:avg,totalCost};
 }
 
 export async function cartonDeliveryRoutes(app:FastifyInstance){
@@ -49,14 +53,14 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  });
 
  app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async()=>{
-  const r=await pool.query("SELECT d.*,COUNT(l.id)::int AS line_count FROM delivery_permissions d LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id GROUP BY d.id ORDER BY d.created_at DESC LIMIT 300");
+  const r=await pool.query("SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id GROUP BY d.id ORDER BY d.created_at DESC LIMIT 300");
   return {data:r.rows};
  });
 
  app.post("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request,reply)=>{
   const parsed=deliverySchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إذن التسليم غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
-   const d=await client.query("INSERT INTO delivery_permissions(destination,notes,status,created_by) VALUES($1,$2,'READY',$3) RETURNING *",[parsed.data.destination,parsed.data.notes??null,request.user!.userId]);
+   const d=await client.query("INSERT INTO delivery_permissions(order_id,destination,notes,status,created_by) VALUES($1,$2,$3,'READY',$4) RETURNING *",[parsed.data.orderId??null,parsed.data.destination,parsed.data.notes??null,request.user!.userId]);
    for(const line of parsed.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[line.productId]);if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","منتج في الإذن غير موجود",422);
     await assertLocation(client,line.warehouseId,line.locationId);
@@ -92,8 +96,8 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
       [remaining,remaining===0?"EMPTY":"PARTIAL",c.id]
      );
     }
-    await changeBalance(client,line.product_id,line.warehouse_id,line.location_id,-Number(line.quantity));
-    await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,reference_type,reference_id,notes,created_by) VALUES('OUT',$1,$2,$3,$4,$5,$6,'DELIVERY',$7,$8,$9)",[line.product_id,line.warehouse_id,line.location_id,line.quantity,line.unit_id,line.carton_code,id,"Delivery permission "+d.rows[0].code,request.user!.userId]);
+    const movementCost=await changeBalance(client,line.product_id,line.warehouse_id,line.location_id,-Number(line.quantity));
+    await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,carton_code,reference_type,reference_id,notes,created_by) VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,'DELIVERY',$10,$11,$12)",[line.product_id,line.warehouse_id,line.location_id,line.quantity,line.unit_id,movementCost.unitCost,movementCost.totalCost,d.rows[0].order_id,line.carton_code,id,"Delivery permission "+d.rows[0].code,request.user!.userId]);
    }
    const updated=await client.query("UPDATE delivery_permissions SET status='RELEASED',released_by=$1,released_at=now(),updated_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"release",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],metadata:{scanCode:parsed.data.scanCode},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
