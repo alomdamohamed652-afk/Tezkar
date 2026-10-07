@@ -129,6 +129,25 @@ export async function productionRoutes(app: FastifyInstance) {
     return { data: result.rows };
   });
 
+  app.get("/api/production/my", {
+    preHandler: [authenticateRequest, requirePermission("production.view_own")]
+  }, async (request) => {
+    if (!request.user?.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+    const result = await pool.query(
+      `SELECT p.id,p.code,p.work_date,p.quantity,p.earning_amount,p.status,
+              pr.name AS product_name,st.name AS stage_name,sh.name AS shift_name,u.name AS unit_name
+         FROM production_entries p
+         JOIN products pr ON pr.id=p.product_id
+         JOIN stages st ON st.id=p.stage_id
+         JOIN shifts sh ON sh.id=p.shift_id
+         JOIN units u ON u.id=p.unit_id
+        WHERE p.employee_id=$1
+        ORDER BY p.work_date DESC,p.created_at DESC LIMIT 300`,
+      [request.user.employeeId]
+    );
+    return {data:result.rows};
+  });
+
   app.post("/api/production", {
     preHandler: [authenticateRequest, requirePermission("production.create")]
   }, async (request, reply) => {
