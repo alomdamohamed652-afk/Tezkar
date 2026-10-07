@@ -8,7 +8,8 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 const warehouseSchema = z.object({
   name: z.string().trim().min(2).max(120),
-  address: z.string().trim().max(300).nullable().optional()
+  address: z.string().trim().max(300).nullable().optional(),
+  warehouseType: z.enum(["GENERAL","RAW_MATERIAL","WIP","FINISHED_GOODS","SCRAP"]).default("GENERAL")
 });
 const locationSchema = z.object({
   warehouseId: z.string().uuid(), code: z.string().trim().min(1).max(40), name: z.string().trim().min(1).max(120)
@@ -50,7 +51,7 @@ async function changeBalance(client: import("pg").PoolClient, productId: string,
 
 export async function warehouseRoutes(app: FastifyInstance) {
   app.get("/api/warehouses",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
-    const result=await pool.query("SELECT w.id,w.code,w.name,w.address,w.is_active,COUNT(l.id)::int AS location_count FROM warehouses w LEFT JOIN warehouse_locations l ON l.warehouse_id=w.id AND l.is_active=TRUE WHERE w.is_active=TRUE GROUP BY w.id ORDER BY w.name");
+    const result=await pool.query("SELECT w.id,w.code,w.name,w.address,w.warehouse_type,w.is_active,COUNT(l.id)::int AS location_count FROM warehouses w LEFT JOIN warehouse_locations l ON l.warehouse_id=w.id AND l.is_active=TRUE WHERE w.is_active=TRUE GROUP BY w.id ORDER BY w.name");
     return {data:result.rows};
   });
 
@@ -99,7 +100,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
   app.post("/api/warehouses",{preHandler:[authenticateRequest,requirePermission("warehouse.manage")]},async(request,reply)=>{
     const parsed=warehouseSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المخزن غير صحيحة",422);
-    const result=await pool.query("INSERT INTO warehouses(name,address) VALUES($1,$2) RETURNING *",[parsed.data.name,parsed.data.address??null]);
+    const result=await pool.query("INSERT INTO warehouses(name,address,warehouse_type) VALUES($1,$2,$3) RETURNING *",[parsed.data.name,parsed.data.address??null,parsed.data.warehouseType]);
     return reply.code(201).send({data:result.rows[0]});
   });
 
