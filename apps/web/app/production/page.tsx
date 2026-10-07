@@ -37,7 +37,7 @@ export default function ProductionPage(){
   async function load(){
     setLoading(true); setError("");
     try{
-      const [e,p,s,h,r]=await Promise.all([
+      const [e,p,s,h,d,r]=await Promise.all([
         api<{data:Item[]}>("/api/employees"),
         api<{data:Item[]}>("/api/products"),
         api<{data:Item[]}>("/api/stages"),
