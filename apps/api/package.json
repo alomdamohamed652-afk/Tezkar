@@ -2,6 +2,7 @@
   "name": "@tezkar/api",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=24 <25" },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
