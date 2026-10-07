@@ -189,5 +189,28 @@ export async function authRoutes(app: FastifyInstance) {
     return { data: { success: true } };
   });
 
-  app.get("/api/auth/me", { preHandler: authenticateRequest }, async (request) => ({ data: request.user }));
+  app.get("/api/auth/me", { preHandler: authenticateRequest }, async (request) => {
+    const client = await pool.connect();
+    try {
+      const permissions = await client.query(
+        `SELECT DISTINCT p.code
+         FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id = ur.role_id
+         JOIN permissions p ON p.id = rp.permission_id
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1
+           AND r.is_active = TRUE
+         ORDER BY p.code`,
+        [request.user!.userId]
+      );
+      return {
+        data: {
+          ...request.user,
+          permissions: permissions.rows.map((row) => row.code as string)
+        }
+      };
+    } finally {
+      client.release();
+    }
+  });
 }
