@@ -16,7 +16,7 @@ type Wage=Row&{method:string};
 type Product=Row&{product_type:string;unit_id:string;unit_name:string;category_id:string|null;category_name:string|null};
 type Category=Row&{category_type:string};
 type ProdType=Row&{calculation_method:string};
-type Rate={id:string;code:string;rate:number;effective_range:string;product_name:string|null;stage_name:string;production_type_name:string|null;rate_group_name:string|null;wage_type_name:string;unit_name:string};
+type Rate={id:string;code:string;rate:number;is_active:boolean;effective_range:string;product_name:string|null;stage_name:string;production_type_name:string|null;rate_group_name:string|null;wage_type_name:string;unit_name:string};
 
 const categoryTypes=[["PRODUCT","منتج"],["RAW_MATERIAL","خامة"],["PRODUCTION_SUPPLY","مستلزم إنتاج"],["OPERATING_SUPPLY","مستلزم تشغيل"]];
 const productTypes=[["RAW_MATERIAL","خامة"],["COMPONENT","مكوّن"],["FINISHED_GOOD","منتج تام"],["SERVICE","خدمة"],["CONSUMABLE","مستهلك"]];
