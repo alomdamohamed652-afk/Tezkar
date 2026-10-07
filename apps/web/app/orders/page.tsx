@@ -6,6 +6,7 @@ import {Sidebar,usePermissions} from "../../components/sidebar";
 
 type Order={id:string;code:string;order_name:string;customer_name:string|null;order_date:string;delivery_start_date:string|null;due_date:string|null;last_delivery_date:string|null;status:string;line_count:number;ordered_quantity:string;completed_quantity:string};
 type StageRow={stageName:string;outputProductName:string;plannedQuantity:string;notes:string};
+const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={DRAFT:"مسودة",PLANNED:"مخططة",IN_PROGRESS:"قيد التنفيذ",COMPLETED:"مكتملة",CANCELLED:"ملغاة"};
 
 export default function OrdersPage(){
@@ -28,7 +29,7 @@ export default function OrdersPage(){
    await api("/api/orders",{method:"POST",body:JSON.stringify({
     orderName,customerName:customer||undefined,orderDate:date,deliveryStartDate:deliveryStart||undefined,lastDeliveryDate:lastDelivery||undefined,notes:notes||undefined,
     lines:[],
-    stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(x.plannedQuantity):undefined,notes:x.notes||undefined}))
+    stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(normalizeNumber(x.plannedQuantity)):undefined,notes:x.notes||undefined}))
    })});
    setOrderName("");setCustomer("");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلبية")}finally{setSaving(false)}
