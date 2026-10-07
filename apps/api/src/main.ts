@@ -20,6 +20,7 @@ import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { orderRoutes } from "./modules/orders/orders.routes.js";
 import { custodyRoutes } from "./modules/custody/custody.routes.js";
 import { receiptRoutes } from "./modules/warehouse/receipts.routes.js";
+import { codingRoutes } from "./modules/coding/coding.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -67,5 +68,6 @@ await app.register(reportsRoutes);
 await app.register(orderRoutes);
 await app.register(custodyRoutes);
 await app.register(receiptRoutes);
+await app.register(codingRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });
