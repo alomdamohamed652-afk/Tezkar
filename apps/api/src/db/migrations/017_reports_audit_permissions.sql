@@ -4,7 +4,7 @@ INSERT INTO permissions(code,module,entity,action,scope) VALUES
 ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
-SELECT r.id,p.id FROM roles r JOIN permissions p
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code IN ('manager','finance','accountant','production_manager','supervisor','hr','warehouse_manager')
   AND p.code IN ('reports.view','audit.view')
 ON CONFLICT DO NOTHING;
