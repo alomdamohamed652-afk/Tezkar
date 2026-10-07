@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
-import { Sidebar } from "../../components/sidebar";
+import { Sidebar, usePermissions } from "../../components/sidebar";
 
 type Item={id:string;code:string;name:string};
 type Shift=Item & {rate_group_name:string};
@@ -11,6 +11,7 @@ type Entry={id:string;code:string;work_date:string;quantity:number;rate_snapshot
 const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد",REJECTED:"مرفوض",CANCELLED:"ملغي"};
 
 export default function ProductionPage(){
+  const { has } = usePermissions();
   const [employees,setEmployees]=useState<Item[]>([]);
   const [products,setProducts]=useState<Item[]>([]);
   const [stages,setStages]=useState<Item[]>([]);
@@ -74,7 +75,7 @@ export default function ProductionPage(){
     <Sidebar active="/production" />
     <main className="main"><header className="topbar"><div><h1 className="page-title">الإنتاج والأجور</h1><p className="page-subtitle">تسجيل الإنتاج، تحديد السعر تلقائيًا، ثم المراجعة والاعتماد</p></div></header>
       <section className="content">{error&&<div className="alert error">{error}</div>}
-        <form className="card production-form" onSubmit={submit}>
+        {has("production.create") && <form className="card production-form" onSubmit={submit}>
           <div className="card-header"><h2 className="card-title">تسجيل إنتاج</h2><span className="form-hint">السعر لا يكتبه المستخدم — النظام يحدده من الإعدادات</span></div>
           <div className="production-grid">
             <label>الموظف<select value={employeeId} onChange={e=>setEmployeeId(e.target.value)}><option value="">تلقائي من الحساب</option>{employees.map(x=><option key={x.id} value={x.id}>{x.name} — {x.code}</option>)}</select></label>
@@ -86,13 +87,13 @@ export default function ProductionPage(){
             <label>قيمة الأساس <span className="optional">(لأجر النسبة فقط)</span><input type="number" min="0" step="0.01" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} /></label>
           </div>
           <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ التسجيل...":"تسجيل الإنتاج"}</button></div>
-        </form>
+        </form>}
 
         <section className="card">
           <div className="card-header"><h2 className="card-title">سجل الإنتاج</h2><select className="filter-select" value={status} onChange={e=>setStatus(e.target.value)}><option value="">كل الحالات</option><option value="PENDING">معلق</option><option value="APPROVED">معتمد</option><option value="REJECTED">مرفوض</option></select></div>
           {loading?<div className="empty">جارٍ تحميل السجل...</div>:!entries.length?<div className="empty">لا يوجد إنتاج مسجل.</div>:
           <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الموظف</th><th>المنتج</th><th>المرحلة</th><th>الوردية</th><th>الكمية</th><th>السعر</th><th>المستحق</th><th>الحالة</th><th>إجراء</th></tr></thead>
-          <tbody>{entries.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.work_date}</td><td className="strong">{x.employee_name}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.shift_name}</td><td>{x.quantity} {x.unit_name}</td><td>{x.rate_snapshot}</td><td className="money">{x.earning_amount}</td><td><span className={"status "+x.status.toLowerCase()}>{statusLabel[x.status]||x.status}</span></td><td>{x.status==="PENDING"&&<div className="row-actions"><button className="approve-button" onClick={()=>review(x.id,"approve")}>اعتماد</button><button className="reject-button" onClick={()=>review(x.id,"reject")}>رفض</button></div>}</td></tr>)}</tbody></table></div>}
+          <tbody>{entries.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.work_date}</td><td className="strong">{x.employee_name}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.shift_name}</td><td>{x.quantity} {x.unit_name}</td><td>{x.rate_snapshot}</td><td className="money">{x.earning_amount}</td><td><span className={"status "+x.status.toLowerCase()}>{statusLabel[x.status]||x.status}</span></td><td>{x.status==="PENDING"&&<div className="row-actions">{has("production.approve")&&<button className="approve-button" onClick={()=>review(x.id,"approve")}>اعتماد</button>}{has("production.reject")&&<button className="reject-button" onClick={()=>review(x.id,"reject")}>رفض</button>}</div>}</td></tr>)}</tbody></table></div>}
         </section>
       </section>
     </main>
