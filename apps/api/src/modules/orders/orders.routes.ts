@@ -40,8 +40,8 @@ const orderSchema = z.object({
 function normalizeBusinessName(value:string):string {
   return value
     .normalize("NFKD")
-    .replace(/[\\u064B-\\u065F\\u0670\\u0640]/g,"")
-    .replace(/\\s+/g," ")
+    .replace(/[\u064B-\u065F\u0670\u0640]/g,"")
+    .replace(/\s+/g," ")
     .trim()
     .toLocaleLowerCase("ar-EG");
 }
@@ -58,7 +58,7 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
   // whitespace, case and Arabic tashkeel as presentation differences.
   await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
   const existing=await client.query(
-    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
@@ -78,7 +78,7 @@ async function ensureStage(client:any, input:{stageId?:string|undefined;stageNam
   const normalized=normalizeBusinessName(name);
   await client.query("SELECT pg_advisory_xact_lock(hashtext('stage:' || $1))",[normalized]);
   const existing=await client.query(
-    "SELECT id,name FROM stages WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,name FROM stages WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
