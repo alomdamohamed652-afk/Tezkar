@@ -7,6 +7,7 @@ import { authenticate, hashPassword } from "./auth.service.js";
 import { authenticateRequest } from "./auth.middleware.js";
 import { isFirstRunSetupRequired } from "./auth.repository.js";
 import { createSession, revokeSession } from "./session.service.js";
+import { env } from "../../config.js";
 
 const loginSchema = z.object({
   username: z.string().trim().min(1).max(100),
@@ -44,12 +45,16 @@ export async function authRoutes(app: FastifyInstance) {
         module: "auth", entityType: "user", entityId: user.userId,
         ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null
       });
+      await client.query("DELETE FROM user_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL");
       return { user, session };
     });
 
     reply.setCookie("tezkar_session", result.session.token, {
-      httpOnly: true, secure: process.env.NODE_ENV === "production",
-      sameSite: "lax", path: "/", expires: result.session.expiresAt
+      httpOnly: true,
+      secure: env.NODE_ENV === "production" || env.SESSION_COOKIE_SAMESITE === "none",
+      sameSite: env.SESSION_COOKIE_SAMESITE,
+      path: "/",
+      expires: result.session.expiresAt
     });
 
     return {
