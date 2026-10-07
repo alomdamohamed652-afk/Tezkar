@@ -72,7 +72,7 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   app.post("/api/payment-requests",{
-    preHandler:[authenticateRequest,requirePermission("payment_requests.create")]
+    preHandler:[authenticateRequest,requirePermission("payment_requests.create", "own")]
   },async(request,reply)=>{
     const parsed=requestSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات طلب القبض غير صحيحة",422);
