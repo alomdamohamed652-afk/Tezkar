@@ -18,7 +18,7 @@ const movementSchema = z.object({
   productId: z.string().uuid(), warehouseId: z.string().uuid(), locationId: z.string().uuid(),
   quantity: z.number().positive(), cartonCode: z.string().trim().max(100).nullable().optional(),
   batchCode: z.string().trim().max(100).nullable().optional(), weight: z.number().nonnegative().nullable().optional(),
-  notes: z.string().trim().max(500).nullable().optional(), targetWarehouseId: z.string().uuid().optional(),
+  notes: z.string().trim().max(500).nullable().optional(), adjustmentDirection: z.enum(["IN","OUT"]).default("IN"), targetWarehouseId: z.string().uuid().optional(),
   targetLocationId: z.string().uuid().optional()
 });
 
@@ -103,7 +103,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!parsed.data.targetWarehouseId||!parsed.data.targetLocationId) throw new AppError("TRANSFER_TARGET_REQUIRED","التحويل يحتاج مخزن ومكان وصول",422);
         await assertLocation(client,parsed.data.targetWarehouseId,parsed.data.targetLocationId);
       }
-      const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT")?-parsed.data.quantity:parsed.data.quantity;
+      const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT"||(parsed.data.movementType==="ADJUSTMENT"&&parsed.data.adjustmentDirection==="OUT"))?-parsed.data.quantity:parsed.data.quantity;
       await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,delta);
       const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,batch_code,weight,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,parsed.data.quantity,product.rows[0].unit_id,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId]);
       let destination=null;
