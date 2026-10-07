@@ -53,7 +53,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  });
 
  app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async()=>{
-  const r=await pool.query("SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id GROUP BY d.id ORDER BY d.created_at DESC LIMIT 300");
+  const r=await pool.query("SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id GROUP BY d.id,o.code,o.order_name ORDER BY d.created_at DESC LIMIT 300");
   return {data:r.rows};
  });
 
