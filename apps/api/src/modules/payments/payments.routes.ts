@@ -18,6 +18,11 @@ const paymentMethodSchema = z.object({
 
 const rejectSchema = z.object({ reason: z.string().trim().min(2).max(500) });
 
+function isUniqueViolation(error: unknown): boolean {
+  const code=typeof error==="object"&&error!==null&&"code" in error?(error as {code?:unknown}).code:null;
+  return code==="23505";
+}
+
 async function isWorker(userId:string) {
   const r=await pool.query(
     `SELECT u.employee_id, EXISTS(
@@ -102,7 +107,9 @@ export async function paymentsRoutes(app:FastifyInstance){
     const user=await isWorker(request.user!.userId);
     if(!user?.is_worker || !user.employee_id) throw new AppError("WORKER_ONLY","طلب القبض متاح للعامل فقط",403);
 
-    const row=await withTransaction(async(client)=>{
+    let row;
+    try {
+      row=await withTransaction(async(client)=>{
       await lockEmployee(client,user.employee_id);
       const balance=await getBalance(client,user.employee_id);
       if(parsed.data.amount>balance) throw new AppError("INSUFFICIENT_BALANCE","المبلغ المطلوب أكبر من المستحق المتاح",409);
@@ -117,7 +124,11 @@ export async function paymentsRoutes(app:FastifyInstance){
         [user.employee_id,parsed.data.amount,parsed.data.method,request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:user.employee_id,action:"create",module:"payments",entityType:"payment_request",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return inserted.rows[0];
-    });
+      });
+    } catch(error) {
+      if(isUniqueViolation(error)) throw new AppError("OPEN_REQUEST_EXISTS","يوجد طلب قبض مفتوح بالفعل",409);
+      throw error;
+    }
     return reply.code(201).send({data:row});
   });
 
