@@ -1,3 +1,5 @@
+CREATE SEQUENCE IF NOT EXISTS rate_code_seq START 1;
+
 CREATE TABLE IF NOT EXISTS products (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL UNIQUE DEFAULT ('ITM-' || lpad(nextval('product_code_seq')::TEXT, 6, '0')),
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS products (
 
 CREATE TABLE IF NOT EXISTS rates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  code TEXT NOT NULL UNIQUE DEFAULT ('RATE-' || lpad(nextval('audit_event_seq')::TEXT, 6, '0')),
+  code TEXT NOT NULL UNIQUE DEFAULT ('RATE-' || lpad(nextval('rate_code_seq')::TEXT, 6, '0')),
   product_id UUID REFERENCES products(id),
   stage_id UUID NOT NULL REFERENCES stages(id),
   rate_group_id UUID REFERENCES rate_groups(id),
