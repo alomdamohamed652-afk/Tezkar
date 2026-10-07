@@ -1,15 +1,17 @@
 "use client";
 import {FormEvent,useEffect,useState} from "react";
 import {api} from "../../lib/api";
+import { Sidebar, usePermissions } from "../../components/sidebar";
 type Advance={id:string;code:string;employee_name:string;amount:number;reason:string;status:string;created_at:string;rejection_reason:string|null};
 const labels:Record<string,string>={PENDING:"قيد المراجعة",APPROVED:"معتمدة",REJECTED:"مرفوضة",PAID:"تم الصرف",CANCELLED:"ملغاة"};
 export default function AdvancesPage(){
+ const { has } = usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  async function load(){try{setItems((await api<{data:Advance[]}>("/api/advances")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل السلف")}}
  useEffect(()=>{void load()},[]);
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{await api("/api/advances",{method:"POST",body:JSON.stringify({amount:Number(amount),reason})});setAmount("");setReason("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلب")}finally{setSaving(false)}}
  async function action(id:string,a:"approve"|"reject"|"pay"){try{if(a==="reject"){const r=window.prompt("سبب الرفض؟");if(!r)return;await api("/api/advances/"+id+"/reject",{method:"POST",body:JSON.stringify({reason:r})})}else await api("/api/advances/"+id+"/"+a,{method:"POST"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ العملية")}}
- return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تيزكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">
+ return <div className="app-shell"><Sidebar active="/advances" /><aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تيزكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">
  <a className="nav-item" href="/"><span className="nav-icon">⌂</span><span>الرئيسية</span></a><a className="nav-item" href="/employees"><span className="nav-icon">▣</span><span>الموظفون</span></a><a className="nav-item" href="/production"><span className="nav-icon">▤</span><span>الإنتاج</span></a><a className="nav-item" href="/warehouse"><span className="nav-icon">▥</span><span>المخزن</span></a><a className="nav-item active" href="/advances"><span className="nav-icon">↔</span><span>السلف</span></a><a className="nav-item" href="/payments"><span className="nav-icon">₤</span><span>القبض</span></a><a className="nav-item" href="/settings"><span className="nav-icon">⚙</span><span>الإعدادات</span></a>
  </nav></aside><main className="main"><header className="topbar"><div><h1 className="page-title">السلف</h1><p className="page-subtitle">طلب ومراجعة وصرف السلف وربطها بدفتر المستحقات</p></div></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
