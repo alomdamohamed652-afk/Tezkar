@@ -49,6 +49,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
        JOIN employees e ON e.id=p.employee_id
        JOIN products pr ON pr.id=p.product_id
        JOIN stages st ON st.id=p.stage_id
+       LEFT JOIN order_stages os ON os.id=p.order_stage_id
        JOIN shifts sh ON sh.id=p.shift_id
        JOIN units u ON u.id=p.unit_id
       WHERE p.id=$1${lock ? " FOR UPDATE" : ""}`,
@@ -358,7 +359,7 @@ export async function productionRoutes(app: FastifyInstance) {
          ON CONFLICT DO NOTHING`,
         [
           current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,
-          productionUnitCost,Number(current.earning_amount),current.order_stage_id??null,current.order_stage_id??null,
+          productionUnitCost,Number(current.earning_amount),current.order_id??null,current.order_stage_id??null,
           "إدخال إنتاج معتمد "+current.code,request.user!.userId,id
         ]
       );
