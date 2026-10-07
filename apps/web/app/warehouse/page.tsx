@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import { Sidebar, usePermissions } from "../../components/sidebar";
 
 type Item={id:string;code:string;name:string};
 type Warehouse=Item & {address:string|null;location_count:number};
@@ -13,6 +14,7 @@ type Movement={code:string;movement_type:string;quantity:number;product_name:str
 const labels:Record<string,string>={IN:"وارد",OUT:"صرف",RETURN:"مرتجع",ADJUSTMENT:"تسوية",TRANSFER_OUT:"تحويل"};
 
 export default function WarehousePage(){
+ const { has } = usePermissions();
  const [warehouses,setWarehouses]=useState<Warehouse[]>([]);
  const [locations,setLocations]=useState<Location[]>([]);
  const [products,setProducts]=useState<Product[]>([]);
@@ -46,9 +48,7 @@ export default function WarehousePage(){
  const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId);
 
  return <div className="app-shell">
-  <aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تيزكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">
-   <a className="nav-item" href="/"><span className="nav-icon">⌂</span><span>الرئيسية</span></a><a className="nav-item" href="/employees"><span className="nav-icon">▣</span><span>الموظفون</span></a><a className="nav-item" href="/production"><span className="nav-icon">▤</span><span>الإنتاج</span></a><a className="nav-item active" href="/warehouse"><span className="nav-icon">▥</span><span>المخزن</span></a><a className="nav-item" href="/deliveries"><span className="nav-icon">⇥</span><span>التسليمات</span></a><a className="nav-item" href="/payments"><span className="nav-icon">₤</span><span>القبض والمدفوعات</span></a><a className="nav-item" href="/settings"><span className="nav-icon">⚙</span><span>الإعدادات</span></a>
-  </nav></aside>
+  <Sidebar active="/warehouse" />
   <main className="main"><header className="topbar"><div><h1 className="page-title">المخزن</h1><p className="page-subtitle">الأرصدة وحركات الوارد والصرف والتسويات</p></div></header><section className="content">
    {error&&<div className="alert error">{error}</div>}
    <div className="stats"><article className="card stat"><div className="stat-label">المخازن</div><div className="stat-value">{warehouses.length}</div><div className="stat-note">المخازن النشطة</div></article><article className="card stat accent"><div className="stat-label">أرصدة بها مخزون</div><div className="stat-value">{stock.length}</div><div className="stat-note">حسب المنتج والمكان</div></article><article className="card stat warning"><div className="stat-label">حركات مسجلة</div><div className="stat-value">{movements.length}</div><div className="stat-note">آخر 100 حركة</div></article></div>
