@@ -117,6 +117,19 @@ export async function orderRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: row });
   });
 
+  app.delete("/api/orders/:id",{preHandler:[authenticateRequest,requirePermission("orders.delete")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const r=await withTransaction(async client=>{
+      const before=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
+      if(!before.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(before.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن إلغاء طلب مكتمل",409);
+      const after=await client.query("UPDATE production_orders SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,order_name,status",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"orders",entityType:"production_order",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return after.rows[0];
+    });
+    return {data:r};
+  });
+
   app.patch("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.edit")] }, async (request) => {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
@@ -185,6 +198,12 @@ export async function orderRoutes(app: FastifyInstance) {
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات الماكينة غير صحيحة",422);
     const r=await pool.query("INSERT INTO machines(name,machine_type) VALUES($1,$2) RETURNING id,code,name,machine_type,is_active",[parsed.data.name,parsed.data.machineType ?? null]);
     return reply.code(201).send({data:r.rows[0]});
+  });
+
+  app.delete("/api/machines/:id",{preHandler:[authenticateRequest,requirePermission("machines.delete")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const r=await pool.query("UPDATE machines SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+    if(!r.rowCount)throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة",404);return {data:r.rows[0]};
   });
 
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
