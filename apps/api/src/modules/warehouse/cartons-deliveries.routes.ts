@@ -36,12 +36,14 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(Number(stock.rows[0]?.quantity??0)<quantity)throw new AppError("INSUFFICIENT_STOCK","الرصيد المتاح أقل من كمية الكرتونة",409);
    const r=await client.query("INSERT INTO cartons(barcode,product_id,warehouse_id,location_id,quantity,unit_id,weight,batch_code,status,sealed_at,sealed_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",[parsed.data.barcode??null,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,quantity,product.rows[0].unit_id,parsed.data.weight??null,parsed.data.batchCode??null,parsed.data.status,parsed.data.status==="SEALED"?new Date():null,parsed.data.status==="SEALED"?request.user!.userId:null]);
    const created=r.rows[0];
-   if(!created.barcode){
-    const barcode=created.code;
-    const updated=await client.query("UPDATE cartons SET barcode=$1,updated_at=now() WHERE id=$2 RETURNING *",[barcode,created.id]);
-    return updated.rows[0];
+   let finalCarton=created;
+   if(!finalCarton.barcode){
+    const barcode=finalCarton.code;
+    const updated=await client.query("UPDATE cartons SET barcode=$1,updated_at=now() WHERE id=$2 RETURNING *",[barcode,finalCarton.id]);
+    finalCarton=updated.rows[0];
    }
-   return created;
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"carton",entityId:finalCarton.id,afterData:finalCarton,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return finalCarton;
   });
   return reply.code(201).send({data:row});
  });
