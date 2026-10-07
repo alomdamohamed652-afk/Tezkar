@@ -1,7 +1,7 @@
 "use client";
 import { FormEvent, useEffect, useState } from "react";
 const API=process.env.NEXT_PUBLIC_API_URL??"http://localhost:4000";
-type O={id:string;code:string;name:string};
+type O={id:string;code:string;name:string;symbol?:string};
 export default function OperationsPage(){
  const [shifts,setShifts]=useState<any[]>([]),[groups,setGroups]=useState<O[]>([]),[units,setUnits]=useState<O[]>([]),[products,setProducts]=useState<any[]>([]),[stages,setStages]=useState<O[]>([]),[wages,setWages]=useState<any[]>([]),[employees,setEmployees]=useState<any[]>([]);
  const [tab,setTab]=useState("shifts"),[msg,setMsg]=useState(""),[err,setErr]=useState("");
