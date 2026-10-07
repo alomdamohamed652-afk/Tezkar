@@ -26,6 +26,14 @@ const movementSchema = z.object({
 async function assertLocation(client: import("pg").PoolClient, warehouseId: string, locationId: string) {
   const result = await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[locationId,warehouseId]);
   if (!result.rowCount) throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);
+ app.delete("/api/warehouses/:id",{preHandler:[authenticateRequest,requirePermission("warehouses.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const stock=await pool.query("SELECT COALESCE(SUM(quantity),0) AS q FROM stock_balances WHERE warehouse_id=$1",[id]);
+  if(Number(stock.rows[0].q)>0)throw new AppError("WAREHOUSE_HAS_STOCK","لا يمكن تعطيل مخزن به رصيد. انقل الرصيد أولاً.",409);
+  const r=await pool.query("UPDATE warehouses SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("WAREHOUSE_NOT_FOUND","المخزن غير موجود",404);return {data:r.rows[0]};
+ });
+
 }
 
 async function changeBalance(client: import("pg").PoolClient, productId: string, warehouseId: string, locationId: string, delta: number, movementUnitCost?: number | null) {
