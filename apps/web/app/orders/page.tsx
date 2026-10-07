@@ -12,13 +12,13 @@ export default function OrdersPage(){
  const {has}=usePermissions();
  const [orders,setOrders]=useState<Order[]>([]);
  const [orderName,setOrderName]=useState(""),[customer,setCustomer]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[deliveryStart,setDeliveryStart]=useState(""),[lastDelivery,setLastDelivery]=useState(""),[notes,setNotes]=useState("");
- const [productName,setProductName]=useState(""),[quantity,setQuantity]=useState(""),[stageRows,setStageRows]=useState<StageRow[]>([]);
+ const [stageRows,setStageRows]=useState<StageRow[]>([]);
  const [error,setError]=useState(""),[saving,setSaving]=useState(false);
 
  async function load(){try{const o=await api<{data:Order[]}>("/api/orders");setOrders(o.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الطلبات")}}
  useEffect(()=>{void load()},[]);
 
- function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:quantity,notes:""}])}
+ function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:"",notes:""}])}
  function updateStage(i:number,key:keyof StageRow,value:string){setStageRows(v=>v.map((r,n)=>n===i?{...r,[key]:value}:r))}
  function removeStage(i:number){setStageRows(v=>v.filter((_,n)=>n!==i))}
 
@@ -27,15 +27,15 @@ export default function OrdersPage(){
   try{
    await api("/api/orders",{method:"POST",body:JSON.stringify({
     orderName,customerName:customer||undefined,orderDate:date,deliveryStartDate:deliveryStart||undefined,lastDeliveryDate:lastDelivery||undefined,notes:notes||undefined,
-    lines:[{productName,quantity:Number(quantity)}],
+    lines:[],
     stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(x.plannedQuantity):undefined,notes:x.notes||undefined}))
    })});
-   setOrderName("");setCustomer("");setQuantity("");setProductName("");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await load();
+   setOrderName("");setCustomer("");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلبية")}finally{setSaving(false)}
  }
 
  return <div className="app-shell"><Sidebar active="/orders"/><main className="main">
-  <header className="topbar"><div><h1 className="page-title">الطلبات</h1><p className="page-subtitle">سجّل الطلبية باسمها، ثم اكتب المنتجات والمراحل مباشرة. النظام ينشئ البيانات الأساسية تلقائيًا.</p></div></header>
+  <header className="topbar"><div><h1 className="page-title">الطلبات</h1><p className="page-subtitle">سجّل الطلبية باسمها، ثم اكتب كل مرحلة والمنتج الناتج بجانبها. النظام ينشئ المنتج والمرحلة تلقائيًا عند الحاجة.</p></div></header>
   <section className="content">{error&&<div className="alert error">{error}</div>}
    {has("orders.create")&&<form className="card form-card" onSubmit={submit}>
     <div className="card-header"><div><h2 className="card-title">تسجيل طلبية جديدة</h2><div className="form-hint">لو كتبت منتجًا أو مرحلة غير موجودة، تذكار ينشئها تلقائيًا في البيانات الأساسية.</div></div></div>
@@ -45,8 +45,7 @@ export default function OrdersPage(){
      <label>تاريخ الطلب<input type="date" value={date} onChange={e=>setDate(e.target.value)} required/></label>
      <label>بداية التسليم<input type="date" value={deliveryStart} onChange={e=>setDeliveryStart(e.target.value)}/></label>
      <label>آخر دفعة تسليم<input type="date" value={lastDelivery} onChange={e=>setLastDelivery(e.target.value)}/></label>
-     <label>المنتج<input value={productName} onChange={e=>setProductName(e.target.value)} placeholder="اكتب اسم المنتج — مثال: مقلمة" required/></label>
-     <label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} placeholder="0" required/></label>
+     <div className="form-hint" style={{gridColumn:"1/-1"}}>المنتج لا يُكتب هنا مرة ثانية. اكتب المنتج الناتج بجانب كل مرحلة؛ تذكار ينشئ منتج الطلبية تلقائيًا ويجمع الكميات المتكررة.</div>
      <label style={{gridColumn:"1/-1"}}>ملاحظات<textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="ملاحظات التشغيل أو التسليم"/></label>
     </div>
     <div className="card-body order-stages-editor">
@@ -59,7 +58,7 @@ export default function OrdersPage(){
        <button type="button" className="danger-button" onClick={()=>removeStage(i)}>حذف</button>
       </div>)}</div>}
     </div>
-    <div className="form-actions"><button className="primary-button" disabled={saving||!productName||!quantity}>{saving?"جارٍ الحفظ...":"حفظ الطلبية"}</button></div>
+    <div className="form-actions"><button className="primary-button" disabled={saving||!stageRows.some(x=>x.stageName.trim()&&x.outputProductName.trim()&&x.plannedQuantity)}>{saving?"جارٍ الحفظ...":"حفظ الطلبية"}</button></div>
    </form>}
 
    <section className="card"><div className="card-header"><div><h2 className="card-title">لوحة الطلبات</h2><div className="form-hint">كل طلبية لها ملف مستقل للتشغيل والتكلفة والمسحوبات والتسليم.</div></div><span className="count-badge">{orders.length}</span></div>
