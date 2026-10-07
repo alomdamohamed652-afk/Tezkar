@@ -34,7 +34,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
     if(user?.is_worker){
       if(!user.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(user.employee_id);where.push("c.employee_id=$"+params.length);
+      params.push(user.employee_id);where.push("c.employee_id=$"+params.length);where.push("c.status IN ('ACTIVE','PARTIAL_RETURNED')");
     }
     const r=await pool.query(
       `SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,
