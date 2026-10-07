@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 
-type Session={permissions:string[];username?:string;roleCodes?:string[]};
-type NavItem={icon:string;label:string;href:string;permissions?:string[]};
+type Session={permissions:string[];username?:string;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
+type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 
 const nav:NavItem[]=[
  {icon:"⌂",label:"الرئيسية",href:"/",permissions:["dashboard.view"]},
@@ -18,7 +18,8 @@ const nav:NavItem[]=[
  {icon:"▰",label:"الكرتونات",href:"/cartons",permissions:["cartons.view"]},
  {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
  {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]},
- {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"]},
+ {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
+ {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own"],conditional:"custody"},
  {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
  {icon:"▰",label:"إنتاج الماكينات",href:"/machine-production",permissions:["machine_production.view"]},
  {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
@@ -26,14 +27,21 @@ const nav:NavItem[]=[
 ];
 
 export function usePermissions(){
- const [permissions,setPermissions]=useState<string[]|null>(null);
- useEffect(()=>{api<{data:Session}>("/api/auth/me").then(r=>setPermissions(r.data.permissions)).catch(()=>setPermissions([]));},[]);
- return {permissions,has:(code:string)=>permissions?.includes(code)??false};
+ const [session,setSession]=useState<Session|null>(null);
+ useEffect(()=>{api<{data:Session}>("/api/auth/me").then(r=>setSession(r.data)).catch(()=>setSession(null));},[]);
+ const permissions=session?.permissions??null;
+ return {permissions,session,has:(code:string)=>permissions?.includes(code)??false};
 }
 
 export function Sidebar({active}:{active:string}){
- const {permissions}=usePermissions();
- const visible=nav.filter(item=>permissions!==null&&item.permissions?.some(p=>permissions.includes(p)));
+ const {permissions,session}=usePermissions();
+ const visible=nav.filter(item=>{
+   if(permissions===null||!item.permissions?.some(p=>permissions.includes(p)))return false;
+   if(!item.conditional)return true;
+   if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
+   if(item.conditional==="custody"&&permissions.includes("custody.view"))return true;
+   return Boolean(session?.activeRecords?.[item.conditional]);
+ });
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
  return <aside className="sidebar">
    <div className="brand">
