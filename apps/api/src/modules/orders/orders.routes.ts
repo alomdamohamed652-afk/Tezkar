@@ -37,6 +37,15 @@ const orderSchema = z.object({
 });
 
 
+function normalizeBusinessName(value:string):string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\\u064B-\\u065F\\u0670\\u0640]/g,"")
+    .replace(/\\s+/g," ")
+    .trim()
+    .toLocaleLowerCase("ar-EG");
+}
+
 async function ensureProduct(client:any, input:{productId?:string|undefined;productName?:string|undefined}) {
   if(input.productId){
     const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
@@ -44,10 +53,14 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
     return existing.rows[0];
   }
   const name=input.productName!.trim();
-  // Serialize auto-creation by normalized business name so a product typed in an order
-  // and the same product typed as a stage output resolve to one master record.
-  await client.query("SELECT pg_advisory_xact_lock(hashtext(lower(btrim($1))))",[name]);
-  const existing=await client.query("SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(trim(name))=lower(trim($1)) ORDER BY created_at LIMIT 1",[name]);
+  const normalized=normalizeBusinessName(name);
+  // Serialize auto-creation by the same normalized business name. This treats
+  // whitespace, case and Arabic tashkeel as presentation differences.
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
+  const existing=await client.query(
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    [normalized]
+  );
   if(existing.rowCount)return existing.rows[0];
   const unit=await client.query("SELECT id FROM units WHERE code='PCS' AND is_active=TRUE LIMIT 1");
   if(!unit.rowCount)throw new AppError("DEFAULT_UNIT_MISSING","وحدة القطعة الافتراضية غير موجودة",500);
@@ -62,8 +75,12 @@ async function ensureStage(client:any, input:{stageId?:string|undefined;stageNam
     return existing.rows[0];
   }
   const name=input.stageName!.trim();
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('stage:' || lower(btrim($1))))",[name]);
-  const existing=await client.query("SELECT id,name FROM stages WHERE is_active=TRUE AND lower(trim(name))=lower(trim($1)) ORDER BY created_at LIMIT 1",[name]);
+  const normalized=normalizeBusinessName(name);
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('stage:' || $1))",[normalized]);
+  const existing=await client.query(
+    "SELECT id,name FROM stages WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    [normalized]
+  );
   if(existing.rowCount)return existing.rows[0];
   const created=await client.query("INSERT INTO stages(name) VALUES($1) RETURNING id,name",[name]);
   return created.rows[0];
