@@ -1,13 +1,13 @@
 "use client";
 import {useEffect,useState} from "react";
 import {api,ApiError} from "../lib/api";
+import { Sidebar } from "../components/sidebar";
 type Summary={production:{quantity:string;entries:number};earnings:{balance:string;earned:string;paid:string};stock:{lines:number;quantity:string};pendingPayments:number;pendingAdvances:number};
-const nav=[["⌂","الرئيسية","/"],["▣","الموظفون","/employees"],["▤","الإنتاج","/production"],["▥","المخزن","/warehouse"],["↔","السلف","/advances"],["₤","القبض","/payments"],["⚙","الإعدادات","/settings"],["▦","التقارير","/reports"]];
 export default function HomePage(){
  const [summary,setSummary]=useState<Summary|null>(null),[error,setError]=useState("");
  useEffect(()=>{api<{data:Summary}>("/api/dashboard/summary").then(x=>setSummary(x.data)).catch(e=>{if(e instanceof ApiError&&e.code==="FORBIDDEN"){window.location.replace("/production");return}setError(e instanceof Error?e.message:"تعذر تحميل لوحة التحكم")})},[]);
  const n=(v:string|number)=>Number(v||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
- return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تيزكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">{nav.map(([icon,label,href])=><a className={"nav-item"+(label==="الرئيسية"?" active":"")} href={href} key={label}><span className="nav-icon">{icon}</span><span>{label}</span></a>)}</nav></aside>
+ return <div className="app-shell"><Sidebar active="/" />
  <main className="main"><header className="topbar"><div><h1 className="page-title">لوحة التحكم</h1><p className="page-subtitle">نظرة حقيقية على حركة المصنع اليوم</p></div><a className="user-chip" href="/settings"><div className="avatar">ت</div><div><div className="user-name">إدارة النظام</div><div className="user-role">الإعدادات والحسابات</div></div></a></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
  <div className="stats"><article className="card stat"><div className="stat-label">إنتاج اليوم</div><div className="stat-value">{summary?n(summary.production.quantity):"—"}</div><div className="stat-note">{summary?summary.production.entries+" سجل معتمد":"جاري التحميل"}</div></article><article className="card stat accent"><div className="stat-label">صافي مستحقات العاملين</div><div className="stat-value">{summary?n(summary.earnings.balance):"—"}</div><div className="stat-note">المستحقات − المدفوع والسلف</div></article><article className="card stat warning"><div className="stat-label">سطور المخزون</div><div className="stat-value">{summary?summary.stock.lines:"—"}</div><div className="stat-note">أرصدة أكبر من صفر</div></article><article className="card stat neutral"><div className="stat-label">طلبات تحتاج مراجعة</div><div className="stat-value">{summary?summary.pendingPayments+summary.pendingAdvances:"—"}</div><div className="stat-note">قبض + سلف</div></article></div>
