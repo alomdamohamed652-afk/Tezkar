@@ -33,6 +33,8 @@ export default function EmployeesPage(){
   }
   useEffect(()=>{void load()},[]);
 
+  async function deactivate(id:string){if(!confirm("تعطيل الموظف؟ سيتم تعطيل حساب الدخول المرتبط به أيضًا."))return;try{await api("/api/employees/"+id,{method:"DELETE"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
+
   async function submit(event:FormEvent){
     event.preventDefault();setSaving(true);setError("");setCredentials(null);
     try{
