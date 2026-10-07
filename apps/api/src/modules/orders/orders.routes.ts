@@ -67,6 +67,15 @@ export async function orderRoutes(app: FastifyInstance) {
     return { data: r.rows };
   });
 
+  app.get("/api/order-stages", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
+    const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
+    if(!q.success) throw new AppError("VALIDATION_ERROR","فلتر مراحل الطلب غير صحيح",422);
+    const params:unknown[]=[]; const where:string[]=["os.status <> 'CANCELLED'"];
+    if(q.data.orderId){params.push(q.data.orderId);where.push("os.order_id=$"+params.length);}
+    const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
+    return {data:r.rows};
+  });
+
   app.get("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const id = (request.params as { id: string }).id;
     const order = await pool.query(
