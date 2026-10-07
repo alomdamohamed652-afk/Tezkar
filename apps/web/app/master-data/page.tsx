@@ -31,7 +31,8 @@ export default function MasterDataPage() {
   const [deptCode,setDeptCode]=useState(""); const [deptName,setDeptName]=useState("");
   const [jobCode,setJobCode]=useState(""); const [jobName,setJobName]=useState(""); const [jobDept,setJobDept]=useState("");
   const [groupName,setGroupName]=useState(""); const [stageName,setStageName]=useState("");
-  const [productName,setProductName]=useState(""); const [productType,setProductType]=useState("FINISHED_GOOD"); const [productUnit,setProductUnit]=useState("");\n  const [outputStage,setOutputStage]=useState(""); const [outputProduct,setOutputProduct]=useState(""); const [stageOutputs,setStageOutputs]=useState<any[]>([]);
+  const [productName,setProductName]=useState(""); const [productType,setProductType]=useState("FINISHED_GOOD"); const [productUnit,setProductUnit]=useState("");
+  const [outputStage,setOutputStage]=useState(""); const [outputProduct,setOutputProduct]=useState(""); const [stageOutputs,setStageOutputs]=useState<any[]>([]);
 
   async function loadAll(){
     setError("");
@@ -47,9 +48,11 @@ export default function MasterDataPage() {
       if(!productUnit && u.data[0]) setProductUnit(u.data[0].id);
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات");}
   }
-  useEffect(()=>{void loadAll();},[]);\n  useEffect(()=>{if(!outputStage){setStageOutputs([]);return;} api<{data:any[]}>(`/api/stages/${outputStage}/outputs`).then(x=>setStageOutputs(x.data)).catch(()=>setStageOutputs([]));},[outputStage]);
+  useEffect(()=>{void loadAll();},[]);
+  useEffect(()=>{if(!outputStage){setStageOutputs([]);return;} api<{data:any[]}>(`/api/stages/${outputStage}/outputs`).then(x=>setStageOutputs(x.data)).catch(()=>setStageOutputs([]));},[outputStage]);
 
-  async function addStageOutput(e:FormEvent){e.preventDefault();setError("");try{await api(`/api/stages/${outputStage}/outputs`,{method:"POST",body:JSON.stringify({productId:outputProduct,isDefault:true})});const x=await api<{data:any[]}>(`/api/stages/${outputStage}/outputs`);setStageOutputs(x.data);}catch(e){setError(e instanceof Error?e.message:"تعذر ربط المنتج بالمرحلة");}}\n  async function submit(e:FormEvent, kind:string){
+  async function addStageOutput(e:FormEvent){e.preventDefault();setError("");try{await api(`/api/stages/${outputStage}/outputs`,{method:"POST",body:JSON.stringify({productId:outputProduct,isDefault:true})});const x=await api<{data:any[]}>(`/api/stages/${outputStage}/outputs`);setStageOutputs(x.data);}catch(e){setError(e instanceof Error?e.message:"تعذر ربط المنتج بالمرحلة");}}
+  async function submit(e:FormEvent, kind:string){
     e.preventDefault(); setSaving(kind); setError("");
     try{
       if(kind==="department"){await api("/api/departments",{method:"POST",body:JSON.stringify({code:deptCode,name:deptName})});setDeptCode("");setDeptName("");}
