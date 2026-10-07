@@ -1,47 +1,90 @@
-const cards = [
-  { label: "الإنتاج اليوم", value: "—", tone: "primary" },
-  { label: "المستحقات", value: "—", tone: "accent" },
-  { label: "حركات المخزن", value: "—", tone: "neutral" }
+const nav = [
+  ["⌂", "الرئيسية"],
+  ["▣", "الموظفون"],
+  ["▤", "الإنتاج"],
+  ["▥", "المخزن"],
+  ["◫", "المشتريات"],
+  ["◇", "الطلبات"],
+  ["₤", "المالية"],
+  ["▦", "التقارير"]
+];
+
+const quick = [
+  ["إضافة موظف", "إنشاء ملف موظف جديد"],
+  ["تسجيل إنتاج", "إدخال إنتاج وردية"],
+  ["حركة مخزن", "إضافة وارد أو صرف"],
+  ["حركة مالية", "تسجيل قبض أو مصروف"]
 ];
 
 export default function HomePage() {
   return (
-    <main style={{ minHeight: "100vh", padding: 24 }}>
-      <section style={{
-        maxWidth: 1180, margin: "0 auto", background: "var(--surface)",
-        border: "1px solid var(--border)", borderRadius: "var(--radius-lg)",
-        boxShadow: "var(--shadow-md)", overflow: "hidden"
-      }}>
-        <header style={{
-          padding: "20px 24px", borderBottom: "1px solid var(--border)",
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16
-        }}>
-          <div>
-            <div style={{ fontSize: 26, fontWeight: 700, color: "var(--brand-primary)" }}>تيزكار</div>
-            <div style={{ color: "var(--brand-muted)", marginTop: 4 }}>منصة إدارة المصنع</div>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true" />
+          <div className="brand-copy">
+            <div className="brand-name">تيزكار</div>
+            <div className="brand-sub">إدارة المصنع</div>
           </div>
-          <div aria-hidden style={{
-            width: 12, height: 12, borderRadius: "50%", background: "var(--brand-accent)",
-            boxShadow: "0 0 0 5px rgb(33 217 156 / 12%)"
-          }} />
-        </header>
-        <div style={{
-          padding: 24, display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 16
-        }}>
-          {cards.map((card) => (
-            <article key={card.label} style={{
-              padding: 20, border: "1px solid var(--border)", borderRadius: "var(--radius-md)",
-              background: card.tone === "primary" ? "rgb(46 91 255 / 6%)"
-                : card.tone === "accent" ? "rgb(33 217 156 / 7%)" : "var(--surface)",
-              boxShadow: "var(--shadow-sm)"
-            }}>
-              <div style={{ color: "var(--brand-muted)", fontSize: 14 }}>{card.label}</div>
-              <div style={{ fontSize: 30, fontWeight: 700, marginTop: 8 }}>{card.value}</div>
-            </article>
-          ))}
         </div>
-      </section>
-    </main>
+        <div className="nav-title">النظام</div>
+        <nav className="nav" aria-label="التنقل الرئيسي">
+          {nav.map(([icon, label], index) => (
+            <a className={`nav-item${index === 0 ? " active" : ""}`} href="#" key={label}>
+              <span className="nav-icon">{icon}</span>
+              <span>{label}</span>
+            </a>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div>
+            <h1 className="page-title">لوحة التحكم</h1>
+            <p className="page-subtitle">نظرة سريعة على حركة المصنع اليوم</p>
+          </div>
+          <div className="user-chip">
+            <div className="avatar">م</div>
+            <div>
+              <div className="user-name">المستخدم الحالي</div>
+              <div className="user-role">مدير النظام</div>
+            </div>
+          </div>
+        </header>
+
+        <section className="content">
+          <div className="stats">
+            <article className="card stat"><div className="stat-label">إنتاج اليوم</div><div className="stat-value">—</div><div className="stat-note">بانتظار ربط بيانات الإنتاج</div></article>
+            <article className="card stat accent"><div className="stat-label">مستحقات العاملين</div><div className="stat-value">—</div><div className="stat-note">الأجر المعتمد غير المدفوع</div></article>
+            <article className="card stat warning"><div className="stat-label">حركات المخزن</div><div className="stat-value">—</div><div className="stat-note">الوارد والصرف والتسويات</div></article>
+            <article className="card stat neutral"><div className="stat-label">طلبات الدفع</div><div className="stat-value">—</div><div className="stat-note">طلبات تحتاج مراجعة</div></article>
+          </div>
+
+          <div className="grid">
+            <section className="card">
+              <div className="card-header">
+                <h2 className="card-title">النشاط الأخير</h2>
+                <a className="link-button" href="#">عرض الكل</a>
+              </div>
+              <div className="empty">لا توجد حركة مسجلة بعد.<br />سيظهر هنا آخر نشاط بمجرد تشغيل الوحدات التشغيلية.</div>
+            </section>
+
+            <section className="card">
+              <div className="card-header"><h2 className="card-title">اختصارات سريعة</h2></div>
+              <div className="card-body">
+                <div className="quick-grid">
+                  {quick.map(([title, desc]) => (
+                    <a className="quick" href="#" key={title}>
+                      <strong>{title}</strong><span>{desc}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
   );
 }
