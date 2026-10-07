@@ -2,14 +2,18 @@
   "name": "@tezkar/api",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24 <25" },
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "node --test",
-    "bootstrap": "tsx src/db/bootstrap-admin.ts"
+    "bootstrap": "tsx src/db/bootstrap-admin.ts",
+    "start": "node dist/main.js",
+    "migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
