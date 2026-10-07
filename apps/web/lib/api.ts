@@ -15,7 +15,7 @@ export async function api<T>(
     ...options,
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(options.body !== undefined && options.body !== null ? {"Content-Type": "application/json"} : {}),
       ...(options.headers ?? {})
     },
     cache: "no-store"
