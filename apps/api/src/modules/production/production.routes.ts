@@ -190,8 +190,6 @@ export async function productionRoutes(app: FastifyInstance) {
         earning = parsed.data.quantity * Number(rate.rate);
       } else if (method === "PER_1000") {
         earning = (parsed.data.quantity / 1000) * Number(rate.rate);
-      } else if (method === "PER_HOUR") {
-        earning = parsed.data.quantity * Number(rate.rate);
       } else if (method === "PER_DAY") {
         earning = Number(rate.rate);
       } else if (method === "PERCENTAGE") {
