@@ -8,7 +8,12 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 const requestSchema = z.object({
   amount: z.number().positive(),
-  method: z.enum(["CASH","VODAFONE_CASH","INSTAPAY","BANK"])
+  method: z.string().trim().min(1).max(50)
+});
+const paymentMethodSchema = z.object({
+  code: z.string().trim().regex(/^[A-Z0-9_]{2,50}$/),
+  name: z.string().trim().min(2).max(100),
+  sortOrder: z.number().int().min(0).max(9999).default(0)
 });
 
 const rejectSchema = z.object({ reason: z.string().trim().min(2).max(500) });
@@ -42,6 +47,21 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
 }
 
 export async function paymentsRoutes(app:FastifyInstance){
+  app.get("/api/payment-methods",{
+    preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
+  },async()=>{
+    const r=await pool.query("SELECT code,name,is_active,sort_order FROM payment_methods WHERE is_active=TRUE ORDER BY sort_order,name");
+    return {data:r.rows};
+  });
+
+  app.post("/api/payment-methods",{
+    preHandler:[authenticateRequest,requirePermission("payment_methods.manage")]
+  },async(request,reply)=>{
+    const parsed=paymentMethodSchema.safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات طريقة القبض غير صحيحة",422);
+    const r=await pool.query("INSERT INTO payment_methods(code,name,sort_order) VALUES($1,$2,$3) RETURNING *",[parsed.data.code,parsed.data.name,parsed.data.sortOrder]);
+    return reply.code(201).send({data:r.rows[0]});
+  });
   app.get("/api/payment-requests",{
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   },async(request)=>{
@@ -76,6 +96,9 @@ export async function paymentsRoutes(app:FastifyInstance){
   },async(request,reply)=>{
     const parsed=requestSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات طلب القبض غير صحيحة",422);
+    const method=await pool.query("SELECT code FROM payment_methods WHERE code=$1 AND is_active=TRUE",[parsed.data.method]);
+    if(!method.rowCount) throw new AppError("PAYMENT_METHOD_NOT_FOUND","طريقة القبض غير متاحة",422);
+
     const user=await isWorker(request.user!.userId);
     if(!user?.is_worker || !user.employee_id) throw new AppError("WORKER_ONLY","طلب القبض متاح للعامل فقط",403);
 
