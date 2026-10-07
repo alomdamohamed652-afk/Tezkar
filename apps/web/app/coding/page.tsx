@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
@@ -84,7 +84,7 @@ export default function CodingPage(){
     <div className="detail-grid"><div><b>المنتج</b><span>{selected.product_name}</span></div><div><b>التشغيل</b><span>{selected.batch_code||"—"}</span></div><div><b>الكمية</b><span>{selected.quantity}</span></div><div><b>الوزن</b><span>{selected.weight??"—"}</span></div><div><b>صاحب الإنتاج</b><span>{selected.production_owner_name||"—"}</span></div><div><b>قام بالتقفيل</b><span>{selected.packed_by_name||"—"}</span></div><div><b>المستلم</b><span>{selected.received_by_name||"—"}</span></div><div><b>وقت التقفيل</b><span>{selected.packed_at?new Date(selected.packed_at).toLocaleString("ar-EG"):"—"}</span></div><div><b>وقت التكويد</b><span>{new Date(selected.coded_at).toLocaleString("ar-EG")}</span></div><div><b>المخزن</b><span>{selected.warehouse_name||"—"}</span></div><div><b>المكان</b><span>{selected.location_name||"—"}</span></div><div><b>Barcode</b><span className="mono">{selected.barcode}</span></div></div>
     <div className="modal-actions"><button className="primary-button" onClick={()=>reprint(selected)}>طباعة البطاقة</button></div>
    </div></div>}
-   {printUnit&&<div className="coding-print-sheet" style={{"--print-width":printWidth+"mm","--print-height":printHeight+"mm"} as React.CSSProperties}><div className="coding-print-inner">
+   {printUnit&&<div className="coding-print-sheet" style={{"--print-width":printWidth+"mm","--print-height":printHeight+"mm"} as CSSProperties}><div className="coding-print-inner">
     <div className="coding-print-head"><img src="/tezkar-mark.svg" alt="تذكار"/><div><strong>تذكار</strong><small>إدارة وتشغيل المصنع</small></div></div>
     <div className="coding-print-title">بطاقة تعريف الإنتاج</div>
     <div className="coding-print-data"><span>المنتج: <b>{printUnit.product_name}</b></span><span>التشغيل: <b>{printUnit.batch_code||"—"}</b></span><span>الكمية: <b>{printUnit.quantity}</b></span><span>الوزن: <b>{printUnit.weight??"—"}</b></span></div>
