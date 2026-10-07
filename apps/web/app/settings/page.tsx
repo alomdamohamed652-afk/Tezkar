@@ -64,7 +64,7 @@ export default function SettingsPage(){
     {filteredEmployees.map(e=><div className="settings-account-row" key={e.id}><div><strong>{e.full_name}</strong><div className="form-hint">{e.code}</div></div><div>{e.is_active?"نشط":"معطل"}</div><div></div><div>{e.is_active?<button className="danger-button" onClick={()=>deactivateEmployee(e.id)}>تعطيل</button>:<span className="status muted">معطل</span>}</div></div>)}
    </section>}
 
-   {tab==="structure"&&<div className="settings-grid"><section className="card"><div className="card-header"><h2 className="card-title">الأقسام</h2><span className="count-badge">{departments.length}</span></div><div className="simple-list">{departments.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section><section className="card"><div className="card-header"><h2 className="card-title">الوظائف</h2><span className="count-badge">{jobs.length}</span></div><div className="simple-list">{jobs.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</section></div>}
+   {tab==="structure"&&<div className="settings-grid"><section className="card"><div className="card-header"><h2 className="card-title">الأقسام</h2><span className="count-badge">{departments.length}</span></div><div className="simple-list">{departments.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section><section className="card"><div className="card-header"><h2 className="card-title">الوظائف</h2><span className="count-badge">{jobs.length}</span></div><div className="simple-list">{jobs.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section></div>}
   </section>
  </main></div>;
 }
