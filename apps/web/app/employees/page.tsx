@@ -100,7 +100,7 @@ export default function EmployeesPage() {
             <h1 className="page-title">الموظفون</h1>
             <p className="page-subtitle">ملفات العاملين والبيانات الإدارية الأساسية</p>
           </div>
-          {has("employees.create") && <button className="primary-button" onClick={() => setShowForm((v) => !v)}>
+          {has("users.create") && <button className="primary-button" onClick={() => setShowForm((v) => !v)}>
             {showForm ? "إلغاء" : "+ إضافة موظف"}
           </button>}
         </header>
@@ -108,7 +108,7 @@ export default function EmployeesPage() {
         <section className="content">
           {error && <div className="alert error">{error}</div>}
 
-          {showForm && has("employees.create") && (
+          {showForm && has("users.create") && (
             <form className="card form-card" onSubmit={submit}>
               <div className="card-header"><h2 className="card-title">موظف جديد</h2></div>
               <div className="form-grid">
