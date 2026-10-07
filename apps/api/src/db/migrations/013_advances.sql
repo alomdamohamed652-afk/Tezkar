@@ -41,7 +41,7 @@ WHERE r.code='worker'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
-SELECT r.id,p.id FROM roles r JOIN permissions p
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code='worker' AND p.code='advances.create'
 ON CONFLICT DO NOTHING;
 
