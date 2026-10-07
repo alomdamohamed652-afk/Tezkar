@@ -5,7 +5,7 @@ import { Sidebar } from "../components/sidebar";
 type Summary={production:{quantity:string;entries:number};earnings:{balance:string;earned:string;paid:string};stock:{lines:number;quantity:string};pendingPayments:number;pendingAdvances:number};
 export default function HomePage(){
  const [summary,setSummary]=useState<Summary|null>(null),[error,setError]=useState("");
- useEffect(()=>{api<{data:Summary}>("/api/dashboard/summary").then(x=>setSummary(x.data)).catch(e=>{if(e instanceof ApiError&&e.code==="FORBIDDEN"){window.location.replace("/production");return}setError(e instanceof Error?e.message:"تعذر تحميل لوحة التحكم")})},[]);
+ useEffect(()=>{api<{data:Summary}>("/api/dashboard/summary").then(x=>setSummary(x.data)).catch(e=>{if(e instanceof ApiError&&e.code==="FORBIDDEN"){window.location.replace("/my-production");return}setError(e instanceof Error?e.message:"تعذر تحميل لوحة التحكم")})},[]);
  const n=(v:string|number)=>Number(v||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
  return <div className="app-shell"><Sidebar active="/" />
  <main className="main"><header className="topbar"><div><h1 className="page-title">لوحة التحكم</h1><p className="page-subtitle">نظرة حقيقية على حركة المصنع اليوم</p></div><a className="user-chip" href="/settings"><div className="avatar">ت</div><div><div className="user-name">إدارة النظام</div><div className="user-role">الإعدادات والحسابات</div></div></a></header><section className="content">
