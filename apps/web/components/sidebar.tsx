@@ -15,6 +15,7 @@ const nav:NavItem[]=[
  {icon:"◫",label:"إنتاج العمال",href:"/production",permissions:["production.view"]},
  {icon:"◉",label:"إنتاجي",href:"/my-production",permissions:["production.view_own"]},
  {icon:"▥",label:"المخزن",href:"/warehouse",permissions:["warehouse.view"]},
+ {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view"]},
  {icon:"▰",label:"الكرتونات",href:"/cartons",permissions:["cartons.view"]},
  {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
  {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]},
