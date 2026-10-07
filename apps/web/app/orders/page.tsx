@@ -1,0 +1,24 @@
+"use client";
+import {FormEvent,useEffect,useState} from "react";
+import {api} from "../../lib/api";
+import {Sidebar,usePermissions} from "../../components/sidebar";
+
+type Item={id:string;code:string;name:string};
+type Order={id:string;code:string;customer_name:string|null;order_date:string;due_date:string|null;status:string;line_count:number;ordered_quantity:string;completed_quantity:string};
+const labels:Record<string,string>={DRAFT:"مسودة",PLANNED:"مخططة",IN_PROGRESS:"قيد التنفيذ",COMPLETED:"مكتملة",CANCELLED:"ملغاة"};
+
+export default function OrdersPage(){
+ const {has}=usePermissions(); const [orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[units,setUnits]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]);
+ const [customer,setCustomer]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[due,setDue]=useState(""),[notes,setNotes]=useState(""),[product,setProduct]=useState(""),[quantity,setQuantity]=useState(""),[unit,setUnit]=useState(""),[selectedStages,setSelectedStages]=useState<string[]>([]),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ async function load(){try{const [o,p,u,s]=await Promise.all([api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/units"),api<{data:Item[]}>("/api/stages")]);setOrders(o.data);setProducts(p.data);setUnits(u.data);setStages(s.data);if(!product&&p.data[0])setProduct(p.data[0].id);if(!unit&&u.data[0])setUnit(u.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الطلبات")}}
+ useEffect(()=>{void load()},[]);
+ async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{await api("/api/orders",{method:"POST",body:JSON.stringify({customerName:customer||undefined,orderDate:date,dueDate:due||undefined,notes:notes||undefined,lines:[{productId:product,quantity:Number(quantity),unitId:unit}],stages:selectedStages.map((id,i)=>({stageId:id,sequenceNo:i+1,plannedQuantity:Number(quantity)}))})});setCustomer("");setQuantity("");setDue("");setNotes("");setSelectedStages([]);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلب")}finally{setSaving(false)}}
+ return <div className="app-shell"><Sidebar active="/orders"/><main className="main"><header className="topbar"><div><h1 className="page-title">الطلبات</h1><p className="page-subtitle">الطلب هو بداية دورة التشغيل: منتجاته ومراحله ثم إنتاجه ومتابعته</p></div></header><section className="content">{error&&<div className="alert error">{error}</div>}
+ {has("orders.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><h2 className="card-title">طلب إنتاج جديد</h2></div><div className="form-grid">
+ <label>اسم العميل / الجهة<input value={customer} onChange={e=>setCustomer(e.target.value)}/></label><label>تاريخ الطلب<input type="date" value={date} onChange={e=>setDate(e.target.value)} required/></label><label>موعد التسليم<input type="date" value={due} onChange={e=>setDue(e.target.value)}/></label>
+ <label>المنتج<select value={product} onChange={e=>setProduct(e.target.value)}>{products.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label><label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label><label>الوحدة<select value={unit} onChange={e=>setUnit(e.target.value)}>{units.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+ <label style={{gridColumn:"1/-1"}}>ملاحظات<textarea value={notes} onChange={e=>setNotes(e.target.value)}/></label>
+ </div><div className="card-body"><strong>مراحل الطلب</strong><div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:12}}>{stages.map((x,i)=><label key={x.id} style={{display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={selectedStages.includes(x.id)} onChange={e=>setSelectedStages(v=>e.target.checked?[...v,x.id]:v.filter(id=>id!==x.id))}/>{i+1}. {x.name}</label>)}</div></div><div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"إنشاء الطلب"}</button></div></form>}
+ <section className="card"><div className="card-header"><h2 className="card-title">لوحة الطلبات</h2><span className="count-badge">{orders.length}</span></div><div className="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل</th><th>التاريخ</th><th>التسليم</th><th>الكمية</th><th>المنجز</th><th>الحالة</th></tr></thead><tbody>{orders.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.customer_name??"—"}</td><td>{x.order_date}</td><td>{x.due_date??"—"}</td><td>{Number(x.ordered_quantity).toLocaleString("ar-EG")}</td><td>{Number(x.completed_quantity).toLocaleString("ar-EG")}</td><td><span className="status">{labels[x.status]??x.status}</span></td></tr>)}{!orders.length&&<tr><td colSpan={7}>لا توجد طلبات.</td></tr>}</tbody></table></div></section>
+ </section></main></div>;
+}
