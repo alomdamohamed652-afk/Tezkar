@@ -32,7 +32,7 @@ const orderSchema = z.object({
   dueDate: z.string().date().optional(),
   lastDeliveryDate: z.string().date().optional(),
   notes: z.string().trim().max(1000).optional(),
-  lines: z.array(orderLineSchema).min(1),
+  lines: z.array(orderLineSchema).optional().default([]),
   stages: z.array(orderStageSchema).optional()
 });
 
@@ -140,13 +140,33 @@ export async function orderRoutes(app: FastifyInstance) {
         [parsed.data.orderName, parsed.data.customerName ?? null, parsed.data.orderDate ?? null, parsed.data.deliveryStartDate ?? null, parsed.data.dueDate ?? null, parsed.data.lastDeliveryDate ?? null, parsed.data.notes ?? null, request.user!.userId]
       );
       const order = created.rows[0];
-      for (const line of parsed.data.lines) {
+      const stages = parsed.data.stages ?? [];
+      const lineInputs = [...parsed.data.lines];
+      // In the normal UI the product is entered once beside each stage.
+      // Build order lines from stage outputs so the same product is never requested twice.
+      if (!lineInputs.length) {
+        if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
+        const derived = new Map<string,{productId?:string;productName?:string;quantity:number;notes?:string}>();
+        for (const stage of stages) {
+          if (!stage.outputProductId && !stage.outputProductName) continue;
+          if (stage.plannedQuantity == null || stage.plannedQuantity <= 0) {
+            throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة لكل منتج ناتج من المرحلة",422);
+          }
+          const key=stage.outputProductId ?? stage.outputProductName!.trim().toLowerCase();
+          const current=derived.get(key);
+          if (current) current.quantity += stage.plannedQuantity;
+          else derived.set(key,{productId:stage.outputProductId,productName:stage.outputProductName,quantity:stage.plannedQuantity,notes:stage.notes});
+        }
+        if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","اكتب المنتج الناتج بجانب مرحلة واحدة على الأقل",422);
+        lineInputs.push(...Array.from(derived.values()));
+      }
+      for (const line of lineInputs) {
         const product=await ensureProduct(client,{productId:line.productId,productName:line.productName});
         const unitId=line.unitId ?? product.unit_id;
         await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5)",
           [order.id,product.id,line.quantity,unitId,line.notes ?? null]);
       }
-      for (const stage of parsed.data.stages ?? []) {
+      for (const stage of stages) {
         const stageRow=await ensureStage(client,{stageId:stage.stageId,stageName:stage.stageName});
         let outputProductId=stage.outputProductId ?? null;
         if(!outputProductId && stage.outputProductName) {
