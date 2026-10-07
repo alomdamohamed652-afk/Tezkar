@@ -23,13 +23,21 @@ async function isWorker(userId:string) {
   return r.rows[0] ?? null;
 }
 
+async function lockEmployee(client: import("pg").PoolClient, employeeId:string) {
+  const r=await client.query(
+    "SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",
+    [employeeId]
+  );
+  if (!r.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 409);
+}
+
 async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   const r=await client.query(
-    `SELECT
-       COALESCE((SELECT SUM(earning_amount) FROM production_entries WHERE employee_id=$1 AND status='APPROVED'),0)
-       -
-       COALESCE((SELECT SUM(amount) FROM worker_payments WHERE employee_id=$1),0)
-       AS balance`,[employeeId]);
+    `SELECT COALESCE(SUM(credit_amount - debit_amount),0) AS balance
+       FROM employee_earnings_ledger
+      WHERE employee_id=$1`,
+    [employeeId]
+  );
   return Number(r.rows[0]?.balance ?? 0);
 }
 
@@ -72,6 +80,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     if(!user?.is_worker || !user.employee_id) throw new AppError("WORKER_ONLY","طلب القبض متاح للعامل فقط",403);
 
     const row=await withTransaction(async(client)=>{
+      await lockEmployee(client,user.employee_id);
       const balance=await getBalance(client,user.employee_id);
       if(parsed.data.amount>balance) throw new AppError("INSUFFICIENT_BALANCE","المبلغ المطلوب أكبر من المستحق المتاح",409);
       const open=await client.query(
@@ -96,6 +105,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     const row=await withTransaction(async(client)=>{
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
+      await lockEmployee(client,current.rows[0].employee_id);
       if(current.rows[0].status!=="PENDING") throw new AppError("INVALID_STATUS","حالة الطلب لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId) throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد طلب قبض أنشأته بنفسك",409);
       const balance=await getBalance(client,current.rows[0].employee_id);
@@ -136,6 +146,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       if(current.rows[0].status!=="APPROVED") throw new AppError("INVALID_STATUS","يجب اعتماد الطلب قبل الدفع",409);
+      await lockEmployee(client,current.rows[0].employee_id);
+      const balance=await getBalance(client,current.rows[0].employee_id);
+      if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
       const payment=await client.query(
         `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by)
          VALUES($1,$2,$3,$4,$5) RETURNING *`,
@@ -143,6 +156,13 @@ export async function paymentsRoutes(app:FastifyInstance){
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [payment.rows[0].id,id]);
+      await client.query(
+        `INSERT INTO employee_earnings_ledger(
+           employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes
+         )
+         VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
+         ON CONFLICT (worker_payment_id) DO NOTHING`,
+        [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"payments",entityType:"worker_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{payment_request_id:id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {request:updated.rows[0],payment:payment.rows[0]};
     });
