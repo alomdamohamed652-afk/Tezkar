@@ -1,12 +1,12 @@
 const nav = [
-  ["⌂", "الرئيسية"],
-  ["▣", "الموظفون"],
-  ["▤", "الإنتاج"],
-  ["▥", "المخزن"],
+  ["⌂", "الرئيسية", "/"],
+  ["▣", "الموظفون", "/employees"],
+  ["▤", "الإنتاج", "/production"],
+  ["▥", "المخزن", "/warehouse"],
   ["◫", "المشتريات"],
   ["◇", "الطلبات"],
-  ["₤", "المالية"],
-  ["▦", "التقارير"]
+  ["₤", "المالية", "/payments"],
+  ["▦", "التقارير", "#"]
 ];
 
 const quick = [
@@ -29,8 +29,8 @@ export default function HomePage() {
         </div>
         <div className="nav-title">النظام</div>
         <nav className="nav" aria-label="التنقل الرئيسي">
-          {nav.map(([icon, label], index) => (
-            <a className={`nav-item${index === 0 ? " active" : ""}`} href="#" key={label}>
+          {nav.map(([icon, label, href], index) => (
+            <a className={`nav-item${index === 0 ? " active" : ""}`} href={href} key={label}>
               <span className="nav-icon">{icon}</span>
               <span>{label}</span>
             </a>
