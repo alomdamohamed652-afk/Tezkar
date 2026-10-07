@@ -31,7 +31,7 @@ export default function MasterDataPage() {
   const [deptCode,setDeptCode]=useState(""); const [deptName,setDeptName]=useState("");
   const [jobCode,setJobCode]=useState(""); const [jobName,setJobName]=useState(""); const [jobDept,setJobDept]=useState("");
   const [groupName,setGroupName]=useState(""); const [stageName,setStageName]=useState("");
-  const [productName,setProductName]=useState(""); const [productType,setProductType]=useState("FINISHED_GOOD"); const [productUnit,setProductUnit]=useState("");
+  const [productName,setProductName]=useState(""); const [productType,setProductType]=useState("FINISHED_GOOD"); const [productUnit,setProductUnit]=useState("");\n  const [outputStage,setOutputStage]=useState(""); const [outputProduct,setOutputProduct]=useState(""); const [stageOutputs,setStageOutputs]=useState<any[]>([]);
 
   async function loadAll(){
     setError("");
@@ -47,9 +47,9 @@ export default function MasterDataPage() {
       if(!productUnit && u.data[0]) setProductUnit(u.data[0].id);
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات");}
   }
-  useEffect(()=>{void loadAll();},[]);
+  useEffect(()=>{void loadAll();},[]);\n  useEffect(()=>{if(!outputStage){setStageOutputs([]);return;} api<{data:any[]}>(`/api/stages/${outputStage}/outputs`).then(x=>setStageOutputs(x.data)).catch(()=>setStageOutputs([]));},[outputStage]);
 
-  async function submit(e:FormEvent, kind:string){
+  async function addStageOutput(e:FormEvent){e.preventDefault();setError("");try{await api(`/api/stages/${outputStage}/outputs`,{method:"POST",body:JSON.stringify({productId:outputProduct,isDefault:true})});const x=await api<{data:any[]}>(`/api/stages/${outputStage}/outputs`);setStageOutputs(x.data);}catch(e){setError(e instanceof Error?e.message:"تعذر ربط المنتج بالمرحلة");}}\n  async function submit(e:FormEvent, kind:string){
     e.preventDefault(); setSaving(kind); setError("");
     try{
       if(kind==="department"){await api("/api/departments",{method:"POST",body:JSON.stringify({code:deptCode,name:deptName})});setDeptCode("");setDeptName("");}
@@ -90,6 +90,7 @@ export default function MasterDataPage() {
           <section className="card"><div className="card-header"><h2 className="card-title">أنواع الأجور</h2><span className="count-badge">{wageTypes.length}</span></div><List rows={wageTypes.map(x=>({code:x.code,name:x.name,extra:x.method}))}/></section>
         </div>}
 
+          <section className="card settings-wide"><div className="card-header"><h2 className="card-title">مخرجات المراحل</h2><span className="count-badge">{stageOutputs.length}</span></div><form className="inline-form" onSubmit={addStageOutput}><select value={outputStage} onChange={e=>setOutputStage(e.target.value)} required><option value="">اختر المرحلة</option>{stages.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><select value={outputProduct} onChange={e=>setOutputProduct(e.target.value)} required><option value="">المنتج الناتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><button className="primary-button">ربط المنتج بالمرحلة</button></form><List rows={stageOutputs.map(x=>({code:x.product_code,name:x.product_name,extra:"منتج ناتج"}))}/></section>
         {tab==="products"&&<div className="master-grid">
           <section className="card"><div className="card-header"><h2 className="card-title">إضافة منتج</h2></div><form className="stack-form" onSubmit={e=>submit(e,"product")}><input placeholder="اسم المنتج" value={productName} onChange={e=>setProductName(e.target.value)} required/><select value={productType} onChange={e=>setProductType(e.target.value)}>{productTypes.map(x=><option key={x[0]} value={x[0]}>{x[1]}</option>)}</select><select value={productUnit} onChange={e=>setProductUnit(e.target.value)} required><option value="">وحدة القياس</option>{units.map(x=><option key={x.id} value={x.id}>{x.name}{x.symbol?" ("+x.symbol+")":""}</option>)}</select><button className="primary-button">حفظ المنتج</button></form></section>
           <section className="card"><div className="card-header"><h2 className="card-title">المنتجات</h2><span className="count-badge">{products.length}</span></div><List rows={products.map(x=>({code:x.code,name:x.name,extra:x.unit_name+" · "+x.product_type}))}/></section>
