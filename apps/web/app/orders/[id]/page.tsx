@@ -7,13 +7,14 @@ import {Sidebar,usePermissions} from "../../../components/sidebar";
 
 type Item={id:string;code:string;name:string};
 type Dashboard={order:any;stages:any[];production:any[];movements:any[];deliveries:any[];totals:any};
+const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 
 export default function OrderDetailPage(){
  const {id}=useParams<{id:string}>(); const {has}=usePermissions();
  const [data,setData]=useState<Dashboard|null>(null),[error,setError]=useState(""),[stageName,setStageName]=useState(""),[outputProductName,setOutputProductName]=useState(""),[planned,setPlanned]=useState("");
  async function load(){try{const d=await api<{data:Dashboard}>("/api/orders/"+id+"/dashboard");setData(d.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ملف الطلب")}}
  useEffect(()=>{if(id)void load()},[id]);
- async function addStage(){if(!stageName.trim())return;try{await api("/api/orders/"+id+"/stages",{method:"POST",body:JSON.stringify({stageName:stageName.trim(),outputProductName:outputProductName.trim()||undefined,sequenceNo:(data?.stages.length??0)+1,plannedQuantity:planned?Number(planned):undefined})});setStageName("");setOutputProductName("");setPlanned("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المرحلة")}}
+ async function addStage(){if(!stageName.trim())return;try{await api("/api/orders/"+id+"/stages",{method:"POST",body:JSON.stringify({stageName:stageName.trim(),outputProductName:outputProductName.trim()||undefined,sequenceNo:(data?.stages.length??0)+1,plannedQuantity:planned?Number(normalizeNumber(planned)):undefined})});setStageName("");setOutputProductName("");setPlanned("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المرحلة")}}
  async function editStage(stage:any){const name=window.prompt("اسم المرحلة",stage.stage_name);if(name===null)return;const product=window.prompt("المنتج الناتج",stage.output_product_name||"");const next=window.prompt("الحالة (PENDING / READY / IN_PROGRESS / COMPLETED / CANCELLED)",stage.status);if(next===null)return;try{await api("/api/order-stages/"+stage.id,{method:"PATCH",body:JSON.stringify({stageName:name.trim(),outputProductName:product?.trim()||undefined,status:next})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعديل المرحلة")}}
  if(!data)return <div className="app-shell"><Sidebar active="/orders"/><main className="main"><div className="content">{error?<div className="alert error">{error}</div>:<div className="empty">جارٍ تحميل ملف الطلب...</div>}</div></main></div>;
  const o=data.order;
