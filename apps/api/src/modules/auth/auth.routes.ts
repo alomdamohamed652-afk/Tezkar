@@ -203,10 +203,17 @@ export async function authRoutes(app: FastifyInstance) {
          ORDER BY p.code`,
         [request.user!.userId]
       );
+      const employeeId=request.user!.employeeId;
+      const activeCustody=employeeId?await client.query("SELECT 1 FROM employee_custodies WHERE employee_id=$1 AND status IN ('ACTIVE','PARTIAL_RETURNED') LIMIT 1",[employeeId]):{rowCount:0};
+      const openAdvance=employeeId?await client.query("SELECT 1 FROM advance_requests WHERE employee_id=$1 AND status='PAID' AND repayment_status='OPEN' LIMIT 1",[employeeId]):{rowCount:0};
       return {
         data: {
           ...request.user,
-          permissions: permissions.rows.map((row) => row.code as string)
+          permissions: permissions.rows.map((row) => row.code as string),
+          activeRecords: {
+            custody: Boolean(activeCustody.rowCount),
+            advance: Boolean(openAdvance.rowCount)
+          }
         }
       };
     } finally {
