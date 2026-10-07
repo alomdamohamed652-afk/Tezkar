@@ -1,17 +1,20 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import crypto from "node:crypto";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hashPassword } from "../auth/auth.service.js";
 
 const createEmployeeSchema = z.object({
   fullName: z.string().trim().min(2).max(200),
   phone: z.string().trim().max(40).optional(),
   departmentId: z.string().uuid().nullable().optional(),
   jobTitleId: z.string().uuid().nullable().optional(),
-  hiredAt: z.string().date().nullable().optional()
+  hiredAt: z.string().date().nullable().optional(),
+  roleCode: z.string().trim().min(2).max(60).default("worker")
 });
 
 export async function employeeRoutes(app: FastifyInstance) {
@@ -44,6 +47,20 @@ export async function employeeRoutes(app: FastifyInstance) {
         ]
       );
       const row = result.rows[0];
+      const role = await client.query("SELECT id FROM roles WHERE code=$1 AND is_active=TRUE", [parsed.data.roleCode]);
+      if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "دور المستخدم غير موجود أو غير نشط", 422);
+
+      const generatedPassword = "Tz" + crypto.randomBytes(9).toString("base64url");
+      const generatedUsername = row.code.toLowerCase();
+
+      const userResult = await client.query(
+        "INSERT INTO users(username,password_hash,employee_id) VALUES($1,$2,$3) RETURNING id,code,username",
+        [generatedUsername, hashPassword(generatedPassword), row.id]
+      );
+      const createdUser = userResult.rows[0];
+
+      await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)", [createdUser.id, role.rows[0].id]);
+
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
@@ -51,11 +68,11 @@ export async function employeeRoutes(app: FastifyInstance) {
         module: "employees",
         entityType: "employee",
         entityId: row.id,
-        afterData: row,
+        afterData: { ...row, userCode: createdUser.code, roleCode: parsed.data.roleCode },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
-      return row;
+      return { employee: row, credentials: { username: generatedUsername, password: generatedPassword, roleCode: parsed.data.roleCode } };
     });
 
     return reply.code(201).send({ data: employee });
