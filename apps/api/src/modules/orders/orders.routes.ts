@@ -6,6 +6,24 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
+const orderLineSchema = z.object({
+  productId: z.string().uuid().optional(),
+  productName: z.string().trim().min(2).max(200).optional(),
+  quantity: z.number().positive(),
+  unitId: z.string().uuid().optional(),
+  notes: z.string().trim().max(500).optional()
+}).refine(x => Boolean(x.productId || x.productName), { message: "اسم المنتج أو معرف المنتج مطلوب" });
+
+const orderStageSchema = z.object({
+  stageId: z.string().uuid().optional(),
+  stageName: z.string().trim().min(2).max(200).optional(),
+  outputProductId: z.string().uuid().nullable().optional(),
+  outputProductName: z.string().trim().min(2).max(200).optional(),
+  sequenceNo: z.number().int().positive(),
+  plannedQuantity: z.number().nonnegative().optional(),
+  notes: z.string().trim().max(500).optional()
+}).refine(x => Boolean(x.stageId || x.stageName), { message: "اسم المرحلة أو معرف المرحلة مطلوب" });
+
 const orderSchema = z.object({
   orderName: z.string().trim().min(2).max(200),
   customerName: z.string().trim().max(200).optional(),
@@ -14,20 +32,38 @@ const orderSchema = z.object({
   dueDate: z.string().date().optional(),
   lastDeliveryDate: z.string().date().optional(),
   notes: z.string().trim().max(1000).optional(),
-  lines: z.array(z.object({
-    productId: z.string().uuid(),
-    quantity: z.number().positive(),
-    unitId: z.string().uuid(),
-    notes: z.string().trim().max(500).optional()
-  })).min(1),
-  stages: z.array(z.object({
-    stageId: z.string().uuid(),
-    outputProductId: z.string().uuid().nullable().optional(),
-    sequenceNo: z.number().int().positive(),
-    plannedQuantity: z.number().nonnegative().optional(),
-    notes: z.string().trim().max(500).optional()
-  })).optional()
+  lines: z.array(orderLineSchema).min(1),
+  stages: z.array(orderStageSchema).optional()
 });
+
+
+async function ensureProduct(client:any, input:{productId?:string;productName?:string}) {
+  if(input.productId){
+    const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
+    if(!existing.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+    return existing.rows[0];
+  }
+  const name=input.productName!.trim();
+  const existing=await client.query("SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(trim(name))=lower(trim($1)) ORDER BY created_at LIMIT 1",[name]);
+  if(existing.rowCount)return existing.rows[0];
+  const unit=await client.query("SELECT id FROM units WHERE code='PCS' AND is_active=TRUE LIMIT 1");
+  if(!unit.rowCount)throw new AppError("DEFAULT_UNIT_MISSING","وحدة القطعة الافتراضية غير موجودة",500);
+  const created=await client.query("INSERT INTO products(name,product_type,unit_id,minimum_stock,track_inventory) VALUES($1,'FINISHED_GOOD',$2,0,TRUE) RETURNING id,unit_id,name",[name,unit.rows[0].id]);
+  return created.rows[0];
+}
+
+async function ensureStage(client:any, input:{stageId?:string;stageName?:string}) {
+  if(input.stageId){
+    const existing=await client.query("SELECT id,name FROM stages WHERE id=$1 AND is_active=TRUE",[input.stageId]);
+    if(!existing.rowCount)throw new AppError("STAGE_NOT_FOUND","المرحلة غير موجودة أو غير نشطة",422);
+    return existing.rows[0];
+  }
+  const name=input.stageName!.trim();
+  const existing=await client.query("SELECT id,name FROM stages WHERE is_active=TRUE AND lower(trim(name))=lower(trim($1)) ORDER BY created_at LIMIT 1",[name]);
+  if(existing.rowCount)return existing.rows[0];
+  const created=await client.query("INSERT INTO stages(name) VALUES($1) RETURNING id,name",[name]);
+  return created.rows[0];
+}
 
 const machineSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -104,12 +140,21 @@ export async function orderRoutes(app: FastifyInstance) {
       );
       const order = created.rows[0];
       for (const line of parsed.data.lines) {
+        const product=await ensureProduct(client,{productId:line.productId,productName:line.productName});
+        const unitId=line.unitId ?? product.unit_id;
         await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5)",
-          [order.id,line.productId,line.quantity,line.unitId,line.notes ?? null]);
+          [order.id,product.id,line.quantity,unitId,line.notes ?? null]);
       }
       for (const stage of parsed.data.stages ?? []) {
+        const stageRow=await ensureStage(client,{stageId:stage.stageId,stageName:stage.stageName});
+        let outputProductId=stage.outputProductId ?? null;
+        if(!outputProductId && stage.outputProductName) {
+          const product=await ensureProduct(client,{productName:stage.outputProductName});
+          outputProductId=product.id;
+        }
         await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes) VALUES($1,$2,$3,$4,$5,$6)",
-          [order.id,stage.stageId,stage.outputProductId ?? null,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null]);
+          [order.id,stageRow.id,outputProductId,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null]);
+        if(outputProductId) await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stageRow.id,outputProductId]);
       }
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"production_order",entityId:order.id,afterData:order,ipAddress:request.ip,userAgent:request.headers["user-agent"] ?? null});
       return order;
@@ -144,9 +189,17 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.post("/api/orders/:id/stages", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request, reply) => {
     const orderId=(request.params as {id:string}).id;
-    const parsed=z.object({stageId:z.string().uuid(),outputProductId:z.string().uuid().nullable().optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional()}).safeParse(request.body);
+    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional()}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);
-    const r=await pool.query("INSERT INTO order_stages(order_id,stage_id,sequence_no,planned_quantity) VALUES($1,$2,$3,$4) RETURNING *",[orderId,parsed.data.stageId,parsed.data.sequenceNo,parsed.data.plannedQuantity ?? null]);
+    const r=await withTransaction(async client=>{
+      const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      const stage=await ensureStage(client,{stageId:parsed.data.stageId,stageName:parsed.data.stageName});
+      let outputProductId=parsed.data.outputProductId??null;
+      if(!outputProductId&&parsed.data.outputProductName)outputProductId=(await ensureProduct(client,{productName:parsed.data.outputProductName})).id;
+      const x=await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[orderId,stage.id,outputProductId,parsed.data.sequenceNo,parsed.data.plannedQuantity??null,parsed.data.notes??null]);
+      if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
+      return x.rows[0];
+    });
     return reply.code(201).send({data:r.rows[0]});
   });
 
