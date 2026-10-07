@@ -91,14 +91,11 @@ export async function orderRoutes(app: FastifyInstance) {
     if (q.status) { params.push(q.status); where = "WHERE o.status=$1"; }
     const r = await pool.query(
       `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,
-              COUNT(DISTINCT ol.id)::int AS line_count,
-              COALESCE(SUM(ol.quantity),0) AS ordered_quantity,
-              COALESCE(SUM(os.completed_quantity),0) AS completed_quantity
+              COALESCE((SELECT COUNT(*)::int FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS line_count,
+              COALESCE((SELECT SUM(ol.quantity) FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS ordered_quantity,
+              COALESCE((SELECT SUM(os.completed_quantity) FROM order_stages os WHERE os.order_id=o.id),0) AS completed_quantity
          FROM production_orders o
-         LEFT JOIN production_order_lines ol ON ol.order_id=o.id
-         LEFT JOIN order_stages os ON os.order_id=o.id
          ${where}
-        GROUP BY o.id
         ORDER BY o.created_at DESC
         LIMIT 300`, params);
     return { data: r.rows };
