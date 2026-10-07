@@ -102,7 +102,7 @@ export default function EmployeesPage() {
         <nav className="nav">
           <a className="nav-item" href="/"><span className="nav-icon">⌂</span><span>الرئيسية</span></a>
           <a className="nav-item active" href="/employees"><span className="nav-icon">▣</span><span>الموظفون</span></a>
-          <a className="nav-item" href="#"><span className="nav-icon">▤</span><span>الإنتاج</span></a>
+          <a className="nav-item" href="/production"><span className="nav-icon">▤</span><span>الإنتاج</span></a>
           <a className="nav-item" href="#"><span className="nav-icon">▥</span><span>المخزن</span></a>
           <a className="nav-item" href="#"><span className="nav-icon">◫</span><span>المشتريات</span></a>
           <a className="nav-item" href="#"><span className="nav-icon">◇</span><span>الطلبات</span></a>
