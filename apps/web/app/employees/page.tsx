@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 
-type Employee={id:string;code:string;full_name:string;phone:string|null;department_name:string|null;job_title_name:string|null;is_active:boolean;hired_at:string|null};
+type Employee={id:string;code:string;full_name:string;phone:string|null;department_name:string|null;job_title_name:string|null;role_code:string|null;is_active:boolean;hired_at:string|null};
 type Department={id:string;code:string;name:string};
 type JobTitle={id:string;code:string;name:string;department_id:string|null};
 type Role={id:string;code:string;name:string};
@@ -60,7 +60,7 @@ export default function EmployeesPage(){
     if(jobName===null)return;
     const job=jobs.find(x=>x.name.trim().toLowerCase()===jobName.trim().toLowerCase());
     if(jobName.trim()&&!job){setError("الوظيفة المكتوبة غير موجودة. اختر وظيفة من شاشة الإضافة.");return;}
-    const role=window.prompt("كود دور النظام (مثال: worker / supervisor / manager)",roles.find(x=>x.name===employee.job_title_name)?.code??"worker");
+    const role=window.prompt("كود دور النظام (مثال: worker / supervisor / manager)",employee.role_code??"worker");
     if(role===null)return;
     try{
       await api("/api/employees/"+employee.id,{method:"PATCH",body:JSON.stringify({
