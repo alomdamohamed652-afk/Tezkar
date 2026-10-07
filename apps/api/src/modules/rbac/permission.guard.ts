@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { pool } from "../../db/pool.js";
 import { hasPermission } from "./rbac.service.js";
 
-export function requirePermission(permissionCode: string) {
+export function requirePermission(permissionCode: string, scope: 'all' | 'own' = 'all') {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (!request.user) {
       reply.code(401).send({
@@ -13,7 +13,7 @@ export function requirePermission(permissionCode: string) {
 
     const client = await pool.connect();
     try {
-      const allowed = await hasPermission(client, request.user.userId, permissionCode);
+      const allowed = await hasPermission(client, request.user.userId, permissionCode, scope);
       if (!allowed) {
         return reply.code(403).send({
           error: { code: "FORBIDDEN", message: "ليس لديك صلاحية لتنفيذ هذا الإجراء" }
