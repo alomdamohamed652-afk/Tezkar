@@ -4,7 +4,6 @@ import {useEffect,useState} from "react";
 import {useParams} from "next/navigation";
 import {api} from "../../../lib/api";
 import {Sidebar,usePermissions} from "../../../components/sidebar";
-import {SearchableSelect} from "../../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
 type Dashboard={order:any;stages:any[];production:any[];movements:any[];deliveries:any[];totals:any};
@@ -12,8 +11,7 @@ type Dashboard={order:any;stages:any[];production:any[];movements:any[];deliveri
 export default function OrderDetailPage(){
  const {id}=useParams<{id:string}>(); const {has}=usePermissions();
  const [data,setData]=useState<Dashboard|null>(null),[error,setError]=useState(""),[stageName,setStageName]=useState(""),[outputProductName,setOutputProductName]=useState(""),[planned,setPlanned]=useState("");
- const [stageId,setStageId]=useState(""),[outputProductId,setOutputProductId]=useState(""),[planned,setPlanned]=useState(""),[error,setError]=useState("");
- async function load(){try{const [d,s,p]=await Promise.all([api<{data:Dashboard}>("/api/orders/"+id+"/dashboard"),api<{data:Item[]}>("/api/stages"),api<{data:Item[]}>("/api/products")]);setData(d.data);setStages(s.data);setProducts(p.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ملف الطلب")}}
+ async function load(){try{const d=await api<{data:Dashboard}>("/api/orders/"+id+"/dashboard");setData(d.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ملف الطلب")}}
  useEffect(()=>{if(id)void load()},[id]);
  async function addStage(){if(!stageName.trim())return;try{await api("/api/orders/"+id+"/stages",{method:"POST",body:JSON.stringify({stageName:stageName.trim(),outputProductName:outputProductName.trim()||undefined,sequenceNo:(data?.stages.length??0)+1,plannedQuantity:planned?Number(planned):undefined})});setStageName("");setOutputProductName("");setPlanned("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إضافة المرحلة")}}
  async function editStage(stage:any){const name=window.prompt("اسم المرحلة",stage.stage_name);if(name===null)return;const product=window.prompt("المنتج الناتج",stage.output_product_name||"");const next=window.prompt("الحالة (PENDING / READY / IN_PROGRESS / COMPLETED / CANCELLED)",stage.status);if(next===null)return;try{await api("/api/order-stages/"+stage.id,{method:"PATCH",body:JSON.stringify({stageName:name.trim(),outputProductName:product?.trim()||undefined,status:next})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعديل المرحلة")}}
