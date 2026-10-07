@@ -10,6 +10,7 @@ import { userRoutes } from "./modules/users/users.routes.js";
 import { operationsMasterRoutes } from "./modules/operations-master/operations-master.routes.js";
 import { productionRoutes } from "./modules/production/production.routes.js";
 import { paymentsRoutes } from "./modules/payments/payments.routes.js";
+import { earningsRoutes } from "./modules/earnings/earnings.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -40,5 +41,6 @@ await app.register(userRoutes);
 await app.register(operationsMasterRoutes);
 await app.register(productionRoutes);
 await app.register(paymentsRoutes);
+await app.register(earningsRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });
