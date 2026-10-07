@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
+import { Code39Barcode } from "../../components/code39-barcode";
 
 type Item={id:string;code:string;name:string};
 type Location=Item & {warehouse_id:string};
@@ -13,7 +14,7 @@ const labels:Record<string,string>={OPEN:"مفتوحة",SEALED:"مغلقة",PART
 export default function CartonsPage(){
  const {has}=usePermissions();
  const [products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Item[]>([]),[locations,setLocations]=useState<Location[]>([]),[items,setItems]=useState<Carton[]>([]);
- const [productId,setProductId]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState(""),[barcode,setBarcode]=useState(""),[status,setStatus]=useState("OPEN"),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ const [printItem,setPrintItem]=useState<Carton|null>(null);\n const [productId,setProductId]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState(""),[barcode,setBarcode]=useState(""),[status,setStatus]=useState("OPEN"),[error,setError]=useState(""),[saving,setSaving]=useState(false);
 
  async function load(){
   try{
@@ -56,8 +57,8 @@ export default function CartonsPage(){
      <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"إنشاء الكرتونة"}</button></div>
     </form>}
     <section className="card"><div className="card-header"><h2 className="card-title">سجل الكرتونات</h2><span className="count-badge">{items.length}</span></div>
-     <div className="table-wrap"><table><thead><tr><th>الكود</th><th>Barcode</th><th>المنتج</th><th>المخزن / المكان</th><th>الكمية</th><th>الوزن</th><th>الحالة</th><th>التاريخ</th></tr></thead>
-      <tbody>{items.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="mono">{x.barcode||"—"}</td><td className="strong">{x.product_name}<div className="form-hint">{x.product_code}</div></td><td>{x.warehouse_name} / {x.location_name}</td><td>{x.quantity} {x.unit_name}</td><td>{x.weight??"—"}</td><td><span className={"status "+x.status.toLowerCase()}>{labels[x.status]||x.status}</span></td><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td></tr>)}{!items.length&&<tr><td colSpan={8}>لا توجد كرتونات.</td></tr>}</tbody>
+     <div className="table-wrap"><table><thead><tr><th>الكود</th><th>Barcode</th><th>المنتج</th><th>المخزن / المكان</th><th>الكمية</th><th>الوزن</th><th>الحالة</th><th>التاريخ</th><th>طباعة</th></tr></thead>
+      <tbody>{items.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="mono">{x.barcode||"—"}</td><td className="strong">{x.product_name}<div className="form-hint">{x.product_code}</div></td><td>{x.warehouse_name} / {x.location_name}</td><td>{x.quantity} {x.unit_name}</td><td>{x.weight??"—"}</td><td><span className={"status "+x.status.toLowerCase()}>{labels[x.status]||x.status}</span></td><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td><td><button className="approve-button" onClick={()=>{setPrintItem(x);setTimeout(()=>window.print(),50)}}>طباعة</button></td></tr>)}{!items.length&&<tr><td colSpan={9}>لا توجد كرتونات.</td></tr>}</tbody>
      </table></div>
     </section>
    </section>
