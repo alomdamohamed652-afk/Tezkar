@@ -81,16 +81,26 @@ export async function authRoutes(app: FastifyInstance) {
     let result;
     try {
       result = await withTransaction(async (client) => {
-      const user = await authenticate(client, parsed.data.username, parsed.data.password);
-      const session = await createSession(client, user);
-      await writeAudit(client, {
-        actorUserId: user.userId, actorEmployeeId: user.employeeId, action: "login",
-        module: "auth", entityType: "user", entityId: user.userId,
-        ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null
+        const user = await authenticate(client, parsed.data.username, parsed.data.password);
+        const session = await createSession(client, user);
+        await writeAudit(client, {
+          actorUserId: user.userId,
+          actorEmployeeId: user.employeeId,
+          action: "login",
+          module: "auth",
+          entityType: "user",
+          entityId: user.userId,
+          ipAddress: request.ip,
+          userAgent: request.headers["user-agent"] ?? null
+        });
+        await client.query("DELETE FROM user_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL");
+        return { user, session };
       });
-      await client.query("DELETE FROM user_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL");
-      return { user, session };
-    });
+      clearLoginFailures(request, parsed.data.username);
+    } catch (error) {
+      recordLoginFailure(request, parsed.data.username);
+      throw error;
+    }
 
     reply.setCookie("tezkar_session", result.session.token, {
       httpOnly: true,
