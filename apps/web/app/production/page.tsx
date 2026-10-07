@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import { Sidebar } from "../../components/sidebar";
 
 type Item={id:string;code:string;name:string};
 type Shift=Item & {rate_group_name:string};
@@ -70,13 +71,7 @@ export default function ProductionPage(){
   }
 
   return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><div className="brand-mark"/><div className="brand-copy"><div className="brand-name">تيزكار</div><div className="brand-sub">إدارة المصنع</div></div></div><div className="nav-title">النظام</div><nav className="nav">
-      <a className="nav-item" href="/"><span className="nav-icon">⌂</span><span>الرئيسية</span></a>
-      <a className="nav-item" href="/employees"><span className="nav-icon">▣</span><span>الموظفون</span></a>
-      <a className="nav-item active" href="/production"><span className="nav-icon">▤</span><span>الإنتاج</span></a>
-      <a className="nav-item" href="/master-data"><span className="nav-icon">⚙</span><span>البيانات الأساسية</span></a>
-      {["المخزن","المشتريات","الطلبات","المالية","التقارير"].map(x=><a className="nav-item" href="#" key={x}><span className="nav-icon">•</span><span>{x}</span></a>)}
-    </nav></aside>
+    <Sidebar active="/production" />
     <main className="main"><header className="topbar"><div><h1 className="page-title">الإنتاج والأجور</h1><p className="page-subtitle">تسجيل الإنتاج، تحديد السعر تلقائيًا، ثم المراجعة والاعتماد</p></div></header>
       <section className="content">{error&&<div className="alert error">{error}</div>}
         <form className="card production-form" onSubmit={submit}>
