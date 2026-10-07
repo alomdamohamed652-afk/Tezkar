@@ -37,7 +37,7 @@ const orderSchema = z.object({
 });
 
 
-async function ensureProduct(client:any, input:{productId?:string;productName?:string}) {
+async function ensureProduct(client:any, input:{productId:string|undefined;productName:string|undefined}) {
   if(input.productId){
     const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
     if(!existing.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
@@ -52,7 +52,7 @@ async function ensureProduct(client:any, input:{productId?:string;productName?:s
   return created.rows[0];
 }
 
-async function ensureStage(client:any, input:{stageId?:string;stageName?:string}) {
+async function ensureStage(client:any, input:{stageId:string|undefined;stageName:string|undefined}) {
   if(input.stageId){
     const existing=await client.query("SELECT id,name FROM stages WHERE id=$1 AND is_active=TRUE",[input.stageId]);
     if(!existing.rowCount)throw new AppError("STAGE_NOT_FOUND","المرحلة غير موجودة أو غير نشطة",422);
