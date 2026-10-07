@@ -36,6 +36,7 @@ const machineSchema = z.object({
 
 const machineProductionSchema = z.object({
   orderStageId: z.string().uuid().nullable().optional(),
+  productionTypeId: z.string().uuid().nullable().optional(),
   machineId: z.string().uuid(),
   productId: z.string().uuid(),
   employeeId: z.string().uuid().nullable().optional(),
@@ -197,10 +198,10 @@ export async function orderRoutes(app: FastifyInstance) {
     if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
     const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
     const r=await pool.query(
-      `INSERT INTO machine_productions(order_stage_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
-      [parsed.data.orderStageId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
+      [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
     );
     return reply.code(201).send({data:r.rows[0]});
   });
@@ -209,7 +210,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const r=await pool.query(
       `SELECT mp.id,mp.code,mp.work_date,mp.quantity,mp.notes,m.code AS machine_code,m.name AS machine_name,
               p.code AS product_code,p.name AS product_name,e.full_name AS employee_name,
-              o.code AS order_code,s.name AS stage_name
+              o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
          FROM machine_productions mp
          JOIN machines m ON m.id=mp.machine_id
          JOIN products p ON p.id=mp.product_id
@@ -217,6 +218,7 @@ export async function orderRoutes(app: FastifyInstance) {
          LEFT JOIN order_stages os ON os.id=mp.order_stage_id
          LEFT JOIN production_orders o ON o.id=os.order_id
          LEFT JOIN stages s ON s.id=os.stage_id
+         LEFT JOIN production_types pt ON pt.id=mp.production_type_id
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
   });
