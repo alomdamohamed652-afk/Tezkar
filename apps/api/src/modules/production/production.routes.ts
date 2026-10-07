@@ -218,6 +218,11 @@ export async function productionRoutes(app: FastifyInstance) {
             AND $4::date <@ r.effective_range
           ORDER BY
             CASE
+              WHEN $5::uuid IS NOT NULL AND r.production_type_id=$5 THEN 0
+              WHEN r.production_type_id IS NULL THEN 1
+              ELSE 2
+            END,
+            CASE
               WHEN r.product_id=$1 AND r.stage_id=$2 AND r.rate_group_id=$3 THEN 1
               WHEN r.product_id IS NULL AND r.stage_id=$2 AND r.rate_group_id=$3 THEN 2
               WHEN r.product_id=$1 AND r.stage_id=$2 THEN 3
