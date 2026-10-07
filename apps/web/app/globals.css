@@ -137,3 +137,36 @@ a { color: inherit; text-decoration: none; }
   .stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .stats .stat-value { font-size:23px; }
 }
+
+.primary-button {
+  border:0; border-radius:10px; padding:10px 15px; background:var(--brand-primary);
+  color:#fff; font-weight:600; font-size:13px; box-shadow:0 4px 12px rgb(46 91 255 / 18%);
+}
+.primary-button:hover { background:var(--brand-primary-strong); }
+.primary-button:disabled { opacity:.6; cursor:not-allowed; }
+.form-card { margin-bottom:16px; }
+.form-grid { padding:18px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.form-grid label { display:grid; gap:6px; color:#475467; font-size:12px; font-weight:600; }
+.form-grid input,.form-grid select {
+  width:100%; border:1px solid #d0d5dd; border-radius:9px; background:#fff; padding:10px 11px;
+  outline:none; color:var(--brand-ink);
+}
+.form-grid input:focus,.form-grid select:focus { border-color:var(--brand-primary); box-shadow:0 0 0 3px rgb(46 91 255 / 10%); }
+.form-actions { padding:0 18px 18px; display:flex; justify-content:flex-start; }
+.alert { max-width:1240px; margin:0 auto 14px; padding:11px 14px; border-radius:10px; font-size:13px; }
+.alert.error { color:#b42318; background:#fef3f2; border:1px solid #fecdca; }
+.count-badge { min-width:28px; padding:4px 8px; border-radius:99px; background:#eef2ff; color:var(--brand-primary); font-size:12px; text-align:center; }
+.table-wrap { overflow:auto; }
+table { width:100%; border-collapse:collapse; min-width:760px; }
+th,td { padding:12px 16px; border-bottom:1px solid #eef0f4; text-align:right; font-size:12px; white-space:nowrap; }
+th { background:#fafbfc; color:#667085; font-weight:600; }
+td { color:#475467; }
+td.strong { color:var(--brand-ink); font-weight:600; }
+.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; direction:ltr; text-align:right; }
+.status { display:inline-flex; padding:4px 8px; border-radius:99px; font-size:11px; font-weight:600; }
+.status.success { color:#067647; background:#ecfdf3; }
+.status.muted { color:#667085; background:#f2f4f7; }
+@media (max-width:720px) {
+  .form-grid { grid-template-columns:1fr; }
+  .primary-button { padding:9px 12px; }
+}
