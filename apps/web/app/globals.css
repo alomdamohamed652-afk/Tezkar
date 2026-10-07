@@ -216,3 +216,10 @@ td.strong { color:var(--brand-ink); font-weight:600; }
 .status.cancelled { color:#667085; background:#f2f4f7; }
 @media (max-width:900px) { .production-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:720px) { .production-grid { grid-template-columns:1fr; } .card-header { gap:10px; align-items:flex-start; } .form-hint { display:none; } }
+
+.payment-form { margin-bottom:16px; }
+.payment-grid { padding:18px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.payment-grid label { display:grid; gap:6px; color:#475467; font-size:12px; font-weight:600; }
+.payment-grid input,.payment-grid select { border:1px solid #d0d5dd; border-radius:9px; background:#fff; padding:10px 11px; outline:none; color:var(--brand-ink); }
+.payment-grid input:focus,.payment-grid select:focus { border-color:var(--brand-primary); box-shadow:0 0 0 3px rgb(46 91 255 / 10%); }
+@media (max-width:720px) { .payment-grid { grid-template-columns:1fr; } }
