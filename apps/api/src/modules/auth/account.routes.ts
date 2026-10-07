@@ -39,4 +39,18 @@ export async function accountRoutes(app: FastifyInstance) {
         GROUP BY u.id,e.full_name,e.code`,[request.user!.userId]);
     return {data:r.rows[0]};
   });
+  app.get("/api/account/preferences/:key", { preHandler: [authenticateRequest] }, async (request) => {
+    const key=(request.params as {key:string}).key;
+    const r=await pool.query("SELECT preference_value FROM user_preferences WHERE user_id=$1 AND preference_key=$2",[request.user!.userId,key]);
+    return {data:r.rows[0]?.preference_value ?? {}};
+  });
+
+  app.put("/api/account/preferences/:key", { preHandler: [authenticateRequest] }, async (request) => {
+    const key=(request.params as {key:string}).key;
+    const parsed=z.record(z.string(),z.unknown()).safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات التفضيلات غير صحيحة",422);
+    await pool.query("INSERT INTO user_preferences(user_id,preference_key,preference_value,updated_at) VALUES($1,$2,$3,now()) ON CONFLICT(user_id,preference_key) DO UPDATE SET preference_value=EXCLUDED.preference_value,updated_at=now()",[request.user!.userId,key,parsed.data]);
+    return {data:parsed.data};
+  });
+
 }
