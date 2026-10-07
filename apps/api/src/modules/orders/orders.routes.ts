@@ -37,7 +37,7 @@ const machineProductionSchema = z.object({
   shiftId: z.string().uuid().nullable().optional(),
   workDate: z.string().date(),
   quantity: z.number().positive(),
-  unitId: z.string().uuid(),
+  unitId: z.string().uuid().optional(),
   notes: z.string().trim().max(500).optional()
 });
 
@@ -155,11 +155,14 @@ export async function orderRoutes(app: FastifyInstance) {
       const stage=await pool.query("SELECT id FROM order_stages WHERE id=$1",[parsed.data.orderStageId]);
       if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
     }
+    const product = await pool.query("SELECT unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
+    if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+    const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
     const r=await pool.query(
       `INSERT INTO machine_productions(order_stage_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING *`,
-      [parsed.data.orderStageId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,parsed.data.unitId,parsed.data.notes ?? null,request.user!.userId]
+      [parsed.data.orderStageId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
     );
     return reply.code(201).send({data:r.rows[0]});
   });
