@@ -33,7 +33,7 @@ export async function codingRoutes(app: FastifyInstance) {
     return {data:r.rows};
   });
 
-  app.get("/api/coding/employees",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{\n    const r=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name");\n    return {data:r.rows};\n  });\n\n  app.get("/api/coding/templates",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{
+  app.get("/api/coding/employees",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{\n    const r=await pool.query("SELECT id,code,full_name AS name FROM employees WHERE is_active=TRUE ORDER BY full_name");\n    return {data:r.rows};\n  });\n\n  app.get("/api/coding/templates",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{
     const r=await pool.query("SELECT t.*,p.code AS packaging_type_code,p.name AS packaging_type_name FROM coding_templates t LEFT JOIN coding_packaging_types p ON p.id=t.packaging_type_id WHERE t.is_active=TRUE ORDER BY t.is_default DESC,t.created_at");
     return {data:r.rows};
   });
