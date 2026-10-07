@@ -77,6 +77,70 @@ export async function employeeRoutes(app: FastifyInstance) {
 
     return reply.code(201).send({ data: employee });
   });
+  app.patch("/api/employees/:id", { preHandler: [authenticateRequest, requirePermission("employees.edit")] }, async (request) => {
+    const id = (request.params as { id: string }).id;
+    const parsed = z.object({
+      fullName: z.string().trim().min(2).max(200).optional(),
+      phone: z.string().trim().max(40).nullable().optional(),
+      departmentId: z.string().uuid().nullable().optional(),
+      jobTitleId: z.string().uuid().nullable().optional(),
+      hiredAt: z.string().date().nullable().optional(),
+      roleCode: z.string().trim().min(2).max(60).optional()
+    }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات تعديل الموظف غير صحيحة", 422);
+
+    const updated = await withTransaction(async (client) => {
+      const before = await client.query("SELECT * FROM employees WHERE id=$1 FOR UPDATE", [id]);
+      if (!before.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود", 404);
+
+      const p = parsed.data;
+      const sets:string[] = [];
+      const params:unknown[] = [];
+      const add = (sql:string, value:unknown) => { params.push(value); sets.push(sql.replace("$N", "$"+params.length)); };
+      if (p.fullName !== undefined) add("full_name=$N", p.fullName);
+      if (p.phone !== undefined) add("phone=$N", p.phone);
+      if (p.departmentId !== undefined) add("department_id=$N", p.departmentId);
+      if (p.jobTitleId !== undefined) add("job_title_id=$N", p.jobTitleId);
+      if (p.hiredAt !== undefined) add("hired_at=$N", p.hiredAt);
+      if (!sets.length && p.roleCode === undefined) return before.rows[0];
+
+      let row = before.rows[0];
+      if (sets.length) {
+        params.push(id);
+        const result = await client.query(
+          "UPDATE employees SET "+sets.join(", ")+", updated_at=now() WHERE id=$"+params.length+" RETURNING *",
+          params
+        );
+        row = result.rows[0];
+      }
+
+      if (p.roleCode !== undefined) {
+        const role = await client.query("SELECT id FROM roles WHERE code=$1 AND is_active=TRUE", [p.roleCode]);
+        if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "دور المستخدم غير موجود أو غير نشط", 422);
+        const user = await client.query("SELECT id FROM users WHERE employee_id=$1 FOR UPDATE", [id]);
+        if (!user.rowCount) throw new AppError("EMPLOYEE_ACCOUNT_NOT_FOUND", "لا يوجد حساب دخول مرتبط بالموظف", 409);
+        await client.query("DELETE FROM user_roles WHERE user_id=$1", [user.rows[0].id]);
+        await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)", [user.rows[0].id, role.rows[0].id]);
+      }
+
+      await writeAudit(client, {
+        actorUserId: request.user!.userId,
+        actorEmployeeId: request.user!.employeeId,
+        action: "update",
+        module: "employees",
+        entityType: "employee",
+        entityId: id,
+        beforeData: before.rows[0],
+        afterData: row,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      });
+      return row;
+    });
+
+    return { data: updated };
+  });
+
   app.delete("/api/employees/:id",{preHandler:[authenticateRequest,requirePermission("employees.delete")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const r=await withTransaction(async client=>{
