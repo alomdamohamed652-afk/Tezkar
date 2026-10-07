@@ -13,7 +13,8 @@ const createSchema = z.object({
   shiftId: z.string().uuid(),
   workDate: z.string().date(),
   quantity: z.number().positive(),
-  baseAmount: z.number().nonnegative().nullable().optional()
+  baseAmount: z.number().nonnegative().nullable().optional(),
+  hoursWorked: z.number().positive().nullable().optional()
 });
 
 const rejectSchema = z.object({
@@ -198,6 +199,11 @@ export async function productionRoutes(app: FastifyInstance) {
           throw new AppError("BASE_AMOUNT_REQUIRED", "هذا النوع من الأجر يحتاج قيمة أساس للحساب", 422);
         }
         earning = parsed.data.baseAmount * Number(rate.rate) / 100;
+      } else if (method === "PER_HOUR") {
+        if (parsed.data.hoursWorked == null) {
+          throw new AppError("HOURS_WORKED_REQUIRED", "الأجر بالساعة يحتاج عدد الساعات الفعلية", 422);
+        }
+        earning = parsed.data.hoursWorked * Number(rate.rate);
       } else {
         throw new AppError("WAGE_METHOD_UNSUPPORTED", "طريقة حساب الأجر غير مدعومة", 422);
       }
@@ -210,19 +216,19 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const inserted = await client.query(
         `INSERT INTO production_entries(
-           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,
            rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
            wage_type_method_snapshot,percentage_base_snapshot,base_amount,earning_amount,
            submitted_by
          )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          RETURNING id,code,employee_id,product_id,stage_id,shift_id,work_date,quantity,
                    unit_id,rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
                    wage_type_method_snapshot,percentage_base_snapshot,base_amount,
                    earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
-          parsed.data.workDate, parsed.data.quantity, unitId, rate.id, rate.rate,
+          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, rate.id, rate.rate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
           parsed.data.baseAmount ?? null, earning, request.user!.userId
         ]
