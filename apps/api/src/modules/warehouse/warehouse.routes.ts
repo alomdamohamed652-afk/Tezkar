@@ -26,7 +26,7 @@ const movementSchema = z.object({
 async function assertLocation(client: import("pg").PoolClient, warehouseId: string, locationId: string) {
   const result = await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[locationId,warehouseId]);
   if (!result.rowCount) throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);
-
+}
 
 async function changeBalance(client: import("pg").PoolClient, productId: string, warehouseId: string, locationId: string, delta: number, movementUnitCost?: number | null) {
   const locked = await client.query("SELECT quantity,avg_unit_cost,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[productId,warehouseId,locationId]);
