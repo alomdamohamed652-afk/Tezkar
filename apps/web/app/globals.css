@@ -794,6 +794,7 @@ tbody tr:last-child td{border-bottom:0}
 /* Coding system */
 .coding-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .coding-toolbar{padding:12px 18px;border-bottom:1px solid var(--border)}
+.coding-settings-card{margin-bottom:16px}.coding-settings-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 .coding-toolbar input{width:100%;min-height:40px;border:1px solid var(--border-strong);border-radius:9px;padding:8px 11px;color:var(--ink);background:#fff}
 .modal-backdrop{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:24px;background:rgb(15 23 42 / 48%)}
 .modal-card{width:min(900px,100%);max-height:90vh;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-md)}
