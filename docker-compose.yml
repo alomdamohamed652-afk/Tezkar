@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tezkar-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tezkar
+      POSTGRES_USER: tezkar
+      POSTGRES_PASSWORD: tezkar
+    ports:
+      - "5432:5432"
+    volumes:
+      - tezkar_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tezkar -d tezkar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tezkar_postgres_data:

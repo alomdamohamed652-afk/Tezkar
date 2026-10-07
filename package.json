@@ -1,0 +1,13 @@
+{
+  "name": "tezkar",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @tezkar/api --filter @tezkar/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  }
+}

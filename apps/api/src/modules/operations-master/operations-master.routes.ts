@@ -1,0 +1,114 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { pool, withTransaction } from "../../db/pool.js";
+import { AppError } from "../../http/errors.js";
+import { writeAudit } from "../audit/audit.service.js";
+import { authenticateRequest } from "../auth/auth.middleware.js";
+import { requirePermission } from "../rbac/permission.guard.js";
+
+const code=z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/);
+const name=z.string().trim().min(2).max(120);
+const createRate=z.object({productId:z.string().uuid().nullable().optional(),stageId:z.string().uuid(),productionTypeId:z.string().uuid().nullable().optional(),rateGroupId:z.string().uuid().nullable().optional(),wageTypeId:z.string().uuid(),unitId:z.string().uuid(),rate:z.number().nonnegative(),effectiveFrom:z.string().date(),effectiveTo:z.string().date().nullable().optional()});
+
+async function audit(client:any,request:any,action:string,type:string,id:string,after:any){await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action,module:"master",entityType:type,entityId:id,afterData:after,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});}
+
+export async function operationsMasterRoutes(app:FastifyInstance){
+ app.get("/api/rate-groups",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,description,is_active FROM rate_groups ORDER BY code");return {data:r.rows};});
+ app.post("/api/rate-groups",{preHandler:[authenticateRequest,requirePermission("rates.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(500).optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مجموعة الأجر غير صحيحة",422);const r=await withTransaction(async c=>{const x=await c.query("INSERT INTO rate_groups(name,description) VALUES($1,$2) RETURNING id,code,name,description,is_active",[p.data.name,p.data.description??null]);await audit(c,req,"create","rate_group",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+
+ app.get("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{const r=await pool.query("SELECT s.id,s.code,s.name,s.start_time,s.end_time,s.crosses_midnight,s.rate_group_id,g.code AS rate_group_code,g.name AS rate_group_name,s.is_active FROM shifts s JOIN rate_groups g ON g.id=s.rate_group_id ORDER BY s.code");return {data:r.rows};});
+ app.post("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.create")]},async(req,reply)=>{const p=z.object({name, startTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/), endTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/), crossesMidnight:z.boolean().default(false),rateGroupId:z.string().uuid()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الوردية غير صحيحة",422);const g=await pool.query("SELECT 1 FROM rate_groups WHERE id=$1 AND is_active=TRUE",[p.data.rateGroupId]);if(!g.rowCount)throw new AppError("RATE_GROUP_NOT_FOUND","مجموعة الأجر غير موجودة",422);const r=await withTransaction(async c=>{const x=await c.query("INSERT INTO shifts(name,start_time,end_time,crosses_midnight,rate_group_id) VALUES($1,$2,$3,$4,$5) RETURNING id,code,name,start_time,end_time,crosses_midnight,rate_group_id,is_active",[p.data.name,p.data.startTime,p.data.endTime,p.data.crossesMidnight,p.data.rateGroupId]);await audit(c,req,"create","shift",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+
+ app.get("/api/shift-leaders",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{
+  const r=await pool.query(`SELECT sl.id,sl.shift_id,s.code AS shift_code,s.name AS shift_name,sl.employee_id,e.code AS employee_code,e.full_name AS employee_name,sl.assignment_type,sl.starts_on,sl.ends_on,sl.is_active
+    FROM shift_leaders sl JOIN shifts s ON s.id=sl.shift_id JOIN employees e ON e.id=sl.employee_id
+    WHERE sl.is_active=TRUE ORDER BY s.code,e.full_name`);
+  return {data:r.rows};
+ });
+ app.post("/api/shifts/:id/leaders",{preHandler:[authenticateRequest,requirePermission("shifts.assign_leader")]},async(req,reply)=>{const p=z.object({employeeId:z.string().uuid(),assignmentType:z.string().trim().min(2).max(40).default("primary"),startsOn:z.string().date().nullable().optional(),endsOn:z.string().date().nullable().optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات قائد الوردية غير صحيحة",422);const shiftId=(req.params as {id:string}).id;const r=await withTransaction(async c=>{const s=await c.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);if(!s.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة",404);const e=await c.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);if(!e.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+if(p.data.assignmentType==="primary"){
+ const active=await c.query("SELECT id FROM shift_leaders WHERE shift_id=$1 AND assignment_type='primary' AND is_active=TRUE LIMIT 1",[shiftId]);
+ if(active.rowCount)throw new AppError("SHIFT_PRIMARY_LEADER_EXISTS","يوجد رئيس وردية أساسي معين بالفعل لهذه الوردية. ألغِ التكليف الحالي أولاً.",409);
+}
+const x=await c.query("INSERT INTO shift_leaders(shift_id,employee_id,assignment_type,starts_on,ends_on,assigned_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,shift_id,employee_id,assignment_type,starts_on,ends_on,is_active",[shiftId,p.data.employeeId,p.data.assignmentType,p.data.startsOn??null,p.data.endsOn??null,req.user!.userId]);await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+
+ app.delete("/api/shift-leaders/:id",{preHandler:[authenticateRequest,requirePermission("shifts.assign_leader")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE shift_leaders SET is_active=FALSE,ends_on=COALESCE(ends_on,CURRENT_DATE) WHERE id=$1 RETURNING id",[id]);
+  if(!r.rowCount) throw new AppError("SHIFT_LEADER_NOT_FOUND","تكليف رئيس الوردية غير موجود",404);
+  return {data:{success:true}};
+ });
+ app.get("/api/units",{preHandler:[authenticateRequest,requirePermission("products.view")]},async()=>{const r=await pool.query("SELECT id,code,name,symbol,decimal_places,is_active FROM units ORDER BY code");return {data:r.rows};});
+ app.get("/api/stages",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,description,is_active FROM stages ORDER BY code");return {data:r.rows};});
+ app.post("/api/stages",{preHandler:[authenticateRequest,requirePermission("stages.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(500).optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);const row=await withTransaction(async c=>{const x=await c.query("INSERT INTO stages(name,description) VALUES($1,$2) RETURNING id,code,name,description,is_active",[p.data.name,p.data.description??null]);await audit(c,req,"create","stage",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:row});});
+ app.get("/api/wage-types",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,method,percentage_base,is_active FROM wage_types ORDER BY code");return {data:r.rows};});
+ app.get("/api/production-types",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,calculation_method,is_active FROM production_types WHERE is_active=TRUE ORDER BY name");return {data:r.rows};});
+ app.post("/api/production-types",{preHandler:[authenticateRequest,requirePermission("production_types.manage")]},async(req,reply)=>{const p=z.object({code:z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/),name,calculationMethod:z.enum(["PER_QUANTITY","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).default("PER_QUANTITY")}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات نوع الإنتاج غير صحيحة",422);const r=await pool.query("INSERT INTO production_types(code,name,calculation_method) VALUES($1,$2,$3) RETURNING id,code,name,calculation_method,is_active",[p.data.code,p.data.name,p.data.calculationMethod]);return reply.code(201).send({data:r.rows[0]});});
+
+ app.get("/api/products",{preHandler:[authenticateRequest,requirePermission("products.view")]},async()=>{const r=await pool.query("SELECT p.id,p.code,p.name,p.product_type,p.category_id,c.code AS category_code,c.name AS category_name,p.unit_id,u.code AS unit_code,u.name AS unit_name,p.sku,p.barcode,p.minimum_stock,p.track_inventory,p.is_active FROM products p LEFT JOIN product_categories c ON c.id=p.category_id JOIN units u ON u.id=p.unit_id ORDER BY p.code");return {data:r.rows};});
+ app.post("/api/products",{preHandler:[authenticateRequest,requirePermission("products.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(1000).optional(),categoryId:z.string().uuid().nullable().optional(),productType:z.enum(["RAW_MATERIAL","COMPONENT","FINISHED_GOOD","SERVICE","CONSUMABLE"]),unitId:z.string().uuid(),sku:z.string().trim().max(100).nullable().optional(),barcode:z.string().trim().max(100).nullable().optional(),color:z.string().trim().max(80).nullable().optional(),thickness:z.number().nonnegative().nullable().optional(),size:z.string().trim().max(80).nullable().optional(),minimumStock:z.number().nonnegative().default(0),trackInventory:z.boolean().default(true)}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المنتج غير صحيحة",422);const r=await withTransaction(async c=>{const u=await c.query("SELECT 1 FROM units WHERE id=$1 AND is_active=TRUE",[p.data.unitId]);if(!u.rowCount)throw new AppError("UNIT_NOT_FOUND","وحدة القياس غير موجودة",422);const x=await c.query("INSERT INTO products(name,description,category_id,product_type,unit_id,sku,barcode,color,thickness,size,minimum_stock,track_inventory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,code,name,product_type,unit_id,sku,barcode,minimum_stock,track_inventory,is_active",[p.data.name,p.data.description??null,p.data.categoryId??null,p.data.productType,p.data.unitId,p.data.sku??null,p.data.barcode??null,p.data.color??null,p.data.thickness??null,p.data.size??null,p.data.minimumStock,p.data.trackInventory]);await audit(c,req,"create","product",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+
+
+ app.delete("/api/rate-groups/:id",{preHandler:[authenticateRequest,requirePermission("rate_groups.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const used=await pool.query("SELECT COUNT(*)::int AS n FROM shifts WHERE rate_group_id=$1 AND is_active=TRUE",[id]);
+  if(Number(used.rows[0].n)>0)throw new AppError("RATE_GROUP_IN_USE","لا يمكن تعطيل مجموعة أجر مرتبطة بورديات نشطة",409);
+  const r=await pool.query("UPDATE rate_groups SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("RATE_GROUP_NOT_FOUND","مجموعة الأجر غير موجودة",404);return {data:r.rows[0]};
+ });
+ app.delete("/api/shifts/:id",{preHandler:[authenticateRequest,requirePermission("shifts.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE shifts SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة",404);return {data:r.rows[0]};
+ });
+ app.delete("/api/production-types/:id",{preHandler:[authenticateRequest,requirePermission("production_types.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE production_types SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود",404);return {data:r.rows[0]};
+ });
+ app.patch("/api/rates/:id",{preHandler:[authenticateRequest,requirePermission("rates.manage")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const p=z.object({rate:z.number().nonnegative(),effectiveFrom:z.string().date().optional(),effectiveTo:z.string().date().nullable().optional()}).safeParse(req.body);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل السعر غير صحيحة",422);
+  const before=await pool.query("SELECT * FROM rates WHERE id=$1 AND is_active=TRUE",[id]);
+  if(!before.rowCount)throw new AppError("RATE_NOT_FOUND","السعر غير موجود أو معطل",404);
+  const from=p.data.effectiveFrom??String(before.rows[0].effective_range).slice(1,11);
+  const to=p.data.effectiveTo;
+  const rangeChanged=p.data.effectiveFrom!==undefined||p.data.effectiveTo!==undefined;
+  const range=rangeChanged?`[${from},${to??""})`:null;
+  if(rangeChanged&&to&&to<=from)throw new AppError("DATE_RANGE_INVALID","نطاق تاريخ السعر غير صحيح",422);
+  if(rangeChanged){
+   const conflict=await pool.query("SELECT id FROM rates WHERE id<>$1 AND is_active=TRUE AND stage_id=$2 AND rate_group_id IS NOT DISTINCT FROM $3 AND product_id IS NOT DISTINCT FROM $4 AND production_type_id IS NOT DISTINCT FROM $5 AND effective_range && $6::daterange LIMIT 1",[id,before.rows[0].stage_id,before.rows[0].rate_group_id,before.rows[0].product_id,before.rows[0].production_type_id,range]);
+   if(conflict.rowCount)throw new AppError("RATE_OVERLAP","يوجد سعر آخر متداخل لنفس الإعدادات",409);
+  }
+  const r=await pool.query(rangeChanged?"UPDATE rates SET rate=$1,effective_range=$2::daterange WHERE id=$3 RETURNING *":"UPDATE rates SET rate=$1 WHERE id=$2 RETURNING *",rangeChanged?[p.data.rate,range,id]:[p.data.rate,id]);
+  await writeAudit(pool as any,{actorUserId:req.user!.userId,actorEmployeeId:req.user!.employeeId,action:"edit",module:"master",entityType:"rate",entityId:id,beforeData:before.rows[0],afterData:r.rows[0],ipAddress:req.ip,userAgent:req.headers["user-agent"]??null});
+  return {data:r.rows[0]};
+ });
+
+ app.delete("/api/rates/:id",{preHandler:[authenticateRequest,requirePermission("rates.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const r=await pool.query("UPDATE rates SET is_active=FALSE WHERE id=$1 RETURNING id,code,is_active",[id]);
+  if(!r.rowCount)throw new AppError("RATE_NOT_FOUND","السعر غير موجود",404);return {data:r.rows[0]};
+ });
+
+ app.get("/api/rates",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{
+  const r=await pool.query("SELECT r.id,r.code,r.rate,r.effective_range,r.is_active,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name,g.name AS rate_group_name,wt.name AS wage_type_name,u.name AS unit_name FROM rates r LEFT JOIN products p ON p.id=r.product_id JOIN stages s ON s.id=r.stage_id LEFT JOIN production_types pt ON pt.id=r.production_type_id LEFT JOIN rate_groups g ON g.id=r.rate_group_id JOIN wage_types wt ON wt.id=r.wage_type_id JOIN units u ON u.id=r.unit_id ORDER BY s.name,p.name,pt.name,r.created_at DESC LIMIT 500");
+  return {data:r.rows};
+ });
+
+ app.get("/api/rates/resolve",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async(req)=>{
+  const p=z.object({productId:z.string().uuid(),stageId:z.string().uuid(),shiftId:z.string().uuid(),productionTypeId:z.string().uuid().optional(),workDate:z.string().date()}).safeParse(req.query);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحديد السعر غير صحيحة",422);
+  const shift=await pool.query("SELECT rate_group_id FROM shifts WHERE id=$1 AND is_active=TRUE",[p.data.shiftId]);
+  if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",404);
+  const groupId=shift.rows[0].rate_group_id;
+  const r=await pool.query(
+   "SELECT r.id,r.code,r.product_id,r.stage_id,r.production_type_id,pt.code AS production_type_code,pt.name AS production_type_name,r.rate_group_id,r.wage_type_id,wt.code AS wage_type_code,wt.name AS wage_type_name,wt.method,wt.percentage_base,r.unit_id,u.code AS unit_code,u.name AS unit_name,r.rate,r.effective_range, CASE WHEN r.product_id=$1 AND r.stage_id=$2 AND r.rate_group_id=$3 THEN 1 WHEN r.product_id IS NULL AND r.stage_id=$2 AND r.rate_group_id=$3 THEN 2 WHEN r.product_id=$1 AND r.stage_id=$2 THEN 3 WHEN r.product_id IS NULL AND r.stage_id=$2 THEN 4 ELSE 99 END AS priority FROM rates r JOIN wage_types wt ON wt.id=r.wage_type_id JOIN units u ON u.id=r.unit_id LEFT JOIN production_types pt ON pt.id=r.production_type_id WHERE r.is_active=TRUE AND r.stage_id=$2 AND (r.rate_group_id=$3 OR r.rate_group_id IS NULL) AND (r.product_id=$1 OR r.product_id IS NULL) AND ($5::uuid IS NULL OR r.production_type_id=$5 OR r.production_type_id IS NULL) AND $4::date <@ r.effective_range ORDER BY priority,r.created_at DESC LIMIT 1",
+   [p.data.productId,p.data.stageId,groupId,p.data.workDate,p.data.productionTypeId ?? null]
+  );
+  if(!r.rowCount)throw new AppError("RATE_NOT_FOUND","لا يوجد سعر مُعد لهذا المنتج والمرحلة والوردية في هذا التاريخ",422);
+  return {data:r.rows[0]};
+ });
+ app.post("/api/rates",{preHandler:[authenticateRequest,requirePermission("rates.create")]},async(req,reply)=>{const p=createRate.safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات السعر غير صحيحة",422);if(p.data.effectiveTo&&p.data.effectiveTo<=p.data.effectiveFrom)throw new AppError("DATE_RANGE_INVALID","نطاق تاريخ السعر غير صحيح",422);const r=await withTransaction(async c=>{const range=`[${p.data.effectiveFrom},${p.data.effectiveTo??""})`;const conflict=await c.query("SELECT id FROM rates WHERE is_active=TRUE AND stage_id=$1 AND rate_group_id=$2 AND product_id IS NOT DISTINCT FROM $3 AND production_type_id IS NOT DISTINCT FROM $4 AND effective_range && $5::daterange LIMIT 1",[p.data.stageId,p.data.rateGroupId,p.data.productId??null,p.data.productionTypeId??null,range]);if(conflict.rowCount)throw new AppError("RATE_OVERLAP","يوجد سعر آخر متداخل لنفس المنتج والمرحلة ومجموعة الأجر",409);const x=await c.query("INSERT INTO rates(product_id,stage_id,production_type_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8::daterange,$9) RETURNING id,code,product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active",[p.data.productId??null,p.data.stageId,p.data.productionTypeId??null,p.data.rateGroupId,p.data.wageTypeId,p.data.unitId,p.data.rate,range,req.user!.userId]);await audit(c,req,"create","rate",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+}

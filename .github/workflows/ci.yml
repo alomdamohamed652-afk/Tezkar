@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "foundation/v0.3"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Setup pnpm
+        run: corepack prepare pnpm@10.12.4 --activate
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Build
+        run: pnpm build

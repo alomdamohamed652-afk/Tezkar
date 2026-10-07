@@ -1,0 +1,14 @@
+"use client";
+import {FormEvent,useEffect,useState} from "react";
+import {api} from "../../lib/api";
+import {Sidebar} from "../../components/sidebar";
+type Profile={username:string;code:string;full_name:string|null;employee_code:string|null;roles:string[]};
+export default function AccountPage(){
+ const [profile,setProfile]=useState<Profile|null>(null),[current,setCurrent]=useState(""),[next,setNext]=useState(""),[confirm,setConfirm]=useState(""),[msg,setMsg]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ useEffect(()=>{api<{data:Profile}>("/api/account/profile").then(x=>setProfile(x.data)).catch(e=>setError(e instanceof Error?e.message:"تعذر تحميل الحساب"));},[]);
+ async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");setMsg("");try{await api("/api/account/change-password",{method:"POST",body:JSON.stringify({currentPassword:current,newPassword:next,confirmPassword:confirm})});setMsg("تم تغيير كلمة المرور. سجل الدخول مرة أخرى.");setCurrent("");setNext("");setConfirm("");setTimeout(()=>window.location.replace("/login"),800)}catch(e){setError(e instanceof Error?e.message:"تعذر تغيير كلمة المرور")}finally{setSaving(false)}}
+ return <div className="app-shell"><Sidebar active="/account"/><main className="main"><header className="topbar"><div><h1 className="page-title">حسابي</h1><p className="page-subtitle">بيانات الدخول وتغيير كلمة المرور</p></div></header><section className="content">{error&&<div className="alert error">{error}</div>}{msg&&<div className="success-box">{msg}</div>}
+ <section className="card"><div className="card-header"><h2 className="card-title">بيانات الحساب</h2></div><div className="form-grid"><label>اسم المستخدم<input readOnly value={profile?.username??""}/></label><label>الكود<input readOnly value={profile?.code??""}/></label><label>الموظف<input readOnly value={profile?.full_name??"حساب إداري"}/></label><label>الأدوار<input readOnly value={profile?.roles?.join("، ")??""}/></label></div></section>
+ <form className="card form-card" onSubmit={submit}><div className="card-header"><h2 className="card-title">تغيير كلمة المرور</h2></div><div className="form-grid"><label>كلمة المرور الحالية<input type="password" value={current} onChange={e=>setCurrent(e.target.value)} required/></label><label>كلمة المرور الجديدة<input type="password" value={next} onChange={e=>setNext(e.target.value)} minLength={12} required/></label><label>تأكيد كلمة المرور<input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} minLength={12} required/></label></div><div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تغيير كلمة المرور"}</button></div></form>
+ </section></main></div>;
+}

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: tezkar-api
+    runtime: node
+    plan: starter
+    buildCommand: corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --no-frozen-lockfile && pnpm --filter @tezkar/api build
+    startCommand: pnpm --filter @tezkar/api start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 10000
+      - key: WEB_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: SESSION_COOKIE_SAMESITE
+        value: lax
+      - key: DB_POOL_MAX
+        value: 10
