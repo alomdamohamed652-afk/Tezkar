@@ -18,7 +18,7 @@ export default function ProductionPage(){
  const {has}=usePermissions();
  const [employees,setEmployees]=useState<Item[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
  const [employeeId,setEmployeeId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
- const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState("");
+ const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState("");
 
  async function load(){
   setLoading(true);setError("");
@@ -35,6 +35,16 @@ export default function ProductionPage(){
  }
  useEffect(()=>{void load()},[status]);
 
+ useEffect(()=>{
+  if(!productId||!stageId||!shiftId||!workDate){setResolvedMethod("");return}
+  const q=new URLSearchParams({productId,stageId,shiftId,workDate});
+  if(productionTypeId)q.set("productionTypeId",productionTypeId);
+  api<{data:{method:string}}>("/api/rates/resolve?"+q.toString()).then(r=>setResolvedMethod(r.data.method)).catch(()=>setResolvedMethod(""));
+ },[productId,stageId,shiftId,workDate,productionTypeId]);
+
+ const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
+ const isShiftWage=resolvedMethod==="PER_DAY";
+
  const employeeOptions=useMemo(()=>employees.map(x=>({value:x.id,label:x.name})),[employees]);
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]);
  const stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]);
@@ -49,9 +59,9 @@ export default function ProductionPage(){
  async function submit(e:FormEvent){
   e.preventDefault();setSaving(true);setError("");
   try{
-   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,orderStageId:orderStageId||null,productionTypeId:productionTypeId||null,productId,stageId,shiftId,workDate,quantity:Number(quantity),baseAmount:baseAmount?Number(baseAmount):undefined,hoursWorked:hoursWorked?Number(hoursWorked):undefined,warehouseId,locationId})});
+   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,orderStageId:orderStageId||null,productionTypeId:productionTypeId||null,productId,stageId,shiftId,workDate,quantity:isShiftWage?1:Number(normalizeNumber(quantity)),baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId,locationId})});
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
-   setQuantity("");setBaseAmount("");setHoursWorked("");await load();
+   setQuantity("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإنتاج")}finally{setSaving(false)}
  }
  async function editEntry(x:Entry){const value=window.prompt("الكمية الجديدة",String(x.quantity));if(value===null)return;const normalized=value.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");const next=Number(normalized);if(!Number.isFinite(next)||next<=0){setError("الكمية غير صحيحة");return}try{await api("/api/production/"+x.id,{method:"PATCH",body:JSON.stringify({quantity:next})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعديل الإنتاج")}}
@@ -68,11 +78,11 @@ export default function ProductionPage(){
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
-    <label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>
+    {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}{isShiftWage&&<div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div>}
     <label>مخزن دخول الإنتاج<SearchableSelect value={warehouseId} onChange={v=>{setWarehouseId(v);setLocationId("")}} options={warehouseOptions} placeholder="اختر المخزن"/></label>
     <label>مكان دخول الإنتاج<SearchableSelect value={locationId} onChange={setLocationId} options={locationOptions} placeholder="اختر المكان"/></label>
-    <label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)}/></label>
-    <label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)}/></label>
+    {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
+    {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
    </div>
    <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ التسجيل...":"تسجيل الإنتاج"}</button></div>
   </form>}
