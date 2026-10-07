@@ -61,6 +61,26 @@ export async function operationsMasterRoutes(app:FastifyInstance){
   const r=await pool.query("UPDATE production_types SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
   if(!r.rowCount)throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود",404);return {data:r.rows[0]};
  });
+ app.patch("/api/rates/:id",{preHandler:[authenticateRequest,requirePermission("rates.manage")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const p=z.object({rate:z.number().nonnegative(),effectiveFrom:z.string().date().optional(),effectiveTo:z.string().date().nullable().optional()}).safeParse(req.body);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل السعر غير صحيحة",422);
+  const before=await pool.query("SELECT * FROM rates WHERE id=$1 AND is_active=TRUE",[id]);
+  if(!before.rowCount)throw new AppError("RATE_NOT_FOUND","السعر غير موجود أو معطل",404);
+  const from=p.data.effectiveFrom??String(before.rows[0].effective_range).slice(1,11);
+  const to=p.data.effectiveTo;
+  const rangeChanged=p.data.effectiveFrom!==undefined||p.data.effectiveTo!==undefined;
+  const range=rangeChanged?`[${from},${to??""})`:null;
+  if(rangeChanged&&to&&to<=from)throw new AppError("DATE_RANGE_INVALID","نطاق تاريخ السعر غير صحيح",422);
+  if(rangeChanged){
+   const conflict=await pool.query("SELECT id FROM rates WHERE id<>$1 AND is_active=TRUE AND stage_id=$2 AND rate_group_id IS NOT DISTINCT FROM $3 AND product_id IS NOT DISTINCT FROM $4 AND production_type_id IS NOT DISTINCT FROM $5 AND effective_range && $6::daterange LIMIT 1",[id,before.rows[0].stage_id,before.rows[0].rate_group_id,before.rows[0].product_id,before.rows[0].production_type_id,range]);
+   if(conflict.rowCount)throw new AppError("RATE_OVERLAP","يوجد سعر آخر متداخل لنفس الإعدادات",409);
+  }
+  const r=await pool.query(rangeChanged?"UPDATE rates SET rate=$1,effective_range=$2::daterange WHERE id=$3 RETURNING *":"UPDATE rates SET rate=$1 WHERE id=$2 RETURNING *",rangeChanged?[p.data.rate,range,id]:[p.data.rate,id]);
+  await writeAudit(pool as any,{actorUserId:req.user!.userId,actorEmployeeId:req.user!.employeeId,action:"edit",module:"master",entityType:"rate",entityId:id,beforeData:before.rows[0],afterData:r.rows[0],ipAddress:req.ip,userAgent:req.headers["user-agent"]??null});
+  return {data:r.rows[0]};
+ });
+
  app.delete("/api/rates/:id",{preHandler:[authenticateRequest,requirePermission("rates.delete")]},async(req)=>{
   const id=(req.params as {id:string}).id;
   const r=await pool.query("UPDATE rates SET is_active=FALSE WHERE id=$1 RETURNING id,code,is_active",[id]);
