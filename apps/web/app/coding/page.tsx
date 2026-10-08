@@ -10,6 +10,7 @@ type Template={id:string;name:string;packaging_type_id:string|null;width_mm:numb
 type Item={id:string;code:string;name:string};
 type Location={id:string;code:string;name:string;warehouse_id:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number};
+type ProductionReady={production_entry_id:string;code:string;quantity:number;remaining_quantity:number;product_id:string;product_name:string;product_code:string;order_stage_id:string|null;order_id:string|null;warehouse_id:string;location_id:string;warehouse_name:string;location_name:string;unit_name:string};
 type Unit={id:string;code:string;barcode:string;packaging_type_id:string;template_id:string|null;packaging_type_name:string;product_id:string;product_name:string;product_code:string;production_order_id:string|null;batch_code:string|null;quantity:number;unit_id:string|null;weight:number|null;production_owner_employee_id:string|null;production_owner_name:string|null;packed_by_employee_id:string|null;packed_by_name:string|null;received_by_employee_id:string|null;received_by_name:string|null;packed_at:string|null;coded_at:string;warehouse_name:string|null;location_name:string|null;status:string};
 const statusLabels:Record<string,string>={CODED:"مُكوّدة",IN_STOCK:"بالمخزن",RESERVED:"محجوزة",READY_FOR_DELIVERY:"جاهزة للتسليم",DELIVERED:"تم التسليم",OUT:"خارجة",CANCELLED:"ملغاة"};
 
