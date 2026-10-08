@@ -437,6 +437,20 @@ export async function productionRoutes(app: FastifyInstance) {
           [current.quantity,current.order_stage_id]
         );
         if(!stageUpdate.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب المرتبطة بالإنتاج غير موجودة",409);
+        const orderCompletion=await client.query(
+          `SELECT COUNT(*)::int AS total,
+                  COUNT(*) FILTER (WHERE status='COMPLETED')::int AS completed
+             FROM order_stages
+            WHERE order_id=$1`,
+          [stageUpdate.rows[0].order_id]
+        );
+        if(Number(orderCompletion.rows[0]?.total||0)>0 &&
+           Number(orderCompletion.rows[0]?.total||0)===Number(orderCompletion.rows[0]?.completed||0)){
+          await client.query(
+            "UPDATE production_orders SET status='COMPLETED',updated_at=now() WHERE id=$1 AND status NOT IN ('CANCELLED','COMPLETED')",
+            [stageUpdate.rows[0].order_id]
+          );
+        }
       }
 
       await client.query(
