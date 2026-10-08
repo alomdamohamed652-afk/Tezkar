@@ -47,11 +47,17 @@ export default function ShiftWithdrawalsPage(){
  const employeeOptions=useMemo(()=>assignedEmployees.map(x=>({value:x.id,label:x.full_name||x.name,meta:x.code})),[assignedEmployees]);
  const activeStageOptions=useMemo(()=>orderStages.filter(x=>x.order_id===orderId&&x.status!=="COMPLETED"&&x.status!=="CANCELLED").map(x=>({value:x.id,label:x.stage_name,meta:x.output_product_name||""})),[orderStages,orderId]);
 
- function printWithdrawal(row:Row){
-  const w=window.open("","_blank","width=720,height=820");
-  if(!w)return;
-  w.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${row.code}</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#111}h1{margin:0 0 8px}table{width:100%;border-collapse:collapse;margin-top:24px}td,th{border:1px solid #ddd;padding:10px;text-align:right}.muted{color:#666;font-size:13px}.code{font-family:monospace}</style></head><body><h1>مسحوبات الوردية</h1><div class="code">${row.code}</div><p>التاريخ: ${row.withdrawal_date}</p><p>الوردية: ${row.shift_name}</p><p>الموظف المسؤول: ${row.employee_name||"—"}</p><p>الطلبية: ${row.order_code?`${row.order_code} — ${row.order_name}`:"عام"}</p><table><thead><tr><th>عدد الأصناف</th><th>إجمالي الكمية</th></tr></thead><tbody><tr><td>${row.line_count}</td><td>${row.total_quantity}</td></tr></tbody></table><p class="muted">هذا الإذن مرقم تسلسليًا من نظام تذكار.</p><script>window.onload=()=>window.print();</script></body></html>`);
-  w.document.close();
+ async function printWithdrawal(row:Row){
+  try{
+   const detail=await api<{data:{withdrawal:Row;lines:Array<{product_code:string;product_name:string;warehouse_name:string;unit_name:string;quantity:number;notes:string|null}>}}>(`/api/shift-withdrawals/${row.id}`);
+   const w=window.open("","_blank","width=820,height=900");
+   if(!w)return;
+   const linesHtml=detail.data.lines.map((line,index)=>`<tr><td>${index+1}</td><td><strong>${line.product_name}</strong><div class="muted">${line.product_code}</div></td><td>${line.warehouse_name}</td><td>${line.quantity}</td><td>${line.unit_name}</td><td>${line.notes||"—"}</td></tr>`).join("");
+   w.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${row.code}</title><style>
+   body{font-family:Arial,sans-serif;padding:32px;color:#111}h1{margin:0 0 8px}.head{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0}.code{font-family:monospace;font-weight:700;font-size:20px}.muted{color:#666;font-size:12px}table{width:100%;border-collapse:collapse;margin-top:20px}td,th{border:1px solid #bbb;padding:9px;text-align:right}th{background:#f3f3f3}.total{font-weight:700;font-size:16px;margin-top:16px}.footer{margin-top:28px;font-size:12px;color:#666}@media print{body{padding:12mm}}
+   </style></head><body><h1>مسحوبات الوردية</h1><div class="code">${row.code}</div><div class="head"><div>التاريخ: <b>${row.withdrawal_date}</b></div><div>الوردية: <b>${row.shift_name}</b></div><div>الموظف المسؤول: <b>${row.employee_name||"—"}</b></div><div>الطلبية: <b>${row.order_code?`${row.order_code} — ${row.order_name}`:"عام"}</b></div></div><table><thead><tr><th>#</th><th>الصنف</th><th>المخزن</th><th>الكمية</th><th>الوحدة</th><th>البيان</th></tr></thead><tbody>${linesHtml}</tbody></table><div class="total">إجمالي الأصناف: ${row.line_count} — إجمالي الكمية: ${row.total_quantity}</div><div class="footer">هذا الإذن مرقم تسلسليًا من نظام تذكار — تفاصيل كل صنف مطبوعة في نفس الإذن.</div><script>window.onload=()=>{window.focus();window.print()};</script></body></html>`);
+   w.document.close();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تفاصيل المسحوبات للطباعة")}
  }
  function update(i:number,key:keyof Line,value:string){setLines(a=>a.map((x,n)=>n===i?{...x,[key]:value}:x))}
  function add(){setLines(a=>[...a,{productId:"",warehouseId:"",quantity:"",notes:""}])}
