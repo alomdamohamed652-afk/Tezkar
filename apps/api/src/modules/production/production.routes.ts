@@ -310,7 +310,7 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const rate = rateResult.rows[0];
       const method = rate.method as string;
-      const effectiveRate = parsed.data.rateOverride ?? Number(rate.rate);
+      const effectiveRate = stagePrice ? Number(rate.rate) : (parsed.data.rateOverride ?? Number(rate.rate));
       let earning: number;
 
       if (method === "PER_PIECE") {
