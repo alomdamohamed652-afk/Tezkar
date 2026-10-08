@@ -7,7 +7,8 @@ import { Code128Barcode } from "../../components/code128-barcode";
 
 type Packaging={id:string;code:string;name:string;default_width_mm:number;default_height_mm:number};
 type Template={id:string;name:string;packaging_type_id:string|null;width_mm:number;height_mm:number;orientation:string;config?:{companyName?:string;companyAddress?:string}};
-type Item={id:string;code:string;name:string};\ntype Location={id:string;code:string;name:string;warehouse_id:string};
+type Item={id:string;code:string;name:string};
+type Location={id:string;code:string;name:string;warehouse_id:string};
 type Unit={id:string;code:string;barcode:string;packaging_type_id:string;template_id:string|null;packaging_type_name:string;product_id:string;product_name:string;product_code:string;production_order_id:string|null;batch_code:string|null;quantity:number;unit_id:string|null;weight:number|null;production_owner_employee_id:string|null;production_owner_name:string|null;packed_by_employee_id:string|null;packed_by_name:string|null;received_by_employee_id:string|null;received_by_name:string|null;packed_at:string|null;coded_at:string;warehouse_name:string|null;location_name:string|null;status:string};
 const statusLabels:Record<string,string>={CODED:"مُكوّدة",IN_STOCK:"بالمخزن",RESERVED:"محجوزة",READY_FOR_DELIVERY:"جاهزة للتسليم",DELIVERED:"تم التسليم",OUT:"خارجة",CANCELLED:"ملغاة"};
 
@@ -16,7 +17,8 @@ export default function CodingPage(){
  const [types,setTypes]=useState<Packaging[]>([]),[templates,setTemplates]=useState<Template[]>([]),[employees,setEmployees]=useState<Item[]>([]),[products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Item[]>([]),[locations,setLocations]=useState<Location[]>([]),[units,setUnits]=useState<Unit[]>([]);
  const [typeId,setTypeId]=useState(""),[templateId,setTemplateId]=useState(""),[productId,setProductId]=useState(""),[batch,setBatch]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState("");
  const [productionOwner,setProductionOwner]=useState(""),[packedBy,setPackedBy]=useState(""),[receivedBy,setReceivedBy]=useState(""),[packedAt,setPackedAt]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState("");
- const [search,setSearch]=useState(""),[selected,setSelected]=useState<Unit|null>(null),[error,setError]=useState(""),[saving,setSaving]=useState(false),[printUnit,setPrintUnit]=useState<Unit|null>(null);\n const [settingsTemplateId,setSettingsTemplateId]=useState(""),[settingsWidth,setSettingsWidth]=useState(""),[settingsHeight,setSettingsHeight]=useState(""),[settingsOrientation,setSettingsOrientation]=useState("LANDSCAPE"),[companyName,setCompanyName]=useState("تذكار"),[companyAddress,setCompanyAddress]=useState("عنوان الشركة"),[settingsSaving,setSettingsSaving]=useState(false);
+ const [search,setSearch]=useState(""),[selected,setSelected]=useState<Unit|null>(null),[error,setError]=useState(""),[saving,setSaving]=useState(false),[printUnit,setPrintUnit]=useState<Unit|null>(null);
+ const [settingsTemplateId,setSettingsTemplateId]=useState(""),[settingsWidth,setSettingsWidth]=useState(""),[settingsHeight,setSettingsHeight]=useState(""),[settingsOrientation,setSettingsOrientation]=useState("LANDSCAPE"),[companyName,setCompanyName]=useState("تذكار"),[companyAddress,setCompanyAddress]=useState("عنوان الشركة"),[settingsSaving,setSettingsSaving]=useState(false);
 
  async function load(){
   try{
