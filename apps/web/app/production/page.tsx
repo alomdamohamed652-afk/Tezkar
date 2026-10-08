@@ -9,6 +9,7 @@ type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string};
 type Shift=Item & {rate_group_name:string};
 type Destination={id:string;code:string;name:string;warehouse_id:string;warehouse_code:string;warehouse_name:string};
+type Order={id:string;code:string;order_name:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null};
 type ProductionType=Item & {calculation_method:string};
 type Entry={id:string;code:string;work_date:string;quantity:number;rate_snapshot:number;earning_amount:number;bonus_amount:number;deduction_amount:number;total_earning_amount:number;status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
@@ -18,8 +19,8 @@ const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد
 
 export default function ProductionPage(){
  const {has}=usePermissions();
- const [employees,setEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
- const [employeeId,setEmployeeId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
+ const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
+ const [employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editQuantity,setEditQuantity]=useState(""),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
@@ -28,12 +29,12 @@ export default function ProductionPage(){
  async function load(){
   setLoading(true);setError("");
   try{
-   const [e,p,s,h,d,os,pt,r]=await Promise.all([
-    api<{data:Employee[]}>("/api/employees"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),
+   const [e,o,p,s,h,d,os,pt,r]=await Promise.all([
+    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),
     api<{data:Destination[]}>("/api/production/destinations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
     api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
    ]);
-   setEmployees(e.data);setProducts(p.data);setStages(s.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
+   setEmployees(e.data);setOrders(o.data.filter(x=>true));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
    if(!warehouseId){const first=d.data[0]?.warehouse_id;if(first)setWarehouseId(first)}
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
@@ -61,7 +62,9 @@ export default function ProductionPage(){
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]);
  const stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]);
  const shiftOptions=useMemo(()=>shifts.map(x=>({value:x.id,label:x.name})),[shifts]);
- const orderStageOptions=useMemo(()=>orderStages.map(x=>({value:x.id,label:x.order_name+" — "+x.stage_name,meta:x.order_code})),[orderStages]);
+ const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
+ const filteredOrderStages=useMemo(()=>orderStages.filter(x=>!orderId||x.order_id===orderId),[orderStages,orderId]);
+ const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+Number(x.stage_rate).toLocaleString("ar-EG")):"بدون سعر"})),[filteredOrderStages]);
  const typeOptions=useMemo(()=>productionTypes.map(x=>({value:x.id,label:x.name})),[productionTypes]);
  const warehouseOptions=useMemo(()=>Array.from(new Map(destinations.map(x=>[x.warehouse_id,{value:x.warehouse_id,label:x.warehouse_name}])).values()),[destinations]);
  const productionToday=useMemo(()=>entries.filter(x=>x.work_date===new Date().toISOString().slice(0,10)),[entries]);
@@ -79,7 +82,8 @@ export default function ProductionPage(){
  async function loadAdjustments(){if(!has("production.adjustments.view"))return;try{const x=await api<{data:Adjustment[]}>("/api/production/adjustments");setAdjustments(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البونص والخصومات")}}
  useEffect(()=>{void loadAdjustments()},[has]);
 
- function selectOrderStage(value:string){setOrderStageId(value);const x=orderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id)}}
+ function selectOrder(value:string){setOrderId(value);setOrderStageId("");setStageId("");setProductId("");}
+ function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id)}}
 
  async function submit(e:FormEvent){
   e.preventDefault();setError("");
@@ -87,7 +91,8 @@ export default function ProductionPage(){
   const bonus=Number(normalizeNumber(bonusAmount||"0"));
   const deduction=Number(normalizeNumber(deductionAmount||"0"));
   if(!employeeId) return setError("اختر الموظف.");
-  if(!orderStageId) return setError("اختر الطلبية والمرحلة.");
+  if(!orderId) return setError("اختر الطلبية.");
+  if(!orderStageId) return setError("اختر المرحلة من مراحل الطلبية.");
   if(!productionTypeId) return setError("اختر نوع الإنتاج.");
   if(!shiftId) return setError("اختر الوردية.");
   if(!resolvedMethod||resolvedRate===null) return setError("لم يتم العثور على سعر إنتاج مطابق للطلب والمرحلة والوردية.");
@@ -129,7 +134,8 @@ export default function ProductionPage(){
   {has("production.create")&&<form className="card production-form" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل إنتاج عامل</h2><span className="form-hint">الاسم فقط يظهر للمستخدم؛ الأكواد تستخدم داخليًا.</span></div></div>
    <div className="production-grid">
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
-    <label>الطلب والمرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder="اختر الطلب والمرحلة" searchPlaceholder="ابحث باسم الطلب أو المرحلة" /></label>
+    <label>الطلبية<SearchableSelect value={orderId} onChange={selectOrder} options={orderOptions} placeholder="اختر الطلبية" searchPlaceholder="ابحث باسم الطلبية"/></label>
+    <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder={orderId?"اختر مرحلة من الطلبية":"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
     {orderStageId&&<div className="form-hint" style={{alignSelf:"end"}}>المنتج والمرحلة بيتحددوا تلقائيًا من الطلبية: {products.find(x=>x.id===productId)?.name||"—"} — {stages.find(x=>x.id===stageId)?.name||"—"}</div>}
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
