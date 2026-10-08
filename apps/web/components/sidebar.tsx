@@ -16,7 +16,6 @@ const nav:NavItem[]=[
  {icon:"◉",label:"إنتاجي",href:"/my-production",permissions:["production.view_own"]},
  {icon:"▥",label:"المخزن",href:"/warehouse",permissions:["warehouse.view"]},
  {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view"]},
- {icon:"▱",label:"الكرتونات",href:"/cartons",permissions:["cartons.view"]},
  {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
  {icon:"↓",label:"مسحوبات الوردية",href:"/shift-withdrawals",permissions:["warehouse.view"]},
  {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]},
