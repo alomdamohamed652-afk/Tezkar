@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Sidebar } from "../../components/sidebar";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -57,7 +58,7 @@ export default function EarningsPage() {
   const money = (value: string) => Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
-    <main className="settings-page">
+    <div className="app-shell"><Sidebar active="/earnings"/><main className="main">
       <header className="settings-header">
         <div>
           <h1>سجل مستحقات العاملين</h1>
