@@ -20,7 +20,7 @@ const createSchema = z.object({
   hoursWorked: z.number().positive().nullable().optional(),
   rateOverride: z.number().nonnegative().nullable().optional(),
   warehouseId: z.string().uuid(),
-  locationId: z.string().uuid()
+  locationId: z.string().uuid().nullable().optional()
 });
 
 const rejectSchema = z.object({
@@ -188,16 +188,26 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
 
-      const destination = await client.query(
-        `SELECT l.id,l.warehouse_id
-           FROM warehouse_locations l
-           JOIN warehouses w ON w.id=l.warehouse_id
-          WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE`,
-        [parsed.data.locationId, parsed.data.warehouseId]
-      );
+      const destination = parsed.data.locationId
+        ? await client.query(
+            `SELECT l.id,l.warehouse_id
+               FROM warehouse_locations l
+               JOIN warehouses w ON w.id=l.warehouse_id
+              WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE`,
+            [parsed.data.locationId, parsed.data.warehouseId]
+          )
+        : await client.query(
+            `SELECT l.id,l.warehouse_id
+               FROM warehouse_locations l
+               JOIN warehouses w ON w.id=l.warehouse_id
+              WHERE l.warehouse_id=$1 AND l.is_active=TRUE AND w.is_active=TRUE
+              ORDER BY l.created_at,l.id LIMIT 1`,
+            [parsed.data.warehouseId]
+          );
       if (!destination.rowCount) {
-        throw new AppError("DESTINATION_NOT_FOUND", "مخزن أو مكان تخزين الإنتاج غير موجود أو غير نشط", 422);
+        throw new AppError("DESTINATION_NOT_FOUND", "المخزن غير موجود أو لا يحتوي على وجهة تخزين داخلية", 422);
       }
+      const resolvedLocationId = destination.rows[0].id;
 
       const product = await client.query(
         "SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",
