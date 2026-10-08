@@ -19,7 +19,7 @@ const createSchema = z.object({
   baseAmount: z.number().nonnegative().nullable().optional(),
   hoursWorked: z.number().positive().nullable().optional(),
   rateOverride: z.number().nonnegative().nullable().optional(),
-  warehouseId: z.string().uuid(),
+  warehouseId: z.string().uuid().optional(),
   locationId: z.string().uuid().nullable().optional(),
   bonusAmount: z.number().nonnegative().optional().default(0),
   bonusReason: z.string().trim().max(500).nullable().optional(),
@@ -197,13 +197,15 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
 
+      let resolvedWarehouseId = parsed.data.warehouseId;
+
       const destination = parsed.data.locationId
         ? await client.query(
             `SELECT l.id,l.warehouse_id
                FROM warehouse_locations l
                JOIN warehouses w ON w.id=l.warehouse_id
               WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE`,
-            [parsed.data.locationId, parsed.data.warehouseId]
+            [parsed.data.locationId, resolvedWarehouseId]
           )
         : await client.query(
             `SELECT l.id,l.warehouse_id
@@ -211,7 +213,7 @@ export async function productionRoutes(app: FastifyInstance) {
                JOIN warehouses w ON w.id=l.warehouse_id
               WHERE l.warehouse_id=$1 AND l.is_active=TRUE AND w.is_active=TRUE
               ORDER BY l.created_at,l.id LIMIT 1`,
-            [parsed.data.warehouseId]
+            [resolvedWarehouseId]
           );
       if (!destination.rowCount) {
         throw new AppError("DESTINATION_NOT_FOUND", "المخزن غير موجود أو لا يحتوي على وجهة تخزين داخلية", 422);
@@ -236,6 +238,11 @@ export async function productionRoutes(app: FastifyInstance) {
         if (!orderStage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const os=orderStage.rows[0];
         if (os.status === "CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج لمرحلة طلبية ملغاة",409);
+        const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os.order_id]);
+        const warehouseType=Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
+        const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
+        if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
+        resolvedWarehouseId=virtualWarehouse.rows[0].id;
         if (os.output_product_id && os.output_product_id !== parsed.data.productId) {
           throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
         }
@@ -256,7 +263,9 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       if (!shift.rowCount) throw new AppError("SHIFT_NOT_FOUND", "الوردية غير موجودة أو غير نشطة", 422);
 
-      const rateResult = await client.query(
+      const orderStagePricing=parsed.data.orderStageId ? await client.query(`SELECT stage_rate,stage_rate_method,stage_rate_unit_id FROM order_stages WHERE id=$1`,[parsed.data.orderStageId]) : {rowCount:0,rows:[]};
+      const stagePrice=orderStagePricing.rowCount && orderStagePricing.rows[0].stage_rate != null ? orderStagePricing.rows[0] : null;
+      const rateResult = stagePrice ? {rowCount:1,rows:[{id:null,rate:Number(stagePrice.stage_rate),wage_type_id:null,unit_id:stagePrice.stage_rate_unit_id ?? product.rows[0].unit_id,production_type_id:parsed.data.productionTypeId ?? null,wage_type_code:stagePrice.stage_rate_method,wage_type_name:stagePrice.stage_rate_method,method:stagePrice.stage_rate_method,percentage_base:null}]} : await client.query(
         `SELECT r.id,r.rate,r.wage_type_id,r.unit_id,r.production_type_id,
                 wt.code AS wage_type_code,wt.name AS wage_type_name,
                 wt.method,wt.percentage_base
