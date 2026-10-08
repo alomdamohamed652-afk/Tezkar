@@ -520,7 +520,7 @@ export async function productionRoutes(app: FastifyInstance) {
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
          ON CONFLICT (production_entry_id) DO NOTHING`,
-        [current.employee_id, totalLaborCost, id, request.user!.userId]
+        [current.employee_id, current.earning_amount, id, request.user!.userId]
       );
 
       const adjustments = await client.query(
@@ -539,7 +539,7 @@ export async function productionRoutes(app: FastifyInstance) {
              employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes
            ) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5,$6)
            RETURNING id`,
-          [current.employee_id,credit,debit,id,request.user!.userId,adjustment.reason]
+          [current.employee_id,credit,debit,null,request.user!.userId,adjustment.reason]
         );
         await client.query("UPDATE employee_earnings_adjustments SET ledger_id=$1 WHERE id=$2",[ledger.rows[0].id,adjustment.id]);
       }
