@@ -172,12 +172,12 @@ export async function codingRoutes(app: FastifyInstance) {
       const barcode=code;
       const row=await client.query(`
         INSERT INTO coding_units
-        (code,barcode,packaging_type_id,template_id,product_id,production_order_id,batch_code,quantity,unit_id,weight,
+        (code,barcode,packaging_type_id,template_id,product_id,production_order_id,order_stage_id,batch_code,quantity,unit_id,weight,
          production_owner_employee_id,packed_by_employee_id,received_by_employee_id,packed_at,coded_at,warehouse_id,location_id,status,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),$15,$16,$17,$18)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16,$17,$18,$19)
         RETURNING *
       `,[
-        code,barcode,p.packagingTypeId,templateId,p.productId,p.productionOrderId??null,p.batchCode??null,p.quantity,
+        code,barcode,p.packagingTypeId,templateId,p.productId,p.productionOrderId??null,p.orderStageId??null,p.batchCode??null,p.quantity,
         p.unitId??product.rows[0].unit_id??null,p.weight??null,p.productionOwnerEmployeeId??null,p.packedByEmployeeId??null,
         p.receivedByEmployeeId??null,p.packedAt??null,p.warehouseId??null,p.locationId??null,initialStatus,request.user!.userId
       ]);
