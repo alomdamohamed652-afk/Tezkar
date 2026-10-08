@@ -195,11 +195,11 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const row=await withTransaction(async(client)=>{
       const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير متابع مخزنيًا",422);
-      const sourceLocationId=await resolveLocation(client,parsed.data.warehouseId,sourceLocationId);
+      const sourceLocationId=await resolveLocation(client,parsed.data.warehouseId,parsed.data.locationId);
       let destinationLocationId:string|undefined;
       if(parsed.data.movementType==="TRANSFER_OUT"){
         if(!parsed.data.targetWarehouseId) throw new AppError("TRANSFER_TARGET_REQUIRED","التحويل يحتاج مخزن وصول",422);
-        destinationLocationId=await resolveLocation(client,parsed.data.targetWarehouseId,destinationLocationId);
+        destinationLocationId=await resolveLocation(client,parsed.data.targetWarehouseId,parsed.data.targetLocationId);
       }
       if(parsed.data.orderStageId){
         const stage=await client.query(`SELECT os.id,os.order_id,os.output_product_id,po.status
