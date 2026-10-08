@@ -262,7 +262,8 @@ export async function productionRoutes(app: FastifyInstance) {
 
       // The order stage is authoritative: production must use its configured
       // stage/output product instead of trusting client-side selections.
-      if (os.output_product_id) parsed.data.productId = os.output_product_id;
+      if (!os.output_product_id) throw new AppError("ORDER_STAGE_PRODUCT_REQUIRED","المرحلة لا تحتوي على منتج ناتج محدد",422);
+      parsed.data.productId = os.output_product_id;
       parsed.data.stageId = os.stage_id;
 
       const stage = await client.query(
@@ -358,7 +359,7 @@ export async function productionRoutes(app: FastifyInstance) {
                    earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
-          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, parsed.data.warehouseId, parsed.data.locationId, rate.id, effectiveRate,
+          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, rate.id, effectiveRate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
           parsed.data.baseAmount ?? null, earning, request.user!.userId
         ]
