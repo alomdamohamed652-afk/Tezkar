@@ -54,11 +54,11 @@ export async function advanceRoutes(app:FastifyInstance){
 
   app.post("/api/advances",{preHandler:[authenticateRequest,requirePermission("advances.create")]},async(request,reply)=>{
     const p=createSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات السلفة غير صحيحة",422);
-    const employee=await pool.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);
-    if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
-    const open=await pool.query("SELECT id FROM advance_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED','PAID') AND repayment_status='OPEN' LIMIT 1",[p.data.employeeId]);
-    if(open.rowCount)throw new AppError("OPEN_ADVANCE_EXISTS","يوجد سلفة مفتوحة بالفعل لهذا الموظف",409);
     const r=await withTransaction(async client=>{
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const open=await client.query("SELECT id FROM advance_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED','PAID') AND repayment_status='OPEN' LIMIT 1 FOR UPDATE",[p.data.employeeId]);
+      if(open.rowCount)throw new AppError("OPEN_ADVANCE_EXISTS","يوجد سلفة مفتوحة بالفعل لهذا الموظف",409);
       const x=await client.query(
         "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,installment_amount,production_percentage) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
         [p.data.employeeId,p.data.amount,p.data.reason,request.user!.userId,p.data.repaymentMethod,p.data.installmentAmount??null,p.data.productionPercentage??null]
