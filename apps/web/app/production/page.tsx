@@ -90,7 +90,6 @@ export default function ProductionPage(){
   if(!orderStageId) return setError("اختر الطلبية والمرحلة.");
   if(!productionTypeId) return setError("اختر نوع الإنتاج.");
   if(!shiftId) return setError("اختر الوردية.");
-  if(!warehouseId) return setError("اختر مخزن دخول الإنتاج.");
   if(!resolvedMethod||resolvedRate===null) return setError("لم يتم العثور على سعر إنتاج مطابق للطلب والمرحلة والوردية.");
   if(!isShiftWage && (!Number.isFinite(q)||q<=0)) return setError("أدخل كمية إنتاج صحيحة.");
   if(resolvedMethod==="PERCENTAGE" && (!baseAmount || Number(normalizeNumber(baseAmount))<0)) return setError("أدخل قيمة أساس صحيحة.");
