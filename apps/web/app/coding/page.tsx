@@ -68,6 +68,7 @@ export default function CodingPage(){
   {has("cartons.manage")&&<form className="card form-card" onSubmit={create}>
     <div className="card-header"><div><h2 className="card-title">إنشاء تكويد جديد</h2><div className="form-hint">المقاس يتحدد حسب نوع العبوة والقالب، ويمكن تغييره من إعدادات القوالب.</div></div></div>
     <div className="form-grid coding-form-grid">
+     <label style={{gridColumn:"1/-1"}}>مصدر الإنتاج <span className="optional">اختياري — إنتاج معتمد غير مكتمل التكويد</span><select value={productionEntryId} onChange={e=>selectProduction(e.target.value)}><option value="">تكويد يدوي</option>{productionReady.map(x=><option key={x.production_entry_id} value={x.production_entry_id}>{x.code} — {x.product_name} — المتبقي {x.remaining_quantity} {x.unit_name}</option>)}</select></label>
      <label>نوع العبوة<select value={typeId} onChange={e=>setTypeId(e.target.value)} required><option value="">اختر النوع</option>{types.map(x=><option key={x.id} value={x.id}>{x.name} — {x.default_width_mm} × {x.default_height_mm} مم</option>)}</select></label>
      <label>قالب الطباعة<select value={templateId} onChange={e=>setTemplateId(e.target.value)} required><option value="">اختر القالب</option>{availableTemplates.map(x=><option key={x.id} value={x.id}>{x.name} — {x.width_mm} × {x.height_mm} مم</option>)}</select></label>
      <label>المنتج<select value={productId} onChange={e=>setProductId(e.target.value)} required><option value="">اختر المنتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.name} — {x.code}</option>)}</select></label>
