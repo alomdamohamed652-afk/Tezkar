@@ -129,7 +129,7 @@ export async function productionRoutes(app: FastifyInstance) {
     params.push(query.data.limit);
 
     const result = await pool.query(
-      `SELECT p.id,p.code,p.work_date,p.quantity,p.rate_snapshot,p.earning_amount,p.status,
+      `SELECT p.id,p.code,p.work_date,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,
               e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.code AS stage_code,st.name AS stage_name,
