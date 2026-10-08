@@ -61,6 +61,16 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
   return result.rows[0] ?? null;
 }
 
+const adjustmentSchema = z.object({
+  employeeId:z.string().uuid(),
+  shiftId:z.string().uuid().nullable().optional(),
+  productionEntryId:z.string().uuid().nullable().optional(),
+  adjustmentType:z.enum(["BONUS","DEDUCTION"]),
+  amount:z.number().positive(),
+  reason:z.string().trim().min(2).max(500),
+  adjustmentDate:z.string().date().optional()
+});
+
 export async function productionRoutes(app: FastifyInstance) {
   app.get("/api/production/destinations", {
     preHandler: [authenticateRequest, requirePermission("production.create")]
@@ -571,5 +581,59 @@ export async function productionRoutes(app: FastifyInstance) {
     });
 
     return { data: row };
+  });  app.get("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.view")]},async(request)=>{
+    const q=z.object({employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
+    if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر البونص والخصم غير صحيحة",422);
+    const params:unknown[]=[];const where:string[]=[];
+    if(q.data.employeeId){params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);}
+    if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
+    if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}
+    const r=await pool.query(`
+      SELECT a.id,a.code,a.adjustment_date,a.adjustment_type,a.amount,a.reason,
+             e.code AS employee_code,e.full_name AS employee_name,
+             s.code AS shift_code,s.name AS shift_name,
+             p.code AS production_code
+        FROM employee_earnings_adjustments a
+        JOIN employees e ON e.id=a.employee_id
+        LEFT JOIN shifts s ON s.id=a.shift_id
+        LEFT JOIN production_entries p ON p.id=a.production_entry_id
+       ${where.length?"WHERE "+where.join(" AND "):""}
+       ORDER BY a.adjustment_date DESC,a.created_at DESC LIMIT 300`,params);
+    return {data:r.rows};
   });
+
+  app.post("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.create")]},async(request,reply)=>{
+    const p=adjustmentSchema.safeParse(request.body);
+    if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات البونص أو الخصم غير صحيحة",422);
+    const row=await withTransaction(async client=>{
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      if(p.data.shiftId){
+        const assigned=await client.query("SELECT 1 FROM shift_employees WHERE shift_id=$1 AND employee_id=$2 AND is_active=TRUE",[p.data.shiftId,p.data.employeeId]);
+        if(!assigned.rowCount)throw new AppError("EMPLOYEE_NOT_ASSIGNED_TO_SHIFT","الموظف غير مربوط بالوردية المحددة",422);
+      }
+      if(p.data.productionEntryId){
+        const production=await client.query("SELECT employee_id FROM production_entries WHERE id=$1",[p.data.productionEntryId]);
+        if(!production.rowCount)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",422);
+        if(production.rows[0].employee_id!==p.data.employeeId)throw new AppError("EMPLOYEE_PRODUCTION_MISMATCH","الإنتاج لا يخص الموظف المحدد",409);
+      }
+      const credit=p.data.adjustmentType==="BONUS"?p.data.amount:0;
+      const debit=p.data.adjustmentType==="DEDUCTION"?p.data.amount:0;
+      const ledger=await client.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,notes,created_by) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5) RETURNING id",
+        [p.data.employeeId,credit,debit,p.data.reason,request.user!.userId]
+      );
+      const adjustment=await client.query(
+        `INSERT INTO employee_earnings_adjustments(
+          employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,ledger_id,created_by
+        ) VALUES($1,$2,$3,$4,$5,$6,COALESCE($7,CURRENT_DATE),$8,$9) RETURNING *`,
+        [p.data.employeeId,p.data.shiftId??null,p.data.productionEntryId??null,p.data.adjustmentType,p.data.amount,p.data.reason,p.data.adjustmentDate??null,ledger.rows[0].id,request.user!.userId]
+      );
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"production",entityType:"employee_adjustment",entityId:adjustment.rows[0].id,afterData:adjustment.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return adjustment.rows[0];
+    });
+    return reply.code(201).send({data:row});
+  });
+
+
 }
