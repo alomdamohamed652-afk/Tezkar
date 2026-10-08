@@ -33,11 +33,17 @@ export default function MasterDataPage(){
 
  async function load(){
   setError("");
-  try{const [d,j,g,s,u,st,w,p,c,t,r]=await Promise.all([
+  const requests=[
    api<{data:Department[]}>("/api/departments"),api<{data:Job[]}>("/api/job-titles"),api<{data:Group[]}>("/api/rate-groups"),api<{data:Shift[]}>("/api/shifts"),api<{data:Unit[]}>("/api/units"),api<{data:Stage[]}>("/api/stages"),api<{data:Wage[]}>("/api/wage-types"),api<{data:Product[]}>("/api/products"),api<{data:Category[]}>("/api/product-categories"),api<{data:ProdType[]}>("/api/production-types"),api<{data:Rate[]}>("/api/rates")
-  ]);setDepartments(d.data);setJobs(j.data);setGroups(g.data);setShifts(s.data);setUnits(u.data);setStages(st.data);setWages(w.data);setProducts(p.data);setCategories(c.data);setTypes(t.data);setRates(r.data);
-   if(!productUnit)setProductUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"");if(!rateUnit)setRateUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"");
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات")}
+  ];
+  const [d,j,g,s,u,st,w,p,c,t,r]=await Promise.allSettled(requests);
+  const value=<T,>(x:PromiseSettledResult<{data:T[]}>,fallback:T[]=[])=>x.status==="fulfilled"?x.value.data:fallback;
+  setDepartments(value(d));setJobs(value(j));setGroups(value(g));setShifts(value(s));setUnits(value(u));setStages(value(st));setWages(value(w));setProducts(value(p));setCategories(value(c));setTypes(value(t));setRates(value(r));
+  const failures=[d,j,g,s,u,st,w,p,c,t,r].filter(x=>x.status==="rejected");
+  if(failures.length===11)setError("تعذر الاتصال بخدمات البيانات الأساسية. تأكد أن API يعمل وأن جلسة الدخول صالحة.");
+  else if(failures.length)setError("بعض أقسام البيانات الأساسية غير متاحة لحسابك أو لم يتم تشغيل خدمتها بعد. الأقسام المتاحة ستعمل بشكل طبيعي.");
+  const unitData=value(u);
+  if(!productUnit)setProductUnit(unitData.find(x=>x.code==="PCS")?.id||unitData[0]?.id||"");if(!rateUnit)setRateUnit(unitData.find(x=>x.code==="PCS")?.id||unitData[0]?.id||"");
  }
  useEffect(()=>{void load()},[]);
  useEffect(()=>{if(!outStage){setStageOutputs([]);return}api<{data:any[]}>("/api/stages/"+outStage+"/outputs").then(x=>setStageOutputs(x.data)).catch(()=>setStageOutputs([]))},[outStage]);
