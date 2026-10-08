@@ -37,6 +37,7 @@ export default function CodingPage(){
  const filtered=useMemo(()=>units.filter(x=>[x.code,x.product_name,x.product_code,x.batch_code||"",x.packaging_type_name].join(" ").toLowerCase().includes(search.trim().toLowerCase())),[units,search]);
  useEffect(()=>{const t=availableTemplates.find(x=>x.packaging_type_id===typeId)||availableTemplates[0];setTemplateId(t?.id??"")},[typeId,templates.length]);
 
+ function selectProduction(id:string){const x=productionReady.find(v=>v.production_entry_id===id);setProductionEntryId(id);if(!x)return;setProductId(x.product_id);setProductionOrderId(x.order_id||"");setOrderStageId(x.order_stage_id||"");setWarehouseId(x.warehouse_id);setLocationId(x.location_id);setQuantity(String(x.remaining_quantity));setBatch(x.code);}
  async function create(e:FormEvent){
   e.preventDefault();setSaving(true);setError("");
   try{
