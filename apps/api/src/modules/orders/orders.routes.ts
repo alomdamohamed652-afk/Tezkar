@@ -174,7 +174,7 @@ export async function orderRoutes(app: FastifyInstance) {
           const key=stage.outputProductId ?? normalizeBusinessName(stage.outputProductName!);
           const current=derived.get(key);
           if (current) current.quantity += stage.plannedQuantity;
-          else derived.set(key,{productId:stage.outputProductId,productName:stage.outputProductName,quantity:stage.plannedQuantity,notes:stage.notes});
+          else derived.set(key,{productId:stage.outputProductId ?? undefined,productName:stage.outputProductName,quantity:stage.plannedQuantity,notes:stage.notes});
         }
         if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","اكتب المنتج الناتج بجانب مرحلة واحدة على الأقل",422);
         lineInputs.push(...Array.from(derived.values()));
