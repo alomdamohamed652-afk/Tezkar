@@ -251,8 +251,8 @@ export async function codingRoutes(app: FastifyInstance) {
         RETURNING *
       `,[
         code,barcode,p.packagingTypeId,templateId,resolvedProductId,resolvedOrderId,resolvedOrderStageId,p.batchCode??null,p.quantity,
-        p.unitId??product.rows[0].unit_id??null,p.weight??null,p.productionOwnerEmployeeId??null,p.packedByEmployeeId??null,
-        p.productionEntryId??null,p.receivedByEmployeeId??null,p.packedAt??null,resolvedWarehouseId,resolvedLocationId,initialStatus,request.user!.userId
+        p.unitId??product.rows[0].unit_id??null,p.weight??null,p.productionEntryId??null,p.productionOwnerEmployeeId??null,p.packedByEmployeeId??null,
+        p.receivedByEmployeeId??null,p.packedAt??null,resolvedWarehouseId,resolvedLocationId,initialStatus,request.user!.userId
       ]);
 
       await client.query("INSERT INTO coding_unit_movements(coding_unit_id,movement_type,to_warehouse_id,to_location_id,notes,created_by) VALUES($1,$2,$3,$4,$5,$6)",[
