@@ -34,7 +34,7 @@ export default function ShiftWithdrawalsPage(){
   setEmployeeId("");
   if(!shiftId){setAssignedEmployees([]);return}
   setLoadingEmployees(true);
-  api<{data<ArrayItem>}>("/api/shifts/"+shiftId+"/employees")
+  api<{data:ArrayItem[]}>("/api/shifts/"+shiftId+"/employees")
     .then(x=>setAssignedEmployees(x.data.map(a=>({id:a.employee_id,code:a.employee_code,name:a.employee_name,full_name:a.employee_name}))))
     .catch(e=>setError(e instanceof Error?e.message:"تعذر تحميل موظفي الوردية"))
     .finally(()=>setLoadingEmployees(false));
