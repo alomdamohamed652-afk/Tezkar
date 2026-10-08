@@ -31,7 +31,7 @@ ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
-WHERE r.code IN ('manager','finance','accountant')
+WHERE r.code IN ('admin','manager','finance','accountant')
   AND p.code IN ('cash_custody.view','cash_custody.create')
 ON CONFLICT DO NOTHING;
 
