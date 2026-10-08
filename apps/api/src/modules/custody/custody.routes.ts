@@ -108,7 +108,7 @@ async function cashAccess(client:import("pg").PoolClient,userId:string,employeeI
   if(employeeId && employeeId!==row.employee_id)throw new AppError("OWN_SCOPE_ONLY","لا يمكنك الحركة إلا على عهدتك",403);
   return {employeeId:row.employee_id,isFinance:false};
 }
-\nexport async function custodyRoutes(app:FastifyInstance){
+export async function custodyRoutes(app:FastifyInstance){
   app.get("/api/custodies",{preHandler:[requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
