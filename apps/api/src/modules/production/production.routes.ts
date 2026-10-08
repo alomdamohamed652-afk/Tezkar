@@ -193,6 +193,26 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       if (!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND", "المنتج غير موجود أو غير نشط", 422);
 
+      if (parsed.data.orderStageId) {
+        const orderStage = await client.query(
+          `SELECT os.id,os.order_id,os.output_product_id,os.stage_id,po.status
+             FROM order_stages os
+             JOIN production_orders po ON po.id=os.order_id
+            WHERE os.id=$1
+            FOR UPDATE`,
+          [parsed.data.orderStageId]
+        );
+        if (!orderStage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const os=orderStage.rows[0];
+        if (os.status === "CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج لمرحلة طلبية ملغاة",409);
+        if (os.output_product_id && os.output_product_id !== parsed.data.productId) {
+          throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
+        }
+        if (os.stage_id !== parsed.data.stageId) {
+          throw new AppError("ORDER_STAGE_STAGE_MISMATCH","مرحلة الإنتاج لا تطابق مرحلة الطلب المرتبطة",409);
+        }
+      }
+
       const stage = await client.query(
         "SELECT id FROM stages WHERE id=$1 AND is_active=TRUE",
         [parsed.data.stageId]
@@ -353,7 +373,7 @@ export async function productionRoutes(app: FastifyInstance) {
       if (!destination.rowCount) throw new AppError("DESTINATION_NOT_FOUND", "وجهة الإنتاج غير موجودة أو غير نشطة", 409);
 
       const lockedBalance = await client.query(
-        "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+        "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
         [current.product_id, current.warehouse_id, current.location_id]
       );
       const currentBalance = Number(lockedBalance.rows[0]?.quantity ?? 0);
