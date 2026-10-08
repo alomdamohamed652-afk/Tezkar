@@ -1,4 +1,5 @@
 -- Tezkar coding integrity: enforce relationships for coding records without breaking existing installations.
+ALTER TABLE coding_units ADD COLUMN IF NOT EXISTS order_stage_id uuid;
 ALTER TABLE coding_templates
   ADD CONSTRAINT coding_templates_packaging_fk
   FOREIGN KEY (packaging_type_id) REFERENCES coding_packaging_types(id) NOT VALID;
