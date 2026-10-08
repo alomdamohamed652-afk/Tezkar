@@ -27,6 +27,16 @@ const rejectSchema = z.object({
   reason: z.string().trim().min(2).max(500)
 });
 
+const adjustmentSchema = z.object({
+  employeeId: z.string().uuid(),
+  shiftId: z.string().uuid().nullable().optional(),
+  productionEntryId: z.string().uuid().nullable().optional(),
+  adjustmentType: z.enum(["BONUS","DEDUCTION"]),
+  amount: z.number().positive(),
+  reason: z.string().trim().min(2).max(500),
+  adjustmentDate: z.string().date().optional()
+});
+
 async function isWorker(client: import("pg").PoolClient, userId: string) {
   const result = await client.query(
     `SELECT EXISTS(
