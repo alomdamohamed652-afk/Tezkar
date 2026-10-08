@@ -198,6 +198,15 @@ export async function productionRoutes(app: FastifyInstance) {
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
 
       let resolvedWarehouseId = parsed.data.warehouseId;
+      if(parsed.data.orderStageId){
+        const os0=await client.query("SELECT os.order_id,os.sequence_no FROM order_stages os WHERE os.id=$1",[parsed.data.orderStageId]);
+        if(!os0.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const final0=await client.query("SELECT MAX(sequence_no) AS max_sequence FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os0.rows[0].order_id]);
+        const type0=Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
+        const wh0=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[type0]);
+        if(!wh0.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
+        resolvedWarehouseId=wh0.rows[0].id;
+      }
 
       const destination = parsed.data.locationId
         ? await client.query(
