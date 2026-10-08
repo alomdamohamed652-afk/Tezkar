@@ -71,15 +71,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
   return result.rows[0] ?? null;
 }
 
-const adjustmentSchema = z.object({
-  employeeId:z.string().uuid(),
-  shiftId:z.string().uuid().nullable().optional(),
-  productionEntryId:z.string().uuid().nullable().optional(),
-  adjustmentType:z.enum(["BONUS","DEDUCTION"]),
-  amount:z.number().positive(),
-  reason:z.string().trim().min(2).max(500),
-  adjustmentDate:z.string().date().optional()
-});
+
 
 export async function productionRoutes(app: FastifyInstance) {
   app.get("/api/production/destinations", {
