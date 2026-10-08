@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { consumeInventoryLots, adjustStockValueAfterLotConsumption, createInventoryLot } from "./inventory-lots.service.js";
 
 const warehouseSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -153,10 +154,20 @@ export async function warehouseRoutes(app: FastifyInstance) {
       const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
       const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,delta,effectiveUnitCost);
       const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null]);
+      let finalSourceCost=sourceCost;
+      if(delta<0){
+        const consumed=await consumeInventoryLots(client,{movementId:source.rows[0].id,productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:parsed.data.locationId,quantity:parsed.data.quantity});
+        finalSourceCost={unitCost:consumed.unitCost,totalCost:consumed.totalCost};
+        await client.query("UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",[finalSourceCost.unitCost,finalSourceCost.totalCost,source.rows[0].id]);
+        await adjustStockValueAfterLotConsumption(client,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,finalSourceCost.totalCost);
+      } else {
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:parsed.data.locationId,quantity:parsed.data.quantity,unitCost:sourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:parsed.data.movementType,sourceId:source.rows[0].id});
+      }
       let destination=null;
       if(parsed.data.movementType==="TRANSFER_OUT"){
-        await changeBalance(client,parsed.data.productId,parsed.data.targetWarehouseId!,parsed.data.targetLocationId!,parsed.data.quantity,sourceCost.unitCost);
-        const d=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,reference_type,reference_id,order_id,order_stage_id) VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'TRANSFER',$12,$13,$14) RETURNING *",[parsed.data.productId,parsed.data.targetWarehouseId,parsed.data.targetLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,source.rows[0].id,parsed.data.orderId??null,parsed.data.orderStageId??null]);
+        await changeBalance(client,parsed.data.productId,parsed.data.targetWarehouseId!,parsed.data.targetLocationId!,parsed.data.quantity,finalSourceCost.unitCost);
+        const d=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,reference_type,reference_id,order_id,order_stage_id) VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'TRANSFER',$12,$13,$14) RETURNING *",[parsed.data.productId,parsed.data.targetWarehouseId,parsed.data.targetLocationId,parsed.data.quantity,product.rows[0].unit_id,finalSourceCost.unitCost,finalSourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,source.rows[0].id,parsed.data.orderId??null,parsed.data.orderStageId??null]);
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.targetWarehouseId!,locationId:parsed.data.targetLocationId!,quantity:parsed.data.quantity,unitCost:finalSourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:"TRANSFER_IN",sourceId:d.rows[0].id});
         destination=d.rows[0];
         await client.query("UPDATE stock_movements SET reference_type='TRANSFER',reference_id=$1 WHERE id=$2",[destination.id,source.rows[0].id]);
       }
