@@ -133,8 +133,25 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!parsed.data.targetWarehouseId||!parsed.data.targetLocationId) throw new AppError("TRANSFER_TARGET_REQUIRED","التحويل يحتاج مخزن ومكان وصول",422);
         await assertLocation(client,parsed.data.targetWarehouseId,parsed.data.targetLocationId);
       }
+      if(parsed.data.orderStageId){
+        const stage=await client.query(`SELECT os.id,os.order_id,os.output_product_id,po.status
+          FROM order_stages os JOIN production_orders po ON po.id=os.order_id
+          WHERE os.id=$1 FOR UPDATE`,[parsed.data.orderStageId]);
+        if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        if(parsed.data.orderId && stage.rows[0].order_id!==parsed.data.orderId) throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الطلب لا تنتمي إلى الطلبية المحددة",409);
+        if(stage.rows[0].status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن ربط حركة مخزن بمرحلة طلبية ملغاة",409);
+        if(stage.rows[0].output_product_id && stage.rows[0].output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق منتج مرحلة الطلب",409);
+      } else if(parsed.data.orderId){
+        const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
+        if(!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",422);
+        if(order.rows[0].status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن ربط حركة مخزن بطلبية ملغاة",409);
+      }
+      if(["IN","ADJUSTMENT"].includes(parsed.data.movementType) && parsed.data.adjustmentDirection==="IN" && parsed.data.unitCost==null){
+        throw new AppError("UNIT_COST_REQUIRED","يجب تحديد تكلفة الوحدة عند إدخال رصيد للمخزن",422);
+      }
       const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT"||(parsed.data.movementType==="ADJUSTMENT"&&parsed.data.adjustmentDirection==="OUT"))?-parsed.data.quantity:parsed.data.quantity;
-      const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,delta,parsed.data.unitCost);
+      const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
+      const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,delta,effectiveUnitCost);
       const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null]);
       let destination=null;
       if(parsed.data.movementType==="TRANSFER_OUT"){
