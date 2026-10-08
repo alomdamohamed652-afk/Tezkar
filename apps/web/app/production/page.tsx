@@ -79,7 +79,7 @@ export default function ProductionPage(){
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
-    {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
+    {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}}
     {resolvedRate!==null&&<label>سعر المرحلة<input inputMode="decimal" value={rateOverride} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">السعر يُثبت على سجل الإنتاج وقت التسجيل. أي تعديل لاحق يتم من البيانات الأساسية ويؤثر على الإنتاج الجديد فقط.</span></label>}{isShiftWage&&<div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div>}
     <label>مخزن دخول الإنتاج<SearchableSelect value={warehouseId} onChange={v=>{setWarehouseId(v);setLocationId("")}} options={warehouseOptions} placeholder="اختر المخزن"/></label>
     <label>مكان دخول الإنتاج<SearchableSelect value={locationId} onChange={setLocationId} options={locationOptions} placeholder="اختر المكان"/></label>
