@@ -12,6 +12,8 @@ ALTER TABLE coding_units
   FOREIGN KEY (product_id) REFERENCES products(id) NOT VALID,
   ADD CONSTRAINT coding_units_order_fk
   FOREIGN KEY (production_order_id) REFERENCES production_orders(id) NOT VALID,
+  ADD CONSTRAINT coding_units_order_stage_fk
+  FOREIGN KEY (order_stage_id) REFERENCES order_stages(id) NOT VALID,
   ADD CONSTRAINT coding_units_unit_fk
   FOREIGN KEY (unit_id) REFERENCES units(id) NOT VALID,
   ADD CONSTRAINT coding_units_production_owner_fk
