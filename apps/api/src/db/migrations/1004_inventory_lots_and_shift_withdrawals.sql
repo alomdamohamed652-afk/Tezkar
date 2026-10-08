@@ -39,6 +39,8 @@ ALTER TABLE stock_movement_lots
   ADD CONSTRAINT stock_movement_lots_lot_fk
   FOREIGN KEY (lot_id) REFERENCES inventory_lots(id);
 
+CREATE SEQUENCE IF NOT EXISTS shift_withdrawal_code_seq START 1;
+
 CREATE TABLE IF NOT EXISTS shift_withdrawals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE DEFAULT ('WD-' || lpad(nextval('shift_withdrawal_code_seq')::text, 7, '0')),
@@ -49,8 +51,6 @@ CREATE TABLE IF NOT EXISTS shift_withdrawals (
   created_by uuid NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE SEQUENCE IF NOT EXISTS shift_withdrawal_code_seq START 1;
 
 CREATE TABLE IF NOT EXISTS shift_withdrawal_lines (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
