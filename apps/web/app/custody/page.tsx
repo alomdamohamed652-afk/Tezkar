@@ -13,6 +13,7 @@ export default function CustodyPage(){
  const {has}=usePermissions();
  type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number};
  const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
  async function load(){try{
   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
 
