@@ -98,6 +98,22 @@ await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return 
  app.get("/api/units",{preHandler:[authenticateRequest,requirePermission("products.view")]},async()=>{const r=await pool.query("SELECT id,code,name,symbol,decimal_places,is_active FROM units ORDER BY code");return {data:r.rows};});
  app.get("/api/stages",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,description,is_active FROM stages ORDER BY code");return {data:r.rows};});
  app.post("/api/stages",{preHandler:[authenticateRequest,requirePermission("stages.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(500).optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);const row=await withTransaction(async c=>{const x=await c.query("INSERT INTO stages(name,description) VALUES($1,$2) RETURNING id,code,name,description,is_active",[p.data.name,p.data.description??null]);await audit(c,req,"create","stage",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:row});});
+ app.delete("/api/stages/:id",{preHandler:[authenticateRequest,requirePermission("stages.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const activeOrderStages=await pool.query("SELECT COUNT(*)::int AS n FROM order_stages WHERE stage_id=$1 AND status NOT IN ('COMPLETED','CANCELLED')",[id]);
+  if(Number(activeOrderStages.rows[0].n)>0) throw new AppError("STAGE_IN_USE","لا يمكن تعطيل مرحلة مرتبطة بمراحل طلبات مفتوحة. أغلق أو ألغِ مراحل الطلب أولاً.",409);
+  const r=await pool.query("UPDATE stages SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount) throw new AppError("STAGE_NOT_FOUND","المرحلة غير موجودة",404);
+  return {data:r.rows[0]};
+ });
+ app.delete("/api/stage-outputs/:id",{preHandler:[authenticateRequest,requirePermission("stages.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const used=await pool.query("SELECT COUNT(*)::int AS n FROM order_stages os JOIN stage_outputs so ON so.stage_id=os.stage_id AND so.product_id=os.output_product_id WHERE so.id=$1",[id]);
+  if(Number(used.rows[0].n)>0) throw new AppError("STAGE_OUTPUT_IN_USE","لا يمكن حذف ناتج مرتبط بطلبات. سيظل محفوظًا في التاريخ.",409);
+  const r=await pool.query("DELETE FROM stage_outputs WHERE id=$1 RETURNING id");
+  if(!r.rowCount) throw new AppError("STAGE_OUTPUT_NOT_FOUND","ناتج المرحلة غير موجود",404);
+  return {data:{success:true}};
+ });
  app.get("/api/wage-types",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,method,percentage_base,is_active FROM wage_types ORDER BY code");return {data:r.rows};});
  app.get("/api/production-types",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,calculation_method,is_active FROM production_types WHERE is_active=TRUE ORDER BY name");return {data:r.rows};});
  app.post("/api/production-types",{preHandler:[authenticateRequest,requirePermission("production_types.manage")]},async(req,reply)=>{const p=z.object({code:z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/),name,calculationMethod:z.enum(["PER_QUANTITY","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).default("PER_QUANTITY")}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات نوع الإنتاج غير صحيحة",422);const r=await pool.query("INSERT INTO production_types(code,name,calculation_method) VALUES($1,$2,$3) RETURNING id,code,name,calculation_method,is_active",[p.data.code,p.data.name,p.data.calculationMethod]);return reply.code(201).send({data:r.rows[0]});});
