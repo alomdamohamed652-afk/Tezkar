@@ -17,6 +17,7 @@ const createSchema = z.object({
   quantity: z.number().positive(),
   baseAmount: z.number().nonnegative().nullable().optional(),
   hoursWorked: z.number().positive().nullable().optional(),
+  rateOverride: z.number().nonnegative().nullable().optional(),
   warehouseId: z.string().uuid(),
   locationId: z.string().uuid()
 });
@@ -261,14 +262,15 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const rate = rateResult.rows[0];
       const method = rate.method as string;
+      const effectiveRate = parsed.data.rateOverride ?? Number(rate.rate);
       let earning: number;
 
       if (method === "PER_PIECE") {
-        earning = parsed.data.quantity * Number(rate.rate);
+        earning = parsed.data.quantity * effectiveRate;
       } else if (method === "PER_1000") {
-        earning = (parsed.data.quantity / 1000) * Number(rate.rate);
+        earning = (parsed.data.quantity / 1000) * effectiveRate;
       } else if (method === "PER_DAY") {
-        earning = Number(rate.rate);
+        earning = effectiveRate;
       } else if (method === "PERCENTAGE") {
         if (parsed.data.baseAmount == null) {
           throw new AppError("BASE_AMOUNT_REQUIRED", "هذا النوع من الأجر يحتاج قيمة أساس للحساب", 422);
@@ -278,7 +280,7 @@ export async function productionRoutes(app: FastifyInstance) {
         if (parsed.data.hoursWorked == null) {
           throw new AppError("HOURS_WORKED_REQUIRED", "الأجر بالساعة يحتاج عدد الساعات الفعلية", 422);
         }
-        earning = parsed.data.hoursWorked * Number(rate.rate);
+        earning = parsed.data.hoursWorked * effectiveRate;
       } else {
         throw new AppError("WAGE_METHOD_UNSUPPORTED", "طريقة حساب الأجر غير مدعومة", 422);
       }
@@ -303,7 +305,7 @@ export async function productionRoutes(app: FastifyInstance) {
                    earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
-          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, parsed.data.warehouseId, parsed.data.locationId, rate.id, rate.rate,
+          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, parsed.data.warehouseId, parsed.data.locationId, rate.id, effectiveRate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
           parsed.data.baseAmount ?? null, earning, request.user!.userId
         ]
