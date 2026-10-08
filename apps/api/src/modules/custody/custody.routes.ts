@@ -25,7 +25,10 @@ const settleSchema=z.object({
 
 async function workerInfo(userId:string){
   const r=await pool.query("SELECT u.employee_id,EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1 AND r.code='worker' AND r.is_active=TRUE) AS is_worker FROM users u WHERE u.id=$1",[userId]);
-  return r.rows[0]??null;const cashSchema=z.object({
+  return r.rows[0]??null;
+}
+
+const cashSchema=z.object({
   employeeId:z.string().uuid().optional(),
   direction:z.enum(["IN","OUT"]),
   amount:z.number().positive(),
