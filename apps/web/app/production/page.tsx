@@ -9,7 +9,7 @@ type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string};
 type Shift=Item & {rate_group_name:string};
 type Destination={id:string;code:string;name:string;warehouse_id:string;warehouse_code:string;warehouse_name:string};
-type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number};
+type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null};
 type ProductionType=Item & {calculation_method:string};
 type Entry={id:string;code:string;work_date:string;quantity:number;rate_snapshot:number;earning_amount:number;bonus_amount:number;deduction_amount:number;total_earning_amount:number;status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;shift_name:string|null;production_code:string|null};
@@ -20,6 +20,7 @@ export default function ProductionPage(){
  const {has}=usePermissions();
  const [employees,setEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
  const [employeeId,setEmployeeId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
+ const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editQuantity,setEditQuantity]=useState(""),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
  const [bonusAmount,setBonusAmount]=useState(""),[bonusReason,setBonusReason]=useState(""),[deductionAmount,setDeductionAmount]=useState(""),[deductionReason,setDeductionReason]=useState("");
@@ -41,11 +42,17 @@ export default function ProductionPage(){
  useEffect(()=>{void load()},[status]);
 
  useEffect(()=>{
+  if(selectedOrderStage?.stage_rate!=null){
+    setResolvedMethod(selectedOrderStage.stage_rate_method||"PER_PIECE");
+    setResolvedRate(Number(selectedOrderStage.stage_rate));
+    setRateOverride(String(selectedOrderStage.stage_rate));
+    return;
+  }
   if(!productId||!stageId||!shiftId||!workDate){setResolvedMethod("");setResolvedRate(null);setRateOverride("");return}
   const q=new URLSearchParams({productId,stageId,shiftId,workDate});
   if(productionTypeId)q.set("productionTypeId",productionTypeId);
   api<{data:{method:string;rate:number}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setResolvedRate(Number(r.data.rate));setRateOverride(String(r.data.rate))}).catch(()=>{setResolvedMethod("");setResolvedRate(null);setRateOverride("")});
- },[productId,stageId,shiftId,workDate,productionTypeId]);
+ },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId]);
 
  const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
  const isShiftWage=resolvedMethod==="PER_DAY";
@@ -129,8 +136,8 @@ export default function ProductionPage(){
     <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
     {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
-    {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">السعر يُثبت على سجل الإنتاج وقت التسجيل. أي تعديل لاحق يتم من البيانات الأساسية ويؤثر على الإنتاج الجديد فقط.</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
-    <label>مخزن دخول الإنتاج<SearchableSelect value={warehouseId} onChange={setWarehouseId} options={warehouseOptions} placeholder="اختر المخزن"/></label>
+    {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":"السعر الحالي من تسعير المرحلة العام."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
+    <div className="form-hint" style={{alignSelf:"end"}}>المخزن يتحدد تلقائيًا: مراحل التشغيل إلى «تحت التشغيل»، والمرحلة النهائية إلى «المنتجات الجاهزة».</div>
     {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
     {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
     <div className="production-adjustment-box">
