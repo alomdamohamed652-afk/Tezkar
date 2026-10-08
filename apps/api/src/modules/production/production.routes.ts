@@ -456,7 +456,7 @@ export async function productionRoutes(app: FastifyInstance) {
          ON CONFLICT DO NOTHING`,
         [
           current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,
-          productionUnitCost,Number(current.earning_amount),current.order_id??null,current.order_stage_id??null,
+          productionUnitCost,totalLaborCost,current.order_id??null,current.order_stage_id??null,
           "إدخال إنتاج معتمد "+current.code,request.user!.userId,id
         ]
       );
