@@ -10,7 +10,7 @@ type Profit = {
   revenue: number; expenses: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
 };
 type Expense = { id: string; code: string; order_code: string | null; category: string; description: string; amount: number; expense_date: string };
-type Revenue = { id: string; code: string; order_code: string; amount: number; revenue_date: string; source: string };
+type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null };
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 
@@ -57,7 +57,7 @@ export default function AccountingPage() {
   async function addRevenue() {
     setError("");setMessage("");
     try {
-      await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({orderId:rForm.orderId,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null})});
+      await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({orderId:rForm.orderId||null,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null})});
       setRForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل الإيراد");await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإيراد")}
   }
@@ -93,7 +93,7 @@ export default function AccountingPage() {
       <div className="grid">
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الداخل</h2><button className="link-button" onClick={()=>setTab("in")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code}</td><td>{x.source}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
+         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.source}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
          {!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}
         </tbody></table></div>
        </section>
@@ -107,9 +107,9 @@ export default function AccountingPage() {
      </>}
 
      {tab==="in"&&<section className="card">
-      <div className="card-header"><div><h2 className="card-title">الداخل — الإيرادات</h2><div className="form-hint">كل الإيرادات المسجلة على الطلبات.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">الداخل — الإيرادات</h2><div className="form-hint">الإيرادات المرتبطة بالطلبات والواردات العامة أو الإدارية من المدير المالي.</div></div></div>
       {has("finance.revenues.create")&&<div className="form-grid finance-four-grid">
-       <label>الطلبية<select value={rForm.orderId} onChange={e=>setRForm({...rForm,orderId:e.target.value})}><option value="">اختر الطلبية</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
+       <label>الطلبية <span className="optional">اختياري</span><select value={rForm.orderId} onChange={e=>setRForm({...rForm,orderId:e.target.value})}><option value="">وارد عام / إداري</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={rForm.amount} onChange={e=>setRForm({...rForm,amount:e.target.value})}/></label>
        <label>المصدر<input value={rForm.source} onChange={e=>setRForm({...rForm,source:e.target.value})}/></label>
        <label>ملاحظات<input value={rForm.notes} onChange={e=>setRForm({...rForm,notes:e.target.value})}/></label>
