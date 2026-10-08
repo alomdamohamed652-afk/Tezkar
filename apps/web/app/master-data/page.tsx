@@ -36,8 +36,11 @@ export default function MasterDataPage(){
   const requests=[
    api<{data:Department[]}>("/api/departments"),api<{data:Job[]}>("/api/job-titles"),api<{data:Group[]}>("/api/rate-groups"),api<{data:Shift[]}>("/api/shifts"),api<{data:Unit[]}>("/api/units"),api<{data:Stage[]}>("/api/stages"),api<{data:Wage[]}>("/api/wage-types"),api<{data:Product[]}>("/api/products"),api<{data:Category[]}>("/api/product-categories"),api<{data:ProdType[]}>("/api/production-types"),api<{data:Rate[]}>("/api/rates")
   ];
-  const [d,j,g,s,u,st,w,p,c,t,r]=await Promise.allSettled(requests);
-  const value=<T,>(x:PromiseSettledResult<{data:T[]}>,fallback:T[]=[])=>x.status==="fulfilled"?x.value.data:fallback;
+  const [d,j,g,s,u,st,w,p,c,t,r]=await Promise.all(requests.map(async request=>{
+   try{return {status:"fulfilled" as const,value:await request};}
+   catch(reason){return {status:"rejected" as const,reason};}
+  }));
+  const value=<T,>(x:{status:"fulfilled";value:{data:T[]}}|{status:"rejected";reason:unknown},fallback:T[]=[])=>x.status==="fulfilled"?x.value.data:fallback;
   setDepartments(value<Department>(d));setJobs(value<Job>(j));setGroups(value<Group>(g));setShifts(value<Shift>(s));setUnits(value<Unit>(u));setStages(value<Stage>(st));setWages(value<Wage>(w));setProducts(value<Product>(p));setCategories(value<Category>(c));setTypes(value<ProdType>(t));setRates(value<Rate>(r));
   const failures=[d,j,g,s,u,st,w,p,c,t,r].filter(x=>x.status==="rejected");
   if(failures.length===11)setError("تعذر الاتصال بخدمات البيانات الأساسية. تأكد أن API يعمل وأن جلسة الدخول صالحة.");
