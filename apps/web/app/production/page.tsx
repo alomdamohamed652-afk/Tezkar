@@ -59,6 +59,15 @@ export default function ProductionPage(){
  const warehouseOptions=useMemo(()=>Array.from(new Map(destinations.map(x=>[x.warehouse_id,{value:x.warehouse_id,label:x.warehouse_name}])).values()),[destinations]);
  const productionToday=useMemo(()=>entries.filter(x=>x.work_date===new Date().toISOString().slice(0,10)),[entries]);
  const approvedCount=useMemo(()=>entries.filter(x=>x.status==="APPROVED").length,[entries]);
+ const calculatedBase=useMemo(()=>{
+  const rate=Number(normalizeNumber(rateOverride||"0")),q=Number(normalizeNumber(quantity||"0")),hours=Number(normalizeNumber(hoursWorked||"0")),base=Number(normalizeNumber(baseAmount||"0"));
+  if(resolvedMethod==="PER_PIECE") return q*rate;
+  if(resolvedMethod==="PER_1000") return q/1000*rate;
+  if(resolvedMethod==="PER_DAY") return rate;
+  if(resolvedMethod==="PER_HOUR") return hours*rate;
+  if(resolvedMethod==="PERCENTAGE") return base*rate/100;
+  return 0;
+ },[resolvedMethod,rateOverride,quantity,hoursWorked,baseAmount]);
  const pendingCount=useMemo(()=>entries.filter(x=>x.status==="PENDING").length,[entries]);
  async function loadAdjustments(){if(!has("production.adjustments.view"))return;try{const x=await api<{data:Adjustment[]}>("/api/production/adjustments");setAdjustments(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البونص والخصومات")}}
  useEffect(()=>{void loadAdjustments()},[has]);
@@ -66,13 +75,26 @@ export default function ProductionPage(){
  function selectOrderStage(value:string){setOrderStageId(value);const x=orderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id)}}
 
  async function submit(e:FormEvent){
-  e.preventDefault();setSaving(true);setError("");
+  e.preventDefault();setError("");
+  const q=isShiftWage?1:Number(normalizeNumber(quantity||"0"));
+  const bonus=Number(normalizeNumber(bonusAmount||"0"));
+  const deduction=Number(normalizeNumber(deductionAmount||"0"));
+  if(!employeeId) return setError("اختر الموظف.");
+  if(!orderStageId) return setError("اختر الطلبية والمرحلة.");
+  if(!productionTypeId) return setError("اختر نوع الإنتاج.");
+  if(!shiftId) return setError("اختر الوردية.");
+  if(!warehouseId) return setError("اختر مخزن دخول الإنتاج.");
+  if(!resolvedMethod||resolvedRate===null) return setError("لم يتم العثور على سعر إنتاج مطابق للطلب والمرحلة والوردية.");
+  if(!isShiftWage && (!Number.isFinite(q)||q<=0)) return setError("أدخل كمية إنتاج صحيحة.");
+  if(resolvedMethod==="PERCENTAGE" && (!baseAmount || Number(normalizeNumber(baseAmount))<0)) return setError("أدخل قيمة أساس صحيحة.");
+  if(resolvedMethod==="PER_HOUR" && (!hoursWorked || Number(normalizeNumber(hoursWorked))<=0)) return setError("أدخل عدد ساعات صحيح.");
+  if(bonus>0&&!bonusReason.trim()) return setError("اكتب بيان البونص.");
+  if(deduction>0&&!deductionReason.trim()) return setError("اكتب بيان الخصم.");
+  if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
+  setSaving(true);
   try{
-   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,orderStageId:orderStageId||null,productionTypeId:productionTypeId||null,productId,stageId,shiftId,workDate,quantity:isShiftWage?1:Number(normalizeNumber(quantity)),rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId,locationId,
-     bonusAmount:Number(normalizeNumber(bonusAmount||"0")),
-     bonusReason:bonusAmount?bonusReason.trim():null,
-     deductionAmount:Number(normalizeNumber(deductionAmount||"0")),
-     deductionReason:deductionAmount?deductionReason.trim():null
+   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,orderStageId,productionTypeId,productId,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId,locationId,
+     bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
     })});
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
    setQuantity("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
@@ -90,7 +112,7 @@ export default function ProductionPage(){
  async function editEntry(x:Entry){setEditTarget(x);setEditQuantity(String(x.quantity));}
  async function review(id:string,action:"approve"|"reject"){if(action==="reject"){setReviewTarget(id);setReviewReason("");return}try{await api("/api/production/"+id+"/approve",{method:"POST"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ المراجعة")}}
 
- return <div className="app-shell"><Sidebar active="/production"/><main className="main"><header className="topbar"><div><h1 className="page-title">إنتاج العمال</h1><p className="page-subtitle">اختار الطلب والمرحلة ونوع الإنتاج، وحدد سعر المرحلة وقت تسجيل الإنتاج.</p></div></header><section className="content">
+ return <div className="app-shell"><Sidebar active="/production"/><main className="main"><header className="topbar"><div><h1 className="page-title">إنتاج العمال</h1><p className="page-subtitle">اختار الطلبية ونوع الإنتاج فقط؛ المنتج والمرحلة والسعر بيتحددوا تلقائيًا من بيانات الطلب.</p></div></header><section className="content">
   {error&&<div className="alert error">{error}</div>}
   <div className="stats">
    <article className="card stat"><div className="stat-label">إنتاج اليوم</div><div className="stat-value">{productionToday.reduce((s,x)=>s+Number(x.quantity||0),0).toLocaleString("ar-EG")}</div><div className="stat-note">{productionToday.length} سجل</div></article>
@@ -101,9 +123,8 @@ export default function ProductionPage(){
   {has("production.create")&&<form className="card production-form" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل إنتاج عامل</h2><span className="form-hint">الاسم فقط يظهر للمستخدم؛ الأكواد تستخدم داخليًا.</span></div></div>
    <div className="production-grid">
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
-    <label>الطلب والمرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder="اختياري — اختر الطلب والمرحلة" searchPlaceholder="ابحث باسم الطلب أو المرحلة"/></label>
-    <label>المنتج<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختر المنتج"/></label>
-    <label>المرحلة<SearchableSelect value={stageId} onChange={setStageId} options={stageOptions} placeholder="اختر المرحلة"/></label>
+    <label>الطلب والمرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder="اختر الطلب والمرحلة" searchPlaceholder="ابحث باسم الطلب أو المرحلة" /></label>
+    {orderStageId&&<div className="form-hint" style={{alignSelf:"end"}}>المنتج والمرحلة بيتحددوا تلقائيًا من الطلبية: {products.find(x=>x.id===productId)?.name||"—"} — {stages.find(x=>x.id===stageId)?.name||"—"}</div>}
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
@@ -122,7 +143,7 @@ export default function ProductionPage(){
       </div>
       <div className="production-total-preview">
         <span>إجمالي مستحق العامل</span>
-        <strong>{(Number(rateOverride||0)*(isShiftWage?1:Number(quantity||0)) + Number(bonusAmount||0) - Number(deductionAmount||0)).toLocaleString("ar-EG",{maximumFractionDigits:2})}</strong>
+        <strong>{(calculatedBase + Number(normalizeNumber(bonusAmount||"0")) - Number(normalizeNumber(deductionAmount||"0"))).toLocaleString("ar-EG",{maximumFractionDigits:2})}</strong>
       </div>
     </div>
    </div>
@@ -130,22 +151,6 @@ export default function ProductionPage(){
   </form>}
   {editTarget&&<div className="modal-backdrop" onClick={()=>setEditTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">تعديل الإنتاج</h2><button type="button" className="secondary-btn" onClick={()=>setEditTarget(null)}>إغلاق</button></div><label>الكمية<input inputMode="decimal" value={editQuantity} onChange={e=>setEditQuantity(e.target.value)}/></label><div className="form-actions"><button type="button" className="primary-button" onClick={async()=>{const next=Number(normalizeNumber(editQuantity));if(!Number.isFinite(next)||next<=0){setError("الكمية غير صحيحة");return}try{await api("/api/production/"+editTarget.id,{method:"PATCH",body:JSON.stringify({quantity:next})});setEditTarget(null);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعديل الإنتاج")}}}>حفظ التعديل</button></div></div></div>}
   {reviewTarget&&<div className="modal-backdrop" onClick={()=>setReviewTarget("")}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">رفض الإنتاج</h2><button type="button" className="secondary-btn" onClick={()=>setReviewTarget("")}>إغلاق</button></div><label>سبب الرفض<textarea rows={4} value={reviewReason} onChange={e=>setReviewReason(e.target.value)}/></label><div className="form-actions"><button type="button" className="danger-button" disabled={!reviewReason.trim()} onClick={async()=>{try{await api("/api/production/"+reviewTarget+"/reject",{method:"POST",body:JSON.stringify({reason:reviewReason.trim()})});setReviewTarget("");setReviewReason("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر رفض الإنتاج")}}}>تأكيد الرفض</button></div></div></div>}
-  {has("production.adjustments.view")&&<section className="card" style={{marginBottom:16}}>
-   <div className="card-header"><div><h2 className="card-title">البونص والخصم</h2><div className="form-hint">كل بونص أو خصم له موظف وبيان واضح، ويُضاف تلقائيًا إلى مستحقات الموظف.</div></div></div>
-   {has("production.adjustments.create")&&<div className="form-grid">
-    <label>الموظف<SearchableSelect value={adjustmentEmployee} onChange={setAdjustmentEmployee} options={employeeOptions} placeholder="اختر الموظف"/></label>
-    <label>الوردية <span className="optional">اختياري</span><SearchableSelect value={adjustmentShift} onChange={setAdjustmentShift} options={shiftOptions} placeholder="اختر الوردية"/></label>
-    <label>النوع<select value={adjustmentType} onChange={e=>setAdjustmentType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">بونص</option><option value="DEDUCTION">خصم</option></select></label>
-    <label>المبلغ<input inputMode="decimal" value={adjustmentAmount} onChange={e=>setAdjustmentAmount(e.target.value)} required/></label>
-    <label style={{gridColumn:"1/-1"}}>البيان / السبب<input value={adjustmentReason} onChange={e=>setAdjustmentReason(e.target.value)} placeholder="مثال: جودة ممتازة / تأخير / هالك زائد" required/></label>
-    <div className="form-actions" style={{gridColumn:"1/-1"}}><button type="button" className="primary-button" disabled={adjustmentSaving||!adjustmentEmployee||!adjustmentAmount||!adjustmentReason.trim()} onClick={addAdjustment}>{adjustmentSaving?"جارٍ الحفظ...":"تسجيل البونص / الخصم"}</button></div>
-   </div>}
-   <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الموظف</th><th>الوردية</th><th>النوع</th><th>المبلغ</th><th>البيان</th><th>الإنتاج</th></tr></thead><tbody>
-    {adjustments.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.adjustment_date}</td><td>{x.employee_name}</td><td>{x.shift_name||"—"}</td><td><span className={"status "+(x.adjustment_type==="BONUS"?"success":"error")}>{x.adjustment_type==="BONUS"?"بونص":"خصم"}</span></td><td className="money">{Number(x.amount).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{x.reason}</td><td>{x.production_code||"—"}</td></tr>)}
-    {!adjustments.length&&<tr><td colSpan={8}>لا توجد بونصات أو خصومات مسجلة.</td></tr>}
-   </tbody></table></div>
-  </section>}
-
   <section className="card"><div className="card-header"><h2 className="card-title">سجل الإنتاج</h2><select className="filter-select" value={status} onChange={e=>setStatus(e.target.value)}><option value="">كل الحالات</option><option value="PENDING">معلق</option><option value="APPROVED">معتمد</option><option value="REJECTED">مرفوض</option></select></div>
    {loading?<div className="empty">جارٍ تحميل السجل...</div>:!entries.length?<div className="empty">لا يوجد إنتاج مسجل.</div>:<div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الموظف</th><th>المنتج</th><th>المرحلة</th><th>نوع الإنتاج</th><th>الوردية</th><th>الكمية</th><th>السعر الأساسي</th><th>البونص</th><th>الخصم</th><th>إجمالي المستحق</th><th>الحالة</th><th></th></tr></thead><tbody>{entries.map(x=><tr key={x.id}><td>{x.work_date}</td><td className="strong">{x.employee_name}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.production_type_name||"—"}</td><td>{x.shift_name}</td><td>{x.quantity} {x.unit_name}</td><td>{Number(x.earning_amount).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{Number(x.bonus_amount||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{Number(x.deduction_amount||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td className="money strong">{Number(x.total_earning_amount??x.earning_amount).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td><span className={"status "+x.status.toLowerCase()}>{statusLabel[x.status]||x.status}</span></td><td>{x.status==="PENDING"&&<div className="row-actions">{has("production.edit")&&<button className="secondary-btn" onClick={()=>editEntry(x)}>تعديل</button>}{has("production.approve")&&<button className="approve-button" onClick={()=>review(x.id,"approve")}>اعتماد</button>}{has("production.reject")&&<button className="reject-button" onClick={()=>review(x.id,"reject")}>رفض</button>}</div>}</td></tr>)}</tbody></table></div>}
   </section>
