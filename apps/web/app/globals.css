@@ -539,6 +539,7 @@ tbody tr:last-child td{border-bottom:0}
 }
 .search-select-trigger:hover{border-color:#94a3b8}
 .search-select-trigger .placeholder{color:#a1adbd}
+.search-select-current{min-width:0;display:flex;align-items:center;gap:7px;overflow:hidden}.search-select-current-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.search-select-current-meta{flex:0 0 auto;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--muted);font-size:10px;font-weight:700;direction:ltr}.search-select-current.placeholder{color:#a1adbd}
 .search-select-chevron{color:#64748b;font-size:15px}
 .search-select-menu{
   position:absolute;
