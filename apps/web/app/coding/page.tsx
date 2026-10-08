@@ -42,7 +42,7 @@ export default function CodingPage(){
   e.preventDefault();setSaving(true);setError("");
   try{
    const result=await api<{data:Unit}>("/api/coding/units",{method:"POST",body:JSON.stringify({packagingTypeId:typeId,templateId:templateId||null,productId,productionOrderId:productionOrderId||null,orderStageId:orderStageId||null,productionEntryId:productionEntryId||null,batchCode:batch.trim()||null,quantity:Number(quantity),unitId:null,weight:weight?Number(weight):null,productionOwnerEmployeeId:productionOwner||null,packedByEmployeeId:packedBy||null,receivedByEmployeeId:receivedBy||null,packedAt:packedAt?new Date(packedAt).toISOString():null,warehouseId:warehouseId||null,locationId:locationId||null})});
-   setPrintUnit(result.data);setUnits(prev=>[result.data,...prev]);setQuantity("");setProductionOrderId("");setOrderStageId("");setWeight("");setBatch("");setProductionOwner("");setPackedBy("");setReceivedBy("");setPackedAt("");setWarehouseId("");setLocationId("");
+   setPrintUnit(result.data);setUnits(prev=>[result.data,...prev]);setQuantity("");setProductionOrderId("");setOrderStageId("");setProductionEntryId("");setWeight("");setBatch("");setProductionOwner("");setPackedBy("");setReceivedBy("");setPackedAt("");setWarehouseId("");setLocationId("");
    setTimeout(()=>window.print(),100);
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء التكويد")}finally{setSaving(false)}
  }
