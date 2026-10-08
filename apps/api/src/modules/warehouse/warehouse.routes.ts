@@ -65,6 +65,43 @@ export async function warehouseRoutes(app: FastifyInstance) {
     return {data:result.rows};
   });
 
+  app.post("/api/warehouse/locations/:id/deactivate",{preHandler:[authenticateRequest,requirePermission("warehouse.manage")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({targetWarehouseId:z.string().uuid().nullable().optional(),targetLocationId:z.string().uuid().nullable().optional()}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","وجهة النقل غير صحيحة",422);
+    const row=await withTransaction(async client=>{
+      const location=await client.query("SELECT l.*,w.name AS warehouse_name FROM warehouse_locations l JOIN warehouses w ON w.id=l.warehouse_id WHERE l.id=$1 FOR UPDATE",[id]);
+      if(!location.rowCount)throw new AppError("LOCATION_NOT_FOUND","المكان غير موجود",404);
+      if(!location.rows[0].is_active)return location.rows[0];
+      const stock=await client.query("SELECT product_id,quantity FROM stock_balances WHERE location_id=$1 AND quantity>0 FOR UPDATE",[id]);
+      if(stock.rowCount){
+        if(!parsed.data.targetWarehouseId||!parsed.data.targetLocationId){
+          throw new AppError("LOCATION_HAS_STOCK","المكان يحتوي على رصيد. اختر مخزنًا ومكانًا بديلًا لنقل الرصيد قبل التعطيل.",409);
+        }
+        if(parsed.data.targetWarehouseId===location.rows[0].warehouse_id&&parsed.data.targetLocationId===id)throw new AppError("INVALID_TRANSFER_TARGET","اختر مكانًا مختلفًا للنقل",422);
+        const target=await client.query("SELECT l.id,l.warehouse_id FROM warehouse_locations l JOIN warehouses w ON w.id=l.warehouse_id WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE",[parsed.data.targetLocationId,parsed.data.targetWarehouseId]);
+        if(!target.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان النقل غير موجود أو غير نشط",422);
+        for(const balance of stock.rows){
+          const lots=await client.query("SELECT id,remaining_quantity,unit_cost,batch_code FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[balance.product_id,location.rows[0].warehouse_id,id]);
+          for(const lot of lots.rows){
+            const qty=Number(lot.remaining_quantity);
+            const sourceCost=await changeBalance(client,balance.product_id,location.rows[0].warehouse_id,id,-qty,Number(lot.unit_cost));
+            const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,notes,created_by,reference_type) SELECT 'TRANSFER_OUT',$1,$2,$3,$4,p.unit_id,$5,$6,$7,'نقل قبل تعطيل المكان',$8,'LOCATION_DEACTIVATION' FROM products p WHERE p.id=$1 RETURNING id",[balance.product_id,location.rows[0].warehouse_id,id,qty,lot.unit_cost,qty*Number(lot.unit_cost),lot.batch_code,request.user!.userId]);
+            await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[lot.id]);
+            await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[source.rows[0].id,lot.id,qty,lot.unit_cost,qty*Number(lot.unit_cost)]);
+            await changeBalance(client,balance.product_id,parsed.data.targetWarehouseId!,parsed.data.targetLocationId!,qty,Number(lot.unit_cost));
+            const dest=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,notes,created_by,reference_type,reference_id) SELECT 'TRANSFER_IN',$1,$2,$3,$4,p.unit_id,$5,$6,$7,'نقل قبل تعطيل المكان',$8,'LOCATION_DEACTIVATION',$9 FROM products p WHERE p.id=$1 RETURNING id",[balance.product_id,parsed.data.targetWarehouseId,parsed.data.targetLocationId,qty,lot.unit_cost,qty*Number(lot.unit_cost),lot.batch_code,request.user!.userId,source.rows[0].id]);
+            await createInventoryLot(client,{productId:balance.product_id,warehouseId:parsed.data.targetWarehouseId!,locationId:parsed.data.targetLocationId!,quantity:qty,unitCost:Number(lot.unit_cost),batchCode:lot.batch_code,sourceType:"LOCATION_TRANSFER",sourceId:dest.rows[0].id});
+          }
+        }
+      }
+      const updated=await client.query("UPDATE warehouse_locations SET is_active=FALSE WHERE id=$1 RETURNING *",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"warehouse",entityType:"warehouse_location",entityId:id,beforeData:location.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return {data:row};
+  });
+
   app.get("/api/warehouse/locations",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
     const parsed=z.object({warehouseId:z.string().uuid().optional()}).safeParse(request.query);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","فلتر المخزن غير صحيح",422);
