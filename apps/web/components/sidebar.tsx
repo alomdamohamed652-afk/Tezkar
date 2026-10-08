@@ -25,7 +25,8 @@ const nav:NavItem[]=[
  {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
  {icon:"▰",label:"إنتاج الماكينات",href:"/machine-production",permissions:["machine_production.view"]},
  {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
- {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]}
+ {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
+ {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]}
 ];
 
 export function usePermissions(){
