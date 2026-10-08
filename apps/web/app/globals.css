@@ -831,3 +831,9 @@ tbody tr:last-child td{border-bottom:0}
 .finance-stats{margin-top:18px;margin-bottom:0;grid-template-columns:repeat(4,minmax(0,1fr))}
 .finance-two-col{margin-top:16px}.finance-detail{margin:18px 0 0}.finance-lists{margin-top:16px}
 @media(max-width:900px){.finance-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Shared finance / ERP page polish */
+.settings-page,.settings-page *{font-family:inherit}
+.finance-stats{gap:12px}.finance-lists{align-items:start}
+.finance-two-col .form-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.finance-two-col .form-actions{padding-top:0}
