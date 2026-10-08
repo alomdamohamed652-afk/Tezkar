@@ -123,6 +123,20 @@ export async function warehouseRoutes(app: FastifyInstance) {
     return {data:result.rows};
   });
 
+  app.get("/api/warehouse/lots",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+    const parsed=z.object({warehouseId:z.string().uuid().optional(),productId:z.string().uuid().optional()}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر دفعات التكلفة غير صحيحة",422);
+    const params:unknown[]=[];const where:string[]=["l.remaining_quantity>0"];
+    if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("l.warehouse_id=$"+params.length)}
+    if(parsed.data.productId){params.push(parsed.data.productId);where.push("l.product_id=$"+params.length)}
+    const r=await pool.query(`SELECT l.id,l.batch_code,l.unit_cost,l.original_quantity,l.remaining_quantity,l.source_type,l.created_at,
+      p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,loc.code AS location_code,loc.name AS location_name,u.name AS unit_name
+      FROM inventory_lots l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id
+      JOIN warehouse_locations loc ON loc.id=l.location_id JOIN units u ON u.id=p.unit_id
+      WHERE ${where.join(" AND ")} ORDER BY p.name,l.created_at,l.id`,params);
+    return {data:r.rows};
+  });
+
   app.get("/api/warehouse/movements",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
     const parsed=z.object({warehouseId:z.string().uuid().optional(),productId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(300).default(100)}).safeParse(request.query);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","فلاتر الحركات غير صحيحة",422);
