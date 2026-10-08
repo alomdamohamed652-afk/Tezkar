@@ -260,6 +260,11 @@ export async function productionRoutes(app: FastifyInstance) {
         }
       }
 
+      // The order stage is authoritative: production must use its configured
+      // stage/output product instead of trusting client-side selections.
+      if (os.output_product_id) parsed.data.productId = os.output_product_id;
+      parsed.data.stageId = os.stage_id;
+
       const stage = await client.query(
         "SELECT id FROM stages WHERE id=$1 AND is_active=TRUE",
         [parsed.data.stageId]
