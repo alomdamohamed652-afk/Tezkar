@@ -17,12 +17,25 @@ const locationSchema = z.object({
 });
 const movementSchema = z.object({
   movementType: z.enum(["IN","OUT","ADJUSTMENT","RETURN","TRANSFER_OUT"]),
-  productId: z.string().uuid(), warehouseId: z.string().uuid(), locationId: z.string().uuid(),
+  productId: z.string().uuid(), warehouseId: z.string().uuid(), locationId: z.string().uuid().nullable().optional(),
   quantity: z.number().positive(), cartonCode: z.string().trim().max(100).nullable().optional(),
   batchCode: z.string().trim().max(100).nullable().optional(), weight: z.number().nonnegative().nullable().optional(),
   notes: z.string().trim().max(500).nullable().optional(), adjustmentDirection: z.enum(["IN","OUT"]).default("IN"), unitCost: z.number().nonnegative().nullable().optional(), orderId: z.string().uuid().nullable().optional(), orderStageId: z.string().uuid().nullable().optional(), targetWarehouseId: z.string().uuid().optional(),
   targetLocationId: z.string().uuid().optional()
 });
+
+async function resolveLocation(client: import("pg").PoolClient, warehouseId: string, locationId?: string | null) {
+  if(locationId){
+    await assertLocation(client,warehouseId,locationId);
+    return locationId;
+  }
+  const result=await client.query(
+    "SELECT id FROM warehouse_locations WHERE warehouse_id=$1 AND is_active=TRUE ORDER BY code,id LIMIT 1",
+    [warehouseId]
+  );
+  if(!result.rowCount) throw new AppError("LOCATION_NOT_FOUND","لا يوجد مكان داخلي للمخزن. سيتم إنشاؤه تلقائيًا عند إعداد المخزن.",422);
+  return result.rows[0].id as string;
+}
 
 async function assertLocation(client: import("pg").PoolClient, warehouseId: string, locationId: string) {
   const result = await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[locationId,warehouseId]);
