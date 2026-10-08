@@ -24,8 +24,8 @@ export default function CodingPage(){
 
  async function load(){
   try{
-   const [t,tm,e,p,w,l,os,u]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/coding/products"),api<{data:Item[]}>("/api/coding/warehouses"),api<{data:Location[]}>("/api/coding/locations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:Unit[]}>("/api/coding/units")]);
-   setTypes(t.data);setTemplates(tm.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setOrderStages(os.data);setUnits(u.data);
+   const [t,tm,e,p,w,l,os,u,pr]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/coding/products"),api<{data:Item[]}>("/api/coding/warehouses"),api<{data:Location[]}>("/api/coding/locations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:Unit[]}>("/api/coding/units"),api<{data:ProductionReady[]}>("/api/coding/production-ready")]);
+   setTypes(t.data);setTemplates(tm.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setOrderStages(os.data);setUnits(u.data);setProductionReady(pr.data);
    if(!typeId&&t.data[0])setTypeId(t.data[0].id);
    if(!settingsTemplateId&&tm.data[0]){setSettingsTemplateId(tm.data[0].id);setSettingsWidth(String(tm.data[0].width_mm));setSettingsHeight(String(tm.data[0].height_mm));setSettingsOrientation(tm.data[0].orientation);setCompanyName(tm.data[0].config?.companyName||"تذكار");setCompanyAddress(tm.data[0].config?.companyAddress||"عنوان الشركة");setCompanyLogoUrl(tm.data[0].config?.logoUrl||"");}
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد")}
