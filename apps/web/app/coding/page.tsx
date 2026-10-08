@@ -25,7 +25,8 @@ export default function CodingPage(){
   try{
    const [t,tm,e,p,w,l,os,u]=await Promise.all([api<{data:Packaging[]}>("/api/coding/packaging-types"),api<{data:Template[]}>("/api/coding/templates"),api<{data:Item[]}>("/api/coding/employees"),api<{data:Item[]}>("/api/coding/products"),api<{data:Item[]}>("/api/coding/warehouses"),api<{data:Location[]}>("/api/coding/locations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:Unit[]}>("/api/coding/units")]);
    setTypes(t.data);setTemplates(tm.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setOrderStages(os.data);setUnits(u.data);
-   if(!typeId&&t.data[0])setTypeId(t.data[0].id);\n   if(!settingsTemplateId&&tm.data[0]){setSettingsTemplateId(tm.data[0].id);setSettingsWidth(String(tm.data[0].width_mm));setSettingsHeight(String(tm.data[0].height_mm));setSettingsOrientation(tm.data[0].orientation);setCompanyName(tm.data[0].config?.companyName||"تذكار");setCompanyAddress(tm.data[0].config?.companyAddress||"عنوان الشركة");}
+   if(!typeId&&t.data[0])setTypeId(t.data[0].id);
+   if(!settingsTemplateId&&tm.data[0]){setSettingsTemplateId(tm.data[0].id);setSettingsWidth(String(tm.data[0].width_mm));setSettingsHeight(String(tm.data[0].height_mm));setSettingsOrientation(tm.data[0].orientation);setCompanyName(tm.data[0].config?.companyName||"تذكار");setCompanyAddress(tm.data[0].config?.companyAddress||"عنوان الشركة");}
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد")}
  }
  useEffect(()=>{void load()},[]);
@@ -43,7 +44,12 @@ export default function CodingPage(){
    setTimeout(()=>window.print(),100);
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء التكويد")}finally{setSaving(false)}
  }
- async function saveTemplate(){\n  if(!settingsTemplateId)return;setSettingsSaving(true);setError("");\n  try{await api("/api/coding/templates/"+settingsTemplateId,{method:"PATCH",body:JSON.stringify({widthMm:Number(settingsWidth),heightMm:Number(settingsHeight),orientation:settingsOrientation,companyName,companyAddress})});await load()}\n  catch(e){setError(e instanceof Error?e.message:"تعذر حفظ إعدادات القالب")}finally{setSettingsSaving(false)}\n }\n async function reprint(unit:Unit){
+ async function saveTemplate(){
+  if(!settingsTemplateId)return;setSettingsSaving(true);setError("");
+  try{await api("/api/coding/templates/"+settingsTemplateId,{method:"PATCH",body:JSON.stringify({widthMm:Number(settingsWidth),heightMm:Number(settingsHeight),orientation:settingsOrientation,companyName,companyAddress})});await load()}
+  catch(e){setError(e instanceof Error?e.message:"تعذر حفظ إعدادات القالب")}finally{setSettingsSaving(false)}
+ }
+ async function reprint(unit:Unit){
   try{await api("/api/coding/units/"+unit.id+"/print",{method:"POST"});setPrintUnit(unit);setTimeout(()=>window.print(),100)}
   catch(e){setError(e instanceof Error?e.message:"تعذر إعادة الطباعة")}
  }
@@ -93,7 +99,7 @@ export default function CodingPage(){
     <div className="coding-print-data"><span>المنتج: <b>{printUnit.product_name}</b></span><span>التشغيل: <b>{printUnit.batch_code||"—"}</b></span><span>الكمية: <b>{printUnit.quantity}</b></span><span>الوزن: <b>{printUnit.weight??"—"}</b></span></div>
     <div className="coding-print-code">{printUnit.code}</div><Code128Barcode value={printUnit.code} height={Math.max(34,Math.min(52,printHeight*0.9))}/>
     <div className="coding-print-meta"><span>التقفيل: {printUnit.packed_at?new Date(printUnit.packed_at).toLocaleDateString("ar-EG"):"—"}</span><span>التكويد: {new Date(printUnit.coded_at).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"})}</span></div>
-    <div className="coding-print-address">عنوان الشركة</div>
+    <div className="coding-print-address">{printTemplate?.config?.companyAddress||"عنوان الشركة"}</div>
    </div></div>}
   </section>
  </main></div>;
