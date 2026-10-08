@@ -94,6 +94,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
             await createInventoryLot(client,{productId:balance.product_id,warehouseId:parsed.data.targetWarehouseId!,locationId:parsed.data.targetLocationId!,quantity:qty,unitCost:Number(lot.unit_cost),batchCode:lot.batch_code,sourceType:"LOCATION_TRANSFER",sourceId:dest.rows[0].id});
           }
         }
+        const remainingValue=await client.query("SELECT COALESCE(SUM(remaining_quantity*unit_cost),0) AS value,COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0",[balance.product_id,location.rows[0].warehouse_id,id]);
+        await client.query("UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=CASE WHEN $1>0 THEN $2/$1 ELSE 0 END,updated_at=now() WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5",[remainingValue.rows[0].quantity,remainingValue.rows[0].value,balance.product_id,location.rows[0].warehouse_id,id]);
       }
       const updated=await client.query("UPDATE warehouse_locations SET is_active=FALSE WHERE id=$1 RETURNING *",[id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"warehouse",entityType:"warehouse_location",entityId:id,beforeData:location.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
