@@ -84,6 +84,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(d.rows[0].status!=="READY")throw new AppError("INVALID_STATUS","إذن التسليم ليس جاهزًا للخروج",409);
    if(parsed.data.scanCode!==d.rows[0].code)throw new AppError("SCAN_MISMATCH","كود المسح لا يطابق إذن التسليم",409);
    if(!d.rows[0].order_id)throw new AppError("ORDER_REQUIRED","إذن التسليم يجب أن يكون مرتبطًا بطلبية",409);
+   const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[d.rows[0].order_id]);
+   if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية المرتبطة بإذن التسليم غير موجودة",409);
+   if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إخراج تسليم لطلبية ملغاة",409);
    const lines=await client.query("SELECT * FROM delivery_permission_lines WHERE delivery_permission_id=$1 ORDER BY id",[id]);
    for(const line of lines.rows){
     const orderLine=await client.query("SELECT quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 LIMIT 1",[d.rows[0].order_id,line.product_id]);
