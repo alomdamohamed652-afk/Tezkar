@@ -60,7 +60,7 @@ export async function codingRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/coding/templates",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request,reply)=>{
-    const parsed=z.object({name:z.string().trim().min(2).max(120),packagingTypeId:z.string().uuid().nullable().optional(),widthMm:z.number().positive().max(500),heightMm:z.number().positive().max(500),orientation:z.enum(["LANDSCAPE","PORTRAIT"]),companyName:z.string().trim().max(120).optional(),companyAddress:z.string().trim().max(250).optional(),logoUrl:z.string().trim().max(500).nullable().optional(),logoUrl:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
+    const parsed=z.object({name:z.string().trim().min(2).max(120),packagingTypeId:z.string().uuid().nullable().optional(),widthMm:z.number().positive().max(500),heightMm:z.number().positive().max(500),orientation:z.enum(["LANDSCAPE","PORTRAIT"]),companyName:z.string().trim().max(120).optional(),companyAddress:z.string().trim().max(250).optional(),logoUrl:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات مقاس التكويد غير صحيحة",422);
     const p=parsed.data;
     if(p.packagingTypeId){
@@ -82,7 +82,8 @@ export async function codingRoutes(app: FastifyInstance) {
       heightMm:z.number().positive().max(500),
       orientation:z.enum(["LANDSCAPE","PORTRAIT"]),
       companyName:z.string().trim().max(120).optional(),
-      companyAddress:z.string().trim().max(250).optional()
+      companyAddress:z.string().trim().max(250).optional(),
+      logoUrl:z.string().trim().max(500).nullable().optional()
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات قالب الطباعة غير صحيحة",422);
     const updated=await withTransaction(async(client)=>{
