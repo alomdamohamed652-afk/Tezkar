@@ -163,13 +163,15 @@ export async function orderRoutes(app: FastifyInstance) {
       // Build order lines from stage outputs so the same product is never requested twice.
       if (!lineInputs.length) {
         if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
+        const finalSequence=Math.max(...stages.map(s=>s.sequenceNo));
+        const finalStages=stages.filter(s=>s.sequenceNo===finalSequence);
         const derived = new Map<string,{productId?:string;productName?:string;quantity:number;notes?:string}>();
-        for (const stage of stages) {
+        for (const stage of finalStages) {
           if (!stage.outputProductId && !stage.outputProductName) continue;
           if (stage.plannedQuantity == null || stage.plannedQuantity <= 0) {
-            throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة لكل منتج ناتج من المرحلة",422);
+            throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة للمرحلة النهائية",422);
           }
-          const key=stage.outputProductId ?? stage.outputProductName!.trim().toLowerCase();
+          const key=stage.outputProductId ?? normalizeBusinessName(stage.outputProductName!);
           const current=derived.get(key);
           if (current) current.quantity += stage.plannedQuantity;
           else derived.set(key,{productId:stage.outputProductId,productName:stage.outputProductName,quantity:stage.plannedQuantity,notes:stage.notes});
