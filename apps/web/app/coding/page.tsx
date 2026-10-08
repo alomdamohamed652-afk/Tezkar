@@ -53,11 +53,7 @@ export default function CodingPage(){
   try{await api("/api/coding/units/"+unit.id+"/print",{method:"POST"});setPrintUnit(unit);setTimeout(()=>window.print(),100)}
   catch(e){setError(e instanceof Error?e.message:"تعذر إعادة الطباعة")}
  }
- async function cancel(unit:Unit){
-  setCancelTarget(unit);setCancelReason("");return;
-  try{await api("/api/coding/units/"+unit.id+"/cancel",{method:"POST",body:JSON.stringify({reason})});await load();setSelected(null)}
-  catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء التكويد")}
- }
+ function cancel(unit:Unit){setCancelTarget(unit);setCancelReason("");}
  const printTemplate=printUnit?templates.find(x=>x.id===printUnit.template_id):undefined;
  const printWidth=printTemplate?.width_mm??selectedType?.default_width_mm??80;
  const printHeight=printTemplate?.height_mm??selectedType?.default_height_mm??50;
