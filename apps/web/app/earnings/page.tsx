@@ -2,6 +2,7 @@
 
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {Sidebar,usePermissions} from "../../components/sidebar";
+import {SearchableSelect} from "../../components/searchable-select";
 import {api} from "../../lib/api";
 
 type Summary={total_earned:string;total_paid:string;remaining:string};
