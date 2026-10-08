@@ -247,16 +247,16 @@ export async function codingRoutes(app: FastifyInstance) {
         INSERT INTO coding_units
         (code,barcode,packaging_type_id,template_id,product_id,production_order_id,order_stage_id,batch_code,quantity,unit_id,weight,production_entry_id,
          production_owner_employee_id,packed_by_employee_id,received_by_employee_id,packed_at,coded_at,warehouse_id,location_id,status,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16,$17,$18,$19)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now(),$18,$19,$20,$21)
         RETURNING *
       `,[
         code,barcode,p.packagingTypeId,templateId,resolvedProductId,resolvedOrderId,resolvedOrderStageId,p.batchCode??null,p.quantity,
         p.unitId??product.rows[0].unit_id??null,p.weight??null,p.productionOwnerEmployeeId??null,p.packedByEmployeeId??null,
-        p.receivedByEmployeeId??null,p.packedAt??null,resolvedWarehouseId,resolvedLocationId,initialStatus,request.user!.userId,p.productionEntryId??null
+        p.productionEntryId??null,p.receivedByEmployeeId??null,p.packedAt??null,resolvedWarehouseId,resolvedLocationId,initialStatus,request.user!.userId
       ]);
 
       await client.query("INSERT INTO coding_unit_movements(coding_unit_id,movement_type,to_warehouse_id,to_location_id,notes,created_by) VALUES($1,$2,$3,$4,$5,$6)",[
-        row.rows[0].id,initialStatus,p.warehouseId??null,p.locationId??null,"تم إنشاء التكويد",request.user!.userId
+        row.rows[0].id,initialStatus,resolvedWarehouseId,resolvedLocationId,"تم إنشاء التكويد",request.user!.userId
       ]);
       await client.query("INSERT INTO coding_print_logs(coding_unit_id,print_type,template_id,printed_by) VALUES($1,'INITIAL',$2,$3)",[row.rows[0].id,templateId,request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"coding",entityType:"coding_unit",entityId:row.rows[0].id,afterData:row.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
