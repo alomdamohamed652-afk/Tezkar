@@ -173,14 +173,24 @@ export async function orderRoutes(app: FastifyInstance) {
           }
           const key=stage.outputProductId ?? normalizeBusinessName(stage.outputProductName!);
           const current=derived.get(key);
-          if (current) current.quantity += stage.plannedQuantity;
-          else derived.set(key,{productId:stage.outputProductId ?? undefined,productName:stage.outputProductName,quantity:stage.plannedQuantity,notes:stage.notes});
+          if (current) {
+            current.quantity += stage.plannedQuantity;
+          } else {
+            const entry:{productId?:string;productName?:string;quantity:number;notes?:string}={quantity:stage.plannedQuantity};
+            if(stage.outputProductId) entry.productId=stage.outputProductId;
+            else if(stage.outputProductName) entry.productName=stage.outputProductName;
+            if(stage.notes) entry.notes=stage.notes;
+            derived.set(key,entry);
+          }
         }
         if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","اكتب المنتج الناتج بجانب مرحلة واحدة على الأقل",422);
         lineInputs.push(...Array.from(derived.values()));
       }
       for (const line of lineInputs) {
-        const product=await ensureProduct(client,{productId:line.productId,productName:line.productName});
+        const product=await ensureProduct(
+          client,
+          line.productId ? {productId:line.productId} : {productName:line.productName!}
+        );
         const unitId=line.unitId ?? product.unit_id;
         await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5)",
           [order.id,product.id,line.quantity,unitId,line.notes ?? null]);
