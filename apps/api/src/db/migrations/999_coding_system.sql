@@ -129,3 +129,5 @@ SELECT 'قالب عام', id, 80, 50, 'LANDSCAPE',
  false
 FROM coding_packaging_types WHERE code='OTHER'
 AND NOT EXISTS (SELECT 1 FROM coding_templates WHERE name='قالب عام');
+
+INSERT INTO schema_migrations(version) VALUES ('999_coding_system') ON CONFLICT(version) DO NOTHING;
