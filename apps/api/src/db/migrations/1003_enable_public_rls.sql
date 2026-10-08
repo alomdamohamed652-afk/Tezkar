@@ -1,0 +1,63 @@
+-- Tezkar security hardening: prevent direct Supabase Data API access to application tables.
+-- The application uses the Fastify API with its PostgreSQL connection, not the Supabase Data API.
+ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.departments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.job_titles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.role_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.rate_groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.units ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.wage_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shifts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shift_leaders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.product_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.rates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.unit_conversions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.rate_change_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.worker_payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.employee_earnings_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.warehouses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.warehouse_locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_balances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.advance_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_methods ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cartons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_permission_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_order_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stage_outputs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.machines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.machine_productions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_preferences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.employee_custodies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.custody_settlements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.advance_repayments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.warehouse_receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.warehouse_receipt_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounting_expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_revenues ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_cost_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coding_packaging_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coding_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coding_units ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coding_unit_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coding_print_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coding_corrections ENABLE ROW LEVEL SECURITY;
+
+INSERT INTO schema_migrations(version)
+VALUES ('1003_enable_public_rls')
+ON CONFLICT(version) DO NOTHING;
