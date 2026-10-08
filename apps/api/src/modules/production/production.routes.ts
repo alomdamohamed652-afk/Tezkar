@@ -229,12 +229,6 @@ export async function productionRoutes(app: FastifyInstance) {
       }
       const resolvedLocationId = destination.rows[0].id;
 
-      const product = await client.query(
-        "SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",
-        [parsed.data.productId]
-      );
-      if (!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND", "المنتج غير موجود أو غير نشط", 422);
-
       if (parsed.data.orderStageId) {
         const orderStage = await client.query(
           `SELECT os.id,os.order_id,os.output_product_id,os.stage_id,po.status
@@ -258,13 +252,16 @@ export async function productionRoutes(app: FastifyInstance) {
         if (os.stage_id !== parsed.data.stageId) {
           throw new AppError("ORDER_STAGE_STAGE_MISMATCH","مرحلة الإنتاج لا تطابق مرحلة الطلب المرتبطة",409);
         }
+        if (!os.output_product_id) throw new AppError("ORDER_STAGE_PRODUCT_REQUIRED","المرحلة لا تحتوي على منتج ناتج محدد",422);
+        parsed.data.productId = os.output_product_id;
+        parsed.data.stageId = os.stage_id;
       }
 
-      // The order stage is authoritative: production must use its configured
-      // stage/output product instead of trusting client-side selections.
-      if (!os.output_product_id) throw new AppError("ORDER_STAGE_PRODUCT_REQUIRED","المرحلة لا تحتوي على منتج ناتج محدد",422);
-      parsed.data.productId = os.output_product_id;
-      parsed.data.stageId = os.stage_id;
+      const product = await client.query(
+        "SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",
+        [parsed.data.productId]
+      );
+      if (!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND", "المنتج غير موجود أو غير نشط", 422);
 
       const stage = await client.query(
         "SELECT id FROM stages WHERE id=$1 AND is_active=TRUE",
