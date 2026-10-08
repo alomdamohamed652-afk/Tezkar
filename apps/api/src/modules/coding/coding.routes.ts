@@ -153,8 +153,9 @@ export async function codingRoutes(app: FastifyInstance) {
 
       let templateId=p.templateId??null;
       if(templateId){
-        const t=await client.query("SELECT id FROM coding_templates WHERE id=$1 AND is_active=TRUE",[templateId]);
+        const t=await client.query("SELECT id,packaging_type_id FROM coding_templates WHERE id=$1 AND is_active=TRUE",[templateId]);
         if(!t.rowCount)throw new AppError("TEMPLATE_NOT_FOUND","قالب الطباعة غير موجود",422);
+        if(t.rows[0].packaging_type_id && t.rows[0].packaging_type_id!==p.packagingTypeId)throw new AppError("TEMPLATE_PACKAGING_MISMATCH","قالب الطباعة لا يطابق نوع العبوة",409);
       }else{
         const t=await client.query("SELECT id FROM coding_templates WHERE packaging_type_id=$1 AND is_active=TRUE ORDER BY is_default DESC LIMIT 1",[p.packagingTypeId]);
         templateId=t.rows[0]?.id??null;
