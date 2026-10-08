@@ -837,3 +837,9 @@ tbody tr:last-child td{border-bottom:0}
 .finance-stats{gap:12px}.finance-lists{align-items:start}
 .finance-two-col .form-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 .finance-two-col .form-actions{padding-top:0}
+
+.report-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.report-summary-grid>div{padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);display:grid;gap:4px}
+.report-summary-grid span{font-size:11px;color:var(--muted)}
+.report-summary-grid strong{font-size:22px;color:var(--ink)}
+@media(max-width:700px){.report-summary-grid{grid-template-columns:1fr}}
