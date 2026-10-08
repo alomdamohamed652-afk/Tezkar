@@ -10,7 +10,7 @@ import { createInventoryLot } from "./inventory-lots.service.js";
 const line=z.object({
   productId:z.string().uuid(),
   warehouseId:z.string().uuid(),
-  locationId:z.string().uuid(),
+  locationId:z.string().uuid().nullable().optional(),
   quantity:z.number().positive(),
   unitCost:z.number().nonnegative().default(0),
   batchCode:z.string().trim().max(100).optional(),
@@ -27,6 +27,12 @@ const schema=z.object({
 async function assertLocation(client:import("pg").PoolClient,w:string,l:string){
  const r=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[l,w]);
  if(!r.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);
+}
+async function resolveLocation(client:import("pg").PoolClient,w:string,l?:string|null){
+ if(l){await assertLocation(client,w,l);return l;}
+ const r=await client.query("SELECT id FROM warehouse_locations WHERE warehouse_id=$1 AND is_active=TRUE ORDER BY code,id LIMIT 1",[w]);
+ if(!r.rowCount)throw new AppError("LOCATION_NOT_FOUND","لا يوجد مكان داخلي للمخزن",422);
+ return r.rows[0].id as string;
 }
 async function addStock(client:import("pg").PoolClient,p:string,w:string,l:string,q:number,cost:number){
  const r=await client.query("SELECT quantity,avg_unit_cost,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[p,w,l]);
@@ -62,11 +68,11 @@ export async function receiptRoutes(app:FastifyInstance){
    for(const item of p.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[item.productId]);
     if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",422);
-    await assertLocation(client,item.warehouseId,item.locationId);
-    const stock=await addStock(client,item.productId,item.warehouseId,item.locationId,item.quantity,item.unitCost);
-    const lineRow=await client.query("INSERT INTO warehouse_receipt_lines(receipt_id,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,batch_code,weight,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[r.rows[0].id,item.productId,item.warehouseId,item.locationId,item.quantity,product.rows[0].unit_id,item.unitCost,item.batchCode??null,item.weight??null,item.notes??null]);
-    const movement=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,weight,reference_type,reference_id,notes,created_by) VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'RECEIPT',$10,$11,$12) RETURNING id",[item.productId,item.warehouseId,item.locationId,item.quantity,product.rows[0].unit_id,item.unitCost,stock.totalCost,item.batchCode??null,item.weight??null,r.rows[0].id,"Receipt "+r.rows[0].code,request.user!.userId]);
-    await createInventoryLot(client,{productId:item.productId,warehouseId:item.warehouseId,locationId:item.locationId,quantity:item.quantity,unitCost:item.unitCost,batchCode:item.batchCode??null,sourceType:"RECEIPT",sourceId:r.rows[0].id});
+    const locationId=await resolveLocation(client,item.warehouseId,locationId);
+    const stock=await addStock(client,item.productId,item.warehouseId,locationId,item.quantity,item.unitCost);
+    const lineRow=await client.query("INSERT INTO warehouse_receipt_lines(receipt_id,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,batch_code,weight,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[r.rows[0].id,item.productId,item.warehouseId,locationId,item.quantity,product.rows[0].unit_id,item.unitCost,item.batchCode??null,item.weight??null,item.notes??null]);
+    const movement=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,weight,reference_type,reference_id,notes,created_by) VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'RECEIPT',$10,$11,$12) RETURNING id",[item.productId,item.warehouseId,locationId,item.quantity,product.rows[0].unit_id,item.unitCost,stock.totalCost,item.batchCode??null,item.weight??null,r.rows[0].id,"Receipt "+r.rows[0].code,request.user!.userId]);
+    await createInventoryLot(client,{productId:item.productId,warehouseId:item.warehouseId,locationId:locationId,quantity:item.quantity,unitCost:item.unitCost,batchCode:item.batchCode??null,sourceType:"RECEIPT",sourceId:r.rows[0].id});
 
    }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"warehouse_receipt",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
