@@ -55,7 +55,7 @@ export default function EarningsPage() {
     })();
   }, []);
 
-  const money = (value: string) => Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = (value: string) => Number(value).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
     <div className="app-shell"><Sidebar active="/earnings"/><main className="main">
@@ -101,7 +101,7 @@ export default function EarningsPage() {
                   <td>{entry.credit_amount !== "0.0000" ? money(entry.credit_amount) : "—"}</td>
                   <td>{entry.debit_amount !== "0.0000" ? money(entry.debit_amount) : "—"}</td>
                   <td>{entry.production_code ?? entry.payment_code ?? "—"}</td>
-                  <td>{new Date(entry.created_at).toLocaleString("en-GB")}</td>
+                  <td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td>
                 </tr>
               ))}
               {!entries.length && <tr><td colSpan={isWorker ? 6 : 7}>لا توجد حركات حتى الآن.</td></tr>}
