@@ -47,6 +47,12 @@ export default function ShiftWithdrawalsPage(){
  const employeeOptions=useMemo(()=>assignedEmployees.map(x=>({value:x.id,label:x.full_name||x.name,meta:x.code})),[assignedEmployees]);
  const activeStageOptions=useMemo(()=>orderStages.filter(x=>x.order_id===orderId&&x.status!=="COMPLETED"&&x.status!=="CANCELLED").map(x=>({value:x.id,label:x.stage_name,meta:x.output_product_name||""})),[orderStages,orderId]);
 
+ function printWithdrawal(row:Row){
+  const w=window.open("","_blank","width=720,height=820");
+  if(!w)return;
+  w.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${row.code}</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#111}h1{margin:0 0 8px}table{width:100%;border-collapse:collapse;margin-top:24px}td,th{border:1px solid #ddd;padding:10px;text-align:right}.muted{color:#666;font-size:13px}.code{font-family:monospace}</style></head><body><h1>مسحوبات الوردية</h1><div class="code">${row.code}</div><p>التاريخ: ${row.withdrawal_date}</p><p>الوردية: ${row.shift_name}</p><p>الموظف المسؤول: ${row.employee_name||"—"}</p><p>الطلبية: ${row.order_code?`${row.order_code} — ${row.order_name}`:"عام"}</p><table><thead><tr><th>عدد الأصناف</th><th>إجمالي الكمية</th></tr></thead><tbody><tr><td>${row.line_count}</td><td>${row.total_quantity}</td></tr></tbody></table><p class="muted">هذا الإذن مرقم تسلسليًا من نظام تذكار.</p><script>window.onload=()=>window.print();</script></body></html>`);
+  w.document.close();
+ }
  function update(i:number,key:keyof Line,value:string){setLines(a=>a.map((x,n)=>n===i?{...x,[key]:value}:x))}
  function add(){setLines(a=>[...a,{productId:"",warehouseId:"",quantity:"",notes:""}])}
  function remove(i:number){setLines(a=>a.filter((_,n)=>n!==i))}
@@ -85,8 +91,8 @@ export default function ShiftWithdrawalsPage(){
    </form>
 
    <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{rows.length}</span></div>
-    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th></tr></thead>
-     <tbody>{rows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td></tr>)}{!rows.length&&<tr><td colSpan={7}>لا توجد مسحوبات.</td></tr>}</tbody>
+    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead>
+     <tbody>{rows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!rows.length&&<tr><td colSpan={7}>لا توجد مسحوبات.</td></tr>}</tbody>
     </table></div>
    </section>
   </section></main></div>;
