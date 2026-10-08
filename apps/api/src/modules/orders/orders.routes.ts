@@ -11,9 +11,7 @@ const orderLineSchema = z.object({
   productName: z.string().trim().min(2).max(200).optional(),
   quantity: z.number().positive(),
   unitId: z.string().uuid().optional(),
-  notes: z.string().trim().max(500).optional(),
-  stageRate: z.number().nonnegative().nullable().optional(),
-  stageRateMethod: z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional()
+  notes: z.string().trim().max(500).optional()
 }).refine(x => Boolean(x.productId || x.productName), { message: "اسم المنتج أو معرف المنتج مطلوب" });
 
 const orderStageSchema = z.object({
@@ -23,7 +21,9 @@ const orderStageSchema = z.object({
   outputProductName: z.string().trim().min(2).max(200).optional(),
   sequenceNo: z.number().int().positive(),
   plannedQuantity: z.number().nonnegative().optional(),
-  notes: z.string().trim().max(500).optional()
+  notes: z.string().trim().max(500).optional(),
+  stageRate: z.number().nonnegative().nullable().optional(),
+  stageRateMethod: z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional()
 }).refine(x => Boolean(x.stageId || x.stageName), { message: "اسم المرحلة أو معرف المرحلة مطلوب" });
 
 const orderSchema = z.object({
