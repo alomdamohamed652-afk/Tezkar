@@ -1,15 +1,20 @@
 "use client";
 import {useEffect,useState} from "react";
 import {api} from "../../lib/api";
-import {Sidebar} from "../../components/sidebar";
+import {Sidebar,usePermissions} from "../../components/sidebar";
 
 type Summary={production:{entries:number;quantity:string;earnings:string};stock:{lines:number;quantity:string};earnings:{earned:string;debited:string;balance:string};pendingPayments:number;pendingAdvances:number};
 type Audit={id:number;occurred_at:string;action:string;module:string;entity_type:string;username:string|null;employee_name:string|null};
 type Production={work_date:string;production_code:string;employee_name:string;product_name:string;stage_name:string;shift_name:string;quantity:number;unit_name:string;earning_amount:number;status:string};
 
 export default function ReportsPage(){
+ const {has}=usePermissions();
  const [summary,setSummary]=useState<Summary|null>(null),[audit,setAudit]=useState<Audit[]>([]),[production,setProduction]=useState<Production[]>([]),[error,setError]=useState("");
- useEffect(()=>{Promise.all([api<{data:Summary}>("/api/reports/summary"),api<{data:Audit[]}>("/api/audit-log?limit=100"),api<{data:Production[]}>("/api/reports/production")]).then(([s,a,p])=>{setSummary(s.data);setAudit(a.data);setProduction(p.data)}).catch(e=>setError(e instanceof Error?e.message:"تعذر تحميل التقارير"))},[]);
+ useEffect(()=>{(async()=>{try{
+   const requests=[api<{data:Summary}>("/api/reports/summary"),api<{data:Production[]}>("/api/reports/production")];
+   const [s,p]=await Promise.all(requests);setSummary(s.data);setProduction(p.data);
+   if(has("audit.view")){const a=await api<{data:Audit[]}>("/api/audit-log?limit=100");setAudit(a.data);}
+ }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل التقارير")}})()},[has]);
  const n=(x:string|number)=>Number(x||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
  return <div className="app-shell"><Sidebar active="/reports"/><main className="main"><header className="topbar"><div><h1 className="page-title">التقارير</h1><p className="page-subtitle">التشغيل، المخزون، المستحقات، وسجل العمليات في مكان واحد.</p></div></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
