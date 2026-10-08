@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { createInventoryLot } from "./inventory-lots.service.js";
 
 const line=z.object({
   productId:z.string().uuid(),
@@ -64,7 +65,9 @@ export async function receiptRoutes(app:FastifyInstance){
     await assertLocation(client,item.warehouseId,item.locationId);
     const stock=await addStock(client,item.productId,item.warehouseId,item.locationId,item.quantity,item.unitCost);
     const lineRow=await client.query("INSERT INTO warehouse_receipt_lines(receipt_id,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,batch_code,weight,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[r.rows[0].id,item.productId,item.warehouseId,item.locationId,item.quantity,product.rows[0].unit_id,item.unitCost,item.batchCode??null,item.weight??null,item.notes??null]);
-    await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,weight,reference_type,reference_id,notes,created_by) VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'RECEIPT',$10,$11,$12)",[item.productId,item.warehouseId,item.locationId,item.quantity,product.rows[0].unit_id,item.unitCost,stock.totalCost,item.batchCode??null,item.weight??null,r.rows[0].id,"Receipt "+r.rows[0].code,request.user!.userId]);
+    const movement=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,weight,reference_type,reference_id,notes,created_by) VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'RECEIPT',$10,$11,$12) RETURNING id",[item.productId,item.warehouseId,item.locationId,item.quantity,product.rows[0].unit_id,item.unitCost,stock.totalCost,item.batchCode??null,item.weight??null,r.rows[0].id,"Receipt "+r.rows[0].code,request.user!.userId]);
+    await createInventoryLot(client,{productId:item.productId,warehouseId:item.warehouseId,locationId:item.locationId,quantity:item.quantity,unitCost:item.unitCost,batchCode:item.batchCode??null,sourceType:"RECEIPT",sourceId:r.rows[0].id});
+
    }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"warehouse_receipt",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
