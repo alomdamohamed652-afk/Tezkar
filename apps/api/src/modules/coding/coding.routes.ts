@@ -247,7 +247,7 @@ export async function codingRoutes(app: FastifyInstance) {
         INSERT INTO coding_units
         (code,barcode,packaging_type_id,template_id,product_id,production_order_id,order_stage_id,batch_code,quantity,unit_id,weight,production_entry_id,
          production_owner_employee_id,packed_by_employee_id,received_by_employee_id,packed_at,coded_at,warehouse_id,location_id,status,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now(),$18,$19,$20,$21)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now(),$17,$18,$19,$20)
         RETURNING *
       `,[
         code,barcode,p.packagingTypeId,templateId,resolvedProductId,resolvedOrderId,resolvedOrderStageId,p.batchCode??null,p.quantity,
