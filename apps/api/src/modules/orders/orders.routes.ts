@@ -328,20 +328,42 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
-    if(parsed.data.orderStageId){
-      const stage=await pool.query("SELECT id FROM order_stages WHERE id=$1",[parsed.data.orderStageId]);
-      if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
-    }
-    const product = await pool.query("SELECT unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
-    if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
-    const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
-    const r=await pool.query(
-      `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       RETURNING *`,
-      [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
-    );
-    return reply.code(201).send({data:r.rows[0]});
+    const row=await withTransaction(async(client)=>{
+      const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
+      if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
+      const product = await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
+      if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+      if(parsed.data.employeeId){
+        const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);
+        if(!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      }
+      if(parsed.data.shiftId){
+        const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[parsed.data.shiftId]);
+        if(!shift.rowCount) throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
+      }
+      if(parsed.data.productionTypeId){
+        const type=await client.query("SELECT id FROM production_types WHERE id=$1 AND is_active=TRUE",[parsed.data.productionTypeId]);
+        if(!type.rowCount) throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود أو غير نشط",422);
+      }
+      if(parsed.data.orderStageId){
+        const stage=await client.query(`SELECT os.id,os.order_id,os.stage_id,os.output_product_id,po.status
+          FROM order_stages os JOIN production_orders po ON po.id=os.order_id
+          WHERE os.id=$1 FOR UPDATE`,[parsed.data.orderStageId]);
+        if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const s=stage.rows[0];
+        if(s.status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية ملغاة",409);
+        if(s.output_product_id && s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
+      }
+      const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
+      const r=await client.query(
+        `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
+      );
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return r.rows[0];
+    });
+    return reply.code(201).send({data:row});
   });
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
