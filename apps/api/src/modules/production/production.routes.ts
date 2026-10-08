@@ -417,6 +417,26 @@ export async function productionRoutes(app: FastifyInstance) {
         [request.user!.userId, id]
       );
 
+      if (current.order_stage_id) {
+        const stageUpdate=await client.query(
+          `UPDATE order_stages
+              SET completed_quantity=completed_quantity+$1,
+                  status=CASE
+                    WHEN planned_quantity IS NOT NULL AND completed_quantity+$1 >= planned_quantity THEN 'COMPLETED'
+                    WHEN status='PENDING' THEN 'IN_PROGRESS'
+                    ELSE status
+                  END,
+                  completed_at=CASE
+                    WHEN planned_quantity IS NOT NULL AND completed_quantity+$1 >= planned_quantity THEN COALESCE(completed_at,now())
+                    ELSE completed_at
+                  END
+            WHERE id=$2
+            RETURNING id,order_id,completed_quantity,status`,
+          [current.quantity,current.order_stage_id]
+        );
+        if(!stageUpdate.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب المرتبطة بالإنتاج غير موجودة",409);
+      }
+
       await client.query(
         `INSERT INTO employee_earnings_ledger(
            employee_id,entry_type,credit_amount,production_entry_id,created_by,notes
