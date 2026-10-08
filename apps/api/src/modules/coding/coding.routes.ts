@@ -11,6 +11,7 @@ const createSchema = z.object({
   templateId: z.string().uuid().nullable().optional(),
   productId: z.string().uuid(),
   productionOrderId: z.string().uuid().nullable().optional(),
+  orderStageId: z.string().uuid().nullable().optional(),
   batchCode: z.string().trim().max(100).nullable().optional(),
   quantity: z.number().positive(),
   unitId: z.string().uuid().nullable().optional(),
@@ -127,6 +128,17 @@ export async function codingRoutes(app: FastifyInstance) {
       const pt=await client.query("SELECT * FROM coding_packaging_types WHERE id=$1 AND is_active=TRUE",[p.packagingTypeId]);
       if(!pt.rowCount)throw new AppError("PACKAGING_TYPE_NOT_FOUND","نوع العبوة غير موجود",422);
       const product=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[p.productId]);
+      if(p.productionOrderId){
+        const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.productionOrderId]);
+        if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",422);
+        if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تكويد إنتاج من طلبية ملغاة",409);
+      }
+      if(p.orderStageId){
+        const stage=await client.query("SELECT id,order_id,output_product_id FROM order_stages WHERE id=$1 FOR UPDATE",[p.orderStageId]);
+        if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        if(p.productionOrderId && stage.rows[0].order_id!==p.productionOrderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الطلب لا تنتمي إلى الطلبية المحددة",409);
+        if(stage.rows[0].output_product_id && stage.rows[0].output_product_id!==p.productId)throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من المرحلة",409);
+      }
       if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود",422);
 
       let templateId=p.templateId??null;
