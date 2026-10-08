@@ -176,7 +176,10 @@ export async function productionRoutes(app: FastifyInstance) {
     preHandler: [authenticateRequest, requirePermission("production.create")]
   }, async (request, reply) => {
     const parsed = createSchema.safeParse(request.body);
-    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات الإنتاج غير صحيحة", 422);
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
+      throw new AppError("VALIDATION_ERROR", firstIssue?.message || "بيانات الإنتاج غير صحيحة", 422);
+    }
 
     const row = await withTransaction(async (client) => {
       const worker = await isWorker(client, request.user!.userId);
