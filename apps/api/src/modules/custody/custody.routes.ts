@@ -99,7 +99,7 @@ const cashSchema=z.object({
 async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined){
   const user=await client.query(`SELECT u.employee_id,EXISTS(
     SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
-    WHERE ur.user_id=$1 AND r.code IN ('manager','finance','accountant') AND r.is_active=TRUE
+    WHERE ur.user_id=$1 AND r.code IN ('admin','manager','finance','accountant') AND r.is_active=TRUE
   ) AS is_finance FROM users u WHERE u.id=$1`,[userId]);
   const row=user.rows[0];
   if(!row)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",403);
