@@ -59,6 +59,22 @@ export async function codingRoutes(app: FastifyInstance) {
     return {data:r.rows};
   });
 
+  app.post("/api/coding/templates",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request,reply)=>{
+    const parsed=z.object({name:z.string().trim().min(2).max(120),packagingTypeId:z.string().uuid().nullable().optional(),widthMm:z.number().positive().max(500),heightMm:z.number().positive().max(500),orientation:z.enum(["LANDSCAPE","PORTRAIT"]),companyName:z.string().trim().max(120).optional(),companyAddress:z.string().trim().max(250).optional(),logoUrl:z.string().trim().max(500).nullable().optional(),logoUrl:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات مقاس التكويد غير صحيحة",422);
+    const p=parsed.data;
+    if(p.packagingTypeId){
+      const pt=await pool.query("SELECT id FROM coding_packaging_types WHERE id=$1 AND is_active=TRUE",[p.packagingTypeId]);
+      if(!pt.rowCount)throw new AppError("PACKAGING_TYPE_NOT_FOUND","نوع العبوة غير موجود",422);
+    }
+    const row=await withTransaction(async client=>{
+      const x=await client.query("INSERT INTO coding_templates(name,packaging_type_id,width_mm,height_mm,orientation,config,is_default) VALUES($1,$2,$3,$4,$5,$6,false) RETURNING *",[p.name,p.packagingTypeId??null,p.widthMm,p.heightMm,p.orientation,JSON.stringify({companyName:p.companyName??"تذكار",companyAddress:p.companyAddress??"عنوان الشركة",logoUrl:p.logoUrl??null})]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"coding",entityType:"coding_template",entityId:x.rows[0].id,afterData:x.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return x.rows[0];
+    });
+    return reply.code(201).send({data:row});
+  });
+
   app.patch("/api/coding/templates/:id",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request)=>{
     const id=String((request.params as {id:string}).id);
     const parsed=z.object({
@@ -74,7 +90,7 @@ export async function codingRoutes(app: FastifyInstance) {
       if(!current.rowCount)throw new AppError("TEMPLATE_NOT_FOUND","قالب الطباعة غير موجود",404);
       const p=parsed.data;
       const oldConfig=current.rows[0].config||{};
-      const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة"};
+      const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة",logoUrl:p.logoUrl??oldConfig.logoUrl??null};
       const row=await client.query("UPDATE coding_templates SET width_mm=$1,height_mm=$2,orientation=$3,config=$4 WHERE id=$5 RETURNING *",[p.widthMm,p.heightMm,p.orientation,JSON.stringify(config),id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"coding",entityType:"coding_template",entityId:id,beforeData:current.rows[0],afterData:row.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return row.rows[0];
