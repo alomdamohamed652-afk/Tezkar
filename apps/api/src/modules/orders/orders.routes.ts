@@ -360,4 +360,24 @@ export async function orderRoutes(app: FastifyInstance) {
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
   });
+
+  app.get("/api/orders/:id/reconciliation",{preHandler:[authenticateRequest,requirePermission("orders.dashboard")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const order=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1",[id]);
+    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+    const [ordered,produced,delivered,stock] = await Promise.all([
+      pool.query("SELECT product_id,COALESCE(SUM(quantity),0) AS quantity FROM production_order_lines WHERE order_id=$1 GROUP BY product_id",[id]),
+      pool.query("SELECT pe.product_id,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' GROUP BY pe.product_id",[id]),
+      pool.query("SELECT dl.product_id,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions d ON d.id=dl.delivery_permission_id WHERE d.order_id=$1 AND d.status='RELEASED' GROUP BY dl.product_id",[id]),
+      pool.query("SELECT sm.product_id,COALESCE(SUM(CASE WHEN sm.movement_type IN ('OUT','TRANSFER_OUT') THEN sm.quantity WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') THEN -sm.quantity ELSE 0 END),0) AS net_used FROM stock_movements sm WHERE sm.order_id=$1 GROUP BY sm.product_id",[id])
+    ]);
+    const map=new Map<string,{ordered:number;produced:number;delivered:number;netUsed:number}>();
+    for(const row of ordered.rows)map.set(row.product_id,{ordered:Number(row.quantity),produced:0,delivered:0,netUsed:0});
+    for(const row of produced.rows){const x=map.get(row.product_id)||{ordered:0,produced:0,delivered:0,netUsed:0};x.produced=Number(row.quantity);map.set(row.product_id,x)}
+    for(const row of delivered.rows){const x=map.get(row.product_id)||{ordered:0,produced:0,delivered:0,netUsed:0};x.delivered=Number(row.quantity);map.set(row.product_id,x)}
+    for(const row of stock.rows){const x=map.get(row.product_id)||{ordered:0,produced:0,delivered:0,netUsed:0};x.netUsed=Number(row.net_used);map.set(row.product_id,x)}
+    const products=[...map.entries()].map(([productId,x])=>({productId,...x,productionVariance:x.produced-x.ordered,deliveryVsProduction:x.delivered-x.produced,stockVsDelivery:x.netUsed-x.delivered}));
+    return {data:{order:order.rows[0],products,ok:products.every(x=>x.produced<=x.ordered+1e-9 && x.delivered<=x.produced+1e-9 && x.stockVsDelivery<=1e-9)}};
+  });
+
 }
