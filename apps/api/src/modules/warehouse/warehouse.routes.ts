@@ -66,10 +66,41 @@ async function changeBalance(client: import("pg").PoolClient, productId: string,
 export async function warehouseRoutes(app: FastifyInstance) {
   app.delete("/api/warehouses/:id",{preHandler:[authenticateRequest,requirePermission("warehouses.delete")]},async(req)=>{
     const id=(req.params as {id:string}).id;
-    const stock=await pool.query("SELECT COALESCE(SUM(quantity),0) AS q FROM stock_balances WHERE warehouse_id=$1",[id]);
-    if(Number(stock.rows[0].q)>0)throw new AppError("WAREHOUSE_HAS_STOCK","لا يمكن تعطيل مخزن به رصيد. انقل الرصيد أولاً.",409);
-    const r=await pool.query("UPDATE warehouses SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
-    if(!r.rowCount)throw new AppError("WAREHOUSE_NOT_FOUND","المخزن غير موجود",404);return {data:r.rows[0]};
+    const parsed=z.object({targetWarehouseId:z.string().uuid().nullable().optional(),targetLocationId:z.string().uuid().nullable().optional()}).safeParse(req.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","وجهة النقل غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const source=await client.query("SELECT * FROM warehouses WHERE id=$1 FOR UPDATE",[id]);
+      if(!source.rowCount)throw new AppError("WAREHOUSE_NOT_FOUND","المخزن غير موجود",404);
+      if(!source.rows[0].is_active)return source.rows[0];
+
+      const stock=await client.query("SELECT product_id,warehouse_id,location_id,quantity FROM stock_balances WHERE warehouse_id=$1 AND quantity>0 FOR UPDATE",[id]);
+      if(stock.rowCount){
+        if(!parsed.data.targetWarehouseId||!parsed.data.targetLocationId)
+          throw new AppError("WAREHOUSE_HAS_STOCK","المخزن يحتوي على رصيد. اختر مخزنًا ومكانًا بديلًا لنقل الرصيد قبل التعطيل.",409);
+        if(parsed.data.targetWarehouseId===id)throw new AppError("INVALID_TRANSFER_TARGET","اختر مخزنًا مختلفًا كوجهة للنقل",422);
+        const target=await client.query("SELECT l.id,l.warehouse_id FROM warehouse_locations l JOIN warehouses w ON w.id=l.warehouse_id WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE",[parsed.data.targetLocationId,parsed.data.targetWarehouseId]);
+        if(!target.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان النقل غير موجود أو غير نشط",422);
+
+        for(const balance of stock.rows){
+          const lots=await client.query("SELECT id,remaining_quantity,unit_cost,batch_code FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[balance.product_id,id,balance.location_id]);
+          for(const lot of lots.rows){
+            const qty=Number(lot.remaining_quantity);
+            await changeBalance(client,balance.product_id,id,balance.location_id,-qty,Number(lot.unit_cost));
+            const sourceMovement=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,notes,created_by,reference_type) SELECT 'TRANSFER_OUT',$1,$2,$3,$4,p.unit_id,$5,$6,$7,'نقل قبل تعطيل المخزن',$8,'WAREHOUSE_DEACTIVATION' FROM products p WHERE p.id=$1 RETURNING id",[balance.product_id,id,balance.location_id,qty,lot.unit_cost,qty*Number(lot.unit_cost),lot.batch_code,req.user!.userId]);
+            await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[lot.id]);
+            await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[sourceMovement.rows[0].id,lot.id,qty,lot.unit_cost,qty*Number(lot.unit_cost)]);
+            await changeBalance(client,balance.product_id,parsed.data.targetWarehouseId!,parsed.data.targetLocationId!,qty,Number(lot.unit_cost));
+            const destinationMovement=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,notes,created_by,reference_type,reference_id) SELECT 'TRANSFER_IN',$1,$2,$3,$4,p.unit_id,$5,$6,$7,'نقل قبل تعطيل المخزن',$8,'WAREHOUSE_DEACTIVATION',$9 FROM products p WHERE p.id=$1 RETURNING id",[balance.product_id,parsed.data.targetWarehouseId,parsed.data.targetLocationId,qty,lot.unit_cost,qty*Number(lot.unit_cost),lot.batch_code,req.user!.userId,sourceMovement.rows[0].id]);
+            await createInventoryLot(client,{productId:balance.product_id,warehouseId:parsed.data.targetWarehouseId!,locationId:parsed.data.targetLocationId!,quantity:qty,unitCost:Number(lot.unit_cost),batchCode:lot.batch_code,sourceType:"WAREHOUSE_TRANSFER",sourceId:destinationMovement.rows[0].id});
+          }
+          await client.query("UPDATE stock_balances SET quantity=0,inventory_value=0,avg_unit_cost=0,updated_at=now() WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",[balance.product_id,id,balance.location_id]);
+        }
+      }
+      const updated=await client.query("UPDATE warehouses SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+      await writeAudit(client,{actorUserId:req.user!.userId,actorEmployeeId:req.user!.employeeId,action:"deactivate",module:"warehouse",entityType:"warehouse",entityId:id,beforeData:source.rows[0],afterData:updated.rows[0],metadata:{targetWarehouseId:parsed.data.targetWarehouseId??null,targetLocationId:parsed.data.targetLocationId??null,movedLines:stock.rowCount},ipAddress:req.ip,userAgent:req.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return {data:result};
   });
 
 
