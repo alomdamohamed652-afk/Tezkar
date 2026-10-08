@@ -20,7 +20,11 @@ const createSchema = z.object({
   hoursWorked: z.number().positive().nullable().optional(),
   rateOverride: z.number().nonnegative().nullable().optional(),
   warehouseId: z.string().uuid(),
-  locationId: z.string().uuid().nullable().optional()
+  locationId: z.string().uuid().nullable().optional(),
+  bonusAmount: z.number().nonnegative().optional().default(0),
+  bonusReason: z.string().trim().max(500).nullable().optional(),
+  deductionAmount: z.number().nonnegative().optional().default(0),
+  deductionReason: z.string().trim().max(500).nullable().optional()
 });
 
 const rejectSchema = z.object({
@@ -335,6 +339,28 @@ export async function productionRoutes(app: FastifyInstance) {
       );
 
       const created = inserted.rows[0];
+
+      const bonusAmount = Number(parsed.data.bonusAmount ?? 0);
+      const deductionAmount = Number(parsed.data.deductionAmount ?? 0);
+      if (bonusAmount > 0) {
+        if (!parsed.data.bonusReason?.trim()) throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
+        await client.query(
+          `INSERT INTO employee_earnings_adjustments(
+             employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by
+           ) VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
+          [employeeId,parsed.data.shiftId,created.id,bonusAmount,parsed.data.bonusReason.trim(),parsed.data.workDate,request.user!.userId]
+        );
+      }
+      if (deductionAmount > 0) {
+        if (!parsed.data.deductionReason?.trim()) throw new AppError("DEDUCTION_REASON_REQUIRED","بيان الخصم مطلوب",422);
+        await client.query(
+          `INSERT INTO employee_earnings_adjustments(
+             employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by
+           ) VALUES($1,$2,$3,'DEDUCTION',$4,$5,$6,$7)`,
+          [employeeId,parsed.data.shiftId,created.id,deductionAmount,parsed.data.deductionReason.trim(),parsed.data.workDate,request.user!.userId]
+        );
+      }
+
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
@@ -404,7 +430,8 @@ export async function productionRoutes(app: FastifyInstance) {
       const currentBalance = Number(lockedBalance.rows[0]?.quantity ?? 0);
       const currentValue = Number(lockedBalance.rows[0]?.inventory_value ?? 0);
       const currentAvg = Number(lockedBalance.rows[0]?.avg_unit_cost ?? 0);
-      const productionUnitCost = Number(current.quantity) > 0 ? Number(current.earning_amount) / Number(current.quantity) : 0;
+      const totalLaborCost = Number(current.total_earning_amount ?? current.earning_amount);
+      const productionUnitCost = Number(current.quantity) > 0 ? totalLaborCost / Number(current.quantity) : 0;
       const nextBalance = currentBalance + Number(current.quantity);
       const nextValue = currentValue + Number(current.quantity) * productionUnitCost;
       const nextAvg = nextBalance > 0 ? nextValue / nextBalance : currentAvg;
@@ -416,7 +443,7 @@ export async function productionRoutes(app: FastifyInstance) {
       } else {
         await client.query(
           "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,avg_unit_cost,inventory_value) VALUES($1,$2,$3,$4,$5,$6)",
-          [current.product_id,current.warehouse_id,current.location_id,current.quantity,productionUnitCost,Number(current.earning_amount)]
+          [current.product_id,current.warehouse_id,current.location_id,current.quantity,productionUnitCost,totalLaborCost]
         );
       }
 
@@ -493,8 +520,29 @@ export async function productionRoutes(app: FastifyInstance) {
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
          ON CONFLICT (production_entry_id) DO NOTHING`,
-        [current.employee_id, current.earning_amount, id, request.user!.userId]
+        [current.employee_id, totalLaborCost, id, request.user!.userId]
       );
+
+      const adjustments = await client.query(
+        `SELECT id,adjustment_type,amount,reason
+           FROM employee_earnings_adjustments
+          WHERE production_entry_id=$1 AND ledger_id IS NULL
+          ORDER BY created_at,id
+          FOR UPDATE`,
+        [id]
+      );
+      for (const adjustment of adjustments.rows) {
+        const credit = adjustment.adjustment_type === "BONUS" ? Number(adjustment.amount) : 0;
+        const debit = adjustment.adjustment_type === "DEDUCTION" ? Number(adjustment.amount) : 0;
+        const ledger = await client.query(
+          `INSERT INTO employee_earnings_ledger(
+             employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes
+           ) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5,$6)
+           RETURNING id`,
+          [current.employee_id,credit,debit,id,request.user!.userId,adjustment.reason]
+        );
+        await client.query("UPDATE employee_earnings_adjustments SET ledger_id=$1 WHERE id=$2",[ledger.rows[0].id,adjustment.id]);
+      }
 
       await writeAudit(client, {
         actorUserId: request.user!.userId,
