@@ -84,13 +84,6 @@ export async function masterDataRoutes(app: FastifyInstance) {
     return {data:r.rows[0]};
   });
 
-  app.delete("/api/products/:id",{preHandler:[authenticateRequest,requirePermission("products.delete")]},async(req)=>{
-    const id=(req.params as {id:string}).id;
-    const r=await pool.query("UPDATE products SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
-    if(!r.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود",404);
-    return {data:r.rows[0]};
-  });
-
   app.get("/api/job-titles", { preHandler: [authenticateRequest, requirePermission("job_titles.view")] }, async () => {
     const result = await pool.query("SELECT j.id,j.code,j.name,j.department_id,d.code AS department_code,d.name AS department_name,j.is_active FROM job_titles j LEFT JOIN departments d ON d.id=j.department_id ORDER BY j.code");
     return {data:result.rows};
