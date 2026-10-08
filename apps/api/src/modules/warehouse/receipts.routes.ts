@@ -68,7 +68,7 @@ export async function receiptRoutes(app:FastifyInstance){
    for(const item of p.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[item.productId]);
     if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",422);
-    const locationId=await resolveLocation(client,item.warehouseId,locationId);
+    const locationId=await resolveLocation(client,item.warehouseId,item.locationId);
     const stock=await addStock(client,item.productId,item.warehouseId,locationId,item.quantity,item.unitCost);
     const lineRow=await client.query("INSERT INTO warehouse_receipt_lines(receipt_id,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,batch_code,weight,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[r.rows[0].id,item.productId,item.warehouseId,locationId,item.quantity,product.rows[0].unit_id,item.unitCost,item.batchCode??null,item.weight??null,item.notes??null]);
     const movement=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,weight,reference_type,reference_id,notes,created_by) VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'RECEIPT',$10,$11,$12) RETURNING id",[item.productId,item.warehouseId,locationId,item.quantity,product.rows[0].unit_id,item.unitCost,stock.totalCost,item.batchCode??null,item.weight??null,r.rows[0].id,"Receipt "+r.rows[0].code,request.user!.userId]);
