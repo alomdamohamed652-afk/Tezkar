@@ -62,6 +62,7 @@ export default function AccountingPage() {
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإيراد")}
   }
 
+  const activeOrders=useMemo(()=>orders.filter(o=>o.status!=="COMPLETED"&&o.status!=="CANCELLED"),[orders]);
   const n=(x:number|null|undefined)=>Number(x||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
   const totalIn=useMemo(()=>revenues.reduce((s,x)=>s+Number(x.amount||0),0),[revenues]);
   const totalOut=useMemo(()=>expenses.reduce((s,x)=>s+Number(x.amount||0),0),[expenses]);
@@ -108,7 +109,7 @@ export default function AccountingPage() {
      {tab==="in"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">الداخل — الإيرادات</h2><div className="form-hint">كل الإيرادات المسجلة على الطلبات.</div></div></div>
       {has("finance.revenues.create")&&<div className="form-grid finance-four-grid">
-       <label>الطلبية<select value={rForm.orderId} onChange={e=>setRForm({...rForm,orderId:e.target.value})}><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
+       <label>الطلبية<select value={rForm.orderId} onChange={e=>setRForm({...rForm,orderId:e.target.value})}><option value="">اختر الطلبية</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={rForm.amount} onChange={e=>setRForm({...rForm,amount:e.target.value})}/></label>
        <label>المصدر<input value={rForm.source} onChange={e=>setRForm({...rForm,source:e.target.value})}/></label>
        <label>ملاحظات<input value={rForm.notes} onChange={e=>setRForm({...rForm,notes:e.target.value})}/></label>
@@ -120,7 +121,7 @@ export default function AccountingPage() {
      {tab==="out"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة والمصروفات المرتبطة بالطلبات.</div></div></div>
       {has("finance.expenses.create")&&<div className="form-grid finance-four-grid">
-       <label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value})}><option value="">مصروف عام</option>{orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
+       <label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
        <label>التصنيف<input value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}/></label>
        <label>الوصف<input value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value})}/></label>
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
@@ -131,7 +132,7 @@ export default function AccountingPage() {
 
      {tab==="profitability"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">ربحية الطلبية</h2><div className="form-hint">الإيراد − تكلفة المخزون − أجور الإنتاج − المصروفات المباشرة.</div></div></div>
-      <div className="card-body"><label className="finance-select">الطلبية<select value={orderId} onChange={e=>void loadProfit(e.target.value)}><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
+      <div className="card-body"><label className="finance-select">الطلبية<select value={orderId} onChange={e=>void loadProfit(e.target.value)}><option value="">اختر الطلبية</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
       {profit&&<><div className="stats finance-stats"><article className="card stat"><div className="stat-label">الإيراد</div><div className="stat-value">{n(profit.revenue)}</div></article><article className="card stat warning"><div className="stat-label">تكلفة المخزون</div><div className="stat-value">{n(profit.materialCost)}</div></article><article className="card stat neutral"><div className="stat-label">أجور الإنتاج</div><div className="stat-value">{n(profit.laborCost)}</div></article><article className="card stat accent"><div className="stat-label">صافي الربح</div><div className="stat-value">{n(profit.profit)}</div><div className="stat-note">{profit.marginPercent==null?"—":"هامش "+n(profit.marginPercent)+"%"}</div></article></div>
        <div className="detail-grid finance-detail"><div><b>إجمالي التكلفة</b><span>{n(profit.totalCost)}</span></div><div><b>مصروفات مباشرة</b><span>{n(profit.expenses)}</span></div><div><b>حالة الطلب</b><span>{profit.order.status}</span></div></div></>}
       </div>
