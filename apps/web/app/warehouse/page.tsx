@@ -28,8 +28,7 @@ export default function WarehousePage(){
  useEffect(()=>{if(year){setFrom(year+"-01-01");setTo(year+"-12-31")}},[year]);
  useEffect(()=>{if(warehouseId)void load()},[warehouseId]);
 
- const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId),targetLocations=locations.filter(x=>x.warehouse_id===targetWarehouseId),productOptions= const visibleProducts=useMemo(()=>products.filter(x=>(x.name+" "+x.code).toLowerCase().includes(productSearch.trim().toLowerCase())),[products,productSearch]);
-useMemo(()=>products.filter(x=>x.id).map(x=>({value:x.id,label:x.name})),[products]),warehouseOptions=useMemo(()=>warehouses.map(x=>({value:x.id,label:x.name,meta:warehouseTypes[x.warehouse_type]})),[warehouses]),orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
+ const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId),targetLocations=locations.filter(x=>x.warehouse_id===targetWarehouseId),productOptions=useMemo(()=>products.filter(x=>x.id).map(x=>({value:x.id,label:x.name})),[products]),warehouseOptions=useMemo(()=>warehouses.map(x=>({value:x.id,label:x.name,meta:warehouseTypes[x.warehouse_type]})),[warehouses]),orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
 
  function deactivateWarehouse(id:string){const w=warehouses.find(x=>x.id===id);if(w)setWarehouseToDisable(w)}
  async function confirmWarehouseDeactivate(){if(!warehouseToDisable)return;try{await api("/api/warehouses/"+warehouseToDisable.id,{method:"DELETE"});setWarehouseToDisable(null);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل المخزن — إذا كان به رصيد انقل الرصيد أولًا إلى مخزن/مكان آخر.")}}
