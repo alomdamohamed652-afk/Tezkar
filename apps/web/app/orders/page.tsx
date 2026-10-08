@@ -61,7 +61,7 @@ export default function OrdersPage(){
        <button type="button" className="danger-button" onClick={()=>removeStage(i)}>حذف</button>
       </div>)}</div>}
     </div>
-    <div className="form-actions"><button className="primary-button" disabled={saving||!stageRows.some(x=>x.stageName.trim()&&x.outputProductName.trim()&&x.plannedQuantity)}>{saving?"جارٍ الحفظ...":"حفظ الطلبية"}</button></div>
+    <div className="form-actions"><button className="primary-button" disabled={saving||!stageRows.some(x=>x.stageName.trim()&&x.outputProductName.trim()&&x.plannedQuantity&&x.stageRate)}>{saving?"جارٍ الحفظ...":"حفظ الطلبية"}</button></div>
    </form>}
 
    <section className="card"><div className="card-header"><div><h2 className="card-title">لوحة الطلبات</h2><div className="form-hint">كل طلبية لها ملف مستقل للتشغيل والتكلفة والمسحوبات والتسليم.</div></div><span className="count-badge">{orders.length}</span></div>
