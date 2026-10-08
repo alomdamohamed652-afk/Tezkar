@@ -35,6 +35,15 @@ export async function operationsMasterRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
 
+ app.get("/api/employees/:id/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async(req)=>{
+  const employeeId=(req.params as {id:string}).id;
+  const r=await pool.query(`SELECT se.id,se.shift_id,s.code AS shift_code,s.name AS shift_name,se.starts_on,se.ends_on
+    FROM shift_employees se JOIN shifts s ON s.id=se.shift_id
+    WHERE se.employee_id=$1 AND se.is_active=TRUE AND s.is_active=TRUE
+    ORDER BY s.code`,[employeeId]);
+  return {data:r.rows};
+ });
+
  app.post("/api/shifts/:id/employees",{preHandler:[authenticateRequest,requirePermission("shifts.assign_employee")]},async(req,reply)=>{
   const shiftId=(req.params as {id:string}).id;
   const p=z.object({employeeId:z.string().uuid(),startsOn:z.string().date().nullable().optional(),endsOn:z.string().date().nullable().optional()}).safeParse(req.body);
