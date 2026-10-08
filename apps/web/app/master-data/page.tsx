@@ -38,11 +38,11 @@ export default function MasterDataPage(){
   ];
   const [d,j,g,s,u,st,w,p,c,t,r]=await Promise.allSettled(requests);
   const value=<T,>(x:PromiseSettledResult<{data:T[]}>,fallback:T[]=[])=>x.status==="fulfilled"?x.value.data:fallback;
-  setDepartments(value(d));setJobs(value(j));setGroups(value(g));setShifts(value(s));setUnits(value(u));setStages(value(st));setWages(value(w));setProducts(value(p));setCategories(value(c));setTypes(value(t));setRates(value(r));
+  setDepartments(value<Department>(d));setJobs(value<Job>(j));setGroups(value<Group>(g));setShifts(value<Shift>(s));setUnits(value<Unit>(u));setStages(value<Stage>(st));setWages(value<Wage>(w));setProducts(value<Product>(p));setCategories(value<Category>(c));setTypes(value<ProdType>(t));setRates(value<Rate>(r));
   const failures=[d,j,g,s,u,st,w,p,c,t,r].filter(x=>x.status==="rejected");
   if(failures.length===11)setError("تعذر الاتصال بخدمات البيانات الأساسية. تأكد أن API يعمل وأن جلسة الدخول صالحة.");
   else if(failures.length)setError("بعض أقسام البيانات الأساسية غير متاحة لحسابك أو لم يتم تشغيل خدمتها بعد. الأقسام المتاحة ستعمل بشكل طبيعي.");
-  const unitData=value(u);
+  const unitData=value<Unit>(u);
   if(!productUnit)setProductUnit(unitData.find(x=>x.code==="PCS")?.id||unitData[0]?.id||"");if(!rateUnit)setRateUnit(unitData.find(x=>x.code==="PCS")?.id||unitData[0]?.id||"");
  }
  useEffect(()=>{void load()},[]);
