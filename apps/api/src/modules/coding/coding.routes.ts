@@ -21,7 +21,8 @@ const createSchema = z.object({
   receivedByEmployeeId: z.string().uuid().nullable().optional(),
   packedAt: z.string().datetime().nullable().optional(),
   warehouseId: z.string().uuid().nullable().optional(),
-  locationId: z.string().uuid().nullable().optional()
+  locationId: z.string().uuid().nullable().optional(),
+  productionEntryId: z.string().uuid().nullable().optional()
 });
 
 function makeCode(sequence:number, year:number) {
@@ -146,25 +147,80 @@ export async function codingRoutes(app: FastifyInstance) {
     return {data:{...unit,movements:moves.rows,prints:prints.rows}};
   });
 
+  app.get("/api/coding/production-ready",{preHandler:[authenticateRequest,requirePermission("cartons.view")]},async()=>{
+    const r=await pool.query(`
+      SELECT p.id AS production_entry_id,p.code,p.work_date,p.quantity,p.product_id,p.stage_id,p.order_stage_id,
+             p.warehouse_id,p.location_id,p.employee_id,
+             pr.code AS product_code,pr.name AS product_name,
+             st.name AS stage_name,
+             os.order_id,po.code AS order_code,po.order_name,
+             w.name AS warehouse_name,l.code AS location_code,l.name AS location_name,
+             u.name AS unit_name,
+             COALESCE((SELECT SUM(cu.quantity) FROM coding_units cu WHERE cu.production_entry_id=p.id AND cu.status<>'CANCELLED'),0) AS coded_quantity
+        FROM production_entries p
+        JOIN products pr ON pr.id=p.product_id
+        JOIN stages st ON st.id=p.stage_id
+        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+        LEFT JOIN production_orders po ON po.id=os.order_id
+        JOIN warehouses w ON w.id=p.warehouse_id
+        JOIN warehouse_locations l ON l.id=p.location_id
+        JOIN units u ON u.id=p.unit_id
+       WHERE p.status='APPROVED'
+         AND p.quantity > COALESCE((SELECT SUM(cu.quantity) FROM coding_units cu WHERE cu.production_entry_id=p.id AND cu.status<>'CANCELLED'),0)
+       ORDER BY p.work_date DESC,p.created_at DESC
+       LIMIT 300
+    `);
+    return {data:r.rows.map(x=>({...x,remaining_quantity:Number(x.quantity)-Number(x.coded_quantity)}))};
+  });
+
   app.post("/api/coding/units",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request,reply)=>{
     const parsed=createSchema.safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات التكويد غير صحيحة",422);
 
     const created=await withTransaction(async(client)=>{
       const p=parsed.data;
+      let resolvedProductId=p.productId;
+      let resolvedOrderId=p.productionOrderId??null;
+      let resolvedOrderStageId=p.orderStageId??null;
+      let resolvedWarehouseId=p.warehouseId??null;
+      let resolvedLocationId=p.locationId??null;
+      if(p.productionEntryId){
+        const production=await client.query(
+          `SELECT id,status,quantity,product_id,order_stage_id,warehouse_id,location_id,unit_id
+             FROM production_entries WHERE id=$1 FOR UPDATE`,
+          [p.productionEntryId]
+        );
+        if(!production.rowCount)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",422);
+        const pe=production.rows[0];
+        if(pe.status!=="APPROVED")throw new AppError("PRODUCTION_NOT_APPROVED","لا يمكن تكويد إنتاج غير معتمد",409);
+        const coded=await client.query(
+          "SELECT COALESCE(SUM(quantity),0) AS quantity FROM coding_units WHERE production_entry_id=$1 AND status<>'CANCELLED'",
+          [p.productionEntryId]
+        );
+        const remaining=Number(pe.quantity)-Number(coded.rows[0]?.quantity??0);
+        if(p.quantity>remaining+1e-9)throw new AppError("CODING_EXCEEDS_PRODUCTION","كمية التكويد تتجاوز الكمية المتبقية من الإنتاج المعتمد",409);
+        resolvedProductId=pe.product_id;
+        resolvedOrderStageId=pe.order_stage_id;
+        resolvedWarehouseId=pe.warehouse_id;
+        resolvedLocationId=pe.location_id;
+        if(resolvedOrderStageId){
+          const os=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[resolvedOrderStageId]);
+          resolvedOrderId=os.rows[0]?.order_id??null;
+        }
+      }
       const pt=await client.query("SELECT * FROM coding_packaging_types WHERE id=$1 AND is_active=TRUE",[p.packagingTypeId]);
       if(!pt.rowCount)throw new AppError("PACKAGING_TYPE_NOT_FOUND","نوع العبوة غير موجود",422);
-      const product=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[p.productId]);
-      if(p.productionOrderId){
-        const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.productionOrderId]);
+      const product=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[resolvedProductId]);
+      if(resolvedOrderId){
+        const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[resolvedOrderId]);
         if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",422);
         if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تكويد إنتاج من طلبية ملغاة",409);
       }
-      if(p.orderStageId){
-        const stage=await client.query("SELECT id,order_id,output_product_id FROM order_stages WHERE id=$1 FOR UPDATE",[p.orderStageId]);
+      if(resolvedOrderStageId){
+        const stage=await client.query("SELECT id,order_id,output_product_id FROM order_stages WHERE id=$1 FOR UPDATE",[resolvedOrderStageId]);
         if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
-        if(p.productionOrderId && stage.rows[0].order_id!==p.productionOrderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الطلب لا تنتمي إلى الطلبية المحددة",409);
-        if(stage.rows[0].output_product_id && stage.rows[0].output_product_id!==p.productId)throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من المرحلة",409);
+        if(resolvedOrderId && stage.rows[0].order_id!==resolvedOrderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الطلب لا تنتمي إلى الطلبية المحددة",409);
+        if(stage.rows[0].output_product_id && stage.rows[0].output_product_id!==resolvedProductId)throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من المرحلة",409);
       }
       if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود",422);
 
@@ -178,25 +234,25 @@ export async function codingRoutes(app: FastifyInstance) {
         templateId=t.rows[0]?.id??null;
       }
 
-      if(p.warehouseId && p.locationId){
-        const loc=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[p.locationId,p.warehouseId]);
+      if(resolvedWarehouseId && resolvedLocationId){
+        const loc=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[resolvedLocationId,resolvedWarehouseId]);
         if(!loc.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);
       }
 
-      const initialStatus=p.warehouseId&&p.locationId?"IN_STOCK":"CODED";
+      const initialStatus=resolvedWarehouseId&&resolvedLocationId?"IN_STOCK":"CODED";
       const seq=await client.query("SELECT nextval('coding_unit_sequence') AS n");
       const code=makeCode(Number(seq.rows[0].n),new Date().getFullYear());
       const barcode=code;
       const row=await client.query(`
         INSERT INTO coding_units
-        (code,barcode,packaging_type_id,template_id,product_id,production_order_id,order_stage_id,batch_code,quantity,unit_id,weight,
+        (code,barcode,packaging_type_id,template_id,product_id,production_order_id,order_stage_id,batch_code,quantity,unit_id,weight,production_entry_id,
          production_owner_employee_id,packed_by_employee_id,received_by_employee_id,packed_at,coded_at,warehouse_id,location_id,status,created_by)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16,$17,$18,$19)
         RETURNING *
       `,[
-        code,barcode,p.packagingTypeId,templateId,p.productId,p.productionOrderId??null,p.orderStageId??null,p.batchCode??null,p.quantity,
+        code,barcode,p.packagingTypeId,templateId,resolvedProductId,resolvedOrderId,resolvedOrderStageId,p.batchCode??null,p.quantity,
         p.unitId??product.rows[0].unit_id??null,p.weight??null,p.productionOwnerEmployeeId??null,p.packedByEmployeeId??null,
-        p.receivedByEmployeeId??null,p.packedAt??null,p.warehouseId??null,p.locationId??null,initialStatus,request.user!.userId
+        p.receivedByEmployeeId??null,p.packedAt??null,resolvedWarehouseId,resolvedLocationId,initialStatus,request.user!.userId,p.productionEntryId??null
       ]);
 
       await client.query("INSERT INTO coding_unit_movements(coding_unit_id,movement_type,to_warehouse_id,to_location_id,notes,created_by) VALUES($1,$2,$3,$4,$5,$6)",[
