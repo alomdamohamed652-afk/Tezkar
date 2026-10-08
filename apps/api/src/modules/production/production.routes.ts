@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 
 const createSchema = z.object({
   employeeId: z.string().uuid().optional(),
@@ -452,6 +453,17 @@ export async function productionRoutes(app: FastifyInstance) {
           );
         }
       }
+
+      await createInventoryLot(client,{
+        productId:current.product_id,
+        warehouseId:current.warehouse_id,
+        locationId:current.location_id,
+        quantity:Number(current.quantity),
+        unitCost:productionUnitCost,
+        batchCode:current.code,
+        sourceType:"PRODUCTION",
+        sourceId:id
+      });
 
       await client.query(
         `INSERT INTO employee_earnings_ledger(
