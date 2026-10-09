@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS payroll_items (
   period_id UUID NOT NULL REFERENCES payroll_periods(id) ON DELETE RESTRICT,
   employee_id UUID NOT NULL REFERENCES employees(id),
   salary_profile_id UUID REFERENCES employee_salary_profiles(id),
+  accounting_expense_id UUID REFERENCES accounting_expenses(id),
   base_salary NUMERIC(18,2) NOT NULL CHECK(base_salary >= 0),
   bonus_amount NUMERIC(18,2) NOT NULL DEFAULT 0 CHECK(bonus_amount >= 0),
   deduction_amount NUMERIC(18,2) NOT NULL DEFAULT 0 CHECK(deduction_amount >= 0),
