@@ -264,7 +264,10 @@ export async function productionRoutes(app: FastifyInstance) {
         const warehouseType=Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
-        if (!parsed.data.warehouseId) resolvedWarehouseId=virtualWarehouse.rows[0].id;
+        // A production entry tied to an order stage must land in the system warehouse
+        // dictated by the workflow (WIP for intermediate stages, finished goods for
+        // the final stage). Do not let a client-supplied warehouse bypass that rule.
+        resolvedWarehouseId=virtualWarehouse.rows[0].id;
         if (os.stage_id !== parsed.data.stageId) {
           throw new AppError("ORDER_STAGE_STAGE_MISMATCH","مرحلة الإنتاج لا تطابق مرحلة الطلب المرتبطة",409);
         }
