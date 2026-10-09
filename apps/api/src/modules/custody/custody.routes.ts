@@ -52,7 +52,7 @@ async function cashAccess(client:import("pg").PoolClient,userId:string,employeeI
 }
 export async function custodyRoutes(app:FastifyInstance){
   app.get("/api/custodies/eligible-employees",{
-    preHandler:[authenticateRequest,requireAnyPermission(["custody.create","all"],["custody.view","all"])]
+    preHandler:[authenticateRequest,requireAnyPermission(["custody.create","all"],["custody.view","all"],["cash_custody.create","all"],["cash_custody.view","all"])]
   },async()=>{
     const result=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
     return {data:result.rows};
