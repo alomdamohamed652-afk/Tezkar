@@ -14,10 +14,11 @@ export default function TasksPage(){
  const {has}=usePermissions();
  const [tasks,setTasks]=useState<Task[]>([]),[employees,setEmployees]=useState<Employee[]>([]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState("");
+ const canManageTasks=has("tasks.create")||has("tasks.edit");
  const [showForm,setShowForm]=useState(false),[title,setTitle]=useState(""),[description,setDescription]=useState(""),[priority,setPriority]=useState("NORMAL"),[dueDate,setDueDate]=useState(""),[assignees,setAssignees]=useState<string[]>([]);
  const [search,setSearch]=useState(""),[statusFilter,setStatusFilter]=useState(""),[commentTask,setCommentTask]=useState<Task|null>(null),[comments,setComments]=useState<Comment[]>([]),[commentBody,setCommentBody]=useState(""),[commentBusy,setCommentBusy]=useState(false);
  async function load(){setLoading(true);setError("");try{const t=await api<{data:Task[]}>("/api/tasks");setTasks(t.data);if(has("tasks.create")||has("tasks.edit")){const e=await api<{data:Employee[]}>("/api/employees");setEmployees(e.data.filter(x=>x.is_active));}}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المهام")}finally{setLoading(false)}}
- useEffect(()=>{void load()},[]);
+ useEffect(()=>{void load()},[canManageTasks]);
  const visible=useMemo(()=>tasks.filter(t=>(!statusFilter||t.status===statusFilter)&&(!search||[t.code,t.title,t.description||"",...t.assignees.map(a=>a.employee_name)].join(" ").toLowerCase().includes(search.toLowerCase()))),[tasks,statusFilter,search]);
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{await api("/api/tasks",{method:"POST",body:JSON.stringify({title,description:description||null,priority,dueDate:dueDate||null,assigneeEmployeeIds:assignees})});setTitle("");setDescription("");setPriority("NORMAL");setDueDate("");setAssignees([]);setShowForm(false);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء المهمة")}finally{setSaving(false)}}
  async function updateStatus(t:Task,status:string){setError("");try{await api("/api/tasks/"+t.id,{method:"PATCH",body:JSON.stringify({status})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تحديث حالة المهمة")}}
