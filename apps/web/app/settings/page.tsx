@@ -35,7 +35,7 @@ export default function SettingsPage(){
  const filteredUsers=users.filter(x=>(x.username+" "+(x.full_name??"")+" "+x.role_codes.join(" ")).toLowerCase().includes(query.toLowerCase()));
  const filteredEmployees=employees.filter(x=>(x.full_name+" "+x.code).toLowerCase().includes(query.toLowerCase()));
 
- async function savePermissions(){try{await fetch((process.env.NEXT_PUBLIC_API_URL??"http://localhost:4000")+"/api/roles/"+roleId+"/permissions",{method:"PUT",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify({permissionIds:rolePermissionIds})});setMessage("تم حفظ صلاحيات الدور");}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
+ async function savePermissions(){try{await api("/api/roles/"+roleId+"/permissions",{method:"PUT",body:JSON.stringify({permissionIds:rolePermissionIds})});setMessage("تم حفظ صلاحيات الدور");}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
  async function deactivateUser(id:string){if(!confirm("تعطيل الحساب؟ لن يستطيع تسجيل الدخول بعد ذلك."))return;try{await api("/api/users/"+id,{method:"DELETE"});setMessage("تم تعطيل الحساب");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الحساب")}}
  async function deactivateEmployee(id:string){if(!confirm("تعطيل الموظف وحسابه المرتبط؟"))return;try{await api("/api/employees/"+id,{method:"DELETE"});setMessage("تم تعطيل الموظف");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
 
