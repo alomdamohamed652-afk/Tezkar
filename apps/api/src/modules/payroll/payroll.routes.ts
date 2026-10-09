@@ -17,7 +17,7 @@ const adjustmentSchema = z.object({
   bonusAmount: z.number().min(0).max(100000000).optional(),
   deductionAmount: z.number().min(0).max(100000000).optional(),
   deductionMode: z.enum(["FIXED", "PERCENTAGE"]).optional(),
-  deductionPercentage: z.number().min(0).max(100).optional(),
+  deductionPercentage: z.number().positive().max(100).optional(),
   deductionBasis: z.enum(["BASE_SALARY", "BASE_PLUS_BONUS"]).optional(),
   notes: z.string().trim().max(1000).nullable().optional()
 });
