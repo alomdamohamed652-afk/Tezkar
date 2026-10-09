@@ -8,7 +8,7 @@ const securityHeaders = [
 ];
 
 function resolveProxyTarget(): string | null {
-  const explicit = process.env.API_PROXY_TARGET?.trim().replace(/\\/+$/, "");
+  const explicit = process.env.API_PROXY_TARGET?.trim().replace(/\/+$/, "");
   if (explicit) return explicit;
   if (process.env.NODE_ENV !== "production") return "http://localhost:4000";
   if (process.env.NEXT_PUBLIC_API_URL?.trim()) return null; // legacy cross-origin mode
