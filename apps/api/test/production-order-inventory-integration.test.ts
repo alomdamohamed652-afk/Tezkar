@@ -512,6 +512,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(duplicateApproval.statusCode, 409, duplicateApproval.body);
+    const deleteApprovedProduction = await app.inject({
+      method: "DELETE", url: "/api/production/" + finalId, headers: { cookie: approver.cookie },
+      payload: { password: "Test-only-password-2026!" }
+    });
+    assert.equal(deleteApprovedProduction.statusCode, 409, deleteApprovedProduction.body);
+    assert.equal(deleteApprovedProduction.json().error.code, "PRODUCTION_DELETE_LOCKED",
+      "approved production must not be removed without reversing stock and earnings");
     const movementCount = await apiPool.query("SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION' AND reference_id=$1",[finalId]);
     assert.equal(movementCount.rows[0].count, 1, "re-approval must not duplicate stock movements");
 
