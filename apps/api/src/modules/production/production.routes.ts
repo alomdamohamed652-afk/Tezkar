@@ -11,7 +11,7 @@ const createSchema = z.object({
   employeeId: z.string().uuid().optional(),
   orderStageId: z.string().uuid().nullable().optional(),
   productionTypeId: z.string().uuid().nullable().optional(),
-  productId: z.string().uuid(),
+  productId: z.string().uuid().optional(),
   stageId: z.string().uuid(),
   shiftId: z.string().uuid(),
   workDate: z.string().date(),
@@ -256,6 +256,8 @@ export async function productionRoutes(app: FastifyInstance) {
         parsed.data.productId = os.output_product_id;
         parsed.data.stageId = os.stage_id;
       }
+
+      if (!parsed.data.productId) throw new AppError("PRODUCT_REQUIRED", "اختر منتجًا أو اربط المرحلة بمنتج ناتج في بيانات الطلبية", 422);
 
       const product = await client.query(
         "SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",
