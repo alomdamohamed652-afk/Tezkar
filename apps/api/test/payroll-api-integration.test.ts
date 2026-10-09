@@ -182,7 +182,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
       const linkedPayroll = await apiPool.query(
-        "SELECT i.id,i.accounting_expense_id,i.net_amount,e.category,e.amount,e.payment_method,e.expense_date " +
+        "SELECT i.id,i.accounting_expense_id,i.net_amount,e.category,e.amount,e.payment_method,e.expense_date::text AS expense_date " +
         "FROM payroll_items i LEFT JOIN accounting_expenses e ON e.id=i.accounting_expense_id WHERE i.period_id=$1 ORDER BY i.id",
         [period.rows[0].id]
       );
