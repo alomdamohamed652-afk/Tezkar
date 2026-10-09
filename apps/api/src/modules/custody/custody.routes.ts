@@ -55,11 +55,20 @@ export async function custodyRoutes(app:FastifyInstance){
     const client=await pool.connect();
     try{
       const userId=request.user!.userId;
-      const permissionCodes=["custody.create","custody.view","cash_custody.create","cash_custody.view"];
+      // Own-scope permissions use their explicit *_own codes in the permission
+      // catalog; checking the base code with scope="own" would miss those users.
+      const permissionScopes:Array<[string,"own"|"all"]>=[
+        ["custody.create","all"],["custody.create_own","own"],
+        ["custody.view","all"],["custody.view_own","own"],
+        ["cash_custody.create","all"],["cash_custody.create_own","own"],
+        ["cash_custody.view","all"],["cash_custody.view_own","own"]
+      ];
       let hasAny=false;let hasAll=false;
-      for(const code of permissionCodes){
-        if(await hasPermission(client,userId,code,"own"))hasAny=true;
-        if(await hasPermission(client,userId,code,"all"))hasAll=true;
+      for(const [code,scope] of permissionScopes){
+        if(await hasPermission(client,userId,code,scope)){
+          hasAny=true;
+          if(scope==="all")hasAll=true;
+        }
       }
       if(!hasAny)throw new AppError("FORBIDDEN","ليس لديك صلاحية لاختيار موظف في العهد",403);
       if(hasAll){
