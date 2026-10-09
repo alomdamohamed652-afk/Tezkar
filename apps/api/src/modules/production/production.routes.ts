@@ -491,6 +491,17 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       if (!destination.rowCount) throw new AppError("DESTINATION_NOT_FOUND", "وجهة الإنتاج غير موجودة أو غير نشطة", 409);
 
+      // Match warehouse movement lock order: serialize all stock mutations by product
+      // before locking/inserting a location balance. This also protects the
+      // first production receipt when no stock_balances row exists yet.
+      const stockProduct = await client.query(
+        "SELECT id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",
+        [current.product_id]
+      );
+      if (!stockProduct.rowCount) {
+        throw new AppError("PRODUCT_NOT_INVENTORIED", "المنتج غير موجود أو غير متابع مخزنيًا", 409);
+      }
+
       const lockedBalance = await client.query(
         "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
         [current.product_id, current.warehouse_id, current.location_id]
