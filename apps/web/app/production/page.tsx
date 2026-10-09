@@ -10,7 +10,7 @@ type Employee={id:string;code:string;full_name:string};
 type Shift=Item & {rate_group_name:string};
 type Destination={id:string;code:string;name:string;warehouse_id:string;warehouse_code:string;warehouse_name:string};
 type Order={id:string;code:string;order_name:string};
-type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null};
+type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null;production_type_id:string|null};
 type ProductionType=Item & {calculation_method:string};
 type Entry={id:string;code:string;work_date:string;quantity:number;rate_snapshot:number;earning_amount:number;bonus_amount:number;deduction_amount:number;total_earning_amount:number;status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;shift_name:string|null;production_code:string|null};
@@ -83,7 +83,7 @@ export default function ProductionPage(){
  useEffect(()=>{void loadAdjustments()},[has]);
 
  function selectOrder(value:string){setOrderId(value);setOrderStageId("");setStageId("");setProductId("");}
- function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id)}}
+ function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id);if(x.production_type_id)setProductionTypeId(x.production_type_id)}}
 
  async function submit(e:FormEvent){
   e.preventDefault();setError("");
