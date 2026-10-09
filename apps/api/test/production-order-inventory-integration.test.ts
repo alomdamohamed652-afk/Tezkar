@@ -379,6 +379,60 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(deliveryMovementCount.rows[0].count, 1, "releasing twice must not duplicate delivery stock movements");
 
+    // Verify carton labeling, barcode resolution, partial-carton balance and stock release.
+    const cartonResponse = await app.inject({
+      method: "POST", url: "/api/warehouse/cartons", headers: { cookie: approver.cookie },
+      payload: {
+        productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+        locationId: finalSaved.rows[0].location_id, quantity: 3, weight: 1.2,
+        batchCode: "INTEGRATION-BATCH", status: "SEALED"
+      }
+    });
+    assert.equal(cartonResponse.statusCode, 201, cartonResponse.body);
+    const carton = cartonResponse.json().data;
+    assert.ok(carton.barcode, "cartons without a supplied barcode must receive a generated barcode");
+    assert.equal(carton.status, "SEALED");
+    assert.equal(Number(carton.quantity), 3);
+
+    const cartonDelivery = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
+      payload: {
+        orderId, destination: "Integration carton delivery",
+        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+          locationId: finalSaved.rows[0].location_id, quantity: 2, cartonCode: carton.barcode }]
+      }
+    });
+    assert.equal(cartonDelivery.statusCode, 201, cartonDelivery.body);
+    const cartonDeliveryId = cartonDelivery.json().data.id as string;
+    const cartonDeliveryCode = cartonDelivery.json().data.code as string;
+    const cartonRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + cartonDeliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: cartonDeliveryCode }
+    });
+    assert.equal(cartonRelease.statusCode, 200, cartonRelease.body);
+    assert.equal(cartonRelease.json().data.status, "RELEASED");
+
+    const cartonAfterRelease = await apiPool.query(
+      "SELECT quantity,status,barcode FROM cartons WHERE id=$1", [carton.id]
+    );
+    assert.equal(Number(cartonAfterRelease.rows[0].quantity), 1, "partial carton release must preserve the remaining quantity");
+    assert.equal(cartonAfterRelease.rows[0].status, "PARTIAL");
+    assert.equal(cartonAfterRelease.rows[0].barcode, carton.barcode);
+    const cartonMovement = await apiPool.query(
+      "SELECT movement_type,quantity,carton_code,reference_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [cartonDeliveryId]
+    );
+    assert.equal(cartonMovement.rowCount, 1);
+    assert.equal(cartonMovement.rows[0].movement_type, "OUT");
+    assert.equal(Number(cartonMovement.rows[0].quantity), 2);
+    assert.equal(cartonMovement.rows[0].carton_code, carton.barcode);
+    const stockAfterCartonDelivery = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
+    assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
+
     // Verify order-linked revenue and expense feed the profitability report.
     const revenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: approver.cookie },
