@@ -33,5 +33,6 @@ export async function authenticateRequest(
     reply.code(401).send({
       error: { code: "SESSION_INVALID", message: "جلسة الدخول غير صالحة أو منتهية" }
     });
+    return;
   }
 }
