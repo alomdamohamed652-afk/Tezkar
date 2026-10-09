@@ -162,6 +162,8 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId);
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      // Serialize duplicate checks per employee so concurrent requests cannot both pass an empty lookup.
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
       const dup=await client.query(`SELECT id,code,description FROM cash_custody_transactions
         WHERE employee_id=$1 AND direction=$2 AND amount=$3 AND transaction_date=$4
         ORDER BY created_at DESC LIMIT 10 FOR SHARE`,
