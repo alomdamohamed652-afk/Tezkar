@@ -33,14 +33,19 @@ function pruneLoginAttempts(now: number) {
 }
 
 function assertLoginAllowed(request: { ip: string }, username: string) {
-  const key = loginKey(request, username);
   const now = Date.now();
+  pruneLoginAttempts(now);
+  const key = loginKey(request, username);
   const current = loginAttempts.get(key);
-  if (!current) return;
-  if (current.blockedUntil > now) {
+  if (current && current.blockedUntil > now) {
     throw new AppError("LOGIN_RATE_LIMITED", "محاولات تسجيل الدخول كثيرة. حاول مرة أخرى بعد قليل.", 429);
   }
-  if (now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
+  // Fail closed when the bounded in-memory tracker is saturated. Otherwise
+  // attackers could bypass throttling by continuously submitting new usernames.
+  if (!current && loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) {
+    throw new AppError("LOGIN_RATE_LIMITED", "تعذر بدء تسجيل الدخول حاليًا. حاول مرة أخرى بعد قليل.", 429);
+  }
+  if (current && now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
 }
 
 function recordLoginFailure(request: { ip: string }, username: string) {
