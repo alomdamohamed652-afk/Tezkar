@@ -9,7 +9,6 @@ type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string};
 type Shift=Item & {rate_group_name:string};
 type ShiftLeader={id:string;shift_id:string;shift_name:string;employee_id:string;employee_name:string;assignment_type:string};
-type Destination={id:string;code:string;name:string;warehouse_id:string;warehouse_code:string;warehouse_name:string};
 type Order={id:string;code:string;order_name:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null;production_type_id:string|null};
 type ProductionType=Item & {calculation_method:string};
@@ -20,8 +19,8 @@ const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد
 
 export default function ProductionPage(){
  const {has}=usePermissions();
- const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
- const [employeeId,setEmployeeId]=useState(""),[responsibleName,setResponsibleName]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[status,setStatus]=useState("");
+ const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
+ const [employeeId,setEmployeeId]=useState(""),[responsibleName,setResponsibleName]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editQuantity,setEditQuantity]=useState(""),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
@@ -31,13 +30,12 @@ export default function ProductionPage(){
  async function load(){
   setLoading(true);setError("");
   try{
-   const [e,o,p,s,h,leaders,d,os,pt,r]=await Promise.all([
+   const [e,o,p,s,h,leaders,os,pt,r]=await Promise.all([
     api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),api<{data:ShiftLeader[]}>("/api/shift-leaders"),
-    api<{data:Destination[]}>("/api/production/destinations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
+    api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
     api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
    ]);
-   setEmployees(e.data);setShiftLeaders(leaders.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
-   if(!warehouseId){const preferred=d.data.find(x=>/منتجات جاهزة|المنتجات الجاهزة|finished goods/i.test(x.warehouse_name+" "+x.warehouse_code))?.warehouse_id||d.data[0]?.warehouse_id;if(preferred)setWarehouseId(preferred)}
+   setEmployees(e.data);setShiftLeaders(leaders.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
@@ -109,7 +107,7 @@ export default function ProductionPage(){
   if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
   setSaving(true);
   try{
-   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,responsibleName:responsibleName.trim()||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId:warehouseId||undefined,locationId:null,
+   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,responsibleName:responsibleName.trim()||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,
      bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
     })});
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
