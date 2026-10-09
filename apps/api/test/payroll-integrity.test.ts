@@ -9,32 +9,55 @@ import pg from "pg";
 const adminUrl = process.env.TEST_DATABASE_URL;
 const apiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+function assertDisposableDatabaseUrl(connectionString: string) {
+  const url = new URL(connectionString);
+  assert.ok(
+    url.protocol === "postgres:" || url.protocol === "postgresql:",
+    "TEST_DATABASE_URL must use PostgreSQL"
+  );
+  assert.ok(
+    ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase()),
+    "TEST_DATABASE_URL must point to a local disposable PostgreSQL test server"
+  );
+  assert.equal(
+    url.pathname.slice(1),
+    "postgres",
+    "TEST_DATABASE_URL must use the disposable admin database named postgres"
+  );
+}
+
 async function withPayrollDatabase(run: (db: pg.Pool) => Promise<void>) {
   assert.ok(adminUrl, "TEST_DATABASE_URL must point to a disposable PostgreSQL test server");
+  assertDisposableDatabaseUrl(adminUrl);
   const name = "tezkar_payroll_test_" + randomBytes(6).toString("hex");
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
-  await admin.query(`CREATE DATABASE ${name}`);
-  await admin.end();
+  try {
+    await admin.query(`CREATE DATABASE ${name}`);
+  } finally {
+    await admin.end();
+  }
 
-  const target = new URL(adminUrl!);
+  const target = new URL(adminUrl);
   target.pathname = "/" + name;
-  const runMigrations = spawnSync(process.execPath, ["--import", "tsx", "src/db/migrate.ts"], {
-    cwd: apiDir,
-    env: { ...process.env, DATABASE_URL: target.toString() },
-    encoding: "utf8"
-  });
-
   const db = new pg.Pool({ connectionString: target.toString(), max: 8 });
   try {
+    const runMigrations = spawnSync(process.execPath, ["--import", "tsx", "src/db/migrate.ts"], {
+      cwd: apiDir,
+      env: { ...process.env, DATABASE_URL: target.toString() },
+      encoding: "utf8"
+    });
     assert.equal(runMigrations.status, 0, runMigrations.stderr || runMigrations.stdout);
     await run(db);
   } finally {
     await db.end();
-    const cleanup = new pg.Client({ connectionString: adminUrl! });
-    await cleanup.connect();
-    await cleanup.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-    await cleanup.end();
+    const cleanup = new pg.Client({ connectionString: adminUrl });
+    try {
+      await cleanup.connect();
+      await cleanup.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+    } finally {
+      await cleanup.end();
+    }
   }
 }
 
