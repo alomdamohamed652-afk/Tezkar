@@ -200,7 +200,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(workerRows.statusCode, 200, workerRows.body);
       assert.equal(workerRows.json().data.length, 4);
       assert.ok(workerRows.json().data.every((row: { employee_id: string }) => row.employee_id === employeeA.id));
-      assert.ok(workerRows.json().data.every((row: { balance: string }) => Number(row.balance) === 23));
+      assert.deepEqual(
+        workerRows.json().data.map((row: { balance: string }) => Number(row.balance)).sort((a: number, b: number) => a - b),
+        [23, 40, 70, 100],
+        "each transaction must show the running balance immediately after that movement"
+      );
 
       const managerEntry = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: managerCookie },
