@@ -33,6 +33,21 @@ await withTransaction(async (client) => {
     return;
   }
 
+  // After first-run setup, never create another temporary manager just because
+  // the configured bootstrap username changed between deployments.
+  const activeManager = await client.query(
+    `SELECT 1
+     FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id
+     JOIN roles r ON r.id = ur.role_id
+     WHERE r.code = 'manager' AND u.is_active = TRUE AND u.is_bootstrap = FALSE
+     LIMIT 1`
+  );
+  if (activeManager.rowCount) {
+    console.log("An active manager already exists; bootstrap skipped.");
+    return;
+  }
+
   const user = await client.query(
     `INSERT INTO users (username, password_hash, is_bootstrap, must_complete_setup)
      VALUES ($1, $2, TRUE, TRUE)
