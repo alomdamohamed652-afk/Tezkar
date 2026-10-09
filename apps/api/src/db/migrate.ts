@@ -17,6 +17,12 @@ const files = (await readdir(migrationsDir))
     return an - bn || a.localeCompare(b);
   });
 
+// Make the runner self-sufficient on an empty database; identical to 001_foundation.sql.
+await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+  version TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`);
+
 for (const file of files) {
   const version = file.replace(/\.sql$/, "");
   const client = await pool.connect();
