@@ -155,9 +155,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       // Approval means the finance user confirms that the money was actually paid.
       // Record the payment and ledger debit atomically to keep the available balance accurate.
       const payment=await client.query(
-        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes)
-         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null]);
+        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
       await client.query(
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
