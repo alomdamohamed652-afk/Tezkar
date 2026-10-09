@@ -51,6 +51,12 @@ async function cashAccess(client:import("pg").PoolClient,userId:string,employeeI
   return {employeeId:row.employee_id,isFinance:false};
 }
 export async function custodyRoutes(app:FastifyInstance){
+  app.get("/api/custodies/eligible-employees",{
+    preHandler:[authenticateRequest,requireAnyPermission(["custody.create","all"],["custody.cash.manage","all"])]
+  },async()=>{
+    const result=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+    return {data:result.rows};
+  });
   app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
