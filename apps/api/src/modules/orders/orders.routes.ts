@@ -226,6 +226,16 @@ export async function orderRoutes(app: FastifyInstance) {
       const before=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
       if(!before.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
       if(before.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن إلغاء طلب مكتمل",409);
+      const activity=await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status <> 'CANCELLED') AS has_production,
+           EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
+           EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1) AS has_deliveries`,
+        [id]
+      );
+      if(activity.rows[0].has_production||activity.rows[0].has_stock_movements||activity.rows[0].has_deliveries){
+        throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن حذف طلبية عليها إنتاج أو حركة مخزنية أو إذونات تسليم. عالج السجلات التابعة أولًا حتى لا تتأثر الأرصدة والتكلفة.",409);
+      }
       const after=await client.query("UPDATE production_orders SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,order_name,status",[id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"orders",entityType:"production_order",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return after.rows[0];
