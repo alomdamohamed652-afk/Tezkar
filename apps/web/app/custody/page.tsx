@@ -12,7 +12,7 @@ const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتج
 export default function CustodyPage(){
  const {has}=usePermissions();
  type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number};
- const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[cashEmployeeId,setCashEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
  async function load(){try{
   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
@@ -26,7 +26,7 @@ export default function CustodyPage(){
  async function submitCash(e:FormEvent,confirmDuplicate=false){
  e.preventDefault();setCashSaving(true);setError("");
  try{
-  const payload={employeeId:employeeId||undefined,direction:cashDirection,amount:Number(normalizeNumber(cashAmount)),transactionDate:cashDate,description:cashDescription.trim(),notes:cashNotes.trim()||null,confirmDuplicate};
+  const payload={employeeId:cashEmployeeId||undefined,direction:cashDirection,amount:Number(normalizeNumber(cashAmount)),transactionDate:cashDate,description:cashDescription.trim(),notes:cashNotes.trim()||null,confirmDuplicate};
   if(!confirmDuplicate){
    const check=await api<{data:{duplicate:boolean;matches:CashTx[]}}>("/api/cash-custody/check-duplicate",{method:"POST",body:JSON.stringify(payload)});
    if(check.data.duplicate){setDuplicateMatches(check.data.matches);setDuplicateOpen(true);setCashSaving(false);return}
@@ -71,7 +71,7 @@ export default function CustodyPage(){
   <div className="card-header"><div><h2 className="card-title">العهدة النقدية</h2><div className="form-hint">الداخل والخارج يسجلان كحركات مستقلة، والرصيد يحسب تلقائيًا. المحاسب/الأدمن يستطيعان إدارة عهد الجميع، وصاحب العهدة يدير عهدته فقط.</div></div><span className="count-badge">{cash.length}</span></div>
   <form className="form-grid" onSubmit={submitCash}>
    <label>اتجاه الحركة<select value={cashDirection} onChange={e=>setCashDirection(e.target.value as "IN"|"OUT")}><option value="IN">داخل إلى العهدة</option><option value="OUT">صرف من العهدة</option></select></label>
-   <label>صاحب العهدة<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
+   <label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
    <label>المبلغ<input inputMode="decimal" value={cashAmount} onChange={e=>setCashAmount(e.target.value)} required/></label>
    <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
    <label style={{gridColumn:"1/-1"}}>البيان<input value={cashDescription} onChange={e=>setCashDescription(e.target.value)} placeholder="مثال: إضافة عهدة نقدية / صرف مشتريات" required/></label>
