@@ -230,9 +230,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       const balance=await getBalance(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
       const payment=await client.query(
-        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by)
-         VALUES($1,$2,$3,$4,$5) RETURNING *`,
-        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId]);
+        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [payment.rows[0].id,id]);
