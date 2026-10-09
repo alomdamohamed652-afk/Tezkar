@@ -223,7 +223,7 @@ export async function productionRoutes(app: FastifyInstance) {
         const type0=Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const wh0=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[type0]);
         if(!wh0.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
-        resolvedWarehouseId=wh0.rows[0].id;
+        if (!parsed.data.warehouseId) resolvedWarehouseId=wh0.rows[0].id;
       }
 
       const destination = parsed.data.locationId
@@ -263,7 +263,7 @@ export async function productionRoutes(app: FastifyInstance) {
         const warehouseType=Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
-        resolvedWarehouseId=virtualWarehouse.rows[0].id;
+        if (!parsed.data.warehouseId) resolvedWarehouseId=virtualWarehouse.rows[0].id;
         if (os.output_product_id && os.output_product_id !== parsed.data.productId) {
           throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
         }
