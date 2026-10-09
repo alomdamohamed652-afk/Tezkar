@@ -83,6 +83,15 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
         [managerUsername, hashPassword(managerPassword), employeeB.id]
       )).rows[0];
+      const unprivilegedEmployee = (await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES ('Cash Custody Unprivileged Employee') RETURNING id"
+      )).rows[0];
+      const unprivilegedUsername = "cashnoperm-" + randomBytes(4).toString("hex");
+      const unprivilegedPassword = "Test-Cash-No-Permission-2026!";
+      await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE)",
+        [unprivilegedUsername, hashPassword(unprivilegedPassword), unprivilegedEmployee.id]
+      );
       await apiPool.query(
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",
         [worker.id]
@@ -107,9 +116,23 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       const workerCookie = await login(workerUsername, workerPassword);
       const managerCookie = await login(managerUsername, managerPassword);
+      const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
 
       const unauthenticated = await app.inject({ method: "GET", url: "/api/cash-custody" });
       assert.equal(unauthenticated.statusCode, 401);
+
+      const forbiddenRead = await app.inject({
+        method: "GET", url: "/api/cash-custody", headers: { cookie: unprivilegedCookie }
+      });
+      assert.equal(forbiddenRead.statusCode, 403, forbiddenRead.body);
+      const forbiddenWrite = await app.inject({
+        method: "POST", url: "/api/cash-custody", headers: { cookie: unprivilegedCookie },
+        payload: {
+          direction: "IN", amount: 999, transactionDate: "2099-01-10",
+          description: "Must be blocked without cash custody permission"
+        }
+      });
+      assert.equal(forbiddenWrite.statusCode, 403, forbiddenWrite.body);
 
       const ownIncoming = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
