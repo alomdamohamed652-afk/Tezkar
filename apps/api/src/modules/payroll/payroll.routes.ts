@@ -82,11 +82,34 @@ export async function payrollRoutes(app: FastifyInstance) {
       const periodResult = await client.query("INSERT INTO payroll_periods(period_month,generated_by) VALUES($1::date,$2) ON CONFLICT(period_month) DO UPDATE SET period_month=EXCLUDED.period_month RETURNING *", [month,request.user!.userId]);
       const period = periodResult.rows[0];
       if (period.status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة معتمدة أو مغلقة ولا يمكن إعادة توليدها", 409);
-      await client.query(`INSERT INTO payroll_items(period_id,employee_id,salary_profile_id,base_salary)
-        SELECT $1,e.id,p.id,p.monthly_salary
-        FROM employees e JOIN employee_salary_profiles p ON p.employee_id=e.id
-        WHERE e.is_active=TRUE AND p.effective_from <= ($2::date + INTERVAL '1 month - 1 day')::date
-          AND (p.effective_to IS NULL OR p.effective_to >= $2::date)
+      // Prorate each salary profile by the calendar days it was effective in this month.
+      // The latest overlapping profile is retained as the item's reference profile, while
+      // base_salary is the rounded sum across all profile periods for the employee.
+      await client.query(`WITH month_bounds AS (
+          SELECT $2::date AS month_start,
+            ($2::date + INTERVAL '1 month - 1 day')::date AS month_end,
+            (($2::date + INTERVAL '1 month')::date - $2::date)::numeric AS days_in_month
+        ), profile_days AS (
+          SELECT e.id AS employee_id, p.id AS profile_id, p.monthly_salary,
+            GREATEST(p.effective_from,b.month_start) AS overlap_start,
+            LEAST(COALESCE(p.effective_to,b.month_end),b.month_end) AS overlap_end,
+            b.days_in_month
+          FROM employees e
+          JOIN employee_salary_profiles p ON p.employee_id=e.id
+          CROSS JOIN month_bounds b
+          WHERE e.is_active=TRUE
+            AND p.effective_from <= b.month_end
+            AND (p.effective_to IS NULL OR p.effective_to >= b.month_start)
+        ), employee_totals AS (
+          SELECT employee_id,
+            (ARRAY_AGG(profile_id ORDER BY overlap_start DESC,profile_id DESC))[1] AS salary_profile_id,
+            ROUND(SUM(monthly_salary * (overlap_end-overlap_start+1)::numeric / days_in_month),2) AS base_salary
+          FROM profile_days
+          GROUP BY employee_id
+        )
+        INSERT INTO payroll_items(period_id,employee_id,salary_profile_id,base_salary)
+        SELECT $1,e.id,t.salary_profile_id,t.base_salary
+        FROM employees e JOIN employee_totals t ON t.employee_id=e.id
         ON CONFLICT(period_id,employee_id) DO NOTHING`, [period.id,month]);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [period.id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"generate",module:"payroll",entityType:"payroll_period",entityId:period.id,afterData:{period,count:Number(count.rows[0].count)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
