@@ -6,7 +6,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
-const monthSchema = z.string().regex(/^\d{4}-\d{2}$/, "الشهر يجب أن يكون بصيغة YYYY-MM");
+const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
   employeeId: z.string().uuid(),
   monthlySalary: z.number().min(0).max(100000000),
