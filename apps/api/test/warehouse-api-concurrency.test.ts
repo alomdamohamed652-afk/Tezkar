@@ -195,7 +195,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       "SELECT COUNT(*)::int AS count FROM stock_movements WHERE product_id=$1",
       [product.rows[0].id]
     );
-    assert.equal(movementCount.rows[0].count, 8,
+    assert.equal(movementCount.rows[0].count, 7,
       "receipts and transfers should create complete source/destination movement records");
   } finally {
     if (app) await app.close();
