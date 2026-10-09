@@ -114,6 +114,10 @@ WHERE r.code IN ('finance','accountant') AND p.code IN ('payroll.view','payroll.
 ON CONFLICT DO NOTHING;
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+WHERE r.code='hr' AND p.code IN ('payroll.view','payroll.manage')
+ON CONFLICT DO NOTHING;
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code='worker' AND p.code IN ('tasks.view_own','tasks.update_own','tasks.comment')
 ON CONFLICT DO NOTHING;
 INSERT INTO role_permissions(role_id,permission_id)
