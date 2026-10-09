@@ -138,7 +138,7 @@ export async function taskRoutes(app: FastifyInstance) {
     } finally { client.release(); }
   });
 
-  app.post("/api/tasks/:id/comments", { preHandler: [authenticateRequest, requirePermission("tasks.comment")] }, async (request, reply) => {
+  app.post("/api/tasks/:id/comments", { preHandler: [authenticateRequest, requirePermission("tasks.comment","own")] }, async (request, reply) => {
     const id = (request.params as { id: string }).id;
     const parsed = z.object({ body: z.string().trim().min(1).max(4000) }).safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اكتب تعليقًا صحيحًا", 422);
