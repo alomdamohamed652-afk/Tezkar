@@ -17,7 +17,8 @@ export interface PayrollDeductionInput {
  */
 export function calculatePayrollDeduction(input: PayrollDeductionInput): { basisAmount: number; amount: number } {
   if (input.mode === "FIXED") {
-    return { basisAmount: input.fixedAmount, amount: Math.round((input.fixedAmount + Number.EPSILON) * 100) / 100 };
+    const amount = Math.round((input.fixedAmount + Number.EPSILON) * 100) / 100;
+    return { basisAmount: amount, amount };
   }
 
   if (input.percentage === null || !Number.isFinite(input.percentage) || input.percentage <= 0 || input.percentage > 100) {
