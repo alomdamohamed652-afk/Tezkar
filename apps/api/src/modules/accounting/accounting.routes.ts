@@ -92,7 +92,7 @@ export async function accountingRoutes(app:FastifyInstance){
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM accounting_expenses WHERE order_id=$1",[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT'",[p.data.orderId]),
-   pool.query("SELECT COALESCE(SUM(earning_amount),0) AS value FROM production_entries WHERE order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$1) AND status='APPROVED'",[p.data.orderId])
+   pool.query("SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS value FROM production_entries WHERE order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$1) AND status='APPROVED'",[p.data.orderId])
   ]);
   const revenueValue=Number(revenue.rows[0].value||0);
   const explicitExpenses=Number(expenses.rows[0].value||0);
