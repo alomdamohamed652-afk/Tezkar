@@ -51,11 +51,24 @@ async function cashAccess(client:import("pg").PoolClient,userId:string,employeeI
   return {employeeId:row.employee_id,isFinance:false};
 }
 export async function custodyRoutes(app:FastifyInstance){
-  app.get("/api/custodies/eligible-employees",{
-    preHandler:[authenticateRequest,requireAnyPermission(["custody.create","all"],["custody.view","all"],["cash_custody.create","all"],["cash_custody.view","all"])]
-  },async()=>{
-    const result=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
-    return {data:result.rows};
+  app.get("/api/custodies/eligible-employees",{preHandler:[authenticateRequest]},async(request)=>{
+    const client=await pool.connect();
+    try{
+      const userId=request.user!.userId;
+      const permissionCodes=["custody.create","custody.view","cash_custody.create","cash_custody.view"];
+      let hasAny=false;let hasAll=false;
+      for(const code of permissionCodes){
+        if(await hasPermission(client,userId,code,"own"))hasAny=true;
+        if(await hasPermission(client,userId,code,"all"))hasAll=true;
+      }
+      if(!hasAny)throw new AppError("FORBIDDEN","ليس لديك صلاحية لاختيار موظف في العهد",403);
+      if(hasAll){
+        const result=await client.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+        return {data:result.rows};
+      }
+      const own=await client.query("SELECT e.id,e.code,e.full_name FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.id=$1 AND e.is_active=TRUE",[userId]);
+      return {data:own.rows};
+    }finally{client.release();}
   });
   app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
