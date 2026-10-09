@@ -8,6 +8,7 @@ import { SearchableSelect } from "../../components/searchable-select";
 type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string};
 type Shift=Item & {rate_group_name:string};
+type ShiftLeader={id:string;shift_id:string;shift_name:string;employee_id:string;employee_name:string;assignment_type:string};
 type Destination={id:string;code:string;name:string;warehouse_id:string;warehouse_code:string;warehouse_name:string};
 type Order={id:string;code:string;order_name:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null;production_type_id:string|null};
@@ -19,7 +20,7 @@ const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد
 
 export default function ProductionPage(){
  const {has}=usePermissions();
- const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
+ const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
  const [employeeId,setEmployeeId]=useState(""),[responsibleName,setResponsibleName]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editQuantity,setEditQuantity]=useState(""),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
@@ -29,12 +30,12 @@ export default function ProductionPage(){
  async function load(){
   setLoading(true);setError("");
   try{
-   const [e,o,p,s,h,d,os,pt,r]=await Promise.all([
+   const [e,o,p,s,h,leaders,d,os,pt,r]=await Promise.all([
     api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),
     api<{data:Destination[]}>("/api/production/destinations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
     api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
    ]);
-   setEmployees(e.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
+   setEmployees(e.data);setShiftLeaders(leaders.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
    if(!warehouseId){const preferred=d.data.find(x=>/منتجات جاهزة|المنتجات الجاهزة|finished goods/i.test(x.warehouse_name+" "+x.warehouse_code))?.warehouse_id||d.data[0]?.warehouse_id;if(preferred)setWarehouseId(preferred)}
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
@@ -141,7 +142,8 @@ export default function ProductionPage(){
     {orderStageId&&<div className="form-hint" style={{alignSelf:"end"}}>عند اختيار المرحلة، يُختار المنتج المرتبط بها تلقائيًا ويمكن تغييره عند الحاجة. المرحلة: {stages.find(x=>x.id===stageId)?.name||"—"}</div>}
     <label>مسؤول الإنتاج / المستلم والمبلّغ<input value={responsibleName} onChange={e=>setResponsibleName(e.target.value)} placeholder="اسم الشخص الذي استلم الإنتاج وبلّغ عنه"/></label>
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
-    <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
+    <label>الوردية<SearchableSelect value={shiftId} onChange={selectShift} options={shiftOptions} placeholder="اختر الوردية"/></label>
+    <label>مسؤول الوردية <span className="optional">(اختياري)</span><SearchableSelect value={shiftLeaders.find(x=>x.employee_name===responsibleName)?.employee_id||""} onChange={selectResponsible} options={responsibleOptions} placeholder="اختر رئيس وردية" searchPlaceholder="ابحث عن المسؤول"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
     {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
     {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={!has("production.rate_override") || Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":has("production.rate_override")?"السعر الحالي من التسعير العام ويمكن تعديله بصلاحيتك.":"السعر الحالي من تسعير المرحلة العام؛ تعديل السعر يحتاج صلاحية منفصلة."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
