@@ -72,7 +72,7 @@ export async function accountingRoutes(app:FastifyInstance){
   return reply.code(201).send({data:row});
  });
 
- app.get("/api/accounting/summary",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>{
+ app.get("/api/accounting/summary",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view"),requirePermission("finance.revenues.view")]},async()=>{
   const r=await pool.query(`
     SELECT
       COALESCE((SELECT SUM(amount) FROM order_revenues),0) AS total_in,
