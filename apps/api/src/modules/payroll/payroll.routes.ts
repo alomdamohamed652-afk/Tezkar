@@ -70,11 +70,21 @@ export async function payrollRoutes(app: FastifyInstance) {
     const period = await pool.query("SELECT * FROM payroll_periods WHERE period_month=$1::date", [month]);
     if (!period.rowCount) return { data: { period: null, items: [], totals: { employees: 0, net: 0, paid: 0, remaining: 0 } } };
     const items = await pool.query(`SELECT i.*,e.code AS employee_code,e.full_name AS employee_name,d.name AS department_name,
-      COALESCE(p.paid,0) AS paid_amount,GREATEST(i.net_amount-COALESCE(p.paid,0),0) AS remaining_amount
+      COALESCE(p.paid,0) AS paid_amount,GREATEST(i.net_amount-COALESCE(p.paid,0),0) AS remaining_amount,
+      COALESCE(ae.amount,0) AS recorded_expense_amount
       FROM payroll_items i JOIN employees e ON e.id=i.employee_id LEFT JOIN departments d ON d.id=e.department_id
       LEFT JOIN (SELECT payroll_item_id,SUM(amount) AS paid FROM payroll_payments GROUP BY payroll_item_id) p ON p.payroll_item_id=i.id
+      LEFT JOIN accounting_expenses ae ON ae.id=i.accounting_expense_id
       WHERE i.period_id=$1 ORDER BY e.full_name`, [period.rows[0].id]);
-    const totals = items.rows.reduce((a, x) => ({ employees:a.employees+1, net:a.net+Number(x.net_amount), paid:a.paid+Number(x.paid_amount), remaining:a.remaining+Number(x.remaining_amount) }), { employees:0, net:0, paid:0, remaining:0 });
+    const totals = items.rows.reduce((a, x) => ({
+      employees:a.employees+1,
+      net:a.net+Number(x.net_amount),
+      paid:a.paid+Number(x.paid_amount),
+      remaining:a.remaining+Number(x.remaining_amount),
+      recordedExpense:a.recordedExpense+Number(x.recorded_expense_amount),
+      expenseDifference:a.expenseDifference+(Number(x.net_amount)-Number(x.recorded_expense_amount)),
+      missingExpenseCount:a.missingExpenseCount+(Number(x.net_amount)>0&&!x.accounting_expense_id?1:0)
+    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0 });
     return { data: { period: period.rows[0], items: items.rows, totals } };
   });
 
