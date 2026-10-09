@@ -224,7 +224,9 @@ export async function productionRoutes(app: FastifyInstance) {
         const type0=Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const wh0=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[type0]);
         if(!wh0.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
-        if (!parsed.data.warehouseId) resolvedWarehouseId=wh0.rows[0].id;
+        // The server enforces the stage's virtual warehouse. The client cannot redirect
+        // a stage-bound production entry into raw materials or another operational store.
+        resolvedWarehouseId=wh0.rows[0].id;
       }
 
       const destination = parsed.data.locationId
