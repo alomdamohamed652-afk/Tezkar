@@ -82,10 +82,13 @@ export async function payrollRoutes(app: FastifyInstance) {
       paid:a.paid+Number(x.paid_amount),
       remaining:a.remaining+Number(x.remaining_amount),
       recordedExpense:a.recordedExpense+Number(x.recorded_expense_amount),
-      expenseDifference:a.expenseDifference+Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount)),
+      // Keep missing links separate from amount mismatches: a missing expense has no
+      // recorded amount to compare, so it must not inflate the linked-difference total.
+      expenseDifference:a.expenseDifference+(x.accounting_expense_id ? Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount)) : 0),
       missingExpenseCount:a.missingExpenseCount+(Number(x.net_amount)>0&&!x.accounting_expense_id?1:0),
+      missingExpenseAmount:a.missingExpenseAmount+(!x.accounting_expense_id&&Number(x.net_amount)>0?Number(x.net_amount):0),
       expenseMismatchCount:a.expenseMismatchCount+(x.accounting_expense_id && Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount))>0.01?1:0)
-    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0, expenseMismatchCount:0 });
+    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0, missingExpenseAmount:0, expenseMismatchCount:0 });
     return { data: { period: period.rows[0], items: items.rows, totals } };
   });
 
