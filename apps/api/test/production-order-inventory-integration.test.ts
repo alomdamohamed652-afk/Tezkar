@@ -593,6 +593,8 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(deleteOrder.statusCode, 200, deleteOrder.body);
     assert.equal(deleteOrder.json().data.status, "CANCELLED");
+    const visibleOrders = await app.inject({ method: "GET", url: "/api/orders", headers: { cookie: submitter.cookie } });
+    assert.ok(!visibleOrders.json().data.some((x: {id:string}) => x.id === deletableOrderId), "cancelled orders must be hidden from the default list");
 
     // A pending production row can be cancelled only after password confirmation.
     const pendingOrder = await app.inject({
