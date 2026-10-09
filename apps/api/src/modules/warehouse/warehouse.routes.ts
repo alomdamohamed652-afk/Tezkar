@@ -83,6 +83,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
 
         for(const balance of stock.rows){
           const lots=await client.query("SELECT id,remaining_quantity,unit_cost,batch_code FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[balance.product_id,id,balance.location_id]);
+          const lotQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
+          if(Math.abs(lotQuantity-Number(balance.quantity))>1e-7) throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المخزن لا يطابق مجموع دفعات التكلفة؛ تم إيقاف التعطيل لحماية المخزون",409);
           for(const lot of lots.rows){
             const qty=Number(lot.remaining_quantity);
             await changeBalance(client,balance.product_id,id,balance.location_id,-qty,Number(lot.unit_cost));
@@ -127,6 +129,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!target.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان النقل غير موجود أو غير نشط",422);
         for(const balance of stock.rows){
           const lots=await client.query("SELECT id,remaining_quantity,unit_cost,batch_code FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[balance.product_id,location.rows[0].warehouse_id,id]);
+          const lotQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
+          if(Math.abs(lotQuantity-Number(balance.quantity))>1e-7) throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المكان لا يطابق مجموع دفعات التكلفة؛ تم إيقاف النقل لحماية المخزون",409);
           for(const lot of lots.rows){
             const qty=Number(lot.remaining_quantity);
             const sourceCost=await changeBalance(client,balance.product_id,location.rows[0].warehouse_id,id,-qty,Number(lot.unit_cost));
