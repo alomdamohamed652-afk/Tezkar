@@ -20,7 +20,7 @@ function assertDisposableDatabaseUrl(connectionString: string) {
     "TEST_DATABASE_URL must point to a local disposable PostgreSQL test server"
   );
   assert.equal(
-    url.pathname.replace(/^\\/+/, ""),
+    url.pathname.slice(1),
     "postgres",
     "TEST_DATABASE_URL must use the disposable admin database named postgres"
   );
