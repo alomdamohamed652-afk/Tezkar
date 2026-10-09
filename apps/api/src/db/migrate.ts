@@ -11,7 +11,10 @@ const files = (await readdir(migrationsDir))
   .sort((a, b) => {
     const an = Number(a.match(/^\d+/)?.[0] ?? 0);
     const bn = Number(b.match(/^\d+/)?.[0] ?? 0);
-    return an - bn;
+    // Multiple migrations may intentionally share a numeric prefix.
+    // Use the filename as a stable tie-breaker so all environments apply
+    // those migrations in the same deterministic order.
+    return an - bn || a.localeCompare(b);
   });
 
 for (const file of files) {
