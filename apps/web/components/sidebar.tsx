@@ -50,7 +50,8 @@ export function usePermissions(){
 
 export function Sidebar({active}:{active:string}){
  const {permissions,session}=usePermissions();
- const [pendingTaskCount,setPendingTaskCount]=useState(0);\n const [pendingPaymentCount,setPendingPaymentCount]=useState(0);
+ const [pendingTaskCount,setPendingTaskCount]=useState(0);
+ const [pendingPaymentCount,setPendingPaymentCount]=useState(0);
  useEffect(()=>{let alive=true;if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});if(permissions?.some(p=>p==="payment_requests.view"||p==="worker_payments.view"))api<{data:{status:string}[]}>("/api/payment-requests").then(r=>{if(alive)setPendingPaymentCount(r.data.filter(x=>x.status==="PENDING"||x.status==="APPROVED").length)}).catch(()=>{if(alive)setPendingPaymentCount(0)});return()=>{alive=false}},[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null||!item.permissions?.some(p=>permissions.includes(p)))return false;
