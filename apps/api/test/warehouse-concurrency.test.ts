@@ -127,8 +127,12 @@ test("warehouse product lock serializes concurrent first balance inserts and opp
     assert.equal(Number(firstBalance.rows[0].quantity), 12, "both receipts must be reflected in the balance");
 
     await db.query(
-      "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity) VALUES ($1,$2,$3,10),($1,$4,$5,10)",
-      [ids.productId, ids.sourceWarehouseId, ids.sourceLocationId, ids.targetWarehouseId, ids.targetLocationId]
+      "UPDATE stock_balances SET quantity=10 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [ids.productId, ids.sourceWarehouseId, ids.sourceLocationId]
+    );
+    await db.query(
+      "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity) VALUES ($1,$2,$3,10)",
+      [ids.productId, ids.targetWarehouseId, ids.targetLocationId]
     );
 
     async function transfer(sourceWarehouseId: string, sourceLocationId: string, destinationWarehouseId: string,
@@ -174,7 +178,7 @@ test("warehouse product lock serializes concurrent first balance inserts and opp
     }
 
     await Promise.all([
-      transfer(ids.productId ? ids.sourceWarehouseId : ids.sourceWarehouseId, ids.sourceLocationId,
+      transfer(ids.sourceWarehouseId, ids.sourceLocationId,
         ids.targetWarehouseId, ids.targetLocationId, 3),
       transfer(ids.targetWarehouseId, ids.targetLocationId, ids.sourceWarehouseId, ids.sourceLocationId, 4)
     ]);
