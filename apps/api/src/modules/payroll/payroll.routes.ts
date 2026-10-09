@@ -82,9 +82,10 @@ export async function payrollRoutes(app: FastifyInstance) {
       paid:a.paid+Number(x.paid_amount),
       remaining:a.remaining+Number(x.remaining_amount),
       recordedExpense:a.recordedExpense+Number(x.recorded_expense_amount),
-      expenseDifference:a.expenseDifference+(Number(x.net_amount)-Number(x.recorded_expense_amount)),
-      missingExpenseCount:a.missingExpenseCount+(Number(x.net_amount)>0&&!x.accounting_expense_id?1:0)
-    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0 });
+      expenseDifference:a.expenseDifference+Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount)),
+      missingExpenseCount:a.missingExpenseCount+(Number(x.net_amount)>0&&!x.accounting_expense_id?1:0),
+      expenseMismatchCount:a.expenseMismatchCount+(Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount))>0.01?1:0)
+    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0, expenseMismatchCount:0 });
     return { data: { period: period.rows[0], items: items.rows, totals } };
   });
 
