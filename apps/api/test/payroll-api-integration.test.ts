@@ -128,6 +128,23 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(invalidSession.statusCode, 401, invalidSession.body);
       assert.equal(invalidSessionHandlerExecuted, false, "invalid sessions must stop before route handlers run");
 
+      const invalidMonthQuery = await app.inject({
+        method: "GET", url: "/api/payroll?month=2099-13", headers: { cookie: cookieHeader }
+      });
+      assert.equal(invalidMonthQuery.statusCode, 422, invalidMonthQuery.body);
+
+      const invalidMonthGenerate = await app.inject({
+        method: "POST", url: "/api/payroll/generate", headers: { cookie: cookieHeader },
+        payload: { month: "2099-00" }
+      });
+      assert.equal(invalidMonthGenerate.statusCode, 422, invalidMonthGenerate.body);
+
+      const zeroYearGenerate = await app.inject({
+        method: "POST", url: "/api/payroll/generate", headers: { cookie: cookieHeader },
+        payload: { month: "0000-01" }
+      });
+      assert.equal(zeroYearGenerate.statusCode, 422, zeroYearGenerate.body);
+
       const period = await apiPool.query(
         "INSERT INTO payroll_periods(period_month,generated_by) VALUES ('2099-01-01',$1) RETURNING id",
         [userId]
