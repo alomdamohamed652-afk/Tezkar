@@ -129,11 +129,14 @@ export async function custodyRoutes(app:FastifyInstance){
       const params:unknown[]=[]; const where:string[]=[];
       if(!access.isFinance){params.push(access.employeeId);where.push("c.employee_id=$"+params.length);}
       const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,
-        COALESCE((SELECT SUM(CASE WHEN x.direction='IN' THEN x.amount ELSE -x.amount END)
-          FROM cash_custody_transactions x WHERE x.employee_id=c.employee_id),0) AS balance
+        SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END) OVER (
+          PARTITION BY c.employee_id
+          ORDER BY c.transaction_date,c.created_at,c.id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS balance
         FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
         ${where.length?"WHERE "+where.join(" AND "):""}
-        ORDER BY c.transaction_date DESC,c.created_at DESC LIMIT 500`,params);
+        ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC LIMIT 500`,params);
       return {data:r.rows};
     }finally{client.release();}
   });
