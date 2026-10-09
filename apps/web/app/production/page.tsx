@@ -31,7 +31,7 @@ export default function ProductionPage(){
   setLoading(true);setError("");
   try{
    const [e,o,p,s,h,leaders,d,os,pt,r]=await Promise.all([
-    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),
+    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),api<{data:ShiftLeader[]}>("/api/shift-leaders"),
     api<{data:Destination[]}>("/api/production/destinations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
     api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
    ]);
@@ -63,6 +63,9 @@ export default function ProductionPage(){
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]);
  const stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]);
  const shiftOptions=useMemo(()=>shifts.map(x=>({value:x.id,label:x.name})),[shifts]);
+ const responsibleOptions=useMemo(()=>Array.from(new Map(shiftLeaders.map(x=>[x.employee_id,{value:x.employee_id,label:x.employee_name,meta:x.shift_name}])).values()),[shiftLeaders]);
+ function selectShift(value:string){setShiftId(value);const leader=shiftLeaders.find(x=>x.shift_id===value);if(leader)setResponsibleName(leader.employee_name)}
+ function selectResponsible(value:string){const leader=shiftLeaders.find(x=>x.employee_id===value);setResponsibleName(leader?.employee_name||"");if(leader)setShiftId(leader.shift_id)}
  const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
  const filteredOrderStages=useMemo(()=>orderStages.filter(x=>!orderId||x.order_id===orderId),[orderStages,orderId]);
  const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+Number(x.stage_rate).toLocaleString("ar-EG")):"بدون سعر"})),[filteredOrderStages]);
