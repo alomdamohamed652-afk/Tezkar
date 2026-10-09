@@ -101,6 +101,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const submitter = await makeUser("submitter", true);
     const approver = await makeUser("approver", true);
+    const limitedUser = await makeUser("limited", false);
+    await apiPool.query("DELETE FROM user_roles WHERE user_id=$1", [limitedUser.userId]);
+    const unauthenticatedCartons = await app.inject({ method: "GET", url: "/api/warehouse/cartons" });
+    assert.equal(unauthenticatedCartons.statusCode, 401, unauthenticatedCartons.body);
+    const forbiddenCartons = await app.inject({
+      method: "GET", url: "/api/warehouse/cartons", headers: { cookie: limitedUser.cookie }
+    });
+    assert.equal(forbiddenCartons.statusCode, 403, forbiddenCartons.body);
+    assert.equal(forbiddenCartons.json().error.code, "FORBIDDEN");
+    const forbiddenDelivery = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: limitedUser.cookie },
+      payload: { orderId: "00000000-0000-4000-8000-000000000001", destination: "No permission", lines: [] }
+    });
+    assert.equal(forbiddenDelivery.statusCode, 403, forbiddenDelivery.body);
     const shift = await apiPool.query(
       "SELECT id,rate_group_id FROM shifts WHERE is_active=TRUE AND rate_group_id IS NOT NULL ORDER BY created_at,id LIMIT 1"
     );
