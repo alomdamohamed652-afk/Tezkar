@@ -6,6 +6,7 @@ import {SearchableSelect} from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
 type Product=Item&{unit_name:string};
+type Stock={product_id:string;warehouse_id:string;quantity:number|string;product_name:string;warehouse_name:string;unit_name:string};
 type Warehouse=Item;
 type Employee=Item&{full_name?:string};
 type Order=Item&{order_name:string;status:string};
@@ -14,18 +15,18 @@ type Line={productId:string;warehouseId:string;quantity:string;notes:string};
 type Row={id:string;code:string;withdrawal_date:string;shift_code:string;shift_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;line_count:number;total_quantity:number};
 
 export default function ShiftWithdrawalsPage(){
- const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]);
+ const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]);
  const [shiftId,setShiftId]=useState(""),[employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[notes,setNotes]=useState("");
  const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);
 
  async function load(){
   try{
-   const [s,e,p,w,o,os,r]=await Promise.all([
+   const [s,e,p,w,st,o,os,r]=await Promise.all([
     api<{data:Item[]}>("/api/shifts"),api<{data:Employee[]}>("/api/employees"),api<{data:Product[]}>("/api/products"),
-    api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),
+    api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Stock[]}>("/api/warehouse/stock"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),
     api<{data:Row[]}>("/api/shift-withdrawals")
    ]);
-   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setOrderStages(os.data);setRows(r.data);
+   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setStock(st.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setOrderStages(os.data);setRows(r.data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مسحوبات الورديات")}
  }
  useEffect(()=>{void load()},[]);
@@ -42,8 +43,9 @@ export default function ShiftWithdrawalsPage(){
 
  type ArrayItem={employee_id:string;employee_code:string;employee_name:string};
 
- const productOptions=useMemo(()=>products.filter(x=>x.name).map(x=>({value:x.id,label:x.name,meta:x.code})),[products]);
- const warehouseOptions=useMemo(()=>warehouses.map(x=>({value:x.id,label:x.name,meta:x.code})),[warehouses]);
+ const productOptionsFor=(line:Line)=>products.filter(p=>p.name&&stock.some(s=>s.product_id===p.id&&(!line.warehouseId||s.warehouse_id===line.warehouseId))).map(p=>({value:p.id,label:p.name,meta:p.code}));
+ const warehouseOptionsFor=(line:Line)=>warehouses.filter(w=>stock.some(s=>s.warehouse_id===w.id&&(!line.productId||s.product_id===line.productId))).map(w=>({value:w.id,label:w.name,meta:w.code}));
+ const stockQuantity=(line:Line)=>stock.filter(s=>s.product_id===line.productId&&s.warehouse_id===line.warehouseId).reduce((sum,s)=>sum+Number(s.quantity||0),0);
  const employeeOptions=useMemo(()=>assignedEmployees.map(x=>({value:x.id,label:x.full_name||x.name,meta:x.code})),[assignedEmployees]);
  const activeStageOptions=useMemo(()=>orderStages.filter(x=>x.order_id===orderId&&x.status!=="COMPLETED"&&x.status!=="CANCELLED").map(x=>({value:x.id,label:x.stage_name,meta:x.output_product_name||""})),[orderStages,orderId]);
 
@@ -59,7 +61,7 @@ export default function ShiftWithdrawalsPage(){
    w.document.close();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تفاصيل المسحوبات للطباعة")}
  }
- function update(i:number,key:keyof Line,value:string){setLines(a=>a.map((x,n)=>n===i?{...x,[key]:value}:x))}
+ function update(i:number,key:keyof Line,value:string){setLines(a=>a.map((x,n)=>{if(n!==i)return x;const next={...x,[key]:value};if(key==="productId"&&next.warehouseId&&!stock.some(s=>s.product_id===value&&s.warehouse_id===next.warehouseId))next.warehouseId="";if(key==="warehouseId"&&next.productId&&!stock.some(s=>s.product_id===next.productId&&s.warehouse_id===value))next.productId="";return next}))}
  function add(){setLines(a=>[...a,{productId:"",warehouseId:"",quantity:"",notes:""}])}
  function remove(i:number){setLines(a=>a.filter((_,n)=>n!==i))}
 
@@ -87,13 +89,13 @@ export default function ShiftWithdrawalsPage(){
      <label style={{gridColumn:"1/-1"}}>الملاحظات<input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="بيان المسحوب أو سبب الصرف"/></label>
     </div>
     <div className="withdrawal-lines">{lines.map((x,i)=><div className="withdrawal-line" key={i}>
-      <SearchableSelect value={x.productId} onChange={v=>update(i,"productId",v)} options={productOptions} placeholder="اكتب اسم الصنف أو الكود" searchPlaceholder="ابحث باسم الصنف أو الكود"/>
-      <SearchableSelect value={x.warehouseId} onChange={v=>update(i,"warehouseId",v)} options={warehouseOptions} placeholder="المخزن"/>
+      <div><SearchableSelect value={x.productId} onChange={v=>update(i,"productId",v)} options={productOptionsFor(x)} placeholder="اختر صنفًا متاحًا" searchPlaceholder="ابحث باسم الصنف أو الكود"/>{x.productId&&x.warehouseId&&<small className="form-hint">المتاح: {stockQuantity(x).toLocaleString("ar-EG")}</small>}</div>
+      <SearchableSelect value={x.warehouseId} onChange={v=>update(i,"warehouseId",v)} options={warehouseOptionsFor(x)} placeholder={x.productId?"مخازن بها الصنف":"اختر المخزن لعرض أصنافه"}/>
       <input type="number" min="0.001" step="0.001" value={x.quantity} onChange={e=>update(i,"quantity",e.target.value)} placeholder="العدد"/>
       <input value={x.notes} onChange={e=>update(i,"notes",e.target.value)} placeholder="بيان الصنف (اختياري)"/>
       <button type="button" className="danger-button" onClick={()=>remove(i)} disabled={lines.length===1}>حذف</button>
     </div>)}</div>
-    <div className="form-actions"><button type="button" className="secondary-btn" onClick={add}>إضافة صنف</button><button className="primary-button" disabled={saving||!shiftId||!employeeId||!orderId||lines.some(x=>!x.productId||!x.warehouseId||!x.quantity)}>{saving?"جارٍ الحفظ...":"تسجيل المسحوبات"}</button></div>
+    <div className="form-actions"><button type="button" className="secondary-btn" onClick={add}>إضافة صنف</button><button className="primary-button" disabled={saving||!shiftId||!employeeId||!orderId||lines.some(x=>!x.productId||!x.warehouseId||!x.quantity||Number(x.quantity)>stockQuantity(x))}>{saving?"جارٍ الحفظ...":"تسجيل المسحوبات"}</button></div>
    </form>
 
    <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{rows.length}</span></div>

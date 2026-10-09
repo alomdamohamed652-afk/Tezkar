@@ -5,21 +5,23 @@ import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 
 type Order={id:string;code:string;order_name:string;customer_name:string|null;order_date:string;delivery_start_date:string|null;due_date:string|null;last_delivery_date:string|null;status:string;line_count:number;ordered_quantity:string;completed_quantity:string};
-type StageRow={stageName:string;outputProductName:string;plannedQuantity:string;notes:string;stageRate:string;stageRateMethod:string};
+type ProductionType={id:string;code:string;name:string;calculation_method:string};
+type StageRow={stageName:string;outputProductName:string;plannedQuantity:string;notes:string;stageRate:string;stageRateMethod:string;productionTypeId:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={DRAFT:"مسودة",PLANNED:"مخططة",IN_PROGRESS:"قيد التنفيذ",COMPLETED:"مكتملة",CANCELLED:"ملغاة"};
 
 export default function OrdersPage(){
  const {has}=usePermissions();
  const [orders,setOrders]=useState<Order[]>([]);
+ const [productionTypes,setProductionTypes]=useState<ProductionType[]>([]);
  const [orderName,setOrderName]=useState(""),[customer,setCustomer]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[deliveryStart,setDeliveryStart]=useState(""),[lastDelivery,setLastDelivery]=useState(""),[notes,setNotes]=useState("");
  const [stageRows,setStageRows]=useState<StageRow[]>([]);
  const [error,setError]=useState(""),[saving,setSaving]=useState(false);
 
- async function load(){try{const o=await api<{data:Order[]}>("/api/orders");setOrders(o.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الطلبات")}}
+ async function load(){try{const [o,t]=await Promise.all([api<{data:Order[]}>("/api/orders"),api<{data:ProductionType[]}>("/api/production-types")]);setOrders(o.data);setProductionTypes(t.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الطلبات أو أنواع الإنتاج")}}
  useEffect(()=>{void load()},[]);
 
- function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:"",notes:"",stageRate:"",stageRateMethod:"PER_1000"}])}
+ function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:"",notes:"",stageRate:"",stageRateMethod:"PER_1000",productionTypeId:""}])}
  function updateStage(i:number,key:keyof StageRow,value:string){setStageRows(v=>v.map((r,n)=>n===i?{...r,[key]:value}:r))}
  function removeStage(i:number){setStageRows(v=>v.filter((_,n)=>n!==i))}
 
@@ -29,7 +31,7 @@ export default function OrdersPage(){
    await api("/api/orders",{method:"POST",body:JSON.stringify({
     orderName,customerName:customer||undefined,orderDate:date,deliveryStartDate:deliveryStart||undefined,lastDeliveryDate:lastDelivery||undefined,notes:notes||undefined,
     lines:[],
-    stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(normalizeNumber(x.plannedQuantity)):undefined,notes:x.notes||undefined,stageRate:x.stageRate?Number(normalizeNumber(x.stageRate)):undefined,stageRateMethod:x.stageRate||x.stageRateMethod?x.stageRateMethod:undefined}))
+    stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(normalizeNumber(x.plannedQuantity)):undefined,notes:x.notes||undefined,stageRate:x.stageRate?Number(normalizeNumber(x.stageRate)):undefined,stageRateMethod:x.stageRate||x.stageRateMethod?x.stageRateMethod:undefined,productionTypeId:x.productionTypeId||undefined}))
    })});
    setOrderName("");setCustomer("");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلبية")}finally{setSaving(false)}
@@ -56,6 +58,7 @@ export default function OrdersPage(){
        <div><span className="field-caption">اسم المرحلة</span><input value={row.stageName} onChange={e=>updateStage(i,"stageName",e.target.value)} placeholder="مثال: طباعة المقلمة"/></div>
        <div><span className="field-caption">المنتج الناتج</span><input value={row.outputProductName} onChange={e=>updateStage(i,"outputProductName",e.target.value)} placeholder="مثال: مقلمة مطبوعة"/></div>
        <div><span className="field-caption">الكمية المخططة</span><input inputMode="decimal" value={row.plannedQuantity} onChange={e=>updateStage(i,"plannedQuantity",e.target.value)} /></div>
+       <div><span className="field-caption">نوع الإنتاج (تحليلي)</span><select value={row.productionTypeId} onChange={e=>updateStage(i,"productionTypeId",e.target.value)}><option value="">بدون تصنيف</option>{productionTypes.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
        <div><span className="field-caption">طريقة التسعير</span><select value={row.stageRateMethod} onChange={e=>updateStage(i,"stageRateMethod",e.target.value)}><option value="PER_PIECE">بالقطعة</option><option value="PER_1000">لكل ألف</option><option value="PER_HOUR">بالساعة</option><option value="PER_DAY">باليومية</option><option value="PERCENTAGE">نسبة</option></select></div>
        <div><span className="field-caption">سعر المرحلة</span><input inputMode="decimal" value={row.stageRate} onChange={e=>updateStage(i,"stageRate",e.target.value)} placeholder="مثال: 300" required /></div>
        <button type="button" className="danger-button" onClick={()=>removeStage(i)}>حذف</button>
