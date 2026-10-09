@@ -86,7 +86,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     if(Number(line.quantity)>productionAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION","كمية إذن التسليم تتجاوز الإنتاج المعتمد المتبقي للطلبية",409);
 
     const stock=await client.query(
-      `SELECT COALESCE(SUM(quantity),0) AS quantity
+      `SELECT quantity
          FROM stock_balances
         WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3
         FOR UPDATE`,
@@ -97,7 +97,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
          JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
         WHERE dl.product_id=$1 AND dl.warehouse_id=$2 AND dl.location_id=$3 AND dp.status='READY'`,
       [line.productId,line.warehouseId,line.locationId]);
-    const stockAvailable=Number(stock.rows[0].quantity)-Number(reservedAtLocation.rows[0].quantity);
+    const stockAvailable=Number(stock.rows[0]?.quantity??0)-Number(reservedAtLocation.rows[0].quantity);
     if(Number(line.quantity)>stockAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","كمية إذن التسليم تتجاوز رصيد المخزن المتاح بعد الأذونات الجاهزة",409);
 
     await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code) VALUES($1,$2,$3,$4,$5,$6,$7)",[d.rows[0].id,line.productId,line.warehouseId,line.locationId,line.quantity,product.rows[0].unit_id,line.cartonCode??null]);
