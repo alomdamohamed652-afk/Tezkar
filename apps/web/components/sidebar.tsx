@@ -11,6 +11,7 @@ const groups:NavGroup[]=[
  {label:"التشغيل",items:[
   {icon:"⌂",label:"الرئيسية",href:"/",permissions:["dashboard.view"]},
   {icon:"▤",label:"الطلبات",href:"/orders",permissions:["orders.view"]},
+  {icon:"✓",label:"المهام",href:"/tasks",permissions:["tasks.view","tasks.view_own"]},
   {icon:"◌",label:"رؤساء الورديات",href:"/shift-leaders",permissions:["shifts.view"]},
   {icon:"◫",label:"إنتاج العمال",href:"/production",permissions:["production.view"]},
   {icon:"◉",label:"إنتاجي",href:"/my-production",permissions:["production.view_own"]},
@@ -26,6 +27,7 @@ const groups:NavGroup[]=[
  {label:"المالية",items:[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
   {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
+  {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
   {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own"],conditional:"custody"},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
