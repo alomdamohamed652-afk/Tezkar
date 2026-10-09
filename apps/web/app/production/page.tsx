@@ -20,7 +20,7 @@ const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد
 export default function ProductionPage(){
  const {has}=usePermissions();
  const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
- const [employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
+ const [employeeId,setEmployeeId]=useState(""),[responsibleName,setResponsibleName]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editQuantity,setEditQuantity]=useState(""),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
@@ -35,7 +35,7 @@ export default function ProductionPage(){
     api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
    ]);
    setEmployees(e.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
-   if(!warehouseId){const first=d.data[0]?.warehouse_id;if(first)setWarehouseId(first)}
+   if(!warehouseId){const preferred=d.data.find(x=>/منتجات جاهزة|المنتجات الجاهزة|finished goods/i.test(x.warehouse_name+" "+x.warehouse_code))?.warehouse_id||d.data[0]?.warehouse_id;if(preferred)setWarehouseId(preferred)}
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
@@ -83,7 +83,7 @@ export default function ProductionPage(){
  useEffect(()=>{void loadAdjustments()},[has]);
 
  function selectOrder(value:string){setOrderId(value);setOrderStageId("");setStageId("");setProductId("");}
- function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id);if(x.production_type_id)setProductionTypeId(x.production_type_id)}}
+ function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);setProductId(x.output_product_id||"");if(x.production_type_id)setProductionTypeId(x.production_type_id)}}
 
  async function submit(e:FormEvent){
   e.preventDefault();setError("");
@@ -93,6 +93,7 @@ export default function ProductionPage(){
   if(!employeeId) return setError("اختر الموظف.");
   if(!orderId) return setError("اختر الطلبية.");
   if(!orderStageId) return setError("اختر المرحلة من مراحل الطلبية.");
+  if(!productId) return setError("اختر المنتج أو اربط منتجًا ناتجًا بالمرحلة.");
   if(!productionTypeId) return setError("اختر نوع الإنتاج.");
   if(!shiftId) return setError("اختر الوردية.");
   if(!resolvedMethod||resolvedRate===null) return setError("لم يتم العثور على سعر إنتاج مطابق للطلب والمرحلة والوردية.");
@@ -104,7 +105,7 @@ export default function ProductionPage(){
   if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
   setSaving(true);
   try{
-   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId,locationId,
+   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,responsibleName:responsibleName.trim()||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId:warehouseId||undefined,locationId:locationId||null,
      bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
     })});
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
@@ -136,13 +137,16 @@ export default function ProductionPage(){
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
     <label>الطلبية<SearchableSelect value={orderId} onChange={selectOrder} options={orderOptions} placeholder="اختر الطلبية" searchPlaceholder="ابحث باسم الطلبية"/></label>
     <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder={orderId?"اختر مرحلة من الطلبية":"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
-    {orderStageId&&<div className="form-hint" style={{alignSelf:"end"}}>المنتج والمرحلة بيتحددوا تلقائيًا من الطلبية: {products.find(x=>x.id===productId)?.name||"—"} — {stages.find(x=>x.id===stageId)?.name||"—"}</div>}
+    <label>المنتج (اختياري — يتحدد تلقائيًا من المرحلة)<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختيار المنتج" searchPlaceholder="ابحث عن المنتج"/></label>
+    {orderStageId&&<div className="form-hint" style={{alignSelf:"end"}}>عند اختيار المرحلة، يُختار المنتج المرتبط بها تلقائيًا ويمكن تغييره عند الحاجة. المرحلة: {stages.find(x=>x.id===stageId)?.name||"—"}</div>}
+    <label>مسؤول الإنتاج / المستلم والمبلّغ<input value={responsibleName} onChange={e=>setResponsibleName(e.target.value)} placeholder="اسم الشخص الذي استلم الإنتاج وبلّغ عنه"/></label>
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
     {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
     {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":"السعر الحالي من تسعير المرحلة العام."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
-    <div className="form-hint" style={{alignSelf:"end"}}>المخزن يتحدد تلقائيًا: مراحل التشغيل إلى «تحت التشغيل»، والمرحلة النهائية إلى «المنتجات الجاهزة».</div>
+    <label>مخزن الإنتاج<SearchableSelect value={warehouseId} onChange={v=>{setWarehouseId(v);setLocationId("")}} options={warehouseOptions} placeholder="اختر المخزن"/></label>
+    <div className="form-hint" style={{alignSelf:"end"}}>الاختيار الافتراضي يكون مخزن المنتجات الجاهزة، ويمكن تغييره يدويًا.</div>
     {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
     {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
     <div className="production-adjustment-box">
