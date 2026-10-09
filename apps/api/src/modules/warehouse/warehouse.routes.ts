@@ -244,7 +244,11 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         if(parsed.data.orderId && stage.rows[0].order_id!==parsed.data.orderId) throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الطلب لا تنتمي إلى الطلبية المحددة",409);
         if(stage.rows[0].status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن ربط حركة مخزن بمرحلة طلبية ملغاة",409);
-        if(stage.rows[0].output_product_id && stage.rows[0].output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق منتج مرحلة الطلب",409);
+        // Only stock entering production as the stage's produced output must match
+        // output_product_id. OUT/TRANSFER_OUT can legitimately consume other inputs.
+        if(parsed.data.movementType==="IN" && stage.rows[0].output_product_id && stage.rows[0].output_product_id!==parsed.data.productId) {
+          throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق منتج مرحلة الطلب",409);
+        }
       } else if(parsed.data.orderId){
         const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
         if(!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",422);
