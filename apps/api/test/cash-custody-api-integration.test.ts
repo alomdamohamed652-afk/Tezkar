@@ -172,6 +172,18 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(confirmedDuplicate.statusCode, 201, confirmedDuplicate.body);
       assert.equal(confirmedDuplicate.json().data.confirmed_duplicate, true);
 
+      const concurrentDuplicates = await Promise.all([1, 2].map(index => app.inject({
+        method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
+        payload: {
+          direction: "OUT", amount: 17, transactionDate: "2099-01-10",
+          description: `Concurrent duplicate attempt ${index}`
+        }
+      })));
+      assert.equal(concurrentDuplicates.filter(response => response.statusCode === 201).length, 1,
+        concurrentDuplicates.map(response => `${response.statusCode}: ${response.body}`).join("\\n"));
+      assert.equal(concurrentDuplicates.filter(response =>
+        response.statusCode === 409 && response.json().error.code === "DUPLICATE_CASH_CUSTODY").length, 1);
+
       const outOfScope = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
         payload: {
@@ -186,9 +198,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         method: "GET", url: "/api/cash-custody", headers: { cookie: workerCookie }
       });
       assert.equal(workerRows.statusCode, 200, workerRows.body);
-      assert.equal(workerRows.json().data.length, 3);
+      assert.equal(workerRows.json().data.length, 4);
       assert.ok(workerRows.json().data.every((row: { employee_id: string }) => row.employee_id === employeeA.id));
-      assert.ok(workerRows.json().data.every((row: { balance: string }) => Number(row.balance) === 40));
+      assert.ok(workerRows.json().data.every((row: { balance: string }) => Number(row.balance) === 23));
 
       const managerEntry = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: managerCookie },
@@ -203,7 +215,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
         [worker.id]
       );
-      assert.equal(audit.rows[0].count, 3, "all successfully created worker transactions must be audited");
+      assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions must be audited");
     } finally {
       await app.close();
     }
