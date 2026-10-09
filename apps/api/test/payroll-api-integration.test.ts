@@ -16,7 +16,7 @@ function assertDisposableDatabaseUrl(connectionString: string) {
     "TEST_DATABASE_URL must use PostgreSQL"
   );
   assert.ok(
-    ["localhost", "127.0.0.1", "::1", "postgres"].includes(url.hostname.toLowerCase()),
+    ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase()),
     "TEST_DATABASE_URL must point to a local disposable PostgreSQL test server"
   );
   assert.equal(
@@ -33,9 +33,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
   assertDisposableDatabaseUrl(adminUrl);
   const name = "tezkar_payroll_api_" + randomBytes(6).toString("hex");
   const admin = new pg.Client({ connectionString: adminUrl });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE ${name}`);
-  await admin.end();
+  try {
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${name}`);
+  } finally {
+    await admin.end();
+  }
 
   const target = new URL(adminUrl);
   target.pathname = "/" + name;
