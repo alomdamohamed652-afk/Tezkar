@@ -18,7 +18,7 @@ function verifyPassword(password: string, stored: string): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-export { hashPassword };
+export { hashPassword, verifyPassword };
 
 export async function authenticate(client: pg.PoolClient, username: string, password: string): Promise<SessionUser> {
   const user = await findUserForLogin(client, username);

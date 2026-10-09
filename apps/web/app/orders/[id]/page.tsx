@@ -27,7 +27,6 @@ export default function OrderDetailPage(){
    <div className="stats">
     <article className="card stat"><div className="stat-label">تكلفة الإنتاج</div><div className="stat-value">{Number(data.totals.production_cost||0).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div className="stat-note">أجور الإنتاج المعتمدة</div></article>
     <article className="card stat accent"><div className="stat-label">تكلفة المسحوبات</div><div className="stat-value">{Number(data.totals.stock_out_cost||0).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div className="stat-note">صرف المخزن المرتبط بالطلب</div></article>
-    <article className="card stat warning"><div className="stat-label">تكلفة الداخل</div><div className="stat-value">{Number(data.totals.stock_in_cost||0).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div className="stat-note">إدخالات مرتبطة بالطلب</div></article>
     <article className="card stat"><div className="stat-label">مصروفات محمّلة على الطلب</div><div className="stat-value">{Number(data.totals.order_expenses||0).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div className="stat-note">مصروفات إدارية مرتبطة بهذه الطلبية</div></article>
     <article className="card stat neutral"><div className="stat-label">الكمية المنجزة</div><div className="stat-value">{Number(o.completed_quantity||0).toLocaleString("ar-EG")}</div><div className="stat-note">تتحدث مع التشغيل</div></article>
    </div>

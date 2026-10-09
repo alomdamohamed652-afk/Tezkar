@@ -180,6 +180,29 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
 
+      // Payroll approval must create exactly one accounting expense per non-zero payroll item.
+      const linkedPayroll = await apiPool.query(
+        "SELECT i.id,i.accounting_expense_id,i.net_amount,e.category,e.amount,e.payment_method,e.expense_date::text AS expense_date " +
+        "FROM payroll_items i LEFT JOIN accounting_expenses e ON e.id=i.accounting_expense_id WHERE i.period_id=$1 ORDER BY i.id",
+        [period.rows[0].id]
+      );
+      assert.equal(linkedPayroll.rowCount, 2);
+      assert.ok(linkedPayroll.rows.every((row: {accounting_expense_id:string|null;category:string|null}) =>
+        row.accounting_expense_id && row.category === "SALARIES"));
+      assert.ok(linkedPayroll.rows.every((row: {amount:string;net_amount:string;payment_method:string;expense_date:string}) =>
+        Number(row.amount) === Number(row.net_amount) && row.payment_method === "PAYROLL" &&
+        String(row.expense_date).slice(0,10) === "2099-01-01"));
+      const secondApproval = await app.inject({
+        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers: { cookie: cookieHeader }
+      });
+      assert.equal(secondApproval.statusCode, 409, secondApproval.body);
+      assert.equal(secondApproval.json().error.code, "PAYROLL_PERIOD_LOCKED");
+      const salaryExpenseCount = await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE category='SALARIES' AND payment_method='PAYROLL' AND expense_date='2099-01-01'"
+      );
+      assert.equal(salaryExpenseCount.rows[0].count, 2, "re-approval must not duplicate salary expenses");
+
       const partial = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
         headers: { cookie: cookieHeader }, payload: { amount: 600, paymentMethod: "TEST" }

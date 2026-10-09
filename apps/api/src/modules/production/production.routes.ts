@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 
@@ -123,7 +124,8 @@ export async function productionRoutes(app: FastifyInstance) {
       where.push(`p.employee_id=${params.length}`);
     }
 
-    if (query.data.status) { params.push(query.data.status); where.push(`p.status=$${params.length}`); }
+    if (query.data.status) { params.push(query.data.status); where.push(`p.status=${params.length}`); }
+    else where.push("p.status <> 'CANCELLED'");
     if (query.data.employeeId) { params.push(query.data.employeeId); where.push(`p.employee_id=$${params.length}`); }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
@@ -167,7 +169,7 @@ export async function productionRoutes(app: FastifyInstance) {
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
-        WHERE p.employee_id=$1
+        WHERE p.employee_id=$1 AND p.status <> 'CANCELLED'
         ORDER BY p.work_date DESC,p.created_at DESC LIMIT 300`,
       [request.user.employeeId]
     );
@@ -447,6 +449,23 @@ export async function productionRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: row });
   });
 
+  app.delete("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({password:z.string().min(1).max(200)}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("PASSWORD_REQUIRED","أدخل كلمة مرور حسابك لتأكيد حذف سجل الإنتاج",422);
+    const row=await withTransaction(async client=>{
+      const actor=await client.query("SELECT password_hash FROM users WHERE id=$1 AND is_active=TRUE",[request.user!.userId]);
+      if(!actor.rowCount || !verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم حذف سجل الإنتاج",401);
+      const current=await getEntry(client,id,true);
+      if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(current.status!=="PENDING")throw new AppError("PRODUCTION_DELETE_LOCKED","يمكن حذف الإنتاج المعلّق فقط. الإنتاج المعتمد له أثر مخزني ومستحقات، ويحتاج إجراء عكس معتمد حتى لا تتلخبط الأرصدة.",409);
+      const updated=await client.query("UPDATE production_entries SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,status,employee_id,order_stage_id,quantity,work_date",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"cancel",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:"password_confirmed_delete"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return {data:row};
+  });
+
   app.patch("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const parsed=z.object({quantity:z.number().positive(),workDate:z.string().date().optional()}).safeParse(request.body);
@@ -723,7 +742,7 @@ export async function productionRoutes(app: FastifyInstance) {
   });  app.get("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.view")]},async(request)=>{
     const q=z.object({employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر البونص والخصم غير صحيحة",422);
-    const params:unknown[]=[];const where:string[]=[];
+    const params:unknown[]=[];const where:string[]=["(a.production_entry_id IS NULL OR p.status <> 'CANCELLED')"];
     if(q.data.employeeId){params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);}
     if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}

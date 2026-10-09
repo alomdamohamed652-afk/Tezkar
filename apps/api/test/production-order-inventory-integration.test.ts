@@ -50,13 +50,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
-      { orderRoutes }, { warehouseRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
-      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
-      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
+      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
+      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
     app = Fastify();
@@ -69,8 +69,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(productionRoutes);
     await app.register(orderRoutes);
     await app.register(warehouseRoutes);
+    await app.register(cartonDeliveryRoutes);
     await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
+    await app.register(reportsRoutes);
 
     async function makeUser(label: string, withEmployee: boolean) {
       let employeeId: string | null = null;
@@ -100,6 +102,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const submitter = await makeUser("submitter", true);
     const approver = await makeUser("approver", true);
+    const limitedUser = await makeUser("limited", false);
+    await apiPool.query("DELETE FROM user_roles WHERE user_id=$1", [limitedUser.userId]);
+    const unauthenticatedCartons = await app.inject({ method: "GET", url: "/api/warehouse/cartons" });
+    assert.equal(unauthenticatedCartons.statusCode, 401, unauthenticatedCartons.body);
+    const forbiddenCartons = await app.inject({
+      method: "GET", url: "/api/warehouse/cartons", headers: { cookie: limitedUser.cookie }
+    });
+    assert.equal(forbiddenCartons.statusCode, 403, forbiddenCartons.body);
+    assert.equal(forbiddenCartons.json().error.code, "FORBIDDEN");
+    const forbiddenDelivery = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: limitedUser.cookie },
+      payload: { orderId: "00000000-0000-4000-8000-000000000001", destination: "No permission", lines: [] }
+    });
+    assert.equal(forbiddenDelivery.statusCode, 403, forbiddenDelivery.body);
     const shift = await apiPool.query(
       "SELECT id,rate_group_id FROM shifts WHERE is_active=TRUE AND rate_group_id IS NOT NULL ORDER BY created_at,id LIMIT 1"
     );
@@ -248,10 +264,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(finalEntry.statusCode, 201, finalEntry.body);
     const finalId = finalEntry.json().data.id as string;
     const finalSaved = await apiPool.query(
-      "SELECT warehouse_id,location_id,earning_amount,bonus_amount,deduction_amount,total_earning_amount FROM production_entries WHERE id=$1",
+      "SELECT warehouse_id,location_id,rate_id,earning_amount,bonus_amount,deduction_amount,total_earning_amount FROM production_entries WHERE id=$1",
       [finalId]
     );
     assert.equal(finalSaved.rows[0].warehouse_id, expectedFinished.id, "final stage must always use finished-goods warehouse");
+    assert.equal(finalSaved.rows[0].rate_id, null, "order-stage pricing must not require a synthetic global rate row");
     assert.equal(Number(finalSaved.rows[0].earning_amount), 300);
     assert.equal(Number(finalSaved.rows[0].bonus_amount), 10);
     assert.equal(Number(finalSaved.rows[0].deduction_amount), 5);
@@ -287,6 +304,31 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       5
     );
 
+    // Regression: production reports must show the adjusted earning total, not the base wage.
+    const productionReport = await app.inject({
+      method: "GET", url: "/api/reports/production?from=2099-01-03&to=2099-01-03",
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(productionReport.statusCode, 200, productionReport.body);
+    const finalProductionCode = (await apiPool.query("SELECT code FROM production_entries WHERE id=$1", [finalId])).rows[0].code as string;
+    const reportedEntry = productionReport.json().data.find((row: {production_code:string;earning_amount:string|number}) => row.production_code === finalProductionCode);
+    assert.ok(reportedEntry, "approved production entry should appear in the production report");
+    assert.equal(Number(reportedEntry.earning_amount), 305, "production report must include bonus and deduction in total earnings");
+
+    // Employee earnings report must reconcile with base production pay and its adjustments.
+    const employeeEarningsReport = await app.inject({
+      method: "GET", url: "/api/reports/employee-earnings", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(employeeEarningsReport.statusCode, 200, employeeEarningsReport.body);
+    const reportedEmployee = employeeEarningsReport.json().data.find(
+      (row: {full_name:string;earned:string|number;debited:string|number;balance:string|number}) =>
+        row.full_name === "submitter Employee"
+    );
+    assert.ok(reportedEmployee, "active employee should appear in earnings report");
+    assert.equal(Number(reportedEmployee.earned), 510, "employee earnings report must include base wages and bonus");
+    assert.equal(Number(reportedEmployee.debited), 5, "employee earnings report must include deductions");
+    assert.equal(Number(reportedEmployee.balance), 505, "employee earnings balance must reconcile to approved production earnings");
+
     const stageState = await apiPool.query(
       "SELECT os.completed_quantity,os.status,po.status AS order_status FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.id=$1",
       [finalStage.id]
@@ -301,9 +343,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(dashboard.statusCode, 200, dashboard.body);
     assert.equal(dashboard.json().data.stages.length, 2);
     assert.equal(dashboard.json().data.production.length, 2);
-    assert.equal(dashboard.json().data.movements.length, 3);
+    assert.equal(dashboard.json().data.movements.length, 1, "order withdrawals must show only actual OUT movements, not production receipts");
     assert.equal(Number(dashboard.json().data.totals.production_cost), 505);
-    assert.equal(Number(dashboard.json().data.totals.stock_in_cost), 505);
+    assert.equal(dashboard.json().data.totals.stock_in_cost, undefined, "production receipt value must not be presented as an order withdrawal cost");
     assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
     const profitability = await app.inject({
@@ -313,10 +355,170 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(profitability.json().data.laborCost), 505);
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
+    // Complete the production -> delivery workflow in this disposable database.
+    const deliveryPermission = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
+      payload: {
+        orderId, destination: "Integration test destination",
+        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+          locationId: finalSaved.rows[0].location_id, quantity: 4 }]
+      }
+    });
+    assert.equal(deliveryPermission.statusCode, 201, deliveryPermission.body);
+    const deliveryId = deliveryPermission.json().data.id as string;
+    const deliveryCode = deliveryPermission.json().data.code as string;
+
+    const overDelivery = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
+      payload: {
+        orderId, destination: "Over-delivery must be rejected",
+        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+          locationId: finalSaved.rows[0].location_id, quantity: 7 }]
+      }
+    });
+    assert.equal(overDelivery.statusCode, 409, overDelivery.body);
+    assert.equal(overDelivery.json().error.code, "DELIVERY_EXCEEDS_PRODUCTION");
+
+    const wrongScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: "WRONG-SCAN-CODE" }
+    });
+    assert.equal(wrongScan.statusCode, 409, wrongScan.body);
+    assert.equal(wrongScan.json().error.code, "SCAN_MISMATCH");
+
+    const release = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: deliveryCode }
+    });
+    assert.equal(release.statusCode, 200, release.body);
+    assert.equal(release.json().data.status, "RELEASED");
+
+    const afterDelivery = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(afterDelivery.rows[0].quantity), 6);
+    assert.equal(Number(afterDelivery.rows[0].inventory_value), 183);
+    const deliveryMovement = await apiPool.query(
+      "SELECT movement_type,quantity,reference_type,reference_id,order_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [deliveryId]
+    );
+    assert.equal(deliveryMovement.rowCount, 1);
+    assert.equal(deliveryMovement.rows[0].movement_type, "OUT");
+    assert.equal(Number(deliveryMovement.rows[0].quantity), 4);
+    assert.equal(deliveryMovement.rows[0].order_id, orderId);
+
+    const duplicateRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: deliveryCode }
+    });
+    assert.equal(duplicateRelease.statusCode, 409, duplicateRelease.body);
+    assert.equal(duplicateRelease.json().error.code, "INVALID_STATUS");
+    const deliveryMovementCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [deliveryId]
+    );
+    assert.equal(deliveryMovementCount.rows[0].count, 1, "releasing twice must not duplicate delivery stock movements");
+
+    // Verify carton labeling, barcode resolution, partial-carton balance and stock release.
+    const cartonResponse = await app.inject({
+      method: "POST", url: "/api/warehouse/cartons", headers: { cookie: approver.cookie },
+      payload: {
+        productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+        locationId: finalSaved.rows[0].location_id, quantity: 3, weight: 1.2,
+        batchCode: "INTEGRATION-BATCH", status: "SEALED"
+      }
+    });
+    assert.equal(cartonResponse.statusCode, 201, cartonResponse.body);
+    const carton = cartonResponse.json().data;
+    assert.ok(carton.barcode, "cartons without a supplied barcode must receive a generated barcode");
+    assert.equal(carton.status, "SEALED");
+    assert.equal(Number(carton.quantity), 3);
+
+    const cartonDelivery = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
+      payload: {
+        orderId, destination: "Integration carton delivery",
+        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+          locationId: finalSaved.rows[0].location_id, quantity: 2, cartonCode: carton.barcode }]
+      }
+    });
+    assert.equal(cartonDelivery.statusCode, 201, cartonDelivery.body);
+    const cartonDeliveryId = cartonDelivery.json().data.id as string;
+    const cartonDeliveryCode = cartonDelivery.json().data.code as string;
+    const cartonRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + cartonDeliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: cartonDeliveryCode }
+    });
+    assert.equal(cartonRelease.statusCode, 200, cartonRelease.body);
+    assert.equal(cartonRelease.json().data.status, "RELEASED");
+
+    const cartonAfterRelease = await apiPool.query(
+      "SELECT quantity,status,barcode FROM cartons WHERE id=$1", [carton.id]
+    );
+    assert.equal(Number(cartonAfterRelease.rows[0].quantity), 1, "partial carton release must preserve the remaining quantity");
+    assert.equal(cartonAfterRelease.rows[0].status, "PARTIAL");
+    assert.equal(cartonAfterRelease.rows[0].barcode, carton.barcode);
+    const cartonMovement = await apiPool.query(
+      "SELECT movement_type,quantity,carton_code,reference_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [cartonDeliveryId]
+    );
+    assert.equal(cartonMovement.rowCount, 1);
+    assert.equal(cartonMovement.rows[0].movement_type, "OUT");
+    assert.equal(Number(cartonMovement.rows[0].quantity), 2);
+    assert.equal(cartonMovement.rows[0].carton_code, carton.barcode);
+    const stockAfterCartonDelivery = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
+    assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
+
+    // Verify order-linked revenue and expense feed the profitability report.
+    const revenue = await app.inject({
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: approver.cookie },
+      payload: { orderId, amount: 1000, revenueDate: "2099-01-06", source: "TEST", notes: "Isolated workflow test" }
+    });
+    assert.equal(revenue.statusCode, 201, revenue.body);
+    assert.equal(revenue.json().data.order_id, orderId);
+    const expense = await app.inject({
+      method: "POST", url: "/api/accounting/expenses", headers: { cookie: approver.cookie },
+      payload: { orderId, category: "TEST", description: "Isolated workflow test expense", amount: 50, expenseDate: "2099-01-06", paymentMethod: "TEST" }
+    });
+    assert.equal(expense.statusCode, 201, expense.body);
+    assert.equal(expense.json().data.order_id, orderId);
+
+    const finalProfitability = await app.inject({
+      method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(finalProfitability.statusCode, 200, finalProfitability.body);
+    assert.equal(Number(finalProfitability.json().data.revenue), 1000);
+    assert.equal(Number(finalProfitability.json().data.expenses), 50);
+    assert.equal(Number(finalProfitability.json().data.materialCost), 100);
+    assert.equal(Number(finalProfitability.json().data.laborCost), 505);
+    assert.equal(Number(finalProfitability.json().data.totalCost), 655);
+    assert.equal(Number(finalProfitability.json().data.profit), 345);
+    assert.equal(Number(finalProfitability.json().data.marginPercent), 34.5);
+
+    const accountingSummary = await app.inject({
+      method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(accountingSummary.statusCode, 200, accountingSummary.body);
+    assert.equal(Number(accountingSummary.json().data.total_in), 1000);
+    assert.equal(Number(accountingSummary.json().data.total_out), 50);
+    assert.equal(Number(accountingSummary.json().data.net), 950);
+
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(duplicateApproval.statusCode, 409, duplicateApproval.body);
+    const deleteApprovedProduction = await app.inject({
+      method: "DELETE", url: "/api/production/" + finalId, headers: { cookie: approver.cookie },
+      payload: { password: "Test-only-password-2026!" }
+    });
+    assert.equal(deleteApprovedProduction.statusCode, 409, deleteApprovedProduction.body);
+    assert.equal(deleteApprovedProduction.json().error.code, "PRODUCTION_DELETE_LOCKED",
+      "approved production must not be removed without reversing stock and earnings");
     const movementCount = await apiPool.query("SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION' AND reference_id=$1",[finalId]);
     assert.equal(movementCount.rows[0].count, 1, "re-approval must not duplicate stock movements");
 
@@ -378,6 +580,59 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [concurrentEntries]
     );
     assert.equal(concurrentLotCount.rows[0].count, 2);
+
+    // Password-confirmed order cancellation must reject an incorrect password.
+    const deletableOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Password delete test order", orderDate: "2099-01-06",
+        stages: [{ stageName: "Password delete stage", sequenceNo: 1, outputProductName: "Password delete product", plannedQuantity: 1, stageRate: 1, stageRateMethod: "PER_PIECE" }] }
+    });
+    assert.equal(deletableOrder.statusCode, 201, deletableOrder.body);
+    const deletableOrderId = deletableOrder.json().data.id as string;
+    const wrongOrderPassword = await app.inject({
+      method: "DELETE", url: "/api/orders/" + deletableOrderId, headers: { cookie: submitter.cookie },
+      payload: { password: "not-the-password" }
+    });
+    assert.equal(wrongOrderPassword.statusCode, 401, wrongOrderPassword.body);
+    const deleteOrder = await app.inject({
+      method: "DELETE", url: "/api/orders/" + deletableOrderId, headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!" }
+    });
+    assert.equal(deleteOrder.statusCode, 200, deleteOrder.body);
+    assert.equal(deleteOrder.json().data.status, "CANCELLED");
+    const visibleOrders = await app.inject({ method: "GET", url: "/api/orders", headers: { cookie: submitter.cookie } });
+    assert.ok(!visibleOrders.json().data.some((x: {id:string}) => x.id === deletableOrderId), "cancelled orders must be hidden from the default list");
+
+    // A pending production row can be cancelled only after password confirmation.
+    const pendingOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Pending production delete test", orderDate: "2099-01-07",
+        stages: [{ stageName: "Pending delete stage", sequenceNo: 1, outputProductName: "Pending delete product", plannedQuantity: 2, stageRate: 1, stageRateMethod: "PER_PIECE" }] }
+    });
+    assert.equal(pendingOrder.statusCode, 201, pendingOrder.body);
+    const pendingOrderId = pendingOrder.json().data.id as string;
+    const pendingStage = await apiPool.query("SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",[pendingOrderId]);
+    const pendingProduction = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: { employeeId: submitterEmployee, orderStageId: pendingStage.rows[0].id,
+        stageId: pendingStage.rows[0].stage_id, productId: pendingStage.rows[0].output_product_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-07", quantity: 1 }
+    });
+    assert.equal(pendingProduction.statusCode, 201, pendingProduction.body);
+    const pendingProductionId = pendingProduction.json().data.id as string;
+    const wrongProductionPassword = await app.inject({
+      method: "DELETE", url: "/api/production/" + pendingProductionId, headers: { cookie: submitter.cookie },
+      payload: { password: "not-the-password" }
+    });
+    assert.equal(wrongProductionPassword.statusCode, 401, wrongProductionPassword.body);
+    const deleteProduction = await app.inject({
+      method: "DELETE", url: "/api/production/" + pendingProductionId, headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!" }
+    });
+    assert.equal(deleteProduction.statusCode, 200, deleteProduction.body);
+    assert.equal(deleteProduction.json().data.status, "CANCELLED");
+    const activeProduction = await app.inject({ method: "GET", url: "/api/production", headers: { cookie: submitter.cookie } });
+    assert.ok(!activeProduction.json().data.some((x: {id:string}) => x.id === pendingProductionId), "cancelled production must be hidden from the default list");
   } finally {
     if (app) await app.close();
     if (apiPool) await apiPool.end();
