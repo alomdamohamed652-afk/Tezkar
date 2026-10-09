@@ -50,13 +50,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
-      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
-      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
+      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
     app = Fastify();
@@ -72,6 +72,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(cartonDeliveryRoutes);
     await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
+    await app.register(reportsRoutes);
 
     async function makeUser(label: string, withEmployee: boolean) {
       let employeeId: string | null = null;
@@ -301,6 +302,16 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       adjustments.rows.reduce((sum: number, x: {adjustment_type:string;amount:string})=>sum+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0),
       5
     );
+
+    // Regression: production reports must show the adjusted earning total, not the base wage.
+    const productionReport = await app.inject({
+      method: "GET", url: "/api/reports/production?from=2099-01-03&to=2099-01-03",
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(productionReport.statusCode, 200, productionReport.body);
+    const reportedEntry = productionReport.json().data.find((row: {production_code:string;earning_amount:string|number}) => row.production_code === (await apiPool!.query("SELECT code FROM production_entries WHERE id=$1",[finalId])).rows[0].code);
+    assert.ok(reportedEntry, "approved production entry should appear in the production report");
+    assert.equal(Number(reportedEntry.earning_amount), 305, "production report must include bonus and deduction in total earnings");
 
     const stageState = await apiPool.query(
       "SELECT os.completed_quantity,os.status,po.status AS order_status FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.id=$1",
