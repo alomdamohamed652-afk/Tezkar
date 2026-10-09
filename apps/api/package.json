@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "node --test",
+    "test": "node --import tsx --test test/*.test.ts",
     "bootstrap": "node --env-file=.env --import tsx src/db/bootstrap-admin.ts",
     "start": "node dist/main.js",
     "migrate": "node --env-file=.env --import tsx src/db/migrate.ts"
