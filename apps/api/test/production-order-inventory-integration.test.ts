@@ -309,7 +309,8 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       headers: { cookie: submitter.cookie }
     });
     assert.equal(productionReport.statusCode, 200, productionReport.body);
-    const reportedEntry = productionReport.json().data.find((row: {production_code:string;earning_amount:string|number}) => row.production_code === (await apiPool!.query("SELECT code FROM production_entries WHERE id=$1",[finalId])).rows[0].code);
+    const finalProductionCode = (await apiPool.query("SELECT code FROM production_entries WHERE id=$1", [finalId])).rows[0].code as string;
+    const reportedEntry = productionReport.json().data.find((row: {production_code:string;earning_amount:string|number}) => row.production_code === finalProductionCode);
     assert.ok(reportedEntry, "approved production entry should appear in the production report");
     assert.equal(Number(reportedEntry.earning_amount), 305, "production report must include bonus and deduction in total earnings");
 
