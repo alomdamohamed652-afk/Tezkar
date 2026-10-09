@@ -8,7 +8,12 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 const requestSchema = z.object({
   amount: z.number().positive(),
-  method: z.string().trim().min(1).max(50)
+  method: z.string().trim().min(1).max(50),
+  transferReference: z.string().trim().min(3).max(120).nullable().optional()
+}).superRefine((value, ctx) => {
+  if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(value.method) && !value.transferReference?.trim()) {
+    ctx.addIssue({ code: "custom", path: ["transferReference"], message: "رقم التحويل أو الحساب مطلوب لطريقة القبض المختارة" });
+  }
 });
 const paymentMethodSchema = z.object({
   code: z.string().trim().regex(/^[A-Z0-9_]{2,50}$/),
@@ -119,9 +124,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(open.rowCount) throw new AppError("OPEN_REQUEST_EXISTS","يوجد طلب قبض مفتوح بالفعل",409);
 
       const inserted=await client.query(
-        `INSERT INTO payment_requests(employee_id,amount,method,requested_by)
-         VALUES($1,$2,$3,$4) RETURNING *`,
-        [user.employee_id,parsed.data.amount,parsed.data.method,request.user!.userId]);
+        `INSERT INTO payment_requests(employee_id,amount,method,transfer_reference,requested_by)
+         VALUES($1,$2,$3,$4,$5) RETURNING *`,
+        [user.employee_id,parsed.data.amount,parsed.data.method,parsed.data.transferReference?.trim() || null,request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:user.employee_id,action:"create",module:"payments",entityType:"payment_request",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return inserted.rows[0];
       });
@@ -139,7 +144,6 @@ export async function paymentsRoutes(app:FastifyInstance){
     const row=await withTransaction(async(client)=>{
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
       if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
-      // Lock the employee before the request to keep lock order consistent with request creation.
       await lockEmployee(client,owner.rows[0].employee_id);
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
@@ -147,11 +151,47 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(current.rows[0].requested_by===request.user!.userId) throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد طلب قبض أنشأته بنفسك",409);
       const balance=await getBalance(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
+
+      // Approval means the finance user confirms that the money was actually paid.
+      // Record the payment and ledger debit atomically to keep the available balance accurate.
+      const payment=await client.query(
+        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
+      await client.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
+         VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
+         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
+        [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId,
+         current.rows[0].transfer_reference ? "صرف طلب قبض "+current.rows[0].code+" — مرجع التحويل: "+current.rows[0].transfer_reference : "صرف طلب قبض "+current.rows[0].code]);
+
+      let allocationRemaining=Number(payment.rows[0].amount);
+      const productions=await client.query(
+        `SELECT pe.id,
+                GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+                  COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+           FROM production_entries pe
+          WHERE pe.employee_id=$1 AND pe.status='APPROVED'
+          ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC
+          FOR UPDATE`,
+        [payment.rows[0].employee_id]);
+      for(const production of productions.rows){
+        if(allocationRemaining<=0.000001) break;
+        const take=Math.min(allocationRemaining,Number(production.remaining));
+        if(take<=0.000001) continue;
+        await client.query(
+          `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
+           VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
+           DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
+          [payment.rows[0].id,production.id,take]);
+        allocationRemaining-=take;
+      }
       const updated=await client.query(
-        `UPDATE payment_requests SET status='APPROVED',reviewed_by=$1,reviewed_at=now(),updated_at=now() WHERE id=$2 RETURNING *`,
-        [request.user!.userId,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return updated.rows[0];
+        `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
+          WHERE id=$3 RETURNING *`,
+        [request.user!.userId,payment.rows[0].id,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:payment.rows[0].id,amount:payment.rows[0].amount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {request:updated.rows[0],payment:payment.rows[0]};
     });
     return {data:row};
   });
@@ -190,9 +230,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       const balance=await getBalance(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
       const payment=await client.query(
-        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by)
-         VALUES($1,$2,$3,$4,$5) RETURNING *`,
-        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId]);
+        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [payment.rows[0].id,id]);
@@ -201,7 +241,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes
          )
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
-         ON CONFLICT (worker_payment_id) DO NOTHING`,
+         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
 
       let allocationRemaining = Number(payment.rows[0].amount);

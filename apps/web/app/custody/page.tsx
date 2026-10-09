@@ -12,21 +12,21 @@ const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتج
 export default function CustodyPage(){
  const {has}=usePermissions();
  type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number};
- const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[cashEmployeeId,setCashEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
  async function load(){try{
   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
 
   const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
   setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
-  if(has("custody.create")&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/employees")).data);
+  if((has("custody.create")||has("custody.view"))&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
  useEffect(()=>{void load()},[employeeId]);
  async function submitCash(e:FormEvent,confirmDuplicate=false){
  e.preventDefault();setCashSaving(true);setError("");
  try{
-  const payload={employeeId:employeeId||undefined,direction:cashDirection,amount:Number(normalizeNumber(cashAmount)),transactionDate:cashDate,description:cashDescription.trim(),notes:cashNotes.trim()||null,confirmDuplicate};
+  const payload={employeeId:cashEmployeeId||undefined,direction:cashDirection,amount:Number(normalizeNumber(cashAmount)),transactionDate:cashDate,description:cashDescription.trim(),notes:cashNotes.trim()||null,confirmDuplicate};
   if(!confirmDuplicate){
    const check=await api<{data:{duplicate:boolean;matches:CashTx[]}}>("/api/cash-custody/check-duplicate",{method:"POST",body:JSON.stringify(payload)});
    if(check.data.duplicate){setDuplicateMatches(check.data.matches);setDuplicateOpen(true);setCashSaving(false);return}
@@ -71,14 +71,14 @@ export default function CustodyPage(){
   <div className="card-header"><div><h2 className="card-title">العهدة النقدية</h2><div className="form-hint">الداخل والخارج يسجلان كحركات مستقلة، والرصيد يحسب تلقائيًا. المحاسب/الأدمن يستطيعان إدارة عهد الجميع، وصاحب العهدة يدير عهدته فقط.</div></div><span className="count-badge">{cash.length}</span></div>
   <form className="form-grid" onSubmit={submitCash}>
    <label>اتجاه الحركة<select value={cashDirection} onChange={e=>setCashDirection(e.target.value as "IN"|"OUT")}><option value="IN">داخل إلى العهدة</option><option value="OUT">صرف من العهدة</option></select></label>
-   <label>صاحب العهدة<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
+   <label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
    <label>المبلغ<input inputMode="decimal" value={cashAmount} onChange={e=>setCashAmount(e.target.value)} required/></label>
    <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
    <label style={{gridColumn:"1/-1"}}>البيان<input value={cashDescription} onChange={e=>setCashDescription(e.target.value)} placeholder="مثال: إضافة عهدة نقدية / صرف مشتريات" required/></label>
    <label style={{gridColumn:"1/-1"}}>ملاحظات<input value={cashNotes} onChange={e=>setCashNotes(e.target.value)}/></label>
    <div className="form-actions"><button className="primary-button" disabled={cashSaving||!cashAmount||!cashDescription.trim()}>{cashSaving?"جارٍ التسجيل...":"تسجيل الحركة"}</button></div>
   </form>
-  <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>النوع</th><th>المبلغ</th><th>التاريخ</th><th>البيان</th><th>الرصيد بعد الحركة</th></tr></thead><tbody>{cash.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_name}</td><td>{x.direction==="IN"?"داخل":"خارج"}</td><td className="money">{Number(x.amount).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{x.transaction_date}</td><td>{x.description}</td><td className="money">{Number(x.balance).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td></tr>)}{!cash.length&&<tr><td colSpan={7}>لا توجد حركات نقدية.</td></tr>}</tbody></table></div>
+  <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>النوع</th><th>المبلغ</th><th>التاريخ</th><th>البيان</th><th>الرصيد بعد الحركة</th></tr></thead><tbody>{cash.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_name}</td><td>{x.direction==="IN"?"داخل":"خارج"}</td><td className="money">{Number(x.amount).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>{x.transaction_date}</td><td>{x.description}</td><td className="money">{Number(x.balance).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>)}{!cash.length&&<tr><td colSpan={7}>لا توجد حركات نقدية.</td></tr>}</tbody></table></div>
  </section>
  {duplicateOpen&&<div className="modal-backdrop" onClick={()=>setDuplicateOpen(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}>
    <div className="card-header"><div><h2 className="card-title">تأكيد حركة مكررة</h2><div className="form-hint">وجد النظام حركة أو أكثر مشابهة. هل تريد تسجيل الحركة الجديدة رغم ذلك؟</div></div><button type="button" className="secondary-btn" onClick={()=>setDuplicateOpen(false)}>إغلاق</button></div>
