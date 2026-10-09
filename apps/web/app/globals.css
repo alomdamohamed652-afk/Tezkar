@@ -488,10 +488,20 @@ th{
   font-size:12px;
   font-weight:800;
 }
-td{color:#475569;background:#fff}
+td{
+  color:#475569;
+  background:#fff;
+  transition:background-color .12s ease;
+}
 td.strong{color:var(--ink);font-weight:700}
-tbody tr:hover td{background:#fbfdff}
+tbody tr:nth-child(odd) td{background:#fff}
+tbody tr:nth-child(even) td{background:linear-gradient(90deg,#f8faff 0%,#f3f6fb 100%)}
+tbody tr:nth-child(even) td:first-child{box-shadow:inset -3px 0 0 #dbeafe}
+tbody tr:hover td{background:#eaf2ff}
+tbody tr:hover td:first-child{box-shadow:inset -3px 0 0 #3b82f6}
 tbody tr:last-child td{border-bottom:0}
+tbody td:nth-child(n){font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){td{transition:none}}
 .mono{
   font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
   direction:ltr;
