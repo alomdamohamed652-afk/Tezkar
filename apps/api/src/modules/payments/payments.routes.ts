@@ -137,9 +137,12 @@ export async function paymentsRoutes(app:FastifyInstance){
   },async(request)=>{
     const id=(request.params as {id:string}).id;
     const row=await withTransaction(async(client)=>{
+      const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
+      if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
+      // Lock the employee before the request to keep lock order consistent with request creation.
+      await lockEmployee(client,owner.rows[0].employee_id);
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
-      await lockEmployee(client,current.rows[0].employee_id);
       if(current.rows[0].status!=="PENDING") throw new AppError("INVALID_STATUS","حالة الطلب لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId) throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد طلب قبض أنشأته بنفسك",409);
       const balance=await getBalance(client,current.rows[0].employee_id);
@@ -177,10 +180,13 @@ export async function paymentsRoutes(app:FastifyInstance){
   },async(request)=>{
     const id=(request.params as {id:string}).id;
     const row=await withTransaction(async(client)=>{
+      const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
+      if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
+      // Keep the same employee -> request lock order used by request creation and approval.
+      await lockEmployee(client,owner.rows[0].employee_id);
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       if(current.rows[0].status!=="APPROVED") throw new AppError("INVALID_STATUS","يجب اعتماد الطلب قبل الدفع",409);
-      await lockEmployee(client,current.rows[0].employee_id);
       const balance=await getBalance(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
       const payment=await client.query(
