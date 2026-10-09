@@ -17,16 +17,30 @@ const loginSchema = z.object({
 const loginAttempts = new Map<string, { count: number; firstAt: number; blockedUntil: number }>();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
+const LOGIN_MAX_TRACKED_KEYS = 10_000;
 
 function loginKey(request: { ip: string }, username: string) {
   return request.ip + ":" + username.toLowerCase();
 }
 
+function pruneLoginAttempts(now: number) {
+  for (const [key, entry] of loginAttempts) {
+    if (now - entry.firstAt >= LOGIN_WINDOW_MS && entry.blockedUntil <= now) {
+      loginAttempts.delete(key);
+    }
+  }
+  while (loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) {
+    const oldestKey = loginAttempts.keys().next().value;
+    if (oldestKey === undefined) break;
+    loginAttempts.delete(oldestKey);
+  }
+}
+
 function assertLoginAllowed(request: { ip: string }, username: string) {
   const key = loginKey(request, username);
+  const now = Date.now();
   const current = loginAttempts.get(key);
   if (!current) return;
-  const now = Date.now();
   if (current.blockedUntil > now) {
     throw new AppError("LOGIN_RATE_LIMITED", "محاولات تسجيل الدخول كثيرة. حاول مرة أخرى بعد قليل.", 429);
   }
@@ -38,6 +52,7 @@ function recordLoginFailure(request: { ip: string }, username: string) {
   const now = Date.now();
   const current = loginAttempts.get(key);
   if (!current || now - current.firstAt >= LOGIN_WINDOW_MS) {
+    pruneLoginAttempts(now);
     loginAttempts.set(key, { count: 1, firstAt: now, blockedUntil: 0 });
     return;
   }
