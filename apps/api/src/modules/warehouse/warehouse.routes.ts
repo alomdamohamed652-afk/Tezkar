@@ -224,7 +224,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const parsed=movementSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات حركة المخزن غير صحيحة",422);
     const row=await withTransaction(async(client)=>{
-      const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[parsed.data.productId]);
+      // Serialize stock mutations for the same product. This prevents concurrent first-time balance inserts and opposing transfers from locking balance rows in opposite orders.
+      const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير متابع مخزنيًا",422);
       const sourceLocationId=await resolveLocation(client,parsed.data.warehouseId,parsed.data.locationId);
       let destinationLocationId:string|undefined;
