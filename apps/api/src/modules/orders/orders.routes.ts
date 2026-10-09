@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { verifyPassword } from "../auth/auth.service.js";
 
 const orderLineSchema = z.object({
   productId: z.string().uuid().optional(),
@@ -217,7 +218,11 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.delete("/api/orders/:id",{preHandler:[authenticateRequest,requirePermission("orders.delete")]},async(request)=>{
     const id=(request.params as {id:string}).id;
+    const parsed=z.object({password:z.string().min(1).max(200)}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("PASSWORD_REQUIRED","أدخل كلمة مرور حسابك لتأكيد حذف الطلبية",422);
     const r=await withTransaction(async client=>{
+      const actor=await client.query("SELECT password_hash FROM users WHERE id=$1 AND is_active=TRUE",[request.user!.userId]);
+      if(!actor.rowCount || !verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم حذف الطلبية",401);
       const before=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
       if(!before.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
       if(before.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن إلغاء طلب مكتمل",409);
@@ -315,11 +320,11 @@ export async function orderRoutes(app: FastifyInstance) {
     const [stages,production,movements,deliveries,payments]=await Promise.all([
       pool.query("SELECT os.id,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.production_type_id,os.notes,s.name AS stage_name,p.name AS output_product_name FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",[id]),
       pool.query("SELECT pe.id,pe.code,pe.product_id,pe.work_date,pe.quantity,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,pe.total_earning_amount,pe.status,e.full_name AS employee_name,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name FROM production_entries pe JOIN employees e ON e.id=pe.employee_id JOIN products p ON p.id=pe.product_id JOIN stages s ON s.id=pe.stage_id LEFT JOIN production_types pt ON pt.id=pe.production_type_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 ORDER BY pe.work_date DESC,pe.created_at DESC LIMIT 500",[id]),
-      pool.query("SELECT sm.code,sm.movement_type,sm.quantity,sm.unit_cost,sm.total_cost,sm.created_at,p.name AS product_name,w.name AS warehouse_name FROM stock_movements sm JOIN products p ON p.id=sm.product_id JOIN warehouses w ON w.id=sm.warehouse_id WHERE sm.order_id=$1 ORDER BY sm.created_at DESC LIMIT 500",[id]),
+      pool.query("SELECT sm.code,sm.movement_type,sm.quantity,sm.unit_cost,sm.total_cost,sm.created_at,p.name AS product_name,w.name AS warehouse_name FROM stock_movements sm JOIN products p ON p.id=sm.product_id JOIN warehouses w ON w.id=sm.warehouse_id WHERE sm.order_id=$1 AND sm.movement_type='OUT' ORDER BY sm.created_at DESC LIMIT 500",[id]),
       pool.query("SELECT d.id,d.code,d.destination,d.status,d.created_at,d.released_at,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permissions d LEFT JOIN delivery_permission_lines dl ON dl.delivery_permission_id=d.id WHERE d.order_id=$1 GROUP BY d.id ORDER BY d.created_at DESC",[id]),
       pool.query("SELECT wpa.production_entry_id,COALESCE(SUM(wpa.amount),0) AS paid_amount FROM worker_payment_allocations wpa JOIN production_entries pe ON pe.id=wpa.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 GROUP BY wpa.production_entry_id",[id])
     ]);
-    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('OUT','TRANSFER_OUT')),0) AS stock_out_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('IN','RETURN','TRANSFER_IN')),0) AS stock_in_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
+    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type='OUT'),0) AS stock_out_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('IN','RETURN','TRANSFER_IN')),0) AS stock_in_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
     const paidMap=new Map<string,number>(payments.rows.map((x:{production_entry_id:string;paid_amount:string|number})=>[x.production_entry_id,Number(x.paid_amount)]));
     const productionWithPayments=production.rows.map((x:{id:string;total_earning_amount?:string|number;earning_amount:string|number})=>({
       ...x,
