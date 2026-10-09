@@ -50,13 +50,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
-      { orderRoutes }, { warehouseRoutes }, { accountingRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
-      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/accounting/accounting.routes.js"),
-      import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
+      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
+      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
     app = Fastify();
@@ -69,6 +69,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(productionRoutes);
     await app.register(orderRoutes);
     await app.register(warehouseRoutes);
+    await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
 
     async function makeUser(label: string, withEmployee: boolean) {
@@ -103,6 +104,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT id,rate_group_id FROM shifts WHERE is_active=TRUE AND rate_group_id IS NOT NULL ORDER BY created_at,id LIMIT 1"
     );
     assert.ok(shift.rowCount, "migrations must seed an active shift and rate group");
+    await apiPool.query(
+      "INSERT INTO shift_employees(shift_id,employee_id,starts_on,is_active) VALUES($1,$2,'2099-01-01',TRUE) ON CONFLICT(shift_id,employee_id) DO UPDATE SET starts_on=EXCLUDED.starts_on,ends_on=NULL,is_active=TRUE",
+      [shift.rows[0].id, submitter.employeeId]
+    );
 
     const orderResponse = await app.inject({
       method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
@@ -204,6 +209,33 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(lot.rows[0].remaining_quantity), 10);
     assert.equal(Number(lot.rows[0].unit_cost), 20);
 
+    // Consume an intermediate-stage product as an input to the final stage.
+    // This intentionally differs from the final stage's output product.
+    const withdrawal = await app.inject({
+      method: "POST", url: "/api/shift-withdrawals", headers: { cookie: submitter.cookie },
+      payload: {
+        shiftId: shift.rows[0].id, employeeId: submitterEmployee, withdrawalDate: "2099-01-03",
+        orderId, orderStageId: finalStage.id, notes: "Consume WIP input on final stage",
+        lines: [{ productId: wipStage.output_product_id, warehouseId: expectedWip.id, quantity: 5, notes: "WIP component input" }]
+      }
+    });
+    assert.equal(withdrawal.statusCode, 201, withdrawal.body);
+    const consumedWip = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [wipStage.output_product_id, expectedWip.id, firstDestination.rows[0].location_id]
+    );
+    assert.equal(Number(consumedWip.rows[0].quantity), 5);
+    assert.equal(Number(consumedWip.rows[0].inventory_value), 100);
+    const consumedMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,order_id,order_stage_id FROM stock_movements WHERE reference_type='SHIFT_WITHDRAWAL' AND order_stage_id=$1",
+      [finalStage.id]
+    );
+    assert.equal(consumedMovement.rowCount, 1);
+    assert.equal(consumedMovement.rows[0].movement_type, "OUT");
+    assert.equal(Number(consumedMovement.rows[0].quantity), 5);
+    assert.equal(Number(consumedMovement.rows[0].total_cost), 100);
+    assert.equal(consumedMovement.rows[0].order_id, orderId);
+
     const finalEntry = await app.inject({
       method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
       payload: {
@@ -269,16 +301,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(dashboard.statusCode, 200, dashboard.body);
     assert.equal(dashboard.json().data.stages.length, 2);
     assert.equal(dashboard.json().data.production.length, 2);
-    assert.equal(dashboard.json().data.movements.length, 2);
+    assert.equal(dashboard.json().data.movements.length, 3);
     assert.equal(Number(dashboard.json().data.totals.production_cost), 505);
     assert.equal(Number(dashboard.json().data.totals.stock_in_cost), 505);
+    assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
     const profitability = await app.inject({
       method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
     });
     assert.equal(profitability.statusCode, 200, profitability.body);
     assert.equal(Number(profitability.json().data.laborCost), 505);
-    assert.equal(Number(profitability.json().data.materialCost), 0);
+    assert.equal(Number(profitability.json().data.materialCost), 100);
 
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
