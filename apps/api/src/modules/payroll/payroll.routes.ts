@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { calculatePayrollDeduction } from "./payroll-calculation.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -134,12 +135,20 @@ export async function payrollRoutes(app: FastifyInstance) {
       const deductionBasis = parsed.data.deductionBasis ?? before.rows[0].deduction_basis ?? "BASE_SALARY";
       const deductionPercentage = parsed.data.deductionPercentage ?? (before.rows[0].deduction_percentage===null ? null : Number(before.rows[0].deduction_percentage));
       let deduction: number;
-      if (deductionMode === "PERCENTAGE") {
-        if (deductionPercentage === null || deductionPercentage === undefined) throw new AppError("DEDUCTION_PERCENTAGE_REQUIRED", "حدد نسبة الخصم أولًا", 422);
-        const basisAmount = deductionBasis === "BASE_PLUS_BONUS" ? Number(before.rows[0].base_salary) + bonus : Number(before.rows[0].base_salary);
-        deduction = Math.round((basisAmount * deductionPercentage / 100 + Number.EPSILON) * 100) / 100;
-      } else {
-        deduction = parsed.data.deductionAmount ?? Number(before.rows[0].deduction_amount);
+      if (deductionMode === "PERCENTAGE" && (deductionPercentage === null || deductionPercentage === undefined)) {
+        throw new AppError("DEDUCTION_PERCENTAGE_REQUIRED", "حدد نسبة الخصم أولًا", 422);
+      }
+      try {
+        deduction = calculatePayrollDeduction({
+          baseSalary: Number(before.rows[0].base_salary),
+          bonusAmount: bonus,
+          mode: deductionMode,
+          basis: deductionBasis,
+          percentage: deductionPercentage,
+          fixedAmount: parsed.data.deductionAmount ?? Number(before.rows[0].deduction_amount)
+        }).amount;
+      } catch {
+        throw new AppError("DEDUCTION_PERCENTAGE_INVALID", "نسبة الخصم يجب أن تكون أكبر من صفر وحتى ١٠٠٪", 422);
       }
       if (Number(before.rows[0].base_salary)+bonus < deduction) throw new AppError("PAYROLL_NET_NEGATIVE", "الخصومات أكبر من إجمالي الراتب والمكافآت", 422);
       const updated = await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2,deduction_mode=$3,deduction_percentage=$4,deduction_basis=$5,notes=$6 WHERE id=$7 RETURNING *",
