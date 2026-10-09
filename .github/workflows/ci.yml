@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main", "foundation/v0.3", "work/**"]
+    branches: ["main", "foundation/v0.3", "work/**", "fix/**"]
   pull_request:
 
 jobs:
@@ -23,5 +23,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
+      - name: Tests
+        run: pnpm test
       - name: Build
         run: pnpm build
