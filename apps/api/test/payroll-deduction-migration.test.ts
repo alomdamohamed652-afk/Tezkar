@@ -53,6 +53,10 @@ test("payroll deduction migration preserves legacy fixed deductions and enforces
       /payroll_items_percentage_mode_requires_percentage/
     );
     await assert.rejects(
+      client.query("INSERT INTO payroll_items(base_salary,deduction_mode,deduction_percentage,deduction_basis) VALUES(6000,'PERCENTAGE',0,'BASE_SALARY')"),
+      /payroll_items_deduction_percentage_range/
+    );
+    await assert.rejects(
       client.query("INSERT INTO payroll_items(base_salary,deduction_mode,deduction_percentage,deduction_basis) VALUES(6000,'PERCENTAGE',101,'BASE_SALARY')"),
       /payroll_items_deduction_percentage_range/
     );
