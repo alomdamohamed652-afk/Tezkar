@@ -377,7 +377,7 @@ export async function productionRoutes(app: FastifyInstance) {
          RETURNING id,code,employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,
                    unit_id,rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
                    wage_type_method_snapshot,percentage_base_snapshot,base_amount,
-                   earning_amount,status,submitted_by,created_at`,
+                   earning_amount,bonus_amount,deduction_amount,total_earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
           parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, parsed.data.responsibleName?.trim() || null, rate.id, effectiveRate,
