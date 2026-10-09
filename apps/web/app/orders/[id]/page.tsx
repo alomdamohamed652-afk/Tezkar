@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect,useState} from "react";
+import {FormEvent,useEffect,useState} from "react";
 import {useParams} from "next/navigation";
 import {api} from "../../../lib/api";
 import {Sidebar,usePermissions} from "../../../components/sidebar";
