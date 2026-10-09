@@ -37,19 +37,60 @@ export default function PayrollPage(){
    <div className="toolbar"><label>الشهر<input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></label><div className="form-actions">{has("payroll.generate")&&<button className="secondary-btn" onClick={generate} disabled={busy}>تجهيز المسير من الرواتب السارية</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&<button className="primary-button" onClick={approve} disabled={busy}>اعتماد المسير</button>}</div></div>
    {payroll.period&&<div className="form-hint" style={{margin:"10px 0"}}>حالة الفترة: <strong>{periodStatus[payroll.period.status]||payroll.period.status}</strong></div>}
    <div className="stats"><article className="card stat"><div className="stat-label">عدد الموظفين</div><div className="stat-value">{payroll.totals.employees}</div></article><article className="card stat"><div className="stat-label">صافي الرواتب</div><div className="stat-value">{money(payroll.totals.net)} ج.م</div></article><article className="card stat accent"><div className="stat-label">تم صرفه</div><div className="stat-value">{money(payroll.totals.paid)} ج.م</div></article><article className="card stat warning"><div className="stat-label">المتبقي للصرف</div><div className="stat-value">{money(payroll.totals.remaining)} ج.م</div></article></div>
-   {loading?<div className="empty">جارٍ تحميل مسير الرواتب...</div>:!payroll.period?<div className="empty">لا يوجد مسير لهذا الشهر. اضغط «تجهيز المسير من الرواتب السارية» بعد تعريف الرواتب الأساسية.</div>:!payroll.items.length?<div className="empty">لا توجد بنود رواتب في هذه الفترة.</div>:<div className="table-wrap"><table><thead><tr><th>الموظف</th><th>الأساسي</th><th>مكافأة</th><th>خصم</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{payroll.items.map(i=>{const a=adjustments[i.id]||{bonus:String(i.bonus_amount),deduction:String(i.deduction_amount),deductionMode:i.deduction_mode==="PERCENTAGE"?"PERCENTAGE" as const:"FIXED" as const,deductionPercentage:String(i.deduction_percentage??""),deductionBasis:i.deduction_basis==="BASE_PLUS_BONUS"?"BASE_PLUS_BONUS" as const:"BASE_SALARY" as const,notes:i.notes||""};return <tr key={i.id}><td><div className="strong">{i.employee_name}</div><div className="form-hint">{i.employee_code} · {i.department_name||"بدون قسم"}</div></td><td>{money(i.base_salary)}</td><td>{payroll.period?.status==="DRAFT"&&has("payroll.manage")?<input aria-label="مكافأة" type="number" min="0" step="0.01" style={{width:105}} value={a.bonus} onChange={e=>setAdjustments(s=>({...s,[i.id]:{...a,bonus:e.target.value}}))}/>:money(i.bonus_amount)}</td><td>{payroll.period?.status==="DRAFT"&&has("payroll.manage")?<div style={{display:"grid",gap:6,minWidth:175}}>
-    <select aria-label="طريقة حساب الخصم" value={a.deductionMode} onChange={e=>setAdjustments(s=>({...s,[i.id]:{...a,deductionMode:e.target.value as "FIXED"|"PERCENTAGE"}}))}>
-     <option value="FIXED">مبلغ ثابت</option><option value="PERCENTAGE">نسبة مئوية</option>
-    </select>
-    {a.deductionMode==="FIXED"?<input aria-label="قيمة الخصم بالجنيه" type="number" min="0" step="0.01" value={a.deduction} onChange={e=>setAdjustments(s=>({...s,[i.id]:{...a,deduction:e.target.value}}))}/>:<div style={{display:"grid",gap:5}}>
-      <input aria-label="نسبة الخصم بالمئة" type="number" min="0.01" max="100" step="0.01" placeholder="النسبة %" value={a.deductionPercentage} onChange={e=>setAdjustments(s=>({...s,[i.id]:{...a,deductionPercentage:e.target.value}}))}/>
-      <select aria-label="أساس حساب الخصم" value={a.deductionBasis} onChange={e=>setAdjustments(s=>({...s,[i.id]:{...a,deductionBasis:e.target.value as "BASE_SALARY"|"BASE_PLUS_BONUS"}}))}>
-       <option value="BASE_SALARY">الراتب الأساسي فقط</option><option value="BASE_PLUS_BONUS">الأساسي + المكافأة</option>
-      </select>
-      <small className="form-hint">أساس الحساب: {money(a.deductionBasis==="BASE_PLUS_BONUS"?Number(i.base_salary)+Number(a.bonus||0):i.base_salary)} ج.م</small>
-      <small className="strong">الخصم المتوقع: {money(Math.round(((a.deductionBasis==="BASE_PLUS_BONUS"?Number(i.base_salary)+Number(a.bonus||0):Number(i.base_salary))*Math.min(100,Math.max(0,Number(a.deductionPercentage||0)))/100+Number.EPSILON)*100)/100)} ج.م</small>
-    </div>
-   </div>:money(i.deduction_amount)}</td><td className="strong">{money(i.net_amount)}</td><td>{money(i.paid_amount)}</td><td>{money(i.remaining_amount)}</td><td><span className={"status "+(i.status==="PAID"?"success":i.status==="PARTIAL"?"warning":"muted")}>{itemStatus[i.status]||i.status}</span></td><td><div className="row-actions">{payroll.period?.status==="DRAFT"&&has("payroll.manage")&&<button className="secondary-btn" disabled={busy} onClick={()=>saveAdjustments(i)}>حفظ التعديلات</button>}{(payroll.period?.status==="APPROVED"||payroll.period?.status==="CLOSED")&&has("payroll.pay")&&Number(i.remaining_amount)>0&&<button className="primary-button" onClick={()=>{setPayTarget(i);setPayAmount(String(i.remaining_amount));setPayDate(today());setPayMethod("CASH");setPayReference("");setPayNotes("")}}>صرف</button>}</div></td></tr>})}</tbody></table></div>}
+   {loading?<div className="empty">جارٍ تحميل مسير الرواتب...</div>:!payroll.period?<div className="empty">لا يوجد مسير لهذا الشهر. اضغط «تجهيز المسير من الرواتب السارية» بعد تعريف الرواتب الأساسية.</div>:!payroll.items.length?<div className="empty">لا توجد بنود رواتب في هذه الفترة.</div>:<div className="table-wrap"><table><thead><tr><th>الموظف</th><th>الأساسي</th><th>مكافأة</th><th>خصم</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{payroll.items.map((i) => {
+    const a = adjustments[i.id] ?? {
+      bonus: String(i.bonus_amount ?? 0),
+      deduction: String(i.deduction_amount ?? 0),
+      deductionMode: i.deduction_mode === "PERCENTAGE" ? "PERCENTAGE" as const : "FIXED" as const,
+      deductionPercentage: String(i.deduction_percentage ?? ""),
+      deductionBasis: i.deduction_basis === "BASE_PLUS_BONUS" ? "BASE_PLUS_BONUS" as const : "BASE_SALARY" as const,
+      notes: i.notes ?? ""
+    };
+    const basisAmount = a.deductionBasis === "BASE_PLUS_BONUS"
+      ? Number(i.base_salary) + Number(a.bonus || 0)
+      : Number(i.base_salary);
+    const previewDeduction = Math.round((basisAmount * Math.min(100, Math.max(0, Number(a.deductionPercentage || 0))) / 100 + Number.EPSILON) * 100) / 100;
+    return (
+      <tr key={i.id}>
+        <td><div className="strong">{i.employee_name}</div><div className="form-hint">{i.employee_code} · {i.department_name || "بدون قسم"}</div></td>
+        <td>{money(i.base_salary)}</td>
+        <td>{payroll.period?.status === "DRAFT" && has("payroll.manage")
+          ? <input aria-label="مكافأة" type="number" min="0" step="0.01" style={{width:105}} value={a.bonus} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,bonus:e.target.value}}))}/>
+          : money(i.bonus_amount)}</td>
+        <td>
+          {payroll.period?.status === "DRAFT" && has("payroll.manage") ? (
+            <div style={{display:"grid",gap:6,minWidth:175}}>
+              <select aria-label="طريقة حساب الخصم" value={a.deductionMode} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionMode:e.target.value as "FIXED" | "PERCENTAGE"}}))}>
+                <option value="FIXED">مبلغ ثابت</option>
+                <option value="PERCENTAGE">نسبة مئوية</option>
+              </select>
+              {a.deductionMode === "FIXED" ? (
+                <input aria-label="قيمة الخصم بالجنيه" type="number" min="0" step="0.01" value={a.deduction} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deduction:e.target.value}}))}/>
+              ) : (
+                <div style={{display:"grid",gap:5}}>
+                  <input aria-label="نسبة الخصم بالمئة" type="number" min="0.01" max="100" step="0.01" placeholder="النسبة %" value={a.deductionPercentage} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionPercentage:e.target.value}}))}/>
+                  <select aria-label="أساس حساب الخصم" value={a.deductionBasis} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionBasis:e.target.value as "BASE_SALARY" | "BASE_PLUS_BONUS"}}))}>
+                    <option value="BASE_SALARY">الراتب الأساسي فقط</option>
+                    <option value="BASE_PLUS_BONUS">الأساسي + المكافأة</option>
+                  </select>
+                  <small className="form-hint">أساس الحساب: {money(basisAmount)} ج.م</small>
+                  <small className="strong">الخصم المتوقع: {money(previewDeduction)} ج.م</small>
+                </div>
+              )}
+            </div>
+          ) : money(i.deduction_amount)}
+        </td>
+        <td className="strong">{money(i.net_amount)}</td>
+        <td>{money(i.paid_amount)}</td>
+        <td>{money(i.remaining_amount)}</td>
+        <td><span className={"status " + (i.status === "PAID" ? "success" : i.status === "PARTIAL" ? "warning" : "muted")}>{itemStatus[i.status] || i.status}</span></td>
+        <td><div className="row-actions">
+          {payroll.period?.status === "DRAFT" && has("payroll.manage") && <button className="secondary-btn" disabled={busy} onClick={() => saveAdjustments(i)}>حفظ التعديلات</button>}
+          {(payroll.period?.status === "APPROVED" || payroll.period?.status === "CLOSED") && has("payroll.pay") && Number(i.remaining_amount) > 0 && <button className="primary-button" onClick={() => {setPayTarget(i);setPayAmount(String(i.remaining_amount));setPayDate(today());setPayMethod("CASH");setPayReference("");setPayNotes("");}}>صرف</button>}
+        </div></td>
+      </tr>
+    );
+  })}</tbody></table></div>}
   </section>
   <section className="card"><div className="card-header"><h2 className="card-title">الرواتب الأساسية الحالية</h2></div><div className="table-wrap"><table><thead><tr><th>الموظف</th><th>القسم</th><th>الراتب الشهري</th><th>ساري من</th><th>الحالة</th></tr></thead><tbody>{employees.filter(e=>e.salary_profile_id).map(e=><tr key={e.id}><td>{e.full_name}<div className="form-hint">{e.code}</div></td><td>{e.department_name||"—"}</td><td>{money(e.monthly_salary||0)} ج.م</td><td>{e.effective_from?new Date(e.effective_from+"T00:00:00").toLocaleDateString("ar-EG"):"—"}</td><td><span className={"status "+(e.is_active?"success":"muted")}>{e.is_active?"نشط":"غير نشط"}</span></td></tr>)}{!employees.some(e=>e.salary_profile_id)&&<tr><td colSpan={5} className="empty">لم يتم تعريف رواتب أساسية بعد.</td></tr>}</tbody></table></div></section>
  </section>
