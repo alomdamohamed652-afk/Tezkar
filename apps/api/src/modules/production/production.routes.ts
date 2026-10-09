@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 
 const createSchema = z.object({
@@ -330,6 +331,12 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const rate = rateResult.rows[0];
       const method = rate.method as string;
+      if (!stagePrice && parsed.data.rateOverride != null && parsed.data.rateOverride !== Number(rate.rate)) {
+        const canOverrideRate = await hasPermission(client, request.user!.userId, "production.rate_override");
+        if (!canOverrideRate) {
+          throw new AppError("FORBIDDEN", "ليس لديك صلاحية تعديل سعر الإنتاج", 403);
+        }
+      }
       const effectiveRate = stagePrice ? Number(rate.rate) : (parsed.data.rateOverride ?? Number(rate.rate));
       let earning: number;
 
