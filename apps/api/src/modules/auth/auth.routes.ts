@@ -29,11 +29,7 @@ function pruneLoginAttempts(now: number) {
       loginAttempts.delete(key);
     }
   }
-  while (loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) {
-    const oldestKey = loginAttempts.keys().next().value;
-    if (oldestKey === undefined) break;
-    loginAttempts.delete(oldestKey);
-  }
+
 }
 
 function assertLoginAllowed(request: { ip: string }, username: string) {
@@ -53,6 +49,9 @@ function recordLoginFailure(request: { ip: string }, username: string) {
   const current = loginAttempts.get(key);
   if (!current || now - current.firstAt >= LOGIN_WINDOW_MS) {
     pruneLoginAttempts(now);
+    // Never evict a still-active key just to make room: doing so could erase
+    // another user's active lockout during a burst of unique login attempts.
+    if (loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) return;
     loginAttempts.set(key, { count: 1, firstAt: now, blockedUntil: 0 });
     return;
   }
@@ -113,7 +112,11 @@ export async function authRoutes(app: FastifyInstance) {
       });
       clearLoginFailures(request, parsed.data.username);
     } catch (error) {
-      recordLoginFailure(request, parsed.data.username);
+      // Only invalid credentials should count toward the login lockout.
+      // Database, session, and audit failures must not lock out a legitimate user.
+      if (error instanceof AppError && error.code === "INVALID_CREDENTIALS") {
+        recordLoginFailure(request, parsed.data.username);
+      }
       throw error;
     }
 
