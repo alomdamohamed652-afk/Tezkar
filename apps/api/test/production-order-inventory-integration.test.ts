@@ -343,9 +343,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(dashboard.statusCode, 200, dashboard.body);
     assert.equal(dashboard.json().data.stages.length, 2);
     assert.equal(dashboard.json().data.production.length, 2);
-    assert.equal(dashboard.json().data.movements.length, 3);
+    assert.equal(dashboard.json().data.movements.length, 1, "order withdrawals must show only actual OUT movements, not production receipts");
     assert.equal(Number(dashboard.json().data.totals.production_cost), 505);
-    assert.equal(Number(dashboard.json().data.totals.stock_in_cost), 505);
+    assert.equal(dashboard.json().data.totals.stock_in_cost, undefined, "production receipt value must not be presented as an order withdrawal cost");
     assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
     const profitability = await app.inject({
@@ -573,6 +573,57 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [concurrentEntries]
     );
     assert.equal(concurrentLotCount.rows[0].count, 2);
+
+    // Password-confirmed order cancellation must reject an incorrect password.
+    const deletableOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Password delete test order", orderDate: "2099-01-06",
+        stages: [{ stageName: "Password delete stage", sequenceNo: 1, outputProductName: "Password delete product", plannedQuantity: 1, stageRate: 1, stageRateMethod: "PER_PIECE" }] }
+    });
+    assert.equal(deletableOrder.statusCode, 201, deletableOrder.body);
+    const deletableOrderId = deletableOrder.json().data.id as string;
+    const wrongOrderPassword = await app.inject({
+      method: "DELETE", url: "/api/orders/" + deletableOrderId, headers: { cookie: submitter.cookie },
+      payload: { password: "not-the-password" }
+    });
+    assert.equal(wrongOrderPassword.statusCode, 401, wrongOrderPassword.body);
+    const deleteOrder = await app.inject({
+      method: "DELETE", url: "/api/orders/" + deletableOrderId, headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!" }
+    });
+    assert.equal(deleteOrder.statusCode, 200, deleteOrder.body);
+    assert.equal(deleteOrder.json().data.status, "CANCELLED");
+
+    // A pending production row can be cancelled only after password confirmation.
+    const pendingOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Pending production delete test", orderDate: "2099-01-07",
+        stages: [{ stageName: "Pending delete stage", sequenceNo: 1, outputProductName: "Pending delete product", plannedQuantity: 2, stageRate: 1, stageRateMethod: "PER_PIECE" }] }
+    });
+    assert.equal(pendingOrder.statusCode, 201, pendingOrder.body);
+    const pendingOrderId = pendingOrder.json().data.id as string;
+    const pendingStage = await apiPool.query("SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",[pendingOrderId]);
+    const pendingProduction = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: { employeeId: submitterEmployee, orderStageId: pendingStage.rows[0].id,
+        stageId: pendingStage.rows[0].stage_id, productId: pendingStage.rows[0].output_product_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-07", quantity: 1 }
+    });
+    assert.equal(pendingProduction.statusCode, 201, pendingProduction.body);
+    const pendingProductionId = pendingProduction.json().data.id as string;
+    const wrongProductionPassword = await app.inject({
+      method: "DELETE", url: "/api/production/" + pendingProductionId, headers: { cookie: submitter.cookie },
+      payload: { password: "not-the-password" }
+    });
+    assert.equal(wrongProductionPassword.statusCode, 401, wrongProductionPassword.body);
+    const deleteProduction = await app.inject({
+      method: "DELETE", url: "/api/production/" + pendingProductionId, headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!" }
+    });
+    assert.equal(deleteProduction.statusCode, 200, deleteProduction.body);
+    assert.equal(deleteProduction.json().data.status, "CANCELLED");
+    const activeProduction = await app.inject({ method: "GET", url: "/api/production", headers: { cookie: submitter.cookie } });
+    assert.ok(!activeProduction.json().data.some((x: {id:string}) => x.id === pendingProductionId), "cancelled production must be hidden from the default list");
   } finally {
     if (app) await app.close();
     if (apiPool) await apiPool.end();
