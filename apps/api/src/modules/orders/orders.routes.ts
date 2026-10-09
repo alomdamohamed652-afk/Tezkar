@@ -112,7 +112,7 @@ export async function orderRoutes(app: FastifyInstance) {
   app.get("/api/orders", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const q = z.object({ status: z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional() }).parse(request.query);
     const params: unknown[] = [];
-    let where = "";
+    let where = "WHERE o.status <> 'CANCELLED'";
     if (q.status) { params.push(q.status); where = "WHERE o.status=$1"; }
     const r = await pool.query(
       `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,
