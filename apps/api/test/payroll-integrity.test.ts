@@ -16,7 +16,7 @@ function assertDisposableDatabaseUrl(connectionString: string) {
     "TEST_DATABASE_URL must use PostgreSQL"
   );
   assert.ok(
-    ["localhost", "127.0.0.1", "::1", "postgres"].includes(url.hostname.toLowerCase()),
+    ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase()),
     "TEST_DATABASE_URL must point to a local disposable PostgreSQL test server"
   );
   assert.equal(
