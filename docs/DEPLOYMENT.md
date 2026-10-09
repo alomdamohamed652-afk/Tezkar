@@ -50,6 +50,10 @@ Then bootstrap the initial admin only if the production database is empty:
 
 `pnpm --filter @tezkar/api bootstrap`
 
+## Railway same-origin API proxy
+
+The browser should call the Web service's own `/api/*` paths. Set `API_PROXY_TARGET=https://<api-host>` on the Web service at build time and leave `NEXT_PUBLIC_API_URL` empty. The Next.js rewrite forwards those requests to the API, keeping the session cookie first-party. Keep `SESSION_COOKIE_SAMESITE=lax` on the API. If `NEXT_PUBLIC_API_URL` is set to a non-empty URL, the legacy cross-origin mode remains active.
+
 ## Cookie topology
 
 Preferred production setup is same-site custom subdomains, for example:

@@ -1,4 +1,6 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+import { API_BASE } from "./api-base";
+
+export const API_URL = API_BASE;
 
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) {
