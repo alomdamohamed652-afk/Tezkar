@@ -161,7 +161,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       await client.query(
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
-         ON CONFLICT (worker_payment_id) DO NOTHING`,
+         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId,
          current.rows[0].transfer_reference ? "صرف طلب قبض "+current.rows[0].code+" — مرجع التحويل: "+current.rows[0].transfer_reference : "صرف طلب قبض "+current.rows[0].code]);
 
@@ -241,7 +241,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes
          )
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
-         ON CONFLICT (worker_payment_id) DO NOTHING`,
+         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
 
       let allocationRemaining = Number(payment.rows[0].amount);
