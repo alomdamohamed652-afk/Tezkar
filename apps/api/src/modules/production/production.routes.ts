@@ -71,7 +71,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
        LEFT JOIN order_stages os ON os.id=p.order_stage_id
        JOIN shifts sh ON sh.id=p.shift_id
        JOIN units u ON u.id=p.unit_id
-      WHERE p.id=$1${lock ? " FOR UPDATE" : ""}`,
+      WHERE p.id=$1${lock ? " FOR UPDATE OF p" : ""}`,
     [id]
   );
   return result.rows[0] ?? null;
@@ -224,7 +224,9 @@ export async function productionRoutes(app: FastifyInstance) {
         const type0=Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const wh0=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[type0]);
         if(!wh0.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
-        if (!parsed.data.warehouseId) resolvedWarehouseId=wh0.rows[0].id;
+        // The server enforces the stage's virtual warehouse. The client cannot redirect
+        // a stage-bound production entry into raw materials or another operational store.
+        resolvedWarehouseId=wh0.rows[0].id;
       }
 
       const destination = parsed.data.locationId
@@ -264,7 +266,10 @@ export async function productionRoutes(app: FastifyInstance) {
         const warehouseType=Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
-        if (!parsed.data.warehouseId) resolvedWarehouseId=virtualWarehouse.rows[0].id;
+        // A production entry tied to an order stage must land in the system warehouse
+        // dictated by the workflow (WIP for intermediate stages, finished goods for
+        // the final stage). Do not let a client-supplied warehouse bypass that rule.
+        resolvedWarehouseId=virtualWarehouse.rows[0].id;
         if (os.stage_id !== parsed.data.stageId) {
           throw new AppError("ORDER_STAGE_STAGE_MISMATCH","مرحلة الإنتاج لا تطابق مرحلة الطلب المرتبطة",409);
         }
@@ -295,7 +300,18 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const orderStagePricing=parsed.data.orderStageId ? await client.query(`SELECT stage_rate,stage_rate_method,stage_rate_unit_id FROM order_stages WHERE id=$1`,[parsed.data.orderStageId]) : {rowCount:0,rows:[]};
       const stagePrice=orderStagePricing.rowCount && orderStagePricing.rows[0].stage_rate != null ? orderStagePricing.rows[0] : null;
-      const rateResult = stagePrice ? {rowCount:1,rows:[{id:null,rate:Number(stagePrice.stage_rate),wage_type_id:null,unit_id:stagePrice.stage_rate_unit_id ?? product.rows[0].unit_id,production_type_id:parsed.data.productionTypeId ?? null,wage_type_code:stagePrice.stage_rate_method,wage_type_name:stagePrice.stage_rate_method,method:stagePrice.stage_rate_method,percentage_base:null}]} : await client.query(
+      const rateResult = stagePrice ? await client.query(
+        `SELECT NULL::uuid AS id,wt.id AS wage_type_id,$1::numeric AS rate,
+                COALESCE($2::uuid,pr.unit_id) AS unit_id,$3::uuid AS production_type_id,
+                wt.code AS wage_type_code,wt.name AS wage_type_name,wt.method,wt.percentage_base
+           FROM wage_types wt CROSS JOIN products pr
+          WHERE pr.id=$4
+            AND wt.method=$5
+            AND wt.is_active=TRUE
+          ORDER BY CASE WHEN wt.percentage_base='ORDER_VALUE' THEN 0 ELSE 1 END,wt.created_at,wt.id
+          LIMIT 1`,
+        [Number(stagePrice.stage_rate),stagePrice.stage_rate_unit_id ?? null,parsed.data.productionTypeId ?? null,parsed.data.productId,stagePrice.stage_rate_method]
+      ) : await client.query(
         `SELECT r.id,r.rate,r.wage_type_id,r.unit_id,r.production_type_id,
                 wt.code AS wage_type_code,wt.name AS wage_type_name,
                 wt.method,wt.percentage_base
@@ -331,6 +347,9 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const rate = rateResult.rows[0];
       const method = rate.method as string;
+      if (!rateResult.rowCount) {
+        throw new AppError("WAGE_TYPE_NOT_FOUND", "طريقة أجر المرحلة غير معرفة في بيانات الأجور", 422);
+      }
       if (!stagePrice && parsed.data.rateOverride != null && parsed.data.rateOverride !== Number(rate.rate)) {
         const canOverrideRate = await hasPermission(client, request.user!.userId, "production.rate_override");
         if (!canOverrideRate) {
@@ -568,7 +587,7 @@ export async function productionRoutes(app: FastifyInstance) {
            employee_id,entry_type,credit_amount,production_entry_id,created_by,notes
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
-         ON CONFLICT (production_entry_id) DO NOTHING`,
+         ON CONFLICT DO NOTHING`,
         [current.employee_id, current.earning_amount, id, request.user!.userId]
       );
 

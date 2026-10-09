@@ -62,7 +62,7 @@ export function Sidebar({active}:{active:string}){
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
  return <aside className="sidebar">
    <div className="brand">
-    <div className="brand-mark"><img src="/tezkar-mark.svg" alt="تذكار" /></div>
+    <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
    </div>
    <div className="sidebar-user">
