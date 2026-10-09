@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -38,14 +39,13 @@ const cashSchema=z.object({
   confirmDuplicate:z.boolean().optional().default(false)
 });
 
-async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined){
-  const user=await client.query(`SELECT u.employee_id,EXISTS(
-    SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
-    WHERE ur.user_id=$1 AND r.code IN ('admin','manager','finance','accountant') AND r.is_active=TRUE
-  ) AS is_finance FROM users u WHERE u.id=$1`,[userId]);
+async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,permissionCode:"cash_custody.view"|"cash_custody.create"){
+  const user=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
   const row=user.rows[0];
   if(!row)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",403);
-  if(row.is_finance)return {employeeId:employeeId??null,isFinance:true};
+  // Scope comes from RBAC permissions, not role names. A non-finance role explicitly
+  // granted an all-scope cash-custody permission must be able to manage all employees.
+  if(await hasPermission(client,userId,permissionCode,"all"))return {employeeId:employeeId??null,isFinance:true};
   if(!row.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
   if(employeeId && employeeId!==row.employee_id)throw new AppError("OWN_SCOPE_ONLY","لا يمكنك الحركة إلا على عهدتك",403);
   return {employeeId:row.employee_id,isFinance:false};
@@ -125,7 +125,7 @@ export async function custodyRoutes(app:FastifyInstance){
   app.get("/api/cash-custody", { preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.view","all"],["cash_custody.view_own","own"])] }, async(request)=>{
     const client=await pool.connect();
     try{
-      const access=await cashAccess(client,request.user!.userId,undefined);
+      const access=await cashAccess(client,request.user!.userId,undefined,"cash_custody.view");
       const params:unknown[]=[]; const where:string[]=[];
       if(!access.isFinance){params.push(access.employeeId);where.push("c.employee_id=$"+params.length);}
       const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,
@@ -146,7 +146,7 @@ export async function custodyRoutes(app:FastifyInstance){
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات حركة العهدة غير صحيحة",422);
     const client=await pool.connect();
     try{
-      const access=await cashAccess(client,request.user!.userId,p.data.employeeId);
+      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       const r=await client.query(`SELECT c.code,c.amount,c.transaction_date,c.description,e.full_name AS employee_name
         FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
