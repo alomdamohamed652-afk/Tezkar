@@ -197,6 +197,31 @@ export async function paymentsRoutes(app:FastifyInstance){
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
          ON CONFLICT (worker_payment_id) DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
+
+      let allocationRemaining = Number(payment.rows[0].amount);
+      const productions = await client.query(
+        `SELECT pe.id,
+                GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+                  COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+           FROM production_entries pe
+          WHERE pe.employee_id=$1 AND pe.status='APPROVED'
+          ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC
+          FOR UPDATE`,
+        [payment.rows[0].employee_id]
+      );
+      for (const production of productions.rows) {
+        if (allocationRemaining <= 0.000001) break;
+        const take = Math.min(allocationRemaining, Number(production.remaining));
+        if (take <= 0.000001) continue;
+        await client.query(
+          `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
+           VALUES($1,$2,$3)
+           ON CONFLICT(worker_payment_id,production_entry_id) DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
+          [payment.rows[0].id,production.id,take]
+        );
+        allocationRemaining -= take;
+      }
+
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"payments",entityType:"worker_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{payment_request_id:id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {request:updated.rows[0],payment:payment.rows[0]};
     });

@@ -8,7 +8,11 @@ const migrationsDir = path.resolve(currentDir, "migrations");
 
 const files = (await readdir(migrationsDir))
   .filter((name) => /^\d+_.+\.sql$/.test(name))
-  .sort();
+  .sort((a, b) => {
+    const an = Number(a.match(/^\d+/)?.[0] ?? 0);
+    const bn = Number(b.match(/^\d+/)?.[0] ?? 0);
+    return an - bn;
+  });
 
 for (const file of files) {
   const version = file.replace(/\.sql$/, "");

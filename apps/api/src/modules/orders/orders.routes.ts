@@ -21,7 +21,9 @@ const orderStageSchema = z.object({
   outputProductName: z.string().trim().min(2).max(200).optional(),
   sequenceNo: z.number().int().positive(),
   plannedQuantity: z.number().nonnegative().optional(),
-  notes: z.string().trim().max(500).optional()
+  notes: z.string().trim().max(500).optional(),
+  stageRate: z.number().nonnegative().nullable().optional(),
+  stageRateMethod: z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional()
 }).refine(x => Boolean(x.stageId || x.stageName), { message: "اسم المرحلة أو معرف المرحلة مطلوب" });
 
 const orderSchema = z.object({
@@ -37,6 +39,15 @@ const orderSchema = z.object({
 });
 
 
+function normalizeBusinessName(value:string):string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u064B-\u065F\u0670\u0640]/g,"")
+    .replace(/\s+/g," ")
+    .trim()
+    .toLocaleLowerCase("ar-EG");
+}
+
 async function ensureProduct(client:any, input:{productId?:string|undefined;productName?:string|undefined}) {
   if(input.productId){
     const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
@@ -44,10 +55,14 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
     return existing.rows[0];
   }
   const name=input.productName!.trim();
-  // Serialize auto-creation by normalized business name so a product typed in an order
-  // and the same product typed as a stage output resolve to one master record.
-  await client.query("SELECT pg_advisory_xact_lock(hashtext(lower(btrim($1))))",[name]);
-  const existing=await client.query("SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(trim(name))=lower(trim($1)) ORDER BY created_at LIMIT 1",[name]);
+  const normalized=normalizeBusinessName(name);
+  // Serialize auto-creation by the same normalized business name. This treats
+  // whitespace, case and Arabic tashkeel as presentation differences.
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
+  const existing=await client.query(
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    [normalized]
+  );
   if(existing.rowCount)return existing.rows[0];
   const unit=await client.query("SELECT id FROM units WHERE code='PCS' AND is_active=TRUE LIMIT 1");
   if(!unit.rowCount)throw new AppError("DEFAULT_UNIT_MISSING","وحدة القطعة الافتراضية غير موجودة",500);
@@ -62,8 +77,12 @@ async function ensureStage(client:any, input:{stageId?:string|undefined;stageNam
     return existing.rows[0];
   }
   const name=input.stageName!.trim();
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('stage:' || lower(btrim($1))))",[name]);
-  const existing=await client.query("SELECT id,name FROM stages WHERE is_active=TRUE AND lower(trim(name))=lower(trim($1)) ORDER BY created_at LIMIT 1",[name]);
+  const normalized=normalizeBusinessName(name);
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('stage:' || $1))",[normalized]);
+  const existing=await client.query(
+    "SELECT id,name FROM stages WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    [normalized]
+  );
   if(existing.rowCount)return existing.rows[0];
   const created=await client.query("INSERT INTO stages(name) VALUES($1) RETURNING id,name",[name]);
   return created.rows[0];
@@ -108,9 +127,9 @@ export async function orderRoutes(app: FastifyInstance) {
   app.get("/api/order-stages", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success) throw new AppError("VALIDATION_ERROR","فلتر مراحل الطلب غير صحيح",422);
-    const params:unknown[]=[]; const where:string[]=["os.status <> 'CANCELLED'"];
+    const params:unknown[]=[]; const where:string[]=["os.status <> 'CANCELLED'","o.status NOT IN ('COMPLETED','CANCELLED')"];
     if(q.data.orderId){params.push(q.data.orderId);where.push("os.order_id=$"+params.length);}
-    const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
+    const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
     return {data:r.rows};
   });
 
@@ -119,7 +138,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const order = await pool.query(
       `SELECT o.*,
               COALESCE(json_agg(DISTINCT jsonb_build_object('id',ol.id,'product_id',ol.product_id,'product_name',p.name,'product_code',p.code,'quantity',ol.quantity,'unit_id',ol.unit_id,'unit_name',u.name,'notes',ol.notes)) FILTER (WHERE ol.id IS NOT NULL),'[]') AS lines,
-              COALESCE((SELECT json_agg(jsonb_build_object('id',os.id,'stage_id',os.stage_id,'stage_name',s.name,'stage_code',s.code,'sequence_no',os.sequence_no,'status',os.status,'planned_quantity',os.planned_quantity,'completed_quantity',os.completed_quantity,'output_product_id',os.output_product_id,'output_product_name',op.name,'notes',os.notes) ORDER BY os.sequence_no) FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products op ON op.id=os.output_product_id WHERE os.order_id=o.id),'[]') AS stages
+              COALESCE((SELECT json_agg(jsonb_build_object('id',os.id,'stage_id',os.stage_id,'stage_name',s.name,'stage_code',s.code,'sequence_no',os.sequence_no,'status',os.status,'planned_quantity',os.planned_quantity,'completed_quantity',os.completed_quantity,'output_product_id',os.output_product_id,'output_product_name',op.name,'stage_rate',os.stage_rate,'stage_rate_method',os.stage_rate_method,'stage_rate_unit_id',os.stage_rate_unit_id,'notes',os.notes) ORDER BY os.sequence_no) FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products op ON op.id=os.output_product_id WHERE os.order_id=o.id),'[]') AS stages
          FROM production_orders o
          LEFT JOIN production_order_lines ol ON ol.order_id=o.id
          LEFT JOIN products p ON p.id=ol.product_id
@@ -146,22 +165,34 @@ export async function orderRoutes(app: FastifyInstance) {
       // Build order lines from stage outputs so the same product is never requested twice.
       if (!lineInputs.length) {
         if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
+        const finalSequence=Math.max(...stages.map(s=>s.sequenceNo));
+        const finalStages=stages.filter(s=>s.sequenceNo===finalSequence);
         const derived = new Map<string,{productId?:string;productName?:string;quantity:number;notes?:string}>();
-        for (const stage of stages) {
+        for (const stage of finalStages) {
           if (!stage.outputProductId && !stage.outputProductName) continue;
           if (stage.plannedQuantity == null || stage.plannedQuantity <= 0) {
-            throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة لكل منتج ناتج من المرحلة",422);
+            throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة للمرحلة النهائية",422);
           }
-          const key=stage.outputProductId ?? stage.outputProductName!.trim().toLowerCase();
+          const key=stage.outputProductId ?? normalizeBusinessName(stage.outputProductName!);
           const current=derived.get(key);
-          if (current) current.quantity += stage.plannedQuantity;
-          else derived.set(key,{productId:stage.outputProductId,productName:stage.outputProductName,quantity:stage.plannedQuantity,notes:stage.notes});
+          if (current) {
+            current.quantity += stage.plannedQuantity;
+          } else {
+            const entry:{productId?:string;productName?:string;quantity:number;notes?:string}={quantity:stage.plannedQuantity};
+            if(stage.outputProductId) entry.productId=stage.outputProductId;
+            else if(stage.outputProductName) entry.productName=stage.outputProductName;
+            if(stage.notes) entry.notes=stage.notes;
+            derived.set(key,entry);
+          }
         }
         if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","اكتب المنتج الناتج بجانب مرحلة واحدة على الأقل",422);
         lineInputs.push(...Array.from(derived.values()));
       }
       for (const line of lineInputs) {
-        const product=await ensureProduct(client,{productId:line.productId,productName:line.productName});
+        const product=await ensureProduct(
+          client,
+          line.productId ? {productId:line.productId} : {productName:line.productName!}
+        );
         const unitId=line.unitId ?? product.unit_id;
         await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5)",
           [order.id,product.id,line.quantity,unitId,line.notes ?? null]);
@@ -173,8 +204,8 @@ export async function orderRoutes(app: FastifyInstance) {
           const product=await ensureProduct(client,{productName:stage.outputProductName});
           outputProductId=product.id;
         }
-        await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes) VALUES($1,$2,$3,$4,$5,$6)",
-          [order.id,stageRow.id,outputProductId,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null]);
+        await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes,stage_rate,stage_rate_method) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+          [order.id,stageRow.id,outputProductId,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null,stage.stageRate ?? null,stage.stageRateMethod ?? null]);
         if(outputProductId) await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stageRow.id,outputProductId]);
       }
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"production_order",entityId:order.id,afterData:order,ipAddress:request.ip,userAgent:request.headers["user-agent"] ?? null});
@@ -200,24 +231,44 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
-    const current=await pool.query("SELECT * FROM production_orders WHERE id=$1",[id]);
-    if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
     const p=parsed.data;
-    const r=await pool.query(`UPDATE production_orders SET order_name=COALESCE($1,order_name),customer_name=COALESCE($2,customer_name),delivery_start_date=COALESCE($3,delivery_start_date),due_date=COALESCE($4,due_date),last_delivery_date=COALESCE($5,last_delivery_date),notes=COALESCE($6,notes),status=COALESCE($7,status),updated_at=now() WHERE id=$8 RETURNING *`,
-      [p.orderName ?? null,p.customerName ?? null,p.deliveryStartDate ?? null,p.dueDate ?? null,p.lastDeliveryDate ?? null,p.notes ?? null,p.status ?? null,id]);
-    return { data:r.rows[0] };
+    const result=await withTransaction(async client=>{
+      const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
+      if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(current.rows[0].status==="COMPLETED" && Object.keys(p).length>0){
+        throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن تعديل طلب مكتمل",409);
+      }
+
+      const fields:string[]=[];
+      const values:unknown[]=[];
+      const add=(field:string,value:unknown)=>{values.push(value);fields.push(field+"=$"+values.length);};
+      if(p.orderName!==undefined)add("order_name",p.orderName);
+      if(p.customerName!==undefined)add("customer_name",p.customerName);
+      if(p.deliveryStartDate!==undefined)add("delivery_start_date",p.deliveryStartDate);
+      if(p.dueDate!==undefined)add("due_date",p.dueDate);
+      if(p.lastDeliveryDate!==undefined)add("last_delivery_date",p.lastDeliveryDate);
+      if(p.notes!==undefined)add("notes",p.notes);
+      if(p.status!==undefined)add("status",p.status);
+      if(!fields.length)return current.rows[0];
+
+      values.push(id);
+      const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=${values.length} RETURNING *`,values);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return { data:result };
   });
 
   app.post("/api/orders/:id/stages", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request, reply) => {
     const orderId=(request.params as {id:string}).id;
-    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional()}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).safeParse(request.body);
+    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional()}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);
     const r=await withTransaction(async client=>{
       const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
       const stage=await ensureStage(client,{stageId:parsed.data.stageId,stageName:parsed.data.stageName});
       let outputProductId=parsed.data.outputProductId??null;
       if(!outputProductId&&parsed.data.outputProductName)outputProductId=(await ensureProduct(client,{productName:parsed.data.outputProductName})).id;
-      const x=await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[orderId,stage.id,outputProductId,parsed.data.sequenceNo,parsed.data.plannedQuantity??null,parsed.data.notes??null]);
+      const x=await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes,stage_rate,stage_rate_method) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",[orderId,stage.id,outputProductId,parsed.data.sequenceNo,parsed.data.plannedQuantity??null,parsed.data.notes??null,parsed.data.stageRate??null,parsed.data.stageRateMethod??null]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
       return x.rows[0];
     });
@@ -240,7 +291,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.patch("/api/order-stages/:id", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request) => {
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
+    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل المرحلة غير صحيحة",422);
     const p=parsed.data;
     const r=await withTransaction(async client=>{
@@ -249,7 +300,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
-      const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes) WHERE id=$7 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,id]);
+      const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method) WHERE id=$9 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,id]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
       return x.rows[0];
     });
@@ -260,14 +311,21 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const order=await pool.query("SELECT o.* FROM production_orders o WHERE o.id=$1",[id]);
     if(!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
-    const [stages,production,movements,deliveries]=await Promise.all([
-      pool.query("SELECT os.id,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.notes,s.name AS stage_name,p.name AS output_product_name FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",[id]),
-      pool.query("SELECT pe.id,pe.code,pe.work_date,pe.quantity,pe.earning_amount,e.full_name AS employee_name,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name FROM production_entries pe JOIN employees e ON e.id=pe.employee_id JOIN products p ON p.id=pe.product_id JOIN stages s ON s.id=pe.stage_id LEFT JOIN production_types pt ON pt.id=pe.production_type_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 ORDER BY pe.work_date DESC,pe.created_at DESC LIMIT 500",[id]),
+    const [stages,production,movements,deliveries,payments]=await Promise.all([
+      pool.query("SELECT os.id,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.notes,s.name AS stage_name,p.name AS output_product_name FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",[id]),
+      pool.query("SELECT pe.id,pe.code,pe.work_date,pe.quantity,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,pe.total_earning_amount,pe.status,e.full_name AS employee_name,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name FROM production_entries pe JOIN employees e ON e.id=pe.employee_id JOIN products p ON p.id=pe.product_id JOIN stages s ON s.id=pe.stage_id LEFT JOIN production_types pt ON pt.id=pe.production_type_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 ORDER BY pe.work_date DESC,pe.created_at DESC LIMIT 500",[id]),
       pool.query("SELECT sm.code,sm.movement_type,sm.quantity,sm.unit_cost,sm.total_cost,sm.created_at,p.name AS product_name,w.name AS warehouse_name FROM stock_movements sm JOIN products p ON p.id=sm.product_id JOIN warehouses w ON w.id=sm.warehouse_id WHERE sm.order_id=$1 ORDER BY sm.created_at DESC LIMIT 500",[id]),
-      pool.query("SELECT d.id,d.code,d.destination,d.status,d.created_at,d.released_at,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permissions d LEFT JOIN delivery_permission_lines dl ON dl.delivery_permission_id=d.id WHERE d.order_id=$1 GROUP BY d.id ORDER BY d.created_at DESC",[id])
+      pool.query("SELECT d.id,d.code,d.destination,d.status,d.created_at,d.released_at,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permissions d LEFT JOIN delivery_permission_lines dl ON dl.delivery_permission_id=d.id WHERE d.order_id=$1 GROUP BY d.id ORDER BY d.created_at DESC",[id]),
+      pool.query("SELECT wpa.production_entry_id,COALESCE(SUM(wpa.amount),0) AS paid_amount FROM worker_payment_allocations wpa JOIN production_entries pe ON pe.id=wpa.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 GROUP BY wpa.production_entry_id",[id])
     ]);
-    const totals=await pool.query("SELECT COALESCE((SELECT SUM(earning_amount) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('OUT','TRANSFER_OUT')),0) AS stock_out_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('IN','RETURN','TRANSFER_IN')),0) AS stock_in_cost",[id]);
-    return {data:{order:order.rows[0],stages:stages.rows,production:production.rows,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]}};
+    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('OUT','TRANSFER_OUT')),0) AS stock_out_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type IN ('IN','RETURN','TRANSFER_IN')),0) AS stock_in_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
+    const paidMap=new Map<string,number>(payments.rows.map((x:{production_entry_id:string;paid_amount:string|number})=>[x.production_entry_id,Number(x.paid_amount)]));
+    const productionWithPayments=production.rows.map((x:{id:string;total_earning_amount?:string|number;earning_amount:string|number})=>({
+      ...x,
+      paid_amount:paidMap.get(x.id)??0,
+      remaining_amount:Math.max(0,Number(x.total_earning_amount??x.earning_amount)-Number(paidMap.get(x.id)??0))
+    }));
+    return {data:{order:order.rows[0],stages:stages.rows,production:productionWithPayments,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]}};
   });
 
   app.get("/api/machines", { preHandler: [authenticateRequest, requirePermission("machines.view")] }, async () => {
@@ -291,20 +349,42 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
-    if(parsed.data.orderStageId){
-      const stage=await pool.query("SELECT id FROM order_stages WHERE id=$1",[parsed.data.orderStageId]);
-      if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
-    }
-    const product = await pool.query("SELECT unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
-    if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
-    const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
-    const r=await pool.query(
-      `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       RETURNING *`,
-      [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
-    );
-    return reply.code(201).send({data:r.rows[0]});
+    const row=await withTransaction(async(client)=>{
+      const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
+      if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
+      const product = await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
+      if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+      if(parsed.data.employeeId){
+        const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);
+        if(!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      }
+      if(parsed.data.shiftId){
+        const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[parsed.data.shiftId]);
+        if(!shift.rowCount) throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
+      }
+      if(parsed.data.productionTypeId){
+        const type=await client.query("SELECT id FROM production_types WHERE id=$1 AND is_active=TRUE",[parsed.data.productionTypeId]);
+        if(!type.rowCount) throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود أو غير نشط",422);
+      }
+      if(parsed.data.orderStageId){
+        const stage=await client.query(`SELECT os.id,os.order_id,os.stage_id,os.output_product_id,po.status
+          FROM order_stages os JOIN production_orders po ON po.id=os.order_id
+          WHERE os.id=$1 FOR UPDATE`,[parsed.data.orderStageId]);
+        if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const s=stage.rows[0];
+        if(s.status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية ملغاة",409);
+        if(s.output_product_id && s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
+      }
+      const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
+      const r=await client.query(
+        `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
+      );
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return r.rows[0];
+    });
+    return reply.code(201).send({data:row});
   });
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
@@ -323,4 +403,24 @@ export async function orderRoutes(app: FastifyInstance) {
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
   });
+
+  app.get("/api/orders/:id/reconciliation",{preHandler:[authenticateRequest,requirePermission("orders.dashboard")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const order=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1",[id]);
+    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+    const [ordered,produced,delivered,stock] = await Promise.all([
+      pool.query("SELECT product_id,COALESCE(SUM(quantity),0) AS quantity FROM production_order_lines WHERE order_id=$1 GROUP BY product_id",[id]),
+      pool.query("SELECT pe.product_id,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' GROUP BY pe.product_id",[id]),
+      pool.query("SELECT dl.product_id,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions d ON d.id=dl.delivery_permission_id WHERE d.order_id=$1 AND d.status='RELEASED' GROUP BY dl.product_id",[id]),
+      pool.query("SELECT sm.product_id,COALESCE(SUM(CASE WHEN sm.movement_type IN ('OUT','TRANSFER_OUT') THEN sm.quantity ELSE 0 END),0) AS stock_out,COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN','ADJUSTMENT') THEN sm.quantity ELSE 0 END),0) AS stock_in FROM stock_movements sm WHERE sm.order_id=$1 GROUP BY sm.product_id",[id])
+    ]);
+    const map=new Map<string,{ordered:number;produced:number;delivered:number;stockOut:number;stockIn:number}>();
+    for(const row of ordered.rows)map.set(row.product_id,{ordered:Number(row.quantity),produced:0,delivered:0,stockOut:0,stockIn:0});
+    for(const row of produced.rows){const x=map.get(row.product_id)||{ordered:0,produced:0,delivered:0,stockOut:0,stockIn:0};x.produced=Number(row.quantity);map.set(row.product_id,x)}
+    for(const row of delivered.rows){const x=map.get(row.product_id)||{ordered:0,produced:0,delivered:0,stockOut:0,stockIn:0};x.delivered=Number(row.quantity);map.set(row.product_id,x)}
+    for(const row of stock.rows){const x=map.get(row.product_id)||{ordered:0,produced:0,delivered:0,stockOut:0,stockIn:0};x.stockOut=Number(row.stock_out);x.stockIn=Number(row.stock_in);map.set(row.product_id,x)}
+    const products=[...map.entries()].map(([productId,x])=>({...x,productId,productionVariance:x.produced-x.ordered,deliveryVariance:x.delivered-x.ordered}));
+    return {data:{order:order.rows[0],products,ok:products.every(x=>x.produced<=x.ordered+1e-9 && x.delivered<=x.ordered+1e-9)}};
+  });
+
 }

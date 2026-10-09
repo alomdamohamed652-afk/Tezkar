@@ -13,6 +13,7 @@ import { productionRoutes } from "./modules/production/production.routes.js";
 import { paymentsRoutes } from "./modules/payments/payments.routes.js";
 import { earningsRoutes } from "./modules/earnings/earnings.routes.js";
 import { warehouseRoutes } from "./modules/warehouse/warehouse.routes.js";
+import { shiftWithdrawalRoutes } from "./modules/warehouse/shift-withdrawals.routes.js";
 import { advanceRoutes } from "./modules/advances/advances.routes.js";
 import { dashboardRoutes } from "./modules/dashboard/dashboard.routes.js";
 import { cartonDeliveryRoutes } from "./modules/warehouse/cartons-deliveries.routes.js";
@@ -20,6 +21,10 @@ import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { orderRoutes } from "./modules/orders/orders.routes.js";
 import { custodyRoutes } from "./modules/custody/custody.routes.js";
 import { receiptRoutes } from "./modules/warehouse/receipts.routes.js";
+import { codingRoutes } from "./modules/coding/coding.routes.js";
+import { accountingRoutes } from "./modules/accounting/accounting.routes.js";
+import { taskRoutes } from "./modules/tasks/tasks.routes.js";
+import { payrollRoutes } from "./modules/payroll/payroll.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -60,6 +65,7 @@ await app.register(productionRoutes);
 await app.register(paymentsRoutes);
 await app.register(earningsRoutes);
 await app.register(warehouseRoutes);
+  await app.register(shiftWithdrawalRoutes);
 await app.register(advanceRoutes);
 await app.register(dashboardRoutes);
 await app.register(cartonDeliveryRoutes);
@@ -67,5 +73,9 @@ await app.register(reportsRoutes);
 await app.register(orderRoutes);
 await app.register(custodyRoutes);
 await app.register(receiptRoutes);
+await app.register(codingRoutes);
+await app.register(accountingRoutes);
+await app.register(taskRoutes);
+await app.register(payrollRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });

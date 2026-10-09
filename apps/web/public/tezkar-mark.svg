@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">تذكار</title>
+  <desc id="desc">شعار تذكار</desc>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#0f172a"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="url(#g)"/>
+  <path d="M35 39h58v13H73v38H59V52H35z" fill="#fff"/>
+  <path d="M82 70c0-7 5-12 12-12v13c-2 0-4 1-4 4v15H77V75c0-2 2-5 5-5z" fill="#dbeafe"/>
+</svg>

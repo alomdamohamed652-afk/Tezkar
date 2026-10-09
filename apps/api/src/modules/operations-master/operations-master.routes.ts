@@ -16,7 +16,59 @@ export async function operationsMasterRoutes(app:FastifyInstance){
  app.get("/api/rate-groups",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,description,is_active FROM rate_groups ORDER BY code");return {data:r.rows};});
  app.post("/api/rate-groups",{preHandler:[authenticateRequest,requirePermission("rates.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(500).optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مجموعة الأجر غير صحيحة",422);const r=await withTransaction(async c=>{const x=await c.query("INSERT INTO rate_groups(name,description) VALUES($1,$2) RETURNING id,code,name,description,is_active",[p.data.name,p.data.description??null]);await audit(c,req,"create","rate_group",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 
- app.get("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{const r=await pool.query("SELECT s.id,s.code,s.name,s.start_time,s.end_time,s.crosses_midnight,s.rate_group_id,g.code AS rate_group_code,g.name AS rate_group_name,s.is_active FROM shifts s JOIN rate_groups g ON g.id=s.rate_group_id ORDER BY s.code");return {data:r.rows};});
+ app.get("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{
+  const r=await pool.query(`SELECT s.id,s.code,s.name,s.start_time,s.end_time,s.crosses_midnight,s.rate_group_id,
+    g.code AS rate_group_code,g.name AS rate_group_name,s.is_active,
+    COUNT(se.id) FILTER (WHERE se.is_active=TRUE)::int AS employee_count
+    FROM shifts s JOIN rate_groups g ON g.id=s.rate_group_id
+    LEFT JOIN shift_employees se ON se.shift_id=s.id
+    GROUP BY s.id,g.id ORDER BY s.code`);
+  return {data:r.rows};
+ });
+
+ app.get("/api/shifts/:id/employees",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async(req)=>{
+  const shiftId=(req.params as {id:string}).id;
+  const r=await pool.query(`SELECT se.id,se.shift_id,se.employee_id,e.code AS employee_code,e.full_name AS employee_name,
+      se.starts_on,se.ends_on,se.is_active
+    FROM shift_employees se JOIN employees e ON e.id=se.employee_id
+    WHERE se.shift_id=$1 AND se.is_active=TRUE ORDER BY e.full_name`,[shiftId]);
+  return {data:r.rows};
+ });
+
+ app.get("/api/employees/:id/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async(req)=>{
+  const employeeId=(req.params as {id:string}).id;
+  const r=await pool.query(`SELECT se.id,se.shift_id,s.code AS shift_code,s.name AS shift_name,se.starts_on,se.ends_on
+    FROM shift_employees se JOIN shifts s ON s.id=se.shift_id
+    WHERE se.employee_id=$1 AND se.is_active=TRUE AND s.is_active=TRUE
+    ORDER BY s.code`,[employeeId]);
+  return {data:r.rows};
+ });
+
+ app.post("/api/shifts/:id/employees",{preHandler:[authenticateRequest,requirePermission("shifts.assign_employee")]},async(req,reply)=>{
+  const shiftId=(req.params as {id:string}).id;
+  const p=z.object({employeeId:z.string().uuid(),startsOn:z.string().date().nullable().optional(),endsOn:z.string().date().nullable().optional()}).safeParse(req.body);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات ربط الموظف بالوردية غير صحيحة",422);
+  const row=await withTransaction(async c=>{
+    const shift=await c.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);
+    if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",404);
+    const emp=await c.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);
+    if(!emp.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+    const x=await c.query(`INSERT INTO shift_employees(shift_id,employee_id,starts_on,ends_on,assigned_by)
+      VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT(shift_id,employee_id) DO UPDATE SET starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on,is_active=TRUE,updated_at=now()
+      RETURNING *`,[shiftId,p.data.employeeId,p.data.startsOn??null,p.data.endsOn??null,req.user!.userId]);
+    await audit(c,req,"assign_employee","shift_employee",x.rows[0].id,x.rows[0]);
+    return x.rows[0];
+  });
+  return reply.code(201).send({data:row});
+ });
+
+ app.delete("/api/shifts/:id/employees/:employeeId",{preHandler:[authenticateRequest,requirePermission("shifts.assign_employee")]},async(req)=>{
+  const {id:shiftId,employeeId} = req.params as {id:string;employeeId:string};
+  const r=await pool.query("UPDATE shift_employees SET is_active=FALSE,updated_at=now(),ends_on=COALESCE(ends_on,CURRENT_DATE) WHERE shift_id=$1 AND employee_id=$2 RETURNING id",[shiftId,employeeId]);
+  if(!r.rowCount)throw new AppError("SHIFT_EMPLOYEE_NOT_FOUND","ربط الموظف بالوردية غير موجود",404);
+  return {data:{success:true}};
+ });
  app.post("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.create")]},async(req,reply)=>{const p=z.object({name, startTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/), endTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/), crossesMidnight:z.boolean().default(false),rateGroupId:z.string().uuid()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الوردية غير صحيحة",422);const g=await pool.query("SELECT 1 FROM rate_groups WHERE id=$1 AND is_active=TRUE",[p.data.rateGroupId]);if(!g.rowCount)throw new AppError("RATE_GROUP_NOT_FOUND","مجموعة الأجر غير موجودة",422);const r=await withTransaction(async c=>{const x=await c.query("INSERT INTO shifts(name,start_time,end_time,crosses_midnight,rate_group_id) VALUES($1,$2,$3,$4,$5) RETURNING id,code,name,start_time,end_time,crosses_midnight,rate_group_id,is_active",[p.data.name,p.data.startTime,p.data.endTime,p.data.crossesMidnight,p.data.rateGroupId]);await audit(c,req,"create","shift",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 
  app.get("/api/shift-leaders",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{
@@ -30,7 +82,12 @@ if(p.data.assignmentType==="primary"){
  const active=await c.query("SELECT id FROM shift_leaders WHERE shift_id=$1 AND assignment_type='primary' AND is_active=TRUE LIMIT 1",[shiftId]);
  if(active.rowCount)throw new AppError("SHIFT_PRIMARY_LEADER_EXISTS","يوجد رئيس وردية أساسي معين بالفعل لهذه الوردية. ألغِ التكليف الحالي أولاً.",409);
 }
-const x=await c.query("INSERT INTO shift_leaders(shift_id,employee_id,assignment_type,starts_on,ends_on,assigned_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,shift_id,employee_id,assignment_type,starts_on,ends_on,is_active",[shiftId,p.data.employeeId,p.data.assignmentType,p.data.startsOn??null,p.data.endsOn??null,req.user!.userId]);await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+const x=await c.query("INSERT INTO shift_leaders(shift_id,employee_id,assignment_type,starts_on,ends_on,assigned_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,shift_id,employee_id,assignment_type,starts_on,ends_on,is_active",[shiftId,p.data.employeeId,p.data.assignmentType,p.data.startsOn??null,p.data.endsOn??null,req.user!.userId]);
+await c.query(`INSERT INTO shift_employees(shift_id,employee_id,starts_on,ends_on,assigned_by)
+  VALUES($1,$2,$3,$4,$5)
+  ON CONFLICT(shift_id,employee_id) DO UPDATE SET is_active=TRUE,updated_at=now()`,
+  [shiftId,p.data.employeeId,p.data.startsOn??null,p.data.endsOn??null,req.user!.userId]);
+await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 
  app.delete("/api/shift-leaders/:id",{preHandler:[authenticateRequest,requirePermission("shifts.assign_leader")]},async(req)=>{
   const id=(req.params as {id:string}).id;
@@ -41,12 +98,38 @@ const x=await c.query("INSERT INTO shift_leaders(shift_id,employee_id,assignment
  app.get("/api/units",{preHandler:[authenticateRequest,requirePermission("products.view")]},async()=>{const r=await pool.query("SELECT id,code,name,symbol,decimal_places,is_active FROM units ORDER BY code");return {data:r.rows};});
  app.get("/api/stages",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,description,is_active FROM stages ORDER BY code");return {data:r.rows};});
  app.post("/api/stages",{preHandler:[authenticateRequest,requirePermission("stages.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(500).optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);const row=await withTransaction(async c=>{const x=await c.query("INSERT INTO stages(name,description) VALUES($1,$2) RETURNING id,code,name,description,is_active",[p.data.name,p.data.description??null]);await audit(c,req,"create","stage",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:row});});
+ app.delete("/api/stages/:id",{preHandler:[authenticateRequest,requirePermission("stages.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const activeOrderStages=await pool.query("SELECT COUNT(*)::int AS n FROM order_stages WHERE stage_id=$1 AND status NOT IN ('COMPLETED','CANCELLED')",[id]);
+  if(Number(activeOrderStages.rows[0].n)>0) throw new AppError("STAGE_IN_USE","لا يمكن تعطيل مرحلة مرتبطة بمراحل طلبات مفتوحة. أغلق أو ألغِ مراحل الطلب أولاً.",409);
+  const r=await pool.query("UPDATE stages SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount) throw new AppError("STAGE_NOT_FOUND","المرحلة غير موجودة",404);
+  return {data:r.rows[0]};
+ });
+ app.delete("/api/stage-outputs/:id",{preHandler:[authenticateRequest,requirePermission("stages.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const used=await pool.query("SELECT COUNT(*)::int AS n FROM order_stages os JOIN stage_outputs so ON so.stage_id=os.stage_id AND so.product_id=os.output_product_id WHERE so.id=$1",[id]);
+  if(Number(used.rows[0].n)>0) throw new AppError("STAGE_OUTPUT_IN_USE","لا يمكن حذف ناتج مرتبط بطلبات. سيظل محفوظًا في التاريخ.",409);
+  const r=await pool.query("DELETE FROM stage_outputs WHERE id=$1 RETURNING id");
+  if(!r.rowCount) throw new AppError("STAGE_OUTPUT_NOT_FOUND","ناتج المرحلة غير موجود",404);
+  return {data:{success:true}};
+ });
  app.get("/api/wage-types",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,method,percentage_base,is_active FROM wage_types ORDER BY code");return {data:r.rows};});
  app.get("/api/production-types",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,calculation_method,is_active FROM production_types WHERE is_active=TRUE ORDER BY name");return {data:r.rows};});
  app.post("/api/production-types",{preHandler:[authenticateRequest,requirePermission("production_types.manage")]},async(req,reply)=>{const p=z.object({code:z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/),name,calculationMethod:z.enum(["PER_QUANTITY","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).default("PER_QUANTITY")}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات نوع الإنتاج غير صحيحة",422);const r=await pool.query("INSERT INTO production_types(code,name,calculation_method) VALUES($1,$2,$3) RETURNING id,code,name,calculation_method,is_active",[p.data.code,p.data.name,p.data.calculationMethod]);return reply.code(201).send({data:r.rows[0]});});
 
  app.get("/api/products",{preHandler:[authenticateRequest,requirePermission("products.view")]},async()=>{const r=await pool.query("SELECT p.id,p.code,p.name,p.product_type,p.category_id,c.code AS category_code,c.name AS category_name,p.unit_id,u.code AS unit_code,u.name AS unit_name,p.sku,p.barcode,p.minimum_stock,p.track_inventory,p.is_active FROM products p LEFT JOIN product_categories c ON c.id=p.category_id JOIN units u ON u.id=p.unit_id ORDER BY p.code");return {data:r.rows};});
  app.post("/api/products",{preHandler:[authenticateRequest,requirePermission("products.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(1000).optional(),categoryId:z.string().uuid().nullable().optional(),productType:z.enum(["RAW_MATERIAL","COMPONENT","FINISHED_GOOD","SERVICE","CONSUMABLE"]),unitId:z.string().uuid(),sku:z.string().trim().max(100).nullable().optional(),barcode:z.string().trim().max(100).nullable().optional(),color:z.string().trim().max(80).nullable().optional(),thickness:z.number().nonnegative().nullable().optional(),size:z.string().trim().max(80).nullable().optional(),minimumStock:z.number().nonnegative().default(0),trackInventory:z.boolean().default(true)}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المنتج غير صحيحة",422);const r=await withTransaction(async c=>{const u=await c.query("SELECT 1 FROM units WHERE id=$1 AND is_active=TRUE",[p.data.unitId]);if(!u.rowCount)throw new AppError("UNIT_NOT_FOUND","وحدة القياس غير موجودة",422);const x=await c.query("INSERT INTO products(name,description,category_id,product_type,unit_id,sku,barcode,color,thickness,size,minimum_stock,track_inventory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,code,name,product_type,unit_id,sku,barcode,minimum_stock,track_inventory,is_active",[p.data.name,p.data.description??null,p.data.categoryId??null,p.data.productType,p.data.unitId,p.data.sku??null,p.data.barcode??null,p.data.color??null,p.data.thickness??null,p.data.size??null,p.data.minimumStock,p.data.trackInventory]);await audit(c,req,"create","product",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
+ app.delete("/api/products/:id",{preHandler:[authenticateRequest,requirePermission("products.delete")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const stock=await pool.query("SELECT COALESCE(SUM(quantity),0) AS quantity FROM stock_balances WHERE product_id=$1 AND quantity>0",[id]);
+  if(Number(stock.rows[0]?.quantity||0)>0)throw new AppError("PRODUCT_HAS_STOCK","لا يمكن تعطيل المنتج وفيه رصيد مخزني. انقل الرصيد أو صرفه أولًا.",409);
+  const openStages=await pool.query("SELECT COUNT(*)::int AS n FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.output_product_id=$1 AND os.status NOT IN ('COMPLETED','CANCELLED') AND po.status NOT IN ('COMPLETED','CANCELLED')",[id]);
+  if(Number(openStages.rows[0]?.n||0)>0)throw new AppError("PRODUCT_USED_IN_OPEN_ORDERS","لا يمكن تعطيل المنتج لأنه ناتج لمرحلة في طلبيات مفتوحة.",409);
+  const r=await pool.query("UPDATE products SET is_active=FALSE,updated_at=now() WHERE id=$1 AND is_active=TRUE RETURNING id,code,name,is_active",[id]);
+  if(!r.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو معطل بالفعل",404);
+  return {data:r.rows[0]};
+ });
 
 
  app.delete("/api/rate-groups/:id",{preHandler:[authenticateRequest,requirePermission("rate_groups.delete")]},async(req)=>{

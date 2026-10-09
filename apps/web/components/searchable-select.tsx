@@ -15,7 +15,7 @@ export function SearchableSelect({value,onChange,options,placeholder="اختر..
  const filtered=useMemo(()=>{const q=query.trim().toLocaleLowerCase("ar-EG");if(!q)return options;return options.filter(x=>(x.label+" "+(x.meta??"")).toLocaleLowerCase("ar-EG").includes(q))},[options,query]);
  return <div className="search-select" ref={ref}>
   <button type="button" className="search-select-trigger" disabled={disabled} onClick={()=>{setOpen(v=>!v);setQuery("")}}>
-   <span className={current?"":"placeholder"}>{current?.label??placeholder}</span><span className="search-select-chevron">⌄</span>
+   <span className={"search-select-current"+(current?"":" placeholder")}><span className="search-select-current-label">{current?.label??placeholder}</span>{current?.meta&&<small className="search-select-current-meta">{current.meta}</small>}</span><span className="search-select-chevron">⌄</span>
   </button>
   {open&&<div className="search-select-menu">
    <input autoFocus className="search-select-search" value={query} onChange={e=>setQuery(e.target.value)} placeholder={searchPlaceholder}/>
