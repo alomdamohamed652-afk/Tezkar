@@ -347,6 +347,9 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const rate = rateResult.rows[0];
       const method = rate.method as string;
+      if (!rateResult.rowCount) {
+        throw new AppError("WAGE_TYPE_NOT_FOUND", "طريقة أجر المرحلة غير معرفة في بيانات الأجور", 422);
+      }
       if (!stagePrice && parsed.data.rateOverride != null && parsed.data.rateOverride !== Number(rate.rate)) {
         const canOverrideRate = await hasPermission(client, request.user!.userId, "production.rate_override");
         if (!canOverrideRate) {
