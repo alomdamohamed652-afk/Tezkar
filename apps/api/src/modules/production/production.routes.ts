@@ -169,7 +169,7 @@ export async function productionRoutes(app: FastifyInstance) {
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
-        WHERE p.employee_id=$1
+        WHERE p.employee_id=$1 AND p.status <> 'CANCELLED'
         ORDER BY p.work_date DESC,p.created_at DESC LIMIT 300`,
       [request.user.employeeId]
     );
