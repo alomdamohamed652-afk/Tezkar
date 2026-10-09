@@ -50,8 +50,8 @@ export function usePermissions(){
 
 export function Sidebar({active}:{active:string}){
  const {permissions,session}=usePermissions();
- const [pendingTaskCount,setPendingTaskCount]=useState(0);
- useEffect(()=>{if(!permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))return;let alive=true;api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});return()=>{alive=false}},[permissions]);
+ const [pendingTaskCount,setPendingTaskCount]=useState(0);\n const [pendingPaymentCount,setPendingPaymentCount]=useState(0);
+ useEffect(()=>{let alive=true;if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});if(permissions?.some(p=>p==="payment_requests.view"||p==="worker_payments.view"))api<{data:{status:string}[]}>("/api/payment-requests").then(r=>{if(alive)setPendingPaymentCount(r.data.filter(x=>x.status==="PENDING"||x.status==="APPROVED").length)}).catch(()=>{if(alive)setPendingPaymentCount(0)});return()=>{alive=false}},[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null||!item.permissions?.some(p=>permissions.includes(p)))return false;
    if(!item.conditional)return true;
@@ -73,7 +73,7 @@ export function Sidebar({active}:{active:string}){
    <div className="sidebar-scroll">
     {visibleGroups.map(group=><div className="nav-group" key={group.label}>
       <div className="nav-title">{group.label}</div>
-      <nav className="nav">{group.items.map(item=><a className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</a>)}</nav>
+      <nav className="nav">{group.items.map(item=><a className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</a>)}</nav>
     </div>)}
    </div>
    <div className="sidebar-footer">
