@@ -27,7 +27,7 @@ const repaySchema=z.object({
 });
 
 export async function advanceRoutes(app:FastifyInstance){
-  app.get("/api/advances",{preHandler:[requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
+  app.get("/api/advances",{preHandler:[authenticateRequest,requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
     const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","PAID","CANCELLED"]).optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
     const user=request.user!;
