@@ -135,6 +135,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT id,warehouse_type FROM warehouses WHERE is_active=TRUE AND warehouse_type='RAW_MATERIAL' ORDER BY created_at,id LIMIT 1"
     );
     assert.ok(wrongWarehouse.rowCount);
+    await apiPool.query(
+      "INSERT INTO warehouse_locations(warehouse_id,code,name,is_active) VALUES($1,'INTEGRATION-RAW','Integration raw location',TRUE) ON CONFLICT(warehouse_id,code) DO NOTHING",
+      [wrongWarehouse.rows[0].id]
+    );
     const wrongLoc = await apiPool.query(
       "SELECT id FROM warehouse_locations WHERE warehouse_id=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",
       [wrongWarehouse.rows[0].id]
