@@ -122,7 +122,7 @@ export async function custodyRoutes(app:FastifyInstance){
     });
     return reply.code(201).send({data:result});
   });
-  app.get("/api/cash-custody", { preHandler:[authenticateRequest] }, async(request)=>{
+  app.get("/api/cash-custody", { preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.view","all"],["cash_custody.view_own","own"])] }, async(request)=>{
     const client=await pool.connect();
     try{
       const access=await cashAccess(client,request.user!.userId,undefined);
@@ -138,7 +138,7 @@ export async function custodyRoutes(app:FastifyInstance){
     }finally{client.release();}
   });
 
-  app.post("/api/cash-custody/check-duplicate",{preHandler:[authenticateRequest]},async(request)=>{
+  app.post("/api/cash-custody/check-duplicate",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request)=>{
     const p=cashSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات حركة العهدة غير صحيحة",422);
     const client=await pool.connect();
@@ -155,7 +155,7 @@ export async function custodyRoutes(app:FastifyInstance){
     }finally{client.release();}
   });
 
-  app.post("/api/cash-custody",{preHandler:[authenticateRequest]},async(request,reply)=>{
+  app.post("/api/cash-custody",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
     const p=cashSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات حركة العهدة غير صحيحة",422);
     const row=await withTransaction(async client=>{
