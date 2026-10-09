@@ -114,7 +114,11 @@ WHERE r.code IN ('finance','accountant') AND p.code IN ('payroll.view','payroll.
 ON CONFLICT DO NOTHING;
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
-WHERE r.code IN ('worker','read_only') AND p.code IN ('tasks.view_own','tasks.update_own','tasks.comment')
+WHERE r.code='worker' AND p.code IN ('tasks.view_own','tasks.update_own','tasks.comment')
+ON CONFLICT DO NOTHING;
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+WHERE r.code='read_only' AND p.code='tasks.view_own'
 ON CONFLICT DO NOTHING;
 
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
