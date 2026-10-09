@@ -9,10 +9,28 @@ import pg from "pg";
 const adminUrl = process.env.TEST_DATABASE_URL;
 const apiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+function assertDisposableDatabaseUrl(connectionString: string) {
+  const url = new URL(connectionString);
+  assert.ok(
+    url.protocol === "postgres:" || url.protocol === "postgresql:",
+    "TEST_DATABASE_URL must use PostgreSQL"
+  );
+  assert.ok(
+    ["localhost", "127.0.0.1", "::1", "postgres"].includes(url.hostname.toLowerCase()),
+    "TEST_DATABASE_URL must point to a local disposable PostgreSQL test server"
+  );
+  assert.equal(
+    url.pathname.replace(/^\\/+/, ""),
+    "postgres",
+    "TEST_DATABASE_URL must use the disposable admin database named postgres"
+  );
+}
+
 test("payroll HTTP routes enforce approval, partial/full payment, overpayment and concurrent payment safety", {
   skip: !adminUrl && "TEST_DATABASE_URL not set"
 }, async () => {
   assert.ok(adminUrl, "TEST_DATABASE_URL must point to a disposable PostgreSQL test server");
+  assertDisposableDatabaseUrl(adminUrl);
   const name = "tezkar_payroll_api_" + randomBytes(6).toString("hex");
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
