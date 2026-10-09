@@ -17,20 +17,35 @@ const loginSchema = z.object({
 const loginAttempts = new Map<string, { count: number; firstAt: number; blockedUntil: number }>();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
+const LOGIN_MAX_TRACKED_KEYS = 10_000;
 
 function loginKey(request: { ip: string }, username: string) {
   return request.ip + ":" + username.toLowerCase();
 }
 
+function pruneLoginAttempts(now: number) {
+  for (const [key, entry] of loginAttempts) {
+    if (now - entry.firstAt >= LOGIN_WINDOW_MS && entry.blockedUntil <= now) {
+      loginAttempts.delete(key);
+    }
+  }
+
+}
+
 function assertLoginAllowed(request: { ip: string }, username: string) {
+  const now = Date.now();
+  pruneLoginAttempts(now);
   const key = loginKey(request, username);
   const current = loginAttempts.get(key);
-  if (!current) return;
-  const now = Date.now();
-  if (current.blockedUntil > now) {
+  if (current && current.blockedUntil > now) {
     throw new AppError("LOGIN_RATE_LIMITED", "محاولات تسجيل الدخول كثيرة. حاول مرة أخرى بعد قليل.", 429);
   }
-  if (now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
+  // Fail closed when the bounded in-memory tracker is saturated. Otherwise
+  // attackers could bypass throttling by continuously submitting new usernames.
+  if (!current && loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) {
+    throw new AppError("LOGIN_RATE_LIMITED", "تعذر بدء تسجيل الدخول حاليًا. حاول مرة أخرى بعد قليل.", 429);
+  }
+  if (current && now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
 }
 
 function recordLoginFailure(request: { ip: string }, username: string) {
@@ -38,6 +53,10 @@ function recordLoginFailure(request: { ip: string }, username: string) {
   const now = Date.now();
   const current = loginAttempts.get(key);
   if (!current || now - current.firstAt >= LOGIN_WINDOW_MS) {
+    pruneLoginAttempts(now);
+    // Never evict a still-active key just to make room: doing so could erase
+    // another user's active lockout during a burst of unique login attempts.
+    if (loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) return;
     loginAttempts.set(key, { count: 1, firstAt: now, blockedUntil: 0 });
     return;
   }
@@ -98,7 +117,11 @@ export async function authRoutes(app: FastifyInstance) {
       });
       clearLoginFailures(request, parsed.data.username);
     } catch (error) {
-      recordLoginFailure(request, parsed.data.username);
+      // Only invalid credentials should count toward the login lockout.
+      // Database, session, and audit failures must not lock out a legitimate user.
+      if (error instanceof AppError && error.code === "INVALID_CREDENTIALS") {
+        recordLoginFailure(request, parsed.data.username);
+      }
       throw error;
     }
 
