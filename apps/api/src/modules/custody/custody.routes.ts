@@ -51,7 +51,7 @@ async function cashAccess(client:import("pg").PoolClient,userId:string,employeeI
   return {employeeId:row.employee_id,isFinance:false};
 }
 export async function custodyRoutes(app:FastifyInstance){
-  app.get("/api/custodies",{preHandler:[requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
+  app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
     if(user?.is_worker){
