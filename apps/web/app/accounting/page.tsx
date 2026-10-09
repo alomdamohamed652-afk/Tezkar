@@ -63,7 +63,7 @@ export default function AccountingPage() {
   }
 
   const activeOrders=useMemo(()=>orders.filter(o=>o.status!=="COMPLETED"&&o.status!=="CANCELLED"),[orders]);
-  const n=(x:number|null|undefined)=>Number(x||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
+  const n=(x:number|null|undefined)=>Number(x||0).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2});
   const totalIn=useMemo(()=>revenues.reduce((s,x)=>s+Number(x.amount||0),0),[revenues]);
   const totalOut=useMemo(()=>expenses.reduce((s,x)=>s+Number(x.amount||0),0),[expenses]);
   const net=totalIn-totalOut;
