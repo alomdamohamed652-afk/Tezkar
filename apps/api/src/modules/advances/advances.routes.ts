@@ -27,6 +27,12 @@ const repaySchema=z.object({
 });
 
 export async function advanceRoutes(app:FastifyInstance){
+  // Dedicated employee picker for the advances workflow. Do not depend on employees.view,
+  // which is a separate permission and may not be granted to finance/advances operators.
+  app.get("/api/advances/eligible-employees",{preHandler:[authenticateRequest,requireAnyPermission(["advances.create","all"],["advances.view","all"])]},async()=>{
+    const result=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+    return {data:result.rows};
+  });
   app.get("/api/advances",{preHandler:[authenticateRequest,requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
     const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","PAID","CANCELLED"]).optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
