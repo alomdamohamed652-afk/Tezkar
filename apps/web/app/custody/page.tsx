@@ -19,7 +19,7 @@ export default function CustodyPage(){
 
   const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
   setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
-  if(has("custody.create")&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/employees")).data);
+  if((has("custody.create")||has("custody.view"))&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
  useEffect(()=>{void load()},[employeeId]);
