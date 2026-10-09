@@ -50,12 +50,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
-      { orderRoutes }, { warehouseRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
-      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
+      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
       import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
@@ -69,6 +69,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(productionRoutes);
     await app.register(orderRoutes);
     await app.register(warehouseRoutes);
+    await app.register(cartonDeliveryRoutes);
     await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
 
@@ -312,6 +313,71 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(profitability.statusCode, 200, profitability.body);
     assert.equal(Number(profitability.json().data.laborCost), 505);
     assert.equal(Number(profitability.json().data.materialCost), 100);
+
+    // Complete the production -> delivery workflow in this disposable database.
+    const deliveryPermission = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
+      payload: {
+        orderId, destination: "Integration test destination",
+        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+          locationId: finalSaved.rows[0].location_id, quantity: 4 }]
+      }
+    });
+    assert.equal(deliveryPermission.statusCode, 201, deliveryPermission.body);
+    const deliveryId = deliveryPermission.json().data.id as string;
+    const deliveryCode = deliveryPermission.json().data.code as string;
+
+    const overDelivery = await app.inject({
+      method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
+      payload: {
+        orderId, destination: "Over-delivery must be rejected",
+        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+          locationId: finalSaved.rows[0].location_id, quantity: 7 }]
+      }
+    });
+    assert.equal(overDelivery.statusCode, 409, overDelivery.body);
+    assert.equal(overDelivery.json().error.code, "DELIVERY_EXCEEDS_PRODUCTION");
+
+    const wrongScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: "WRONG-SCAN-CODE" }
+    });
+    assert.equal(wrongScan.statusCode, 409, wrongScan.body);
+    assert.equal(wrongScan.json().error.code, "SCAN_MISMATCH");
+
+    const release = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: deliveryCode }
+    });
+    assert.equal(release.statusCode, 200, release.body);
+    assert.equal(release.json().data.status, "RELEASED");
+
+    const afterDelivery = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(afterDelivery.rows[0].quantity), 6);
+    assert.equal(Number(afterDelivery.rows[0].inventory_value), 183);
+    const deliveryMovement = await apiPool.query(
+      "SELECT movement_type,quantity,reference_type,reference_id,order_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [deliveryId]
+    );
+    assert.equal(deliveryMovement.rowCount, 1);
+    assert.equal(deliveryMovement.rows[0].movement_type, "OUT");
+    assert.equal(Number(deliveryMovement.rows[0].quantity), 4);
+    assert.equal(deliveryMovement.rows[0].order_id, orderId);
+
+    const duplicateRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: deliveryCode }
+    });
+    assert.equal(duplicateRelease.statusCode, 409, duplicateRelease.body);
+    assert.equal(duplicateRelease.json().error.code, "INVALID_STATUS");
+    const deliveryMovementCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [deliveryId]
+    );
+    assert.equal(deliveryMovementCount.rows[0].count, 1, "releasing twice must not duplicate delivery stock movements");
 
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
