@@ -587,7 +587,7 @@ export async function productionRoutes(app: FastifyInstance) {
            employee_id,entry_type,credit_amount,production_entry_id,created_by,notes
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
-         ON CONFLICT (production_entry_id) DO NOTHING`,
+         ON CONFLICT DO NOTHING`,
         [current.employee_id, current.earning_amount, id, request.user!.userId]
       );
 
