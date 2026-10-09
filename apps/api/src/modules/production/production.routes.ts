@@ -71,7 +71,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
        LEFT JOIN order_stages os ON os.id=p.order_stage_id
        JOIN shifts sh ON sh.id=p.shift_id
        JOIN units u ON u.id=p.unit_id
-      WHERE p.id=$1${lock ? " FOR UPDATE" : ""}`,
+      WHERE p.id=$1${lock ? " FOR UPDATE OF p" : ""}`,
     [id]
   );
   return result.rows[0] ?? null;
