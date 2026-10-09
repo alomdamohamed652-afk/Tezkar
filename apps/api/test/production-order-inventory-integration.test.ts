@@ -264,10 +264,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(finalEntry.statusCode, 201, finalEntry.body);
     const finalId = finalEntry.json().data.id as string;
     const finalSaved = await apiPool.query(
-      "SELECT warehouse_id,location_id,earning_amount,bonus_amount,deduction_amount,total_earning_amount FROM production_entries WHERE id=$1",
+      "SELECT warehouse_id,location_id,rate_id,earning_amount,bonus_amount,deduction_amount,total_earning_amount FROM production_entries WHERE id=$1",
       [finalId]
     );
     assert.equal(finalSaved.rows[0].warehouse_id, expectedFinished.id, "final stage must always use finished-goods warehouse");
+    assert.equal(finalSaved.rows[0].rate_id, null, "order-stage pricing must not require a synthetic global rate row");
     assert.equal(Number(finalSaved.rows[0].earning_amount), 300);
     assert.equal(Number(finalSaved.rows[0].bonus_amount), 10);
     assert.equal(Number(finalSaved.rows[0].deduction_amount), 5);
