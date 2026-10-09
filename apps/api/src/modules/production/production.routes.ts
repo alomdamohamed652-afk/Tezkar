@@ -22,6 +22,7 @@ const createSchema = z.object({
   warehouseId: z.string().uuid().optional(),
   locationId: z.string().uuid().nullable().optional(),
   bonusAmount: z.number().nonnegative().optional().default(0),
+  responsibleName: z.string().trim().max(200).nullable().optional(),
   bonusReason: z.string().trim().max(500).nullable().optional(),
   deductionAmount: z.number().nonnegative().optional().default(0),
   deductionReason: z.string().trim().max(500).nullable().optional()
@@ -363,19 +364,19 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const inserted = await client.query(
         `INSERT INTO production_entries(
-           employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,
+           employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,responsible_name,
            rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
            wage_type_method_snapshot,percentage_base_snapshot,base_amount,earning_amount,
            submitted_by
          )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
          RETURNING id,code,employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,
                    unit_id,rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
                    wage_type_method_snapshot,percentage_base_snapshot,base_amount,
                    earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
-          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, rate.id, effectiveRate,
+          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, parsed.data.responsibleName?.trim() || null, rate.id, effectiveRate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
           parsed.data.baseAmount ?? null, earning, request.user!.userId
         ]
