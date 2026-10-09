@@ -314,6 +314,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.ok(reportedEntry, "approved production entry should appear in the production report");
     assert.equal(Number(reportedEntry.earning_amount), 305, "production report must include bonus and deduction in total earnings");
 
+    // Employee earnings report must reconcile with base production pay and its adjustments.
+    const employeeEarningsReport = await app.inject({
+      method: "GET", url: "/api/reports/employee-earnings", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(employeeEarningsReport.statusCode, 200, employeeEarningsReport.body);
+    const reportedEmployee = employeeEarningsReport.json().data.find(
+      (row: {full_name:string;earned:string|number;debited:string|number;balance:string|number}) =>
+        row.full_name === "submitter Employee"
+    );
+    assert.ok(reportedEmployee, "active employee should appear in earnings report");
+    assert.equal(Number(reportedEmployee.earned), 510, "employee earnings report must include base wages and bonus");
+    assert.equal(Number(reportedEmployee.debited), 5, "employee earnings report must include deductions");
+    assert.equal(Number(reportedEmployee.balance), 505, "employee earnings balance must reconcile to approved production earnings");
+
     const stageState = await apiPool.query(
       "SELECT os.completed_quantity,os.status,po.status AS order_status FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.id=$1",
       [finalStage.id]
