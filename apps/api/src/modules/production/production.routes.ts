@@ -264,9 +264,6 @@ export async function productionRoutes(app: FastifyInstance) {
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
         if (!parsed.data.warehouseId) resolvedWarehouseId=virtualWarehouse.rows[0].id;
-        if (os.output_product_id && os.output_product_id !== parsed.data.productId) {
-          throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
-        }
         if (os.stage_id !== parsed.data.stageId) {
           throw new AppError("ORDER_STAGE_STAGE_MISMATCH","مرحلة الإنتاج لا تطابق مرحلة الطلب المرتبطة",409);
         }
