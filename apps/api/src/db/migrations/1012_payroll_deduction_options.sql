@@ -8,7 +8,7 @@ ALTER TABLE payroll_items
 
 ALTER TABLE payroll_items
   ADD CONSTRAINT payroll_items_deduction_percentage_range
-  CHECK (deduction_percentage IS NULL OR (deduction_percentage >= 0 AND deduction_percentage <= 100));
+  CHECK (deduction_percentage IS NULL OR (deduction_percentage > 0 AND deduction_percentage <= 100));
 
 ALTER TABLE payroll_items
   ADD CONSTRAINT payroll_items_percentage_mode_requires_percentage
