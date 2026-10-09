@@ -379,6 +379,40 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(deliveryMovementCount.rows[0].count, 1, "releasing twice must not duplicate delivery stock movements");
 
+    // Verify order-linked revenue and expense feed the profitability report.
+    const revenue = await app.inject({
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: approver.cookie },
+      payload: { orderId, amount: 1000, revenueDate: "2099-01-06", source: "TEST", notes: "Isolated workflow test" }
+    });
+    assert.equal(revenue.statusCode, 201, revenue.body);
+    assert.equal(revenue.json().data.order_id, orderId);
+    const expense = await app.inject({
+      method: "POST", url: "/api/accounting/expenses", headers: { cookie: approver.cookie },
+      payload: { orderId, category: "TEST", description: "Isolated workflow test expense", amount: 50, expenseDate: "2099-01-06", paymentMethod: "TEST" }
+    });
+    assert.equal(expense.statusCode, 201, expense.body);
+    assert.equal(expense.json().data.order_id, orderId);
+
+    const finalProfitability = await app.inject({
+      method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(finalProfitability.statusCode, 200, finalProfitability.body);
+    assert.equal(Number(finalProfitability.json().data.revenue), 1000);
+    assert.equal(Number(finalProfitability.json().data.expenses), 50);
+    assert.equal(Number(finalProfitability.json().data.materialCost), 100);
+    assert.equal(Number(finalProfitability.json().data.laborCost), 505);
+    assert.equal(Number(finalProfitability.json().data.totalCost), 655);
+    assert.equal(Number(finalProfitability.json().data.profit), 345);
+    assert.equal(Number(finalProfitability.json().data.marginPercent), 34.5);
+
+    const accountingSummary = await app.inject({
+      method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(accountingSummary.statusCode, 200, accountingSummary.body);
+    assert.equal(Number(accountingSummary.json().data.total_in), 1000);
+    assert.equal(Number(accountingSummary.json().data.total_out), 50);
+    assert.equal(Number(accountingSummary.json().data.net), 950);
+
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
     });
