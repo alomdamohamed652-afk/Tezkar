@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 
 type Session={permissions:string[];username?:string;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
@@ -44,7 +44,8 @@ export function usePermissions(){
  const [session,setSession]=useState<Session|null>(null);
  useEffect(()=>{api<{data:Session}>("/api/auth/me").then(r=>setSession(r.data)).catch(()=>setSession(null));},[]);
  const permissions=session?.permissions??null;
- return {permissions,session,has:(code:string)=>permissions?.includes(code)??false};
+ const has=useCallback((code:string)=>permissions?.includes(code)??false,[permissions]);
+ return {permissions,session,has};
 }
 
 export function Sidebar({active}:{active:string}){
