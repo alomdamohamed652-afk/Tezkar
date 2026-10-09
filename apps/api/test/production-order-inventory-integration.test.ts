@@ -160,7 +160,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       payload: {
         employeeId: submitterEmployee, orderStageId: wipStage.id, stageId: wipStage.stage_id,
         productId: wipStage.output_product_id, shiftId: shift.rows[0].id, workDate: "2099-01-02",
-        quantity: 10, warehouseId: wrongWarehouse.rows[0].id, locationId: wrongLoc.rows[0].id,
+        quantity: 10, warehouseId: wrongWarehouse.rows[0].id,
         responsibleName: "Integration responsible"
       }
     });
