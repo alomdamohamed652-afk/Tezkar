@@ -249,9 +249,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [finalId]
     );
     assert.equal(adjustments.rows.length, 2);
-    assert.ok(adjustments.every((x: {ledger_id:string|null})=>x.ledger_id));
+    assert.ok(adjustments.rows.every((x: {ledger_id:string|null})=>x.ledger_id));
     assert.equal(
-      adjustments.reduce((sum: number, x: {adjustment_type:string;amount:string})=>sum+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0),
+      adjustments.rows.reduce((sum: number, x: {adjustment_type:string;amount:string})=>sum+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0),
       5
     );
 
