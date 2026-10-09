@@ -178,7 +178,24 @@ export async function productionRoutes(app: FastifyInstance) {
     const parsed = createSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstIssue = parsed.error.issues[0];
-      throw new AppError("VALIDATION_ERROR", firstIssue?.message || "بيانات الإنتاج غير صحيحة", 422);
+      const fieldLabels: Record<string, string> = {
+        employeeId: "الموظف",
+        orderStageId: "مرحلة الطلبية",
+        productionTypeId: "نوع الإنتاج",
+        productId: "المنتج",
+        stageId: "المرحلة",
+        shiftId: "الوردية",
+        warehouseId: "المخزن",
+        locationId: "موقع التخزين",
+        workDate: "تاريخ الإنتاج",
+        quantity: "الكمية",
+        rateOverride: "سعر المرحلة"
+      };
+      const field = String(firstIssue?.path?.[0] ?? "");
+      const message = firstIssue?.message === "Invalid UUID" && fieldLabels[field]
+        ? `معرّف ${fieldLabels[field]} غير صحيح. حدّث الصفحة وأعد الاختيار.`
+        : firstIssue?.message || "بيانات الإنتاج غير صحيحة";
+      throw new AppError("VALIDATION_ERROR", message, 422);
     }
 
     const row = await withTransaction(async (client) => {
@@ -231,7 +248,7 @@ export async function productionRoutes(app: FastifyInstance) {
 
       if (parsed.data.orderStageId) {
         const orderStage = await client.query(
-          `SELECT os.id,os.order_id,os.output_product_id,os.stage_id,po.status
+          `SELECT os.id,os.order_id,os.output_product_id,os.stage_id,os.sequence_no,os.status AS stage_status,po.status AS order_status
              FROM order_stages os
              JOIN production_orders po ON po.id=os.order_id
             WHERE os.id=$1
@@ -240,7 +257,7 @@ export async function productionRoutes(app: FastifyInstance) {
         );
         if (!orderStage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const os=orderStage.rows[0];
-        if (os.status === "CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج لمرحلة طلبية ملغاة",409);
+        if (os.order_status === "CANCELLED" || os.stage_status === "CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج لمرحلة طلبية أو مرحلة ملغاة",409);
         const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os.order_id]);
         const warehouseType=Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
