@@ -233,6 +233,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
     const p=parsed.data;
+    if(p.status!==undefined) throw new AppError("ORDER_STATUS_TRANSITION_REQUIRED","تغيير حالة الطلب يجب أن يتم من خلال إجراء انتقال الحالة المخصص",409);
     const result=await withTransaction(async client=>{
       const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
@@ -249,7 +250,6 @@ export async function orderRoutes(app: FastifyInstance) {
       if(p.dueDate!==undefined)add("due_date",p.dueDate);
       if(p.lastDeliveryDate!==undefined)add("last_delivery_date",p.lastDeliveryDate);
       if(p.notes!==undefined)add("notes",p.notes);
-      if(p.status!==undefined)add("status",p.status);
       if(!fields.length)return current.rows[0];
 
       values.push(id);
