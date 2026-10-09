@@ -319,6 +319,65 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(duplicateApproval.statusCode, 409, duplicateApproval.body);
     const movementCount = await apiPool.query("SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION' AND reference_id=$1",[finalId]);
     assert.equal(movementCount.rows[0].count, 1, "re-approval must not duplicate stock movements");
+
+    // Regression: two approvals for the same product when no balance row exists
+    // must serialize and preserve both quantities and values.
+    const concurrentOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: {
+        orderName: "Concurrent stock integration order",
+        orderDate: "2099-01-04",
+        stages: [
+          { stageName: "Concurrent stock stage", sequenceNo: 1, outputProductName: "Concurrent stock product", plannedQuantity: 10, stageRate: 20, stageRateMethod: "PER_PIECE" }
+        ]
+      }
+    });
+    assert.equal(concurrentOrder.statusCode, 201, concurrentOrder.body);
+    const concurrentOrderId = concurrentOrder.json().data.id as string;
+    const concurrentStage = await apiPool.query(
+      "SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",
+      [concurrentOrderId]
+    );
+    const concurrentProductId = concurrentStage.rows[0].output_product_id as string;
+    const concurrentEntries = await Promise.all([4, 6].map(async (quantity, index) => {
+      const response = await app!.inject({
+        method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+        payload: {
+          employeeId: submitterEmployee, orderStageId: concurrentStage.rows[0].id,
+          stageId: concurrentStage.rows[0].stage_id, productId: concurrentProductId,
+          shiftId: shift.rows[0].id, workDate: index === 0 ? "2099-01-04" : "2099-01-05",
+          quantity, warehouseId: expectedFinished.id
+        }
+      });
+      assert.equal(response.statusCode, 201, response.body);
+      return response.json().data.id as string;
+    }));
+    const simultaneousApprovals = await Promise.all(concurrentEntries.map(id =>
+      app!.inject({ method: "POST", url: "/api/production/" + id + "/approve", headers: { cookie: approver.cookie } })
+    ));
+    assert.ok(simultaneousApprovals.every(response => response.statusCode === 200),
+      simultaneousApprovals.map(response => `${response.statusCode}: ${response.body}`).join("\\n"));
+    const concurrentLocation = await apiPool.query(
+      "SELECT id FROM warehouse_locations WHERE warehouse_id=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",
+      [expectedFinished.id]
+    );
+    const concurrentBalance = await apiPool.query(
+      "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [concurrentProductId, expectedFinished.id, concurrentLocation.rows[0].id]
+    );
+    assert.equal(Number(concurrentBalance.rows[0].quantity), 10);
+    assert.equal(Number(concurrentBalance.rows[0].inventory_value), 200);
+    assert.equal(Number(concurrentBalance.rows[0].avg_unit_cost), 20);
+    const concurrentMovementCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION' AND reference_id=ANY($1::uuid[])",
+      [concurrentEntries]
+    );
+    assert.equal(concurrentMovementCount.rows[0].count, 2);
+    const concurrentLotCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM inventory_lots WHERE source_type='PRODUCTION' AND source_id=ANY($1::uuid[])",
+      [concurrentEntries]
+    );
+    assert.equal(concurrentLotCount.rows[0].count, 2);
   } finally {
     if (app) await app.close();
     if (apiPool) await apiPool.end();
