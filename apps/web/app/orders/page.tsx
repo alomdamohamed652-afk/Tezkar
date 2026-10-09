@@ -12,7 +12,8 @@ const labels:Record<string,string>={DRAFT:"مسودة",PLANNED:"مخططة",IN_P
 
 export default function OrdersPage(){
  const {has}=usePermissions();
- const [orders,setOrders]=useState<Order[]>([]);\n const [productionTypes,setProductionTypes]=useState<ProductionType[]>([]);
+ const [orders,setOrders]=useState<Order[]>([]);
+ const [productionTypes,setProductionTypes]=useState<ProductionType[]>([]);
  const [orderName,setOrderName]=useState(""),[customer,setCustomer]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[deliveryStart,setDeliveryStart]=useState(""),[lastDelivery,setLastDelivery]=useState(""),[notes,setNotes]=useState("");
  const [stageRows,setStageRows]=useState<StageRow[]>([]);
  const [error,setError]=useState(""),[saving,setSaving]=useState(false);
