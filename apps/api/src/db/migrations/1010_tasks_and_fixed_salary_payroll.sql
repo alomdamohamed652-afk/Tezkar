@@ -1,4 +1,5 @@
 -- Tezkar v1.0: task management and fixed-salary payroll
+CREATE SEQUENCE IF NOT EXISTS task_code_seq START 1;
 CREATE TABLE IF NOT EXISTS tasks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL UNIQUE DEFAULT ('TSK-' || lpad(nextval('task_code_seq')::text,7,'0')),
@@ -12,7 +13,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE SEQUENCE IF NOT EXISTS task_code_seq START 1;
 CREATE TABLE IF NOT EXISTS task_assignees (
   task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   employee_id UUID NOT NULL REFERENCES employees(id),
@@ -115,5 +115,13 @@ INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code IN ('worker','read_only') AND p.code IN ('tasks.view_own','tasks.update_own','tasks.comment')
 ON CONFLICT DO NOTHING;
+
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task_assignees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task_comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employee_salary_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_periods ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_payments ENABLE ROW LEVEL SECURITY;
 
 INSERT INTO schema_migrations(version) VALUES ('1010_tasks_and_fixed_salary_payroll') ON CONFLICT(version) DO NOTHING;
