@@ -162,7 +162,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const p=cashSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات حركة العهدة غير صحيحة",422);
     const row=await withTransaction(async client=>{
-      const access=await cashAccess(client,request.user!.userId,p.data.employeeId);
+      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
       // Serialize duplicate checks per employee so concurrent requests cannot both pass an empty lookup.
