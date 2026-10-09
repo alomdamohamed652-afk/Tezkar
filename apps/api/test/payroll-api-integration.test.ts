@@ -58,13 +58,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { hashPassword }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
         import("../src/modules/auth/auth.routes.js"),
         import("../src/modules/payroll/payroll.routes.js"),
         import("../src/modules/auth/auth.service.js"),
+        import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
       ]);
     apiPool = poolModule.pool;
@@ -77,6 +78,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     });
     await app.register(authRoutes);
     await app.register(payrollRoutes);
+
+    let invalidSessionHandlerExecuted = false;
+    app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
+      invalidSessionHandlerExecuted = true;
+      return { ok: true };
+    });
 
     try {
       const employeeA = await apiPool.query(
@@ -114,6 +121,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         method: "POST", url: "/api/payroll/periods/00000000-0000-0000-0000-000000000000/approve"
       });
       assert.equal(unauthenticated.statusCode, 401);
+
+      const invalidSession = await app.inject({
+        method: "GET", url: "/test/auth-only", headers: { cookie: "tezkar_session=invalid-session-token" }
+      });
+      assert.equal(invalidSession.statusCode, 401, invalidSession.body);
+      assert.equal(invalidSessionHandlerExecuted, false, "invalid sessions must stop before route handlers run");
 
       const period = await apiPool.query(
         "INSERT INTO payroll_periods(period_month,generated_by) VALUES ('2099-01-01',$1) RETURNING id",
