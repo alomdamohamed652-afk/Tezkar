@@ -35,7 +35,7 @@ export default function ProductionPage(){
     api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
    ]);
    setEmployees(e.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
-   if(!warehouseId){const first=d.data[0]?.warehouse_id;if(first)setWarehouseId(first)}
+   if(!warehouseId){const preferred=d.data.find(x=>/منتجات جاهزة|المنتجات الجاهزة|finished goods/i.test(x.warehouse_name+" "+x.warehouse_code))?.warehouse_id||d.data[0]?.warehouse_id;if(preferred)setWarehouseId(preferred)}
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
