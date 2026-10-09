@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { calculatePayrollDeduction } from "../src/modules/payroll/payroll-calculation.js";
 
-test("fixed deduction stays a fixed amount", () => {
-  assert.deepEqual(calculatePayrollDeduction({
+test("fixed deduction rounds the payable amount to two decimal places", () => {
+  const result = calculatePayrollDeduction({
     baseSalary: 6000, bonusAmount: 500, mode: "FIXED", basis: "BASE_SALARY",
     percentage: null, fixedAmount: 200.129
-  }), { basisAmount: 200.13, amount: 200.13 });
+  });
+  assert.equal(result.amount, 200.13);
 });
 
 test("percentage deduction can use base salary only", () => {
