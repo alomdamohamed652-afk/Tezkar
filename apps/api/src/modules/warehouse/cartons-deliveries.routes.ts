@@ -172,9 +172,19 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إخراج تسليم لطلبية ملغاة",409);
    const lines=await client.query("SELECT * FROM delivery_permission_lines WHERE delivery_permission_id=$1 ORDER BY id",[id]);
    for(const line of lines.rows){
-    const orderLine=await client.query("SELECT quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 LIMIT 1",[d.rows[0].order_id,line.product_id]);
+    let orderLine;
+    if(line.order_item_id){
+      orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND id=$2 AND product_id=$3",[d.rows[0].order_id,line.order_item_id,line.product_id]);
+    }else{
+      orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id",[d.rows[0].order_id,line.product_id]);
+      if(orderLine.rowCount>1)throw new AppError("LEGACY_DELIVERY_LINE_AMBIGUOUS","إذن التسليم القديم لا يحدد سطر المنتج، والصنف مكرر في الطلبية. راجع الربط يدويًا قبل إخراج الإذن.",409);
+      if(orderLine.rowCount===1){
+        await client.query("UPDATE delivery_permission_lines SET order_item_id=$1 WHERE id=$2",[orderLine.rows[0].id,line.id]);
+        line.order_item_id=orderLine.rows[0].id;
+      }
+    }
     if(!orderLine.rowCount)throw new AppError("PRODUCT_NOT_IN_ORDER","المنتج المحدد ليس ضمن منتجات الطلبية",409);
-    const delivered=await client.query("SELECT COALESCE(SUM(quantity),0) AS quantity FROM stock_movements WHERE reference_type='DELIVERY' AND order_id=$1 AND product_id=$2 AND movement_type='OUT'",[d.rows[0].order_id,line.product_id]);
+    const delivered=await client.query("SELECT COALESCE(SUM(quantity),0) AS quantity FROM stock_movements WHERE reference_type='DELIVERY' AND order_id=$1 AND product_id=$2 AND movement_type='OUT' AND (order_item_id=$3 OR order_item_id IS NULL)",[d.rows[0].order_id,line.product_id,orderLine.rows[0].id]);
     const orderedQuantity=Number(orderLine.rows[0].quantity||0);
     const deliveredQuantity=Number(delivered.rows[0].quantity||0);
     if(deliveredQuantity+Number(line.quantity)>orderedQuantity+1e-9){
@@ -206,7 +216,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
      }
     }
     const movementCost=await changeBalance(client,line.product_id,line.warehouse_id,line.location_id,-Number(line.quantity));
-    await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,carton_code,reference_type,reference_id,notes,created_by) VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,'DELIVERY',$10,$11,$12)",[line.product_id,line.warehouse_id,line.location_id,line.quantity,line.unit_id,movementCost.unitCost,movementCost.totalCost,d.rows[0].order_id,line.carton_code,id,"Delivery permission "+d.rows[0].code,request.user!.userId]);
+    await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_item_id,carton_code,reference_type,reference_id,notes,created_by) VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'DELIVERY',$11,$12,$13)",[line.product_id,line.warehouse_id,line.location_id,line.quantity,line.unit_id,movementCost.unitCost,movementCost.totalCost,d.rows[0].order_id,line.order_item_id??orderLine.rows[0].id,line.carton_code,id,"Delivery permission "+d.rows[0].code,request.user!.userId]);
    }
    const updated=await client.query("UPDATE delivery_permissions SET status='RELEASED',released_by=$1,released_at=now(),updated_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"release",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],metadata:{scanCode:parsed.data.scanCode},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
