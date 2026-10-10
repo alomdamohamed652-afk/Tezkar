@@ -94,22 +94,32 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
 }
 
 export async function shiftWithdrawalRoutes(app:FastifyInstance){
- app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
+ app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+  const parsed=z.object({from:z.string().date().optional(),to:z.string().date().optional(),shiftId:z.string().uuid().optional(),employeeId:z.string().uuid().optional(),orderId:z.string().uuid().optional(),productId:z.string().uuid().optional(),q:z.string().trim().max(160).optional()}).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر مسحوبات الوردية غير صحيحة",422);
+  const params:unknown[]=[];const where:string[]=[];
+  if(parsed.data.from){params.push(parsed.data.from);where.push("sw.withdrawal_date >= $"+params.length+"::date");}
+  if(parsed.data.to){params.push(parsed.data.to);where.push("sw.withdrawal_date <= $"+params.length+"::date");}
+  if(parsed.data.shiftId){params.push(parsed.data.shiftId);where.push("sw.shift_id=$"+params.length);}
+  if(parsed.data.employeeId){params.push(parsed.data.employeeId);where.push("sw.employee_id=$"+params.length);}
+  if(parsed.data.orderId){params.push(parsed.data.orderId);where.push("sw.order_id=$"+params.length);}
+  if(parsed.data.productId){params.push(parsed.data.productId);where.push("EXISTS (SELECT 1 FROM shift_withdrawal_lines filter_line WHERE filter_line.withdrawal_id=sw.id AND filter_line.product_id=$"+params.length+")");}
+  if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(sw.code ILIKE ${n} OR COALESCE(sw.notes,'') ILIKE ${n} OR COALESCE(s.name,'') ILIKE ${n} OR COALESCE(e.full_name,'') ILIKE ${n} OR COALESCE(o.code,'') ILIKE ${n} OR COALESCE(o.order_name,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n} OR EXISTS (SELECT 1 FROM shift_withdrawal_lines search_line JOIN products search_product ON search_product.id=search_line.product_id WHERE search_line.withdrawal_id=sw.id AND search_product.name ILIKE ${n}))`);}
   const r=await pool.query(`
-    SELECT sw.id,sw.code,sw.withdrawal_date,sw.notes,
+    SELECT sw.id,sw.code,sw.withdrawal_date,sw.notes,creator.username AS created_by_username,
            s.code AS shift_code,s.name AS shift_name,
            e.code AS employee_code,e.full_name AS employee_name,
            o.code AS order_code,o.order_name,
-           COUNT(l.id)::int AS line_count,
-           COALESCE(SUM(l.quantity),0) AS total_quantity
+           COUNT(l.id)::int AS line_count,COALESCE(SUM(l.quantity),0) AS total_quantity
       FROM shift_withdrawals sw
       JOIN shifts s ON s.id=sw.shift_id
       LEFT JOIN employees e ON e.id=sw.employee_id
       LEFT JOIN production_orders o ON o.id=sw.order_id
       LEFT JOIN shift_withdrawal_lines l ON l.withdrawal_id=sw.id
-     GROUP BY sw.id,s.code,s.name,e.code,e.full_name,o.code,o.order_name
-     ORDER BY sw.withdrawal_date DESC,sw.created_at DESC
-     LIMIT 300`);
+      LEFT JOIN users creator ON creator.id=sw.created_by
+      ${where.length?"WHERE "+where.join(" AND "):""}
+     GROUP BY sw.id,s.code,s.name,e.code,e.full_name,o.code,o.order_name,creator.username
+     ORDER BY sw.withdrawal_date DESC,sw.created_at DESC LIMIT 300`,params);
   return {data:r.rows};
  });
 
