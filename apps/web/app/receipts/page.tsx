@@ -2,6 +2,7 @@
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
+import {formatMoney} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
@@ -42,6 +43,6 @@ export default function ReceiptsPage(){
   </div>
   <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تسجيل الاستلام"}</button></div>
  </form>}
- <section className="card"><div className="card-header"><h2 className="card-title">سجل الاستلامات</h2><span className="count-badge">{receipts.length}</span></div><div className="table-wrap"><table><thead><tr><th>رقم الاستلام</th><th>التاريخ</th><th>المصدر</th><th>الأصناف</th><th>التكلفة</th></tr></thead><tbody>{receipts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.receipt_date}</td><td className="strong">{x.source}</td><td>{x.line_count}</td><td className="money">{Number(x.total_cost||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td></tr>)}{!receipts.length&&<tr><td colSpan={5}>لا توجد استلامات.</td></tr>}</tbody></table></div></section>
+ <section className="card"><div className="card-header"><h2 className="card-title">سجل الاستلامات</h2><span className="count-badge">{receipts.length}</span></div><div className="table-wrap"><table><thead><tr><th>رقم الاستلام</th><th>التاريخ</th><th>المصدر</th><th>الأصناف</th><th>التكلفة</th></tr></thead><tbody>{receipts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.receipt_date}</td><td className="strong">{x.source}</td><td>{x.line_count}</td><td className="money">{formatMoney(x.total_cost||0)}</td></tr>)}{!receipts.length&&<tr><td colSpan={5}>لا توجد استلامات.</td></tr>}</tbody></table></div></section>
  </section></main></div>
 }
