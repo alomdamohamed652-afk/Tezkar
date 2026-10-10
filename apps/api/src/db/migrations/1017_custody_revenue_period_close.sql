@@ -66,7 +66,9 @@ CREATE INDEX IF NOT EXISTS idx_accounting_allocations_order
 
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('finance.period_close.view','finance','period_close','view','all'),
- ('finance.period_close.create','finance','period_close','create','all')
+ ('finance.period_close.create','finance','period_close','create','all'),
+ ('finance.ledger.view','finance','ledger','view','all'),
+ ('audit.view','system','audit','view','all')
 ON CONFLICT(code) DO NOTHING;
 
 -- Grant settlement access to roles that already have accounting permissions.
@@ -74,8 +76,18 @@ INSERT INTO role_permissions(role_id,permission_id)
 SELECT DISTINCT existing_rp.role_id,new_permission.id
 FROM role_permissions existing_rp
 JOIN permissions existing_permission ON existing_permission.id=existing_rp.permission_id
-JOIN permissions new_permission ON new_permission.code IN ('finance.period_close.view','finance.period_close.create')
+JOIN permissions new_permission ON new_permission.code IN ('finance.period_close.view','finance.period_close.create','finance.ledger.view')
 WHERE existing_permission.code IN ('finance.expenses.view','finance.expenses.create','finance.revenues.view','finance.revenues.create','finance.profitability.view')
+ON CONFLICT DO NOTHING;
+
+
+-- Audit visibility follows existing administrative/reporting access.
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT DISTINCT existing_rp.role_id,audit_permission.id
+FROM role_permissions existing_rp
+JOIN permissions existing_permission ON existing_permission.id=existing_rp.permission_id
+JOIN permissions audit_permission ON audit_permission.code='audit.view'
+WHERE existing_permission.code IN ('users.view','users.manage','reports.view','settings.manage')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version)
