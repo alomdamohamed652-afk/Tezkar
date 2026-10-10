@@ -7,7 +7,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const cartonSchema=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().nonnegative(),barcode:z.string().trim().max(120).nullable().optional(),weight:z.number().nonnegative().nullable().optional(),batchCode:z.string().trim().max(100).nullable().optional(),status:z.enum(["OPEN","SEALED","PARTIAL"]).default("OPEN")});
-const deliverySchema=z.object({orderId:z.string().uuid(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),lines:z.array(z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional()})).min(1).max(100)});
+const deliverySchema=z.object({orderId:z.string().uuid(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),totalWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(2000).nullable().optional(),lines:z.array(z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional(),cartonWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(1000).nullable().optional()})).min(1).max(100)});
 const releaseSchema=z.object({scanCode:z.string().trim().min(4).max(100)});
 
 async function assertLocation(client:import("pg").PoolClient,w:string,l:string){const r=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[l,w]);if(!r.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);}
@@ -53,7 +53,12 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  });
 
  app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async()=>{
-  const r=await pool.query("SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id GROUP BY d.id,o.code,o.order_name ORDER BY d.created_at DESC LIMIT 300");
+  const r=await pool.query(`SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name,
+    COALESCE(json_agg(jsonb_build_object('id',l.id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY p.name) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
+    FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id
+    LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id
+    LEFT JOIN products p ON p.id=l.product_id LEFT JOIN units u ON u.id=l.unit_id
+    GROUP BY d.id,o.code,o.order_name ORDER BY d.created_at DESC LIMIT 300`);
   return {data:r.rows};
  });
 
@@ -63,7 +68,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إنشاء تسليم لطلبية ملغاة",409);
-   const d=await client.query("INSERT INTO delivery_permissions(order_id,destination,notes,status,created_by) VALUES($1,$2,$3,'READY',$4) RETURNING *",[parsed.data.orderId,parsed.data.destination,parsed.data.notes??null,request.user!.userId]);
+   const d=await client.query("INSERT INTO delivery_permissions(order_id,destination,notes,total_weight,piece_count,sample_quantity,details,status,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,'READY',$8) RETURNING *",[parsed.data.orderId,parsed.data.destination,parsed.data.notes??null,parsed.data.totalWeight??null,parsed.data.pieceCount??null,parsed.data.sampleQuantity??null,parsed.data.details??null,request.user!.userId]);
    for(const line of parsed.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[line.productId]);if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","منتج في الإذن غير موجود",422);
     await assertLocation(client,line.warehouseId,line.locationId);
@@ -100,7 +105,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     const stockAvailable=Number(stock.rows[0]?.quantity??0)-Number(reservedAtLocation.rows[0].quantity);
     if(Number(line.quantity)>stockAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","كمية إذن التسليم تتجاوز رصيد المخزن المتاح بعد الأذونات الجاهزة",409);
 
-    await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code) VALUES($1,$2,$3,$4,$5,$6,$7)",[d.rows[0].id,line.productId,line.warehouseId,line.locationId,line.quantity,product.rows[0].unit_id,line.cartonCode??null]);
+    await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,carton_weight,piece_count,sample_quantity,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",[d.rows[0].id,line.productId,line.warehouseId,line.locationId,line.quantity,product.rows[0].unit_id,line.cartonCode??null,line.cartonWeight??null,line.pieceCount??null,line.sampleQuantity??null,line.details??null]);
    }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"delivery_permission",entityId:d.rows[0].id,afterData:d.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return d.rows[0];
