@@ -76,7 +76,7 @@ export async function userRoutes(app: FastifyInstance){
    if(!before.rowCount)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",404);
    if(before.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","لا يمكن إعادة تعيين كلمة مرور حساب الإعداد الأولي من هنا",409);
    await client.query("UPDATE users SET password_hash=$1,must_complete_setup=TRUE,updated_at=now() WHERE id=$2",[hashPassword(parsed.data.password),id]);
-   await client.query("DELETE FROM user_sessions WHERE user_id=$1",[id]);
+   await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reset_password",module:"iam",entityType:"user",entityId:id,beforeData:{username:before.rows[0].username},afterData:{passwordReset:true,sessionsRevoked:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {id,username:before.rows[0].username,passwordReset:true,sessionsRevoked:true};
   });
