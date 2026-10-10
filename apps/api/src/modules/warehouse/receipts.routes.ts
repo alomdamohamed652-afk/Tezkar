@@ -44,12 +44,21 @@ async function addStock(client:import("pg").PoolClient,p:string,w:string,l:strin
 }
 
 export async function receiptRoutes(app:FastifyInstance){
- app.get("/api/warehouse/receipts",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
+ app.get("/api/warehouse/receipts",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+  const parsed=z.object({from:z.string().date().optional(),to:z.string().date().optional(),source:z.string().trim().max(120).optional(),q:z.string().trim().max(160).optional()}).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر الاستلامات غير صحيحة",422);
+  const params:unknown[]=[];const where:string[]=[];
+  if(parsed.data.from){params.push(parsed.data.from);where.push("wr.receipt_date >= $"+params.length+"::date");}
+  if(parsed.data.to){params.push(parsed.data.to);where.push("wr.receipt_date <= $"+params.length+"::date");}
+  if(parsed.data.source){params.push("%"+parsed.data.source+"%");where.push("wr.source ILIKE $"+params.length);}
+  if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(wr.code ILIKE ${n} OR wr.source ILIKE ${n} OR COALESCE(wr.notes,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
   const r=await pool.query(
-   `SELECT wr.id,wr.code,wr.receipt_date,wr.source,wr.notes,wr.created_at,
+   `SELECT wr.id,wr.code,wr.receipt_date,wr.source,wr.notes,wr.created_at,creator.username AS created_by_username,
            COUNT(wrl.id)::int AS line_count,COALESCE(SUM(wrl.quantity*wrl.unit_cost),0) AS total_cost
       FROM warehouse_receipts wr LEFT JOIN warehouse_receipt_lines wrl ON wrl.receipt_id=wr.id
-     GROUP BY wr.id ORDER BY wr.receipt_date DESC,wr.created_at DESC LIMIT 300`);
+      LEFT JOIN users creator ON creator.id=wr.created_by
+      ${where.length?"WHERE "+where.join(" AND "):""}
+     GROUP BY wr.id,creator.username ORDER BY wr.receipt_date DESC,wr.created_at DESC LIMIT 300`,params);
   return {data:r.rows};
  });
 
