@@ -10,7 +10,7 @@ const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦
 const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتجع جزئي",RETURNED:"مُسواة",DAMAGED:"تالف",LOST:"مفقودة",CANCELLED:"ملغاة"};
 
 export default function CustodyPage(){
- const {has}=usePermissions();
+ const {has,permissions}=usePermissions();
  type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number};
  const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[cashEmployeeId,setCashEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
@@ -22,7 +22,9 @@ export default function CustodyPage(){
   if((has("custody.create")||has("custody.view")||has("cash_custody.create")||has("cash_custody.view"))&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
- useEffect(()=>{void load()},[employeeId]);
+ // Permissions arrive asynchronously; refetch after hydration so the eligible-employee
+ // list is loaded on the first visit instead of remaining empty until another interaction.
+ useEffect(()=>{void load()},[employeeId,permissions]);
  async function submitCash(e:FormEvent,confirmDuplicate=false){
  e.preventDefault();setCashSaving(true);setError("");
  try{
