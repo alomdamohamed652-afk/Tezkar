@@ -23,7 +23,7 @@ export default function SearchPage(){
     catch(e){setResults([]);setError(e instanceof Error?e.message:"تعذر تنفيذ البحث");}
     finally{setSearching(false);}
   }
-  const canSearch=["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","employees.view"].some(has);
+  const canSearch=["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view"].some(has);
   return <div className="app-shell"><Sidebar active="/search"/><main className="main"><header className="topbar"><div><h1 className="page-title">البحث المركزي</h1><p className="page-subtitle">اكتب كودًا أو اسمًا للوصول إلى السجلات المرتبطة به في الأقسام التي تسمح بها صلاحياتك.</p></div></header><section className="content">
     {!canSearch&&<div className="alert error">لا توجد صلاحية بحث في السجلات المتاحة لهذا الحساب.</div>}
     <section className="card global-search-panel"><form onSubmit={submit} className="global-search-form"><label>الكود أو الاسم أو المرجع<input autoFocus value={query} onChange={e=>setQuery(e.target.value)} minLength={2} maxLength={120} placeholder="مثال: ORD-001 أو اسم صنف أو رقم سند" /></label><button className="primary-button" disabled={!canSearch||searching||query.trim().length<2}>{searching?"جارٍ البحث...":"بحث في النظام"}</button></form><div className="form-hint">البحث يراعي صلاحيات الحساب؛ لن تظهر سجلات من أقسام غير مسموح لك بعرضها.</div></section>
