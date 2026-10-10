@@ -88,7 +88,7 @@ export default function AccountingPage() {
 
   useEffect(()=>{
     let active=true;
-    api<{data:Employee[]}>("/api/custodies/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
+    if(has("finance.ledger.view"))api<{data:Employee[]}>("/api/accounting/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
     if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
     return()=>{active=false};
   },[has]);
