@@ -26,6 +26,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_custody_source_movement
   ON cash_custody_transactions(source_type,source_id,direction)
   WHERE source_type IS NOT NULL AND source_id IS NOT NULL;
 
+CREATE SEQUENCE IF NOT EXISTS accounting_period_code_seq START WITH 1;
+
 CREATE TABLE IF NOT EXISTS accounting_periods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL UNIQUE DEFAULT ('PER-' || lpad(nextval('accounting_period_code_seq')::TEXT,8,'0')),
@@ -42,7 +44,6 @@ CREATE TABLE IF NOT EXISTS accounting_periods (
   CHECK ((status='OPEN' AND closed_at IS NULL) OR (status='CLOSED' AND closed_at IS NOT NULL))
 );
 
-CREATE SEQUENCE IF NOT EXISTS accounting_period_code_seq;
 
 CREATE TABLE IF NOT EXISTS accounting_expense_allocations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -62,8 +63,6 @@ CREATE INDEX IF NOT EXISTS idx_accounting_allocations_period
   ON accounting_expense_allocations(period_id,expense_id);
 CREATE INDEX IF NOT EXISTS idx_accounting_allocations_order
   ON accounting_expense_allocations(order_id,period_id);
-
-CREATE SEQUENCE IF NOT EXISTS accounting_period_code_seq START WITH 1;
 
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('finance.period_close.view','finance','period_close','view','all'),
