@@ -396,7 +396,7 @@ export async function orderRoutes(app: FastifyInstance) {
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
       const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_output=COALESCE($10,is_final_output) WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalOutput??null,id]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
-      if(p.isFinalOutput!==undefined || (current.rows[0].is_final_output && (p.outputProductName!==undefined || p.outputProductId!==undefined || p.plannedQuantity!==undefined || p.status==="CANCELLED"))) await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
+      if((p.isFinalOutput!==undefined && p.isFinalOutput!==current.rows[0].is_final_output) || (current.rows[0].is_final_output && (p.outputProductName!==undefined || p.outputProductId!==undefined || p.plannedQuantity!==undefined || p.status==="CANCELLED"))) await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
       return x.rows[0];
     });
     return {data:r};
