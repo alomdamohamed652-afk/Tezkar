@@ -1309,3 +1309,46 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .delivery-line-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 @media(max-width:900px){.delivery-line-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.delivery-line-fields{grid-template-columns:minmax(0,1fr)}.delivery-lines-section>.section-title{align-items:flex-start;flex-direction:column}}
+
+
+/* Consistent, calmer form controls across pages (including inline forms and nested editors). */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+select,
+textarea{
+  border-color:var(--border-strong);
+  border-radius:10px;
+  background-color:#fff;
+  color:var(--ink);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):focus,
+select:focus,
+textarea:focus{
+  border-color:var(--primary);
+  outline:0;
+  box-shadow:var(--focus);
+}
+input::placeholder,textarea::placeholder{color:#94a3b8}
+select[multiple]{min-height:150px;padding:8px;line-height:1.8}
+select[multiple] option{padding:7px 9px;border-radius:6px}
+select[multiple] option:checked{background:var(--primary-soft) linear-gradient(0deg,var(--primary-soft),var(--primary-soft));color:var(--primary)}
+/* Keep account and logout actions visible when the desktop sidebar becomes a mobile header. */
+@media(max-width:820px){
+  .sidebar-footer{
+    display:grid!important;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:8px;
+    position:relative;
+    padding:10px 0 0;
+    margin-top:10px;
+    border-top:1px solid rgb(148 163 184 / 20%);
+    background:transparent;
+  }
+  .sidebar-footer .nav-item{justify-content:center;min-height:42px}
+  .sidebar-footer .nav-label{white-space:nowrap}
+  .sidebar-scroll{max-height:38vh;overflow:auto}
+  .main{min-width:0}
+  .form-grid,.production-grid,.payment-grid{grid-template-columns:minmax(0,1fr)}
+  .settings-grid,.settings-permission-grid{grid-template-columns:minmax(0,1fr)}
+  .settings-grid .settings-wide{grid-column:auto}
+  .card-header{flex-wrap:wrap}
+}
