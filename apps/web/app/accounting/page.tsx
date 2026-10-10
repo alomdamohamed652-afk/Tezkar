@@ -16,6 +16,8 @@ type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:numb
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[]};
 type Expense = { id: string; code: string; order_code: string | null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null };
+type LedgerRow={id:string;code:string;transaction_date:string;direction:"IN"|"OUT";amount:number;description:string;source_type:string;source_label:string;employee_id:string|null;employee_name:string|null;order_id:string|null;order_code:string|null;order_name:string|null;created_by_username:string|null;notes:string|null;is_internal_transfer:boolean};
+type LedgerSummary={movement_count:number;total_in:number;total_out:number;net:number;company_income:number;recorded_expenses:number;internal_transfer_in:number;internal_transfer_out:number};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر" } as Record<string,string>)[source]||source);
@@ -39,6 +41,12 @@ export default function AccountingPage() {
   const [periodSaving,setPeriodSaving]=useState(false);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
+  const [ledgerRows,setLedgerRows]=useState<LedgerRow[]>([]);
+  const [ledgerSummary,setLedgerSummary]=useState<LedgerSummary>({movement_count:0,total_in:0,total_out:0,net:0,company_income:0,recorded_expenses:0,internal_transfer_in:0,internal_transfer_out:0});
+  const [ledgerLoading,setLedgerLoading]=useState(false);
+  const [ledgerFilters,setLedgerFilters]=useState({from:"",to:"",direction:"",employeeId:"",orderId:"",sourceType:"",q:""});
+  const [dashboardPeriodId,setDashboardPeriodId]=useState("");
+
 
   async function load() {
     setError("");
@@ -52,6 +60,32 @@ export default function AccountingPage() {
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
+  async function loadLedger(next=ledgerFilters){
+    if(!has("finance.ledger.view"))return;
+    setLedgerLoading(true);
+    try{
+      const q=new URLSearchParams();
+      if(next.from)q.set("from",next.from);if(next.to)q.set("to",next.to);
+      if(next.direction)q.set("direction",next.direction);if(next.employeeId)q.set("employeeId",next.employeeId);
+      if(next.orderId)q.set("orderId",next.orderId);if(next.sourceType)q.set("sourceType",next.sourceType);
+      if(next.q.trim())q.set("q",next.q.trim());q.set("limit","500");
+      const r=await api<{data:LedgerRow[];summary:LedgerSummary}>("/api/accounting/ledger?"+q.toString());
+      setLedgerRows(r.data);setLedgerSummary(r.summary);
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل الحركة المالية")}finally{setLedgerLoading(false)}
+  }
+  useEffect(()=>{
+    if(!has("finance.ledger.view"))return;
+    let active=true;
+    api<{data:LedgerRow[];summary:LedgerSummary}>("/api/accounting/ledger?limit=500").then(r=>{if(active){setLedgerRows(r.data);setLedgerSummary(r.summary)}}).catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل سجل الحركة المالية")});
+    return()=>{active=false};
+  },[has]);
+  function chooseDashboardPeriod(id:string){
+    setDashboardPeriodId(id);
+    const period=periods.find(x=>x.id===id);
+    const next={...ledgerFilters,from:period?.period_start||"",to:period?.period_end||""};
+    setLedgerFilters(next);void loadLedger(next);
+  }
+
   useEffect(()=>{
     let active=true;
     api<{data:Employee[]}>("/api/custodies/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
@@ -128,9 +162,9 @@ export default function AccountingPage() {
 
   const activeOrders=useMemo(()=>orders.filter(o=>o.status!=="COMPLETED"&&o.status!=="CANCELLED"),[orders]);
   const n=(x:number|null|undefined)=>Number(x||0).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2});
-  const totalIn=useMemo(()=>revenues.reduce((s,x)=>s+Number(x.amount||0),0),[revenues]);
-  const totalOut=useMemo(()=>expenses.reduce((s,x)=>s+Number(x.amount||0),0),[expenses]);
-  const net=totalIn-totalOut;
+  const totalIn=Number(ledgerSummary.total_in||0);
+  const totalOut=Number(ledgerSummary.total_out||0);
+  const net=Number(ledgerSummary.net||0);
 
   return <div className="app-shell">
    <Sidebar active="/accounting"/>
@@ -149,28 +183,39 @@ export default function AccountingPage() {
      </div>
 
      {tab==="dashboard"&&<>
+      <div className="card">
+       <div className="card-header"><div><h2 className="card-title">لوحة الحركة المالية</h2><div className="form-hint">كل حركة مع بيانها والطلبية والموظف والحساب الذي سجّلها. الحركة المرتبطة بالعهدة لا تتكرر في الإجماليات.</div></div><button className="secondary-button" disabled={ledgerLoading} onClick={()=>void loadLedger()}>{ledgerLoading?"جارٍ التحديث...":"تحديث البيانات"}</button></div>
+       <div className="form-grid finance-four-grid">
+        <label>الفترة المحاسبية<select value={dashboardPeriodId} onChange={e=>chooseDashboardPeriod(e.target.value)}><option value="">كل الفترات / تحديد يدوي</option>{periods.map(p=><option key={p.id} value={p.id}>{p.name} — {p.status==="CLOSED"?"مقفلة":"مفتوحة"}</option>)}</select></label>
+        <label>من تاريخ<input type="date" value={ledgerFilters.from} onChange={e=>{setDashboardPeriodId("");setLedgerFilters(v=>({...v,from:e.target.value}))}}/></label>
+        <label>إلى تاريخ<input type="date" value={ledgerFilters.to} onChange={e=>{setDashboardPeriodId("");setLedgerFilters(v=>({...v,to:e.target.value}))}}/></label>
+        <label>نوع الحركة<select value={ledgerFilters.direction} onChange={e=>setLedgerFilters(v=>({...v,direction:e.target.value}))}><option value="">الداخل والخارج</option><option value="IN">داخل</option><option value="OUT">خارج</option></select></label>
+        <label>الموظف / صاحب العهدة<select value={ledgerFilters.employeeId} onChange={e=>setLedgerFilters(v=>({...v,employeeId:e.target.value}))}><option value="">كل الموظفين</option>{employees.map(x=><option key={x.id} value={x.id}>{x.full_name} — {x.code}</option>)}</select></label>
+        <label>الطلبية<select value={ledgerFilters.orderId} onChange={e=>setLedgerFilters(v=>({...v,orderId:e.target.value}))}><option value="">كل الطلبيات</option>{orders.map(x=><option key={x.id} value={x.id}>{orderLabel(x)}</option>)}</select></label>
+        <label>مصدر الحركة<select value={ledgerFilters.sourceType} onChange={e=>setLedgerFilters(v=>({...v,sourceType:e.target.value}))}><option value="">كل المصادر</option><option value="ORDER_REVENUE">تحصيلات وإيرادات الطلبيات</option><option value="ACCOUNTING_EXPENSE">المصروفات</option><option value="CUSTODY_TRANSFER">تحويل بين العهد</option><option value="CASH_CUSTODY">حركة عهدة يدوية</option><option value="MANAGER_TOPUP">توريد من المدير المالي</option></select></label>
+        <label>بحث في البيان / الكود / الحساب<input value={ledgerFilters.q} onChange={e=>setLedgerFilters(v=>({...v,q:e.target.value}))} placeholder="اسم الموظف أو البيان أو الكود"/></label>
+       </div>
+       <div className="form-actions"><button className="primary-button" disabled={ledgerLoading} onClick={()=>void loadLedger()}>{ledgerLoading?"جارٍ البحث...":"تطبيق الفلاتر"}</button><button className="secondary-button" onClick={()=>{const next={from:"",to:"",direction:"",employeeId:"",orderId:"",sourceType:"",q:""};setDashboardPeriodId("");setLedgerFilters(next);void loadLedger(next)}}>مسح الفلاتر</button></div>
+      </div>
       <div className="stats finance-stats">
-       <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{revenues.length} حركة إيراد محملة</div></article>
-       <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{expenses.length} حركة مصروف محملة</div></article>
-       <article className="card stat"><div className="stat-label">الصافي</div><div className="stat-value">{n(net)}</div><div className="stat-note">الداخل − الخارج</div></article>
-       <article className="card stat neutral"><div className="stat-label">الطلبات</div><div className="stat-value">{orders.length}</div><div className="stat-note">متاحة للتحليل المالي</div></article>
+       <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{Number(ledgerSummary.movement_count||0).toLocaleString("ar-EG")} حركة حسب الفلاتر</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">يشمل المصروفات والحركات الخارجة</div></article>
+       <article className="card stat"><div className="stat-label">صافي الحركة</div><div className="stat-value">{n(net)}</div><div className="stat-note">الداخل − الخارج</div></article>
+       <article className="card stat neutral"><div className="stat-label">إيراد الشركة المسجل</div><div className="stat-value">{n(Number(ledgerSummary.company_income||0))}</div><div className="stat-note">لا يشمل التحويلات بين العهد</div></article>
       </div>
-      <div className="grid">
-       <section className="card"><div className="card-header"><h2 className="card-title">آخر الداخل</h2><button className="link-button" onClick={()=>setTab("in")}>عرض الكل</button></div>
-        <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
-         {!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}
-        </tbody></table></div>
-       </section>
-       <section className="card"><div className="card-header"><h2 className="card-title">آخر الخارج</h2><button className="link-button" onClick={()=>setTab("out")}>عرض الكل</button></div>
-        <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {expenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
-         {!expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات.</td></tr>}
-        </tbody></table></div>
-       </section>
+      <div className="stats finance-stats">
+       <article className="card stat"><div className="stat-label">المصروفات المسجلة</div><div className="stat-value">{n(Number(ledgerSummary.recorded_expenses||0))}</div></article>
+       <article className="card stat"><div className="stat-label">تحويلات داخلة بين العهد</div><div className="stat-value">{n(Number(ledgerSummary.internal_transfer_in||0))}</div></article>
+       <article className="card stat"><div className="stat-label">تحويلات خارجة بين العهد</div><div className="stat-value">{n(Number(ledgerSummary.internal_transfer_out||0))}</div></article>
+       <article className="card stat"><div className="stat-label">الفترات المحاسبية</div><div className="stat-value">{periods.length.toLocaleString("ar-EG")}</div><div className="stat-note">مفتوحة: {periods.filter(p=>p.status==="OPEN").length.toLocaleString("ar-EG")} · مقفلة: {periods.filter(p=>p.status==="CLOSED").length.toLocaleString("ar-EG")}</div></article>
       </div>
+      <section className="card"><div className="card-header"><div><h2 className="card-title">سجل الداخل والخارج بالتفصيل</h2><div className="form-hint">البيان والمصدر والطلبية والموظف واسم الحساب المسجّل.</div></div><span className="count-badge">{ledgerRows.length.toLocaleString("ar-EG")}</span></div>
+       <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الكود</th><th>نوع الحركة</th><th>البيان</th><th>الطلبية</th><th>الموظف / العهدة</th><th>المبلغ</th><th>الحساب المسجّل</th></tr></thead><tbody>
+        {ledgerRows.map(x=><tr key={x.id}><td>{new Date(x.transaction_date).toLocaleDateString("ar-EG")}</td><td className="mono">{x.code}</td><td><span className={"status "+(x.direction==="IN"?"approved":"pending")}>{x.direction==="IN"?"داخل":"خارج"}</span><div className="form-hint">{x.source_label}</div></td><td><strong>{x.description||"—"}</strong>{x.notes&&<div className="form-hint">{x.notes}</div>}</td><td>{x.order_code?x.order_code+" — "+(x.order_name||""):"—"}</td><td>{x.employee_name||"—"}</td><td className="money">{x.direction==="OUT"?"− ":"+ "}{n(Number(x.amount))}</td><td>{x.created_by_username||"حساب غير متاح"}</td></tr>)}
+        {!ledgerRows.length&&<tr><td colSpan={8}>{ledgerLoading?"جارٍ تحميل الحركات...":"لا توجد حركات مطابقة للفلاتر الحالية."}</td></tr>}
+       </tbody></table></div>
+      </section>
      </>}
-
      {tab==="in"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">الداخل — الإيرادات</h2><div className="form-hint">الإيرادات المرتبطة بالطلبات والواردات العامة أو الإدارية من المدير المالي.</div></div></div>
       {(has("cash_custody.create")||has("cash_custody.create_own"))&&<section className="card nested-card">
