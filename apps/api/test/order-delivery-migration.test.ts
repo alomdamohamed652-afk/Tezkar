@@ -74,7 +74,7 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
       client.query("INSERT INTO order_price_changes(order_id,order_stage_id,new_rate,scope,reason,created_by) VALUES($1,$2,12.5,'INVALID','اختبار',$3)", [orderId, stageId, userId]),
       /order_price_changes_scope_check/
     );
-    const applied = await client.query("SELECT version FROM schema_migrations WHERE version IN ('1013_order_price_changes_and_delivery_details','1014_production_shift_leader')");
+    const applied = await client.query("SELECT version FROM schema_migrations WHERE version IN ('1013_order_price_changes_and_delivery_details','1014_production_shift_leader','1015_employee_payout_preferences','1016_user_notifications')");
     assert.equal(applied.rowCount, 4);
   } finally {
     await client.query("RESET search_path");
