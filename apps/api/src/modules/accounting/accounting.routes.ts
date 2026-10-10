@@ -12,7 +12,13 @@ const expenseSchema=z.object({
   description:z.string().trim().min(2).max(300),
   amount:z.number().positive(),
   expenseDate:z.string().date().optional(),
-  paymentMethod:z.string().trim().max(50).nullable().optional()
+  paymentMethod:z.string().trim().max(50).nullable().optional(),
+  expenseType:z.enum(["DIRECT","ADMINISTRATIVE"]).default("DIRECT"),
+  paidFromEmployeeId:z.string().uuid().nullable().optional()
+}).superRefine((v,ctx)=>{
+  if(v.expenseType==="ADMINISTRATIVE"&&v.orderId){
+    ctx.addIssue({code:"custom",path:["orderId"],message:"المصروف الإداري يوزع على الطلبيات وقت التصفية ولا يرتبط بطلبية واحدة"});
+  }
 });
 const revenueSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
@@ -44,7 +50,19 @@ export async function accountingRoutes(app:FastifyInstance){
     const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
    }
-   const r=await client.query("INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by) VALUES($1,$2,$3,$4,COALESCE($5,current_date),$6,$7) RETURNING *",[p.data.orderId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId]);
+   if(p.data.paidFromEmployeeId){
+    const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);
+    if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+   }
+   let r=await client.query("INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,COALESCE($5,current_date),$6,$7,$8,$9) RETURNING *",[p.data.orderId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
+   if(p.data.paidFromEmployeeId){
+    // Administrative/direct expense payment is an actual custody OUT movement.
+    // Expenses may drive custody negative as requested; this is distinct from an
+    // ordinary manual OUT movement, which still checks available balance.
+    const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,current_date),$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING id",
+      [p.data.paidFromEmployeeId,p.data.amount,p.data.expenseDate??null,p.data.description,"صرف مصروف: "+p.data.category,r.rows[0].id,request.user!.userId]);
+    r=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,r.rows[0].id]);
+   }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"expense",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   });
@@ -85,12 +103,125 @@ export async function accountingRoutes(app:FastifyInstance){
   return {data:r.rows[0]};
  });
 
+
+ const periodSchema=z.object({
+  name:z.string().trim().min(2).max(120),
+  periodStart:z.string().date(),
+  periodEnd:z.string().date(),
+  notes:z.string().trim().max(1000).nullable().optional()
+ }).refine(v=>v.periodEnd>=v.periodStart,{message:"تاريخ نهاية الفترة يجب أن يكون بعد بدايتها",path:["periodEnd"]});
+ const allocationSchema=z.object({
+  allocations:z.array(z.object({expenseId:z.string().uuid(),orderId:z.string().uuid(),amount:z.number().nonnegative()})).min(1)
+ });
+ app.get("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async()=>{
+  const r=await pool.query(`SELECT p.*,
+    (SELECT COUNT(*)::int FROM accounting_expense_allocations a WHERE a.period_id=p.id) AS allocation_count,
+    COALESCE((SELECT SUM(amount) FROM accounting_expense_allocations a WHERE a.period_id=p.id),0) AS allocated_amount
+    FROM accounting_periods p ORDER BY p.period_start DESC,p.created_at DESC`);
+  return {data:r.rows};
+ });
+ app.post("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request,reply)=>{
+  const p=periodSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الفترة المالية غير صحيحة",422);
+  const row=await withTransaction(async client=>{
+   const overlap=await client.query("SELECT id FROM accounting_periods WHERE period_start<=$2::date AND period_end>=$1::date LIMIT 1",[p.data.periodStart,p.data.periodEnd]);
+   if(overlap.rowCount)throw new AppError("ACCOUNTING_PERIOD_OVERLAP","الفترة تتداخل مع فترة مالية مسجلة بالفعل",409);
+   const r=await client.query("INSERT INTO accounting_periods(name,period_start,period_end,notes,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[p.data.name,p.data.periodStart,p.data.periodEnd,p.data.notes??null,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"accounting_period",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return r.rows[0];
+  });
+  return reply.code(201).send({data:row});
+ });
+ app.get("/api/accounting/periods/:id",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  const period=await pool.query("SELECT * FROM accounting_periods WHERE id=$1",[id]);
+  if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+  const [expenses,allocations]=await Promise.all([
+   pool.query("SELECT e.id,e.code,e.category,e.description,e.amount,e.expense_date FROM accounting_expenses e WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 ORDER BY e.expense_date,e.created_at",[period.rows[0].period_start,period.rows[0].period_end]),
+   pool.query("SELECT a.*,e.code AS expense_code,e.description AS expense_description,o.code AS order_code,o.order_name FROM accounting_expense_allocations a JOIN accounting_expenses e ON e.id=a.expense_id JOIN production_orders o ON o.id=a.order_id WHERE a.period_id=$1 ORDER BY e.expense_date,e.created_at,o.code",[id])
+  ]);
+  const orders=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status<>'CANCELLED' ORDER BY created_at DESC");
+  return {data:{period:period.rows[0],expenses:expenses.rows,allocations:allocations.rows,orders:orders.rows}};
+ });
+ app.post("/api/accounting/periods/:id/auto-allocate",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
+   const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
+   if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
+   const orders=await client.query(`SELECT o.id,
+    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id),0)
+    +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
+    +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS cost
+    FROM production_orders o WHERE o.status<>'CANCELLED' ORDER BY o.code`);
+   const totalCost=orders.rows.reduce((sum,row)=>sum+Number(row.cost||0),0);
+   if(!orders.rowCount||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
+   await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   for(const expense of expenses.rows){
+    const amount=Number(expense.amount);
+    let allocated=0;
+    for(let i=0;i<orders.rows.length;i++){
+     const order=orders.rows[i];
+     const share=i===orders.rows.length-1?Number((amount-allocated).toFixed(4)):Number((amount*Number(order.cost||0)/totalCost).toFixed(4));
+     allocated+=share;
+     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,share,request.user!.userId]);
+    }
+   }
+   const result=await client.query("SELECT COALESCE(SUM(amount),0) AS allocated FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*orders.rows.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*orders.rows.length,allocatedAmount:result.rows[0].allocated};
+  })};
+ });
+ app.put("/api/accounting/periods/:id/allocations",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  const p=allocationSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات توزيع المصروفات غير صحيحة",422);
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
+   const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2",[period.rows[0].period_start,period.rows[0].period_end]);
+   const sums=new Map<string,number>();
+   for(const item of p.data.allocations)sums.set(item.expenseId,(sums.get(item.expenseId)||0)+item.amount);
+   for(const expense of expenses.rows){
+    if(Math.abs((sums.get(expense.id)||0)-Number(expense.amount))>0.01)throw new AppError("ALLOCATION_TOTAL_MISMATCH","يجب أن يساوي مجموع توزيع كل مصروف إداري قيمة المصروف نفسه",422);
+   }
+   if(p.data.allocations.some(a=>!expenses.rows.some(e=>e.id===a.expenseId)))throw new AppError("INVALID_ALLOCATION_EXPENSE","يوجد مصروف خارج الفترة أو ليس مصروفًا إداريًا",422);
+   const validOrders=await client.query("SELECT id FROM production_orders WHERE status<>'CANCELLED'");
+   const orderIds=new Set(validOrders.rows.map(r=>r.id));
+   if(p.data.allocations.some(a=>!orderIds.has(a.orderId)))throw new AppError("INVALID_ALLOCATION_ORDER","يوجد اختيار طلبية غير صالح",422);
+   await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   for(const a of p.data.allocations){
+    await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,a.expenseId,a.orderId,a.amount,request.user!.userId]);
+   }
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:p.data.allocations.length},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,allocationCount:p.data.allocations.length};
+  })};
+ });
+ app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة مقفلة بالفعل",409);
+   const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
+   const unbalanced=expenses.rows.filter(e=>Math.abs(Number(e.amount)-Number(e.allocated))>0.01);
+   if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
+   const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return r.rows[0];
+  })};
+ });
+
  app.get("/api/accounting/orders/:orderId/profitability",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
   const p=idSchema.safeParse(request.params);if(!p.success)throw new AppError("VALIDATION_ERROR","الطلبية غير صحيحة",422);
   const order=await pool.query("SELECT id,code,order_name,status,customer_name FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
-   pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM accounting_expenses WHERE order_id=$1",[p.data.orderId]),
+   pool.query(`SELECT
+     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0)
+     +COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS value,
+     COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'",[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS value FROM production_entries WHERE order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$1) AND status='APPROVED'",[p.data.orderId])
   ]);
