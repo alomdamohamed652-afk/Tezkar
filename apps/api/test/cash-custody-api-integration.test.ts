@@ -166,6 +166,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(assignedCustody.statusCode,200,assignedCustody.body);
       assert.equal(assignedCustody.json().data.length,1);
       assert.equal(assignedCustody.json().data[0].description,"Assigned custody without permission");
+      const unprivilegedCustodyId=(await apiPool.query("SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Assigned custody without permission'",[unprivilegedEmployee.id])).rows[0].id;
+      const closeAssignedCustody=await app.inject({method:"POST",url:"/api/custodies/"+unprivilegedCustodyId+"/settlements",headers:{cookie:managerCookie},payload:{returnedQuantity:2,lostQuantity:0,damageValue:0,shortageValue:0}});
+      assert.equal(closeAssignedCustody.statusCode,201,closeAssignedCustody.body);
+      const assignedAfterClose=await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
+      assert.equal(assignedAfterClose.statusCode,403,assignedAfterClose.body);
 
       const managerAdvance = await app.inject({
         method: "POST", url: "/api/advances", headers: { cookie: managerCookie },
