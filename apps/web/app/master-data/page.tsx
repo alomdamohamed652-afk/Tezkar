@@ -21,7 +21,7 @@ type Rate={id:string;code:string;rate:number;is_active:boolean;effective_range:s
 const categoryTypes=[["PRODUCT","منتج"],["RAW_MATERIAL","خامة"],["PRODUCTION_SUPPLY","مستلزم إنتاج"],["OPERATING_SUPPLY","مستلزم تشغيل"]];
 const productTypes=[["RAW_MATERIAL","خامة"],["COMPONENT","مكوّن"],["FINISHED_GOOD","منتج تام"],["SERVICE","خدمة"],["CONSUMABLE","مستهلك"]];
 function rangeContainsDate(range:string,date:string){const comma=range.indexOf(",");if(comma<0)return false;const from=range.slice(1,comma),to=range.slice(comma+1,-1);return from<=date&&(!to||date<to)}
-function pickStageRate(rates:Rate[],stageId:string){const rows=rates.filter(r=>r.is_active&&r.stage_id===stageId);const today=new Date().toISOString().slice(0,10);const current=rows.find(r=>rangeContainsDate(r.effective_range,today));if(current)return current;const past=rows.filter(r=>r.effective_range.slice(1,11)<=today).sort((a,b)=>b.effective_range.slice(1,11).localeCompare(a.effective_range.slice(1,11)));return past[0]||rows.sort((a,b)=>a.effective_range.slice(1,11).localeCompare(b.effective_range.slice(1,11)))[0]}
+function pickStageRate(rates:Rate[],stageId:string){const rows=rates.filter(r=>r.is_active&&r.stage_id===stageId);const now=new Date();const today=[now.getFullYear(),String(now.getMonth()+1).padStart(2,"0"),String(now.getDate()).padStart(2,"0")].join("-");const current=rows.find(r=>rangeContainsDate(r.effective_range,today));if(current)return current;const past=rows.filter(r=>r.effective_range.slice(1,11)<=today).sort((a,b)=>b.effective_range.slice(1,11).localeCompare(a.effective_range.slice(1,11)));return past[0]||rows.sort((a,b)=>a.effective_range.slice(1,11).localeCompare(b.effective_range.slice(1,11)))[0]}
 
 
 export default function MasterDataPage(){
