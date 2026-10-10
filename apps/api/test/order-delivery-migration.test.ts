@@ -27,7 +27,8 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
     for (const [file, version] of [
       ["1013_order_price_changes_and_delivery_details.sql", "1013_order_price_changes_and_delivery_details"],
       ["1014_production_shift_leader.sql", "1014_production_shift_leader"],
-      ["1015_employee_payout_preferences.sql", "1015_employee_payout_preferences"]
+      ["1015_employee_payout_preferences.sql", "1015_employee_payout_preferences"],
+      ["1016_user_notifications.sql", "1016_user_notifications"]
     ]) {
       const sql = await readFile(new URL("../src/db/migrations/" + file, import.meta.url), "utf8");
       await client.query("BEGIN");
@@ -74,7 +75,7 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
       /order_price_changes_scope_check/
     );
     const applied = await client.query("SELECT version FROM schema_migrations WHERE version IN ('1013_order_price_changes_and_delivery_details','1014_production_shift_leader')");
-    assert.equal(applied.rowCount, 3);
+    assert.equal(applied.rowCount, 4);
   } finally {
     await client.query("RESET search_path");
     await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
