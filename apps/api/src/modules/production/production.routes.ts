@@ -650,6 +650,11 @@ export async function productionRoutes(app: FastifyInstance) {
         await client.query("UPDATE employee_earnings_adjustments SET ledger_id=$1 WHERE id=$2",[ledger.rows[0].id,adjustment.id]);
       }
 
+      await client.query(
+        `INSERT INTO user_notifications(recipient_user_id,notification_type,title,body,entity_type,entity_id,created_by)
+         SELECT u.id,'PRODUCTION_APPROVED','تم اعتماد الإنتاج',$2,'production_entry',$3,$4
+           FROM users u WHERE u.employee_id=$1 AND u.is_active=TRUE AND u.id<>$4`,
+        [current.employee_id, `تم اعتماد عملية الإنتاج ${current.code} بكمية ${current.quantity}`, id, request.user!.userId]);
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,

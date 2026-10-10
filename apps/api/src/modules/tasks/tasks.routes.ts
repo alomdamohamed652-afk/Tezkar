@@ -72,6 +72,11 @@ export async function taskRoutes(app: FastifyInstance) {
       const task = inserted.rows[0];
       for (const employeeId of [...new Set(parsed.data.assigneeEmployeeIds)]) {
         await client.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)", [task.id, employeeId, request.user!.userId]);
+        await client.query(
+          `INSERT INTO user_notifications(recipient_user_id,notification_type,title,body,entity_type,entity_id,created_by)
+           SELECT u.id,'TASK_ASSIGNED','مهمة جديدة',$2,'task',$3,$4
+             FROM users u WHERE u.employee_id=$1 AND u.is_active=TRUE AND u.id<>$4`,
+          [employeeId, task.title, task.id, request.user!.userId]);
       }
       await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "create", module: "tasks", entityType: "task", entityId: task.id, afterData: task, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
       return task;
@@ -114,6 +119,18 @@ export async function taskRoutes(app: FastifyInstance) {
         }
         await client.query("DELETE FROM task_assignees WHERE task_id=$1", [id]);
         for (const employeeId of ids) await client.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)", [id,employeeId,request.user!.userId]);
+      }
+      if (p.status !== undefined && p.status !== before.rows[0].status) {
+        await client.query(
+          `INSERT INTO user_notifications(recipient_user_id,notification_type,title,body,entity_type,entity_id,created_by)
+           SELECT DISTINCT recipients.user_id,'TASK_STATUS','تحديث حالة مهمة',$1,'task',$2,$3
+             FROM (
+               SELECT t.created_by AS user_id FROM tasks t WHERE t.id=$2
+               UNION
+               SELECT u.id AS user_id FROM task_assignees ta JOIN users u ON u.employee_id=ta.employee_id AND u.is_active=TRUE WHERE ta.task_id=$2
+             ) recipients
+            WHERE recipients.user_id IS NOT NULL AND recipients.user_id<>$3`,
+          [`تم تغيير حالة المهمة «${updated.rows[0].title}» إلى ${p.status}`, id, request.user!.userId]);
       }
       await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "update", module: "tasks", entityType: "task", entityId: id, beforeData: before.rows[0], afterData: updated.rows[0], ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
       return { data: updated.rows[0] };
