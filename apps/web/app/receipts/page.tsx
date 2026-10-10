@@ -7,7 +7,7 @@ import {SearchableSelect} from "../../components/searchable-select";
 type Item={id:string;code:string;name:string};
 type Location=Item&{warehouse_id:string};
 type Warehouse=Item&{warehouse_type:string};
-type Receipt={id:string;code:string;receipt_date:string;source:string;line_count:number;total_cost:number;created_at:string};
+type Receipt={id:string;code:string;receipt_date:string;source:string;line_count:number;total_cost:number;created_at:string;created_by_username?:string|null;notes?:string|null};
 type Line={productId:string;warehouseId:string;locationId:string;quantity:string;unitCost:string;batchCode:string;weight:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 
@@ -15,8 +15,9 @@ export default function ReceiptsPage(){
  const {has}=usePermissions();
  const [products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[locations,setLocations]=useState<Location[]>([]),[receipts,setReceipts]=useState<Receipt[]>([]);
  const [receiptDate,setReceiptDate]=useState(new Date().toISOString().slice(0,10)),[source,setSource]=useState(""),[notes,setNotes]=useState(""),[lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",locationId:"",quantity:"",unitCost:"",batchCode:"",weight:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false);
- async function load(){try{const [p,w,l,r]=await Promise.all([api<{data:Item[]}>("/api/products"),api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Receipt[]}>("/api/warehouse/receipts")]);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setReceipts(r.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الاستلامات")}}
- useEffect(()=>{void load()},[]);
+ const [filterFrom,setFilterFrom]=useState(""),[filterTo,setFilterTo]=useState(""),[filterSource,setFilterSource]=useState(""),[filterSearch,setFilterSearch]=useState("");
+ async function load(){try{const q=new URLSearchParams();if(filterFrom)q.set("from",filterFrom);if(filterTo)q.set("to",filterTo);if(filterSource.trim())q.set("source",filterSource.trim());if(filterSearch.trim())q.set("q",filterSearch.trim());const [p,w,l,r]=await Promise.all([api<{data:Item[]}>("/api/products"),api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Receipt[]}>("/api/warehouse/receipts"+(q.toString()?"?"+q.toString():""))]);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setReceipts(r.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الاستلامات")}}
+ useEffect(()=>{void load()},[filterFrom,filterTo,filterSource,filterSearch]);
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]);
  const warehouseOptions=useMemo(()=>warehouses.map(x=>({value:x.id,label:x.name,meta:x.warehouse_type})),[warehouses]);
  function update(i:number,key:keyof Line,value:string){setLines(v=>v.map((x,n)=>n===i?{...x,[key]:value}:x))}
@@ -42,6 +43,12 @@ export default function ReceiptsPage(){
   </div>
   <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تسجيل الاستلام"}</button></div>
  </form>}
- <section className="card"><div className="card-header"><h2 className="card-title">سجل الاستلامات</h2><span className="count-badge">{receipts.length}</span></div><div className="table-wrap"><table><thead><tr><th>رقم الاستلام</th><th>التاريخ</th><th>المصدر</th><th>الأصناف</th><th>التكلفة</th></tr></thead><tbody>{receipts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.receipt_date}</td><td className="strong">{x.source}</td><td>{x.line_count}</td><td className="money">{Number(x.total_cost||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td></tr>)}{!receipts.length&&<tr><td colSpan={5}>لا توجد استلامات.</td></tr>}</tbody></table></div></section>
+ <section className="card"><div className="card-header"><div><h2 className="card-title">سجل الاستلامات</h2><div className="form-hint">إجمالي التكلفة محسوب من كميات وأسعار الأصناف.</div></div><span className="count-badge">{receipts.length}</span></div>
+  <div className="form-grid finance-four-grid" style={{padding:16}}>
+   <label>من تاريخ<input type="date" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)}/></label><label>إلى تاريخ<input type="date" value={filterTo} onChange={e=>setFilterTo(e.target.value)}/></label>
+   <label>المصدر / المورد<input value={filterSource} onChange={e=>setFilterSource(e.target.value)} placeholder="اسم المورد"/></label><label>بحث بالكود أو البيان أو الحساب<input value={filterSearch} onChange={e=>setFilterSearch(e.target.value)} placeholder="الكود أو اسم الحساب"/></label>
+   <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>{setFilterFrom("");setFilterTo("");setFilterSource("");setFilterSearch("")}}>مسح الفلاتر</button></div>
+  </div>
+  <div className="table-wrap"><table><thead><tr><th>رقم الاستلام</th><th>التاريخ</th><th>المصدر / البيان</th><th>الأصناف</th><th>التكلفة</th><th>الحساب المسجّل</th></tr></thead><tbody>{receipts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.receipt_date}</td><td className="strong">{x.source}{x.notes&&<div className="form-hint">{x.notes}</div>}</td><td>{x.line_count}</td><td className="money">{Number(x.total_cost||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{x.created_by_username||"—"}</td></tr>)}{!receipts.length&&<tr><td colSpan={6}>لا توجد استلامات مطابقة للفلاتر.</td></tr>}</tbody></table></div></section>
  </section></main></div>
 }
