@@ -23,8 +23,8 @@ export async function auditRoutes(app:FastifyInstance){
     const q=parsed.data;
     const params:unknown[]=[];const where:string[]=[];
     const add=(clause:string,value:unknown)=>{params.push(value);where.push(clause.replace("?", "$"+params.length));};
-    if(q.from)add("a.created_at >= ?::date",q.from);
-    if(q.to)add("a.created_at < (?::date + interval '1 day')",q.to);
+    if(q.from)add("a.occurred_at >= ?::date",q.from);
+    if(q.to)add("a.occurred_at < (?::date + interval '1 day')",q.to);
     if(q.module)add("a.module = ?",q.module);
     if(q.action)add("a.action = ?",q.action);
     if(q.actorUserId)add("a.actor_user_id = ?",q.actorUserId);
@@ -34,10 +34,10 @@ export async function auditRoutes(app:FastifyInstance){
       where.push(`(COALESCE(u.username,'') ILIKE $${n} OR COALESCE(e.full_name,'') ILIKE $${n} OR a.module ILIKE $${n} OR a.entity_type ILIKE $${n} OR a.action ILIKE $${n} OR COALESCE(a.entity_id::text,'') ILIKE $${n} OR COALESCE(a.request_id::text,'') ILIKE $${n} OR COALESCE(a.before_data::text,'') ILIKE $${n} OR COALESCE(a.after_data::text,'') ILIKE $${n} OR COALESCE(a.metadata::text,'') ILIKE $${n})`);
     }
     const whereSql=where.length?" WHERE "+where.join(" AND "):"";
-    const result=await pool.query(`SELECT a.id,a.actor_user_id,a.actor_employee_id,a.action,a.module,a.entity_type,a.entity_id,a.request_id,a.ip_address,a.user_agent,a.before_data,a.after_data,a.metadata,a.created_at,
+    const result=await pool.query(`SELECT a.id,a.actor_user_id,a.actor_employee_id,a.action,a.module,a.entity_type,a.entity_id,a.request_id,a.ip_address,a.user_agent,a.before_data,a.after_data,a.metadata,a.occurred_at,
       COALESCE(u.username,'حساب غير متاح') AS actor_username,e.full_name AS actor_employee_name
       FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id LEFT JOIN employees e ON e.id=a.actor_employee_id
-      ${whereSql} ORDER BY a.created_at DESC,a.id DESC LIMIT $${params.length+1}`,[...params,q.limit]);
+      ${whereSql} ORDER BY a.occurred_at DESC,a.id DESC LIMIT $${params.length+1}`,[...params,q.limit]);
     const [modules,actions,actors]=await Promise.all([
       pool.query("SELECT DISTINCT module FROM audit_log ORDER BY module"),
       pool.query("SELECT DISTINCT action FROM audit_log ORDER BY action"),
