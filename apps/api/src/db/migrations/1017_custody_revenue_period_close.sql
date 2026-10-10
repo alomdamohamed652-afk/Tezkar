@@ -68,7 +68,9 @@ INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('finance.period_close.view','finance','period_close','view','all'),
  ('finance.period_close.create','finance','period_close','create','all'),
  ('finance.ledger.view','finance','ledger','view','all'),
- ('audit.view','system','audit','view','all')
+ ('audit.view','system','audit','view','all'),
+ ('cash_custody.view_own','finance','cash_custody','view','own'),
+ ('cash_custody.create_own','finance','cash_custody','create','own')
 ON CONFLICT(code) DO NOTHING;
 
 -- Grant settlement access to roles that already have accounting permissions.
@@ -88,6 +90,17 @@ FROM role_permissions existing_rp
 JOIN permissions existing_permission ON existing_permission.id=existing_rp.permission_id
 JOIN permissions audit_permission ON audit_permission.code='audit.view'
 WHERE existing_permission.code IN ('users.view','users.manage','reports.view','settings.manage')
+ON CONFLICT DO NOTHING;
+
+
+-- Employee accounts that already have their own production/earnings/advance access
+-- can see and register movements on their own cash custody only.
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT DISTINCT existing_rp.role_id,own_permission.id
+FROM role_permissions existing_rp
+JOIN permissions existing_permission ON existing_permission.id=existing_rp.permission_id
+JOIN permissions own_permission ON own_permission.code IN ('cash_custody.view_own','cash_custody.create_own')
+WHERE existing_permission.code IN ('production.view_own','earnings.view_own','advances.view_own')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version)
