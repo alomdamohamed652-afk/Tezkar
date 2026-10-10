@@ -143,7 +143,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if(q.status){params.push(q.status);where.push("o.status=$"+params.length);}else where.push("o.status <> 'CANCELLED'");
     if(q.from){params.push(q.from);where.push("o.order_date >= $"+params.length+"::date");}
     if(q.to){params.push(q.to);where.push("o.order_date <= $"+params.length+"::date");}
-    if(q.q){params.push("%"+q.q+"%");const n=params.length;where.push(`(o.code ILIKE ${n} OR o.order_name ILIKE ${n} OR COALESCE(o.customer_name,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
+    if(q.q){params.push("%"+q.q+"%");const n=params.length;where.push(`(o.code ILIKE $${n} OR o.order_name ILIKE $${n} OR COALESCE(o.customer_name,'') ILIKE $${n} OR COALESCE(creator.username,'') ILIKE $${n})`);}
     const r = await pool.query(
       `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,creator.username AS created_by_username,
               COALESCE((SELECT COUNT(*)::int FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS line_count,
