@@ -2,12 +2,27 @@ name: CI
 
 on:
   push:
-    branches: ["main", "foundation/v0.3", "work/**"]
+    branches: ["main", "foundation/v0.3", "work/**", "fix/**"]
   pull_request:
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      API_PROXY_TARGET: http://localhost:4000
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,5 +38,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
+      - name: Tests
+        run: pnpm test
       - name: Build
         run: pnpm build

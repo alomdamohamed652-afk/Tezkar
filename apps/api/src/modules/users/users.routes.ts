@@ -28,6 +28,18 @@ export async function userRoutes(app: FastifyInstance){
   const result=await pool.query("SELECT id,code,name,is_system,is_active FROM roles WHERE is_active=TRUE ORDER BY name");
   return {data:result.rows};
  });
+ app.post("/api/roles",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(request,reply)=>{
+  const parsed=z.object({code:z.string().trim().min(2).max(60).regex(/^[a-z][a-z0-9_]*$/),name:z.string().trim().min(2).max(120)}).safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","اسم الدور أو كوده غير صحيح",422);
+  const row=await withTransaction(async client=>{
+   try{
+    const result=await client.query("INSERT INTO roles(code,name,is_system,is_active) VALUES($1,$2,FALSE,TRUE) RETURNING id,code,name,is_system,is_active",[parsed.data.code,parsed.data.name]);
+    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"iam",entityType:"role",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    return result.rows[0];
+   }catch(error){if((error as {code?:string}).code==="23505")throw new AppError("DUPLICATE_ROLE_CODE","كود الدور مستخدم بالفعل",409);throw error;}
+  });
+  return reply.code(201).send({data:row});
+ });
  app.get("/api/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async()=>{
   const r=await pool.query("SELECT id,code,module,entity,action,scope FROM permissions ORDER BY module,entity,action,code");
   return {data:r.rows};

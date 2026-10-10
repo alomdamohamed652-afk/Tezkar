@@ -5,13 +5,15 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { verifyPassword } from "../auth/auth.service.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 
 const createSchema = z.object({
   employeeId: z.string().uuid().optional(),
   orderStageId: z.string().uuid().nullable().optional(),
   productionTypeId: z.string().uuid().nullable().optional(),
-  productId: z.string().uuid(),
+  productId: z.string().uuid().optional(),
   stageId: z.string().uuid(),
   shiftId: z.string().uuid(),
   workDate: z.string().date(),
@@ -22,6 +24,7 @@ const createSchema = z.object({
   warehouseId: z.string().uuid().optional(),
   locationId: z.string().uuid().nullable().optional(),
   bonusAmount: z.number().nonnegative().optional().default(0),
+  shiftLeaderEmployeeId: z.string().uuid().nullable().optional(),
   bonusReason: z.string().trim().max(500).nullable().optional(),
   deductionAmount: z.number().nonnegative().optional().default(0),
   deductionReason: z.string().trim().max(500).nullable().optional()
@@ -69,7 +72,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
        LEFT JOIN order_stages os ON os.id=p.order_stage_id
        JOIN shifts sh ON sh.id=p.shift_id
        JOIN units u ON u.id=p.unit_id
-      WHERE p.id=$1${lock ? " FOR UPDATE" : ""}`,
+      WHERE p.id=$1${lock ? " FOR UPDATE OF p" : ""}`,
     [id]
   );
   return result.rows[0] ?? null;
@@ -121,7 +124,8 @@ export async function productionRoutes(app: FastifyInstance) {
       where.push(`p.employee_id=${params.length}`);
     }
 
-    if (query.data.status) { params.push(query.data.status); where.push(`p.status=$${params.length}`); }
+    if (query.data.status) { params.push(query.data.status); where.push(`p.status=${params.length}`); }
+    else where.push("p.status <> 'CANCELLED'");
     if (query.data.employeeId) { params.push(query.data.employeeId); where.push(`p.employee_id=$${params.length}`); }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
@@ -129,7 +133,7 @@ export async function productionRoutes(app: FastifyInstance) {
     params.push(query.data.limit);
 
     const result = await pool.query(
-      `SELECT p.id,p.code,p.work_date,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,
+      `SELECT p.id,p.code,p.work_date,p.responsible_name,sle.full_name AS shift_leader_name,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,
               e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.code AS stage_code,st.name AS stage_name,
@@ -139,6 +143,7 @@ export async function productionRoutes(app: FastifyInstance) {
               p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id
          FROM production_entries p
          JOIN employees e ON e.id=p.employee_id
+         LEFT JOIN employees sle ON sle.id=p.shift_leader_employee_id
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
@@ -165,7 +170,7 @@ export async function productionRoutes(app: FastifyInstance) {
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
-        WHERE p.employee_id=$1
+        WHERE p.employee_id=$1 AND p.status <> 'CANCELLED'
         ORDER BY p.work_date DESC,p.created_at DESC LIMIT 300`,
       [request.user.employeeId]
     );
@@ -178,7 +183,24 @@ export async function productionRoutes(app: FastifyInstance) {
     const parsed = createSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstIssue = parsed.error.issues[0];
-      throw new AppError("VALIDATION_ERROR", firstIssue?.message || "بيانات الإنتاج غير صحيحة", 422);
+      const fieldLabels: Record<string, string> = {
+        employeeId: "الموظف",
+        orderStageId: "مرحلة الطلبية",
+        productionTypeId: "نوع الإنتاج",
+        productId: "المنتج",
+        stageId: "المرحلة",
+        shiftId: "الوردية",
+        warehouseId: "المخزن",
+        locationId: "موقع التخزين",
+        workDate: "تاريخ الإنتاج",
+        quantity: "الكمية",
+        rateOverride: "سعر المرحلة"
+      };
+      const field = String(firstIssue?.path?.[0] ?? "");
+      const message = firstIssue?.message === "Invalid UUID" && fieldLabels[field]
+        ? `معرّف ${fieldLabels[field]} غير صحيح. حدّث الصفحة وأعد الاختيار.`
+        : firstIssue?.message || "بيانات الإنتاج غير صحيحة";
+      throw new AppError("VALIDATION_ERROR", message, 422);
     }
 
     const row = await withTransaction(async (client) => {
@@ -196,15 +218,24 @@ export async function productionRoutes(app: FastifyInstance) {
         [employeeId]
       );
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
+      if(parsed.data.shiftLeaderEmployeeId){
+        const leader=await client.query(
+          "SELECT 1 FROM shift_leaders WHERE employee_id=$1 AND shift_id=$2 AND is_active=TRUE AND (starts_on IS NULL OR starts_on<=$3::date) AND (ends_on IS NULL OR ends_on>=$3::date) LIMIT 1",
+          [parsed.data.shiftLeaderEmployeeId,parsed.data.shiftId,parsed.data.workDate]
+        );
+        if(!leader.rowCount)throw new AppError("SHIFT_LEADER_NOT_ASSIGNED","مسؤول الوردية المختار غير مكلف بهذه الوردية في تاريخ الإنتاج",422);
+      }
 
       let resolvedWarehouseId = parsed.data.warehouseId;
       if(parsed.data.orderStageId){
-        const os0=await client.query("SELECT os.order_id,os.sequence_no FROM order_stages os WHERE os.id=$1",[parsed.data.orderStageId]);
+        const os0=await client.query("SELECT os.order_id,os.sequence_no,os.is_final_product FROM order_stages os WHERE os.id=$1",[parsed.data.orderStageId]);
         if(!os0.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
-        const final0=await client.query("SELECT MAX(sequence_no) AS max_sequence FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os0.rows[0].order_id]);
-        const type0=Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
+        const final0=await client.query("SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os0.rows[0].order_id]);
+        const type0=Boolean(os0.rows[0].is_final_product)||(!Boolean(final0.rows[0]?.has_explicit_final)&&Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence)) ? "FINISHED_GOODS" : "WIP";
         const wh0=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[type0]);
         if(!wh0.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
+        // The server enforces the stage's virtual warehouse. The client cannot redirect
+        // a stage-bound production entry into raw materials or another operational store.
         resolvedWarehouseId=wh0.rows[0].id;
       }
 
@@ -231,7 +262,7 @@ export async function productionRoutes(app: FastifyInstance) {
 
       if (parsed.data.orderStageId) {
         const orderStage = await client.query(
-          `SELECT os.id,os.order_id,os.output_product_id,os.stage_id,po.status
+          `SELECT os.id,os.order_id,os.output_product_id,os.stage_id,os.sequence_no,os.is_final_product,os.status AS stage_status,po.status AS order_status
              FROM order_stages os
              JOIN production_orders po ON po.id=os.order_id
             WHERE os.id=$1
@@ -240,15 +271,15 @@ export async function productionRoutes(app: FastifyInstance) {
         );
         if (!orderStage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const os=orderStage.rows[0];
-        if (os.status === "CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج لمرحلة طلبية ملغاة",409);
-        const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os.order_id]);
-        const warehouseType=Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence) ? "FINISHED_GOODS" : "WIP";
+        if (os.order_status === "CANCELLED" || os.stage_status === "CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج لمرحلة طلبية أو مرحلة ملغاة",409);
+        const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os.order_id]);
+        const warehouseType=Boolean(os.is_final_product)||(!Boolean(finalStage.rows[0]?.has_explicit_final)&&Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence)) ? "FINISHED_GOODS" : "WIP";
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
+        // A production entry tied to an order stage must land in the system warehouse
+        // dictated by the workflow (WIP for intermediate stages, finished goods for
+        // the final stage). Do not let a client-supplied warehouse bypass that rule.
         resolvedWarehouseId=virtualWarehouse.rows[0].id;
-        if (os.output_product_id && os.output_product_id !== parsed.data.productId) {
-          throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
-        }
         if (os.stage_id !== parsed.data.stageId) {
           throw new AppError("ORDER_STAGE_STAGE_MISMATCH","مرحلة الإنتاج لا تطابق مرحلة الطلب المرتبطة",409);
         }
@@ -256,6 +287,8 @@ export async function productionRoutes(app: FastifyInstance) {
         parsed.data.productId = os.output_product_id;
         parsed.data.stageId = os.stage_id;
       }
+
+      if (!parsed.data.productId) throw new AppError("PRODUCT_REQUIRED", "اختر منتجًا أو اربط المرحلة بمنتج ناتج في بيانات الطلبية", 422);
 
       const product = await client.query(
         "SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",
@@ -277,7 +310,18 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const orderStagePricing=parsed.data.orderStageId ? await client.query(`SELECT stage_rate,stage_rate_method,stage_rate_unit_id FROM order_stages WHERE id=$1`,[parsed.data.orderStageId]) : {rowCount:0,rows:[]};
       const stagePrice=orderStagePricing.rowCount && orderStagePricing.rows[0].stage_rate != null ? orderStagePricing.rows[0] : null;
-      const rateResult = stagePrice ? {rowCount:1,rows:[{id:null,rate:Number(stagePrice.stage_rate),wage_type_id:null,unit_id:stagePrice.stage_rate_unit_id ?? product.rows[0].unit_id,production_type_id:parsed.data.productionTypeId ?? null,wage_type_code:stagePrice.stage_rate_method,wage_type_name:stagePrice.stage_rate_method,method:stagePrice.stage_rate_method,percentage_base:null}]} : await client.query(
+      const rateResult = stagePrice ? await client.query(
+        `SELECT NULL::uuid AS id,wt.id AS wage_type_id,$1::numeric AS rate,
+                COALESCE($2::uuid,pr.unit_id) AS unit_id,$3::uuid AS production_type_id,
+                wt.code AS wage_type_code,wt.name AS wage_type_name,wt.method,wt.percentage_base
+           FROM wage_types wt CROSS JOIN products pr
+          WHERE pr.id=$4
+            AND wt.method=$5
+            AND wt.is_active=TRUE
+          ORDER BY CASE WHEN wt.percentage_base='ORDER_VALUE' THEN 0 ELSE 1 END,wt.created_at,wt.id
+          LIMIT 1`,
+        [Number(stagePrice.stage_rate),stagePrice.stage_rate_unit_id ?? null,parsed.data.productionTypeId ?? null,parsed.data.productId,stagePrice.stage_rate_method]
+      ) : await client.query(
         `SELECT r.id,r.rate,r.wage_type_id,r.unit_id,r.production_type_id,
                 wt.code AS wage_type_code,wt.name AS wage_type_name,
                 wt.method,wt.percentage_base
@@ -313,6 +357,15 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const rate = rateResult.rows[0];
       const method = rate.method as string;
+      if (!rateResult.rowCount) {
+        throw new AppError("WAGE_TYPE_NOT_FOUND", "طريقة أجر المرحلة غير معرفة في بيانات الأجور", 422);
+      }
+      if (!stagePrice && parsed.data.rateOverride != null && parsed.data.rateOverride !== Number(rate.rate)) {
+        const canOverrideRate = await hasPermission(client, request.user!.userId, "production.rate_override");
+        if (!canOverrideRate) {
+          throw new AppError("FORBIDDEN", "ليس لديك صلاحية تعديل سعر الإنتاج", 403);
+        }
+      }
       const effectiveRate = stagePrice ? Number(rate.rate) : (parsed.data.rateOverride ?? Number(rate.rate));
       let earning: number;
 
@@ -344,21 +397,22 @@ export async function productionRoutes(app: FastifyInstance) {
 
       const inserted = await client.query(
         `INSERT INTO production_entries(
-           employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,
+           employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,hours_worked,warehouse_id,location_id,responsible_name,
            rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
            wage_type_method_snapshot,percentage_base_snapshot,base_amount,earning_amount,
-           submitted_by
+           bonus_amount,deduction_amount,submitted_by,shift_leader_employee_id
          )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
          RETURNING id,code,employee_id,order_stage_id,production_type_id,product_id,stage_id,shift_id,work_date,quantity,
                    unit_id,rate_id,rate_snapshot,wage_type_id,wage_type_code_snapshot,
                    wage_type_method_snapshot,percentage_base_snapshot,base_amount,
-                   earning_amount,status,submitted_by,created_at`,
+                   earning_amount,bonus_amount,deduction_amount,total_earning_amount,status,submitted_by,created_at`,
         [
           employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
-          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, rate.id, effectiveRate,
+          parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, null, rate.id, effectiveRate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
-          parsed.data.baseAmount ?? null, earning, request.user!.userId
+          parsed.data.baseAmount ?? null, earning, Number(parsed.data.bonusAmount ?? 0),
+           Number(parsed.data.deductionAmount ?? 0), request.user!.userId, parsed.data.shiftLeaderEmployeeId ?? null
         ]
       );
 
@@ -401,6 +455,23 @@ export async function productionRoutes(app: FastifyInstance) {
     });
 
     return reply.code(201).send({ data: row });
+  });
+
+  app.delete("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({password:z.string().min(1).max(200)}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("PASSWORD_REQUIRED","أدخل كلمة مرور حسابك لتأكيد حذف سجل الإنتاج",422);
+    const row=await withTransaction(async client=>{
+      const actor=await client.query("SELECT password_hash FROM users WHERE id=$1 AND is_active=TRUE",[request.user!.userId]);
+      if(!actor.rowCount || !verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم حذف سجل الإنتاج",401);
+      const current=await getEntry(client,id,true);
+      if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(current.status!=="PENDING")throw new AppError("PRODUCTION_DELETE_LOCKED","يمكن حذف الإنتاج المعلّق فقط. الإنتاج المعتمد له أثر مخزني ومستحقات، ويحتاج إجراء عكس معتمد حتى لا تتلخبط الأرصدة.",409);
+      const updated=await client.query("UPDATE production_entries SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,status,employee_id,order_stage_id,quantity,work_date",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"cancel",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:"password_confirmed_delete"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return {data:row};
   });
 
   app.patch("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
@@ -446,6 +517,17 @@ export async function productionRoutes(app: FastifyInstance) {
         [current.location_id, current.warehouse_id]
       );
       if (!destination.rowCount) throw new AppError("DESTINATION_NOT_FOUND", "وجهة الإنتاج غير موجودة أو غير نشطة", 409);
+
+      // Match warehouse movement lock order: serialize all stock mutations by product
+      // before locking/inserting a location balance. This also protects the
+      // first production receipt when no stock_balances row exists yet.
+      const stockProduct = await client.query(
+        "SELECT id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",
+        [current.product_id]
+      );
+      if (!stockProduct.rowCount) {
+        throw new AppError("PRODUCT_NOT_INVENTORIED", "المنتج غير موجود أو غير متابع مخزنيًا", 409);
+      }
 
       const lockedBalance = await client.query(
         "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
@@ -543,9 +625,49 @@ export async function productionRoutes(app: FastifyInstance) {
            employee_id,entry_type,credit_amount,production_entry_id,created_by,notes
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
-         ON CONFLICT (production_entry_id) DO NOTHING`,
+         ON CONFLICT DO NOTHING`,
         [current.employee_id, current.earning_amount, id, request.user!.userId]
       );
+
+      // Production-percentage advances are recovered from each approved production earning.
+      // The advance row is locked so concurrent approvals cannot over-repay the balance.
+      const percentageAdvance = await client.query(
+        `SELECT a.*,
+                GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding
+           FROM advance_requests a
+          WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+            AND a.repayment_method='PRODUCTION_PERCENTAGE' AND a.production_percentage>0
+            AND a.paid_at::date <= $2::date
+          ORDER BY a.paid_at,a.created_at,a.id
+          LIMIT 1
+          FOR UPDATE OF a`,
+        [current.employee_id,current.work_date]
+      );
+      if (percentageAdvance.rowCount) {
+        const advance = percentageAdvance.rows[0];
+        const outstanding = Number(advance.outstanding);
+        const percentageAmount = Number(current.earning_amount)*Number(advance.production_percentage)/100;
+        const repaymentAmount = Math.round(Math.min(outstanding,percentageAmount)*100)/100;
+        if (repaymentAmount > 0) {
+          const repayment = await client.query(
+            `INSERT INTO advance_repayments(
+               advance_id,amount,repayment_type,payment_date,notes,created_by,source_production_entry_id
+             ) VALUES($1,$2,'PRODUCTION_PERCENTAGE',$3,$4,$5,$6)
+             ON CONFLICT(source_production_entry_id) WHERE source_production_entry_id IS NOT NULL DO NOTHING
+             RETURNING id`,
+            [advance.id,repaymentAmount,current.work_date,`خصم ${Number(advance.production_percentage)}٪ من إنتاج ${current.code} لسداد السلفة ${advance.code}`,request.user!.userId,id]
+          );
+          if (repayment.rowCount) {
+            const nextRemaining = outstanding-repaymentAmount;
+            await client.query(
+              "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4)",
+              [current.employee_id,repaymentAmount,request.user!.userId,`سداد سلفة ${advance.code} من إنتاج ${current.code}`]
+            );
+            await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[nextRemaining<=0.0001?"SETTLED":"OPEN",advance.id]);
+            await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"automatic_production_repayment",module:"advances",entityType:"advance_request",entityId:advance.id,metadata:{repaymentId:repayment.rows[0].id,productionEntryId:id,productionCode:current.code,amount:repaymentAmount,remaining:Math.max(0,nextRemaining)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+          }
+        }
+      }
 
       const adjustments = await client.query(
         `SELECT id,adjustment_type,amount,reason
@@ -668,7 +790,7 @@ export async function productionRoutes(app: FastifyInstance) {
   });  app.get("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.view")]},async(request)=>{
     const q=z.object({employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر البونص والخصم غير صحيحة",422);
-    const params:unknown[]=[];const where:string[]=[];
+    const params:unknown[]=[];const where:string[]=["(a.production_entry_id IS NULL OR p.status <> 'CANCELLED')"];
     if(q.data.employeeId){params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);}
     if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}

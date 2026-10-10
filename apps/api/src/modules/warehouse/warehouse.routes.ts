@@ -52,8 +52,11 @@ async function changeBalance(client: import("pg").PoolClient, productId: string,
   const cost = movementUnitCost == null ? currentAvg : movementUnitCost;
   let nextValue = currentValue;
   if (delta > 0) nextValue = currentValue + delta * cost;
-  else if (delta < 0) nextValue = Math.max(0,currentValue - Math.abs(delta) * currentAvg);
-  const nextAvg = next > 0 ? nextValue / next : 0;
+  // Outbound movements consume FIFO inventory lots below. Keep the current value
+  // here and subtract the actual lot cost exactly once after lot consumption.
+  // Subtracting average cost here as well would double-decrement inventory value.
+  else if (delta < 0) nextValue = currentValue;
+  const nextAvg = next > 0 ? (delta < 0 ? currentAvg : nextValue / next) : 0;
   if (locked.rowCount) {
     await client.query("UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[Math.max(0,next),nextAvg,nextValue,productId,warehouseId,locationId]);
   } else {
@@ -83,6 +86,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
 
         for(const balance of stock.rows){
           const lots=await client.query("SELECT id,remaining_quantity,unit_cost,batch_code FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[balance.product_id,id,balance.location_id]);
+          const lotQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
+          if(Math.abs(lotQuantity-Number(balance.quantity))>1e-7) throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المخزن لا يطابق مجموع دفعات التكلفة؛ تم إيقاف التعطيل لحماية المخزون",409);
           for(const lot of lots.rows){
             const qty=Number(lot.remaining_quantity);
             await changeBalance(client,balance.product_id,id,balance.location_id,-qty,Number(lot.unit_cost));
@@ -127,6 +132,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!target.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان النقل غير موجود أو غير نشط",422);
         for(const balance of stock.rows){
           const lots=await client.query("SELECT id,remaining_quantity,unit_cost,batch_code FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[balance.product_id,location.rows[0].warehouse_id,id]);
+          const lotQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
+          if(Math.abs(lotQuantity-Number(balance.quantity))>1e-7) throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المكان لا يطابق مجموع دفعات التكلفة؛ تم إيقاف النقل لحماية المخزون",409);
           for(const lot of lots.rows){
             const qty=Number(lot.remaining_quantity);
             const sourceCost=await changeBalance(client,balance.product_id,location.rows[0].warehouse_id,id,-qty,Number(lot.unit_cost));
@@ -163,7 +170,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const params:unknown[]=[]; const where=["b.quantity > 0"];
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("b.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("b.product_id=$"+params.length);}
-    const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
+    const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,w.warehouse_type,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
     return {data:result.rows};
   });
 
@@ -199,7 +206,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(q.data.from){params.push(q.data.from);where.push("created_at::date >= $"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("created_at::date <= $"+params.length);}
     if(q.data.warehouseId){params.push(q.data.warehouseId);where.push("warehouse_id=$"+params.length);}
-    const r=await pool.query("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN','ADJUSTMENT') THEN total_cost ELSE 0 END),0) AS total_in,COALESCE(SUM(CASE WHEN movement_type IN ('OUT','TRANSFER_OUT') THEN total_cost ELSE 0 END),0) AS total_out,COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN','ADJUSTMENT') THEN total_cost ELSE -total_cost END),0) AS net FROM stock_movements WHERE "+where.join(" AND "),params);
+    const r=await pool.query("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN') OR (movement_type='ADJUSTMENT' AND reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN total_cost ELSE 0 END),0) AS total_in,COALESCE(SUM(CASE WHEN movement_type IN ('OUT','TRANSFER_OUT') OR (movement_type='ADJUSTMENT' AND reference_type='ADJUSTMENT_OUT') THEN total_cost ELSE 0 END),0) AS total_out,COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN') OR (movement_type='ADJUSTMENT' AND reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN total_cost ELSE -total_cost END),0) AS net FROM stock_movements WHERE "+where.join(" AND "),params);
     const current=await pool.query("SELECT COALESCE(SUM(inventory_value),0) AS current_value,COUNT(*)::int AS lines FROM stock_balances WHERE quantity>0"+(q.data.warehouseId?" AND warehouse_id=$1":"") ,q.data.warehouseId?[q.data.warehouseId]:[]);
     return {data:{...r.rows[0],current_value:current.rows[0].current_value,stock_lines:current.rows[0].lines}};
   });
@@ -224,7 +231,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const parsed=movementSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات حركة المخزن غير صحيحة",422);
     const row=await withTransaction(async(client)=>{
-      const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[parsed.data.productId]);
+      // Serialize stock mutations for the same product. This prevents concurrent first-time balance inserts and opposing transfers from locking balance rows in opposite orders.
+      const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير متابع مخزنيًا",422);
       const sourceLocationId=await resolveLocation(client,parsed.data.warehouseId,parsed.data.locationId);
       let destinationLocationId:string|undefined;
@@ -239,7 +247,11 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         if(parsed.data.orderId && stage.rows[0].order_id!==parsed.data.orderId) throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الطلب لا تنتمي إلى الطلبية المحددة",409);
         if(stage.rows[0].status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن ربط حركة مخزن بمرحلة طلبية ملغاة",409);
-        if(stage.rows[0].output_product_id && stage.rows[0].output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق منتج مرحلة الطلب",409);
+        // Only stock entering production as the stage's produced output must match
+        // output_product_id. OUT/TRANSFER_OUT can legitimately consume other inputs.
+        if(parsed.data.movementType==="IN" && stage.rows[0].output_product_id && stage.rows[0].output_product_id!==parsed.data.productId) {
+          throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق منتج مرحلة الطلب",409);
+        }
       } else if(parsed.data.orderId){
         const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
         if(!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",422);
@@ -251,7 +263,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
       const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT"||(parsed.data.movementType==="ADJUSTMENT"&&parsed.data.adjustmentDirection==="OUT"))?-parsed.data.quantity:parsed.data.quantity;
       const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
       const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,delta,effectiveUnitCost);
-      const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null]);
+      const adjustmentReferenceType=parsed.data.movementType==="ADJUSTMENT"?"ADJUSTMENT_"+parsed.data.adjustmentDirection:null;
+      const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id,reference_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null,adjustmentReferenceType]);
       let finalSourceCost=sourceCost;
       if(delta<0){
         const consumed=await consumeInventoryLots(client,{movementId:source.rows[0].id,productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity});
@@ -264,7 +277,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
       let destination=null;
       if(parsed.data.movementType==="TRANSFER_OUT"){
         await changeBalance(client,parsed.data.productId,parsed.data.targetWarehouseId!,destinationLocationId!,parsed.data.quantity,finalSourceCost.unitCost);
-        const d=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,reference_type,reference_id,order_id,order_stage_id) VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'TRANSFER',$12,$13,$14) RETURNING *",[parsed.data.productId,parsed.data.targetWarehouseId,destinationLocationId,parsed.data.quantity,product.rows[0].unit_id,finalSourceCost.unitCost,finalSourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,source.rows[0].id,parsed.data.orderId??null,parsed.data.orderStageId??null]);
+        const d=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,reference_type,reference_id,order_id,order_stage_id) VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'TRANSFER',$13,$14,$15) RETURNING *",[parsed.data.productId,parsed.data.targetWarehouseId,destinationLocationId,parsed.data.quantity,product.rows[0].unit_id,finalSourceCost.unitCost,finalSourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,source.rows[0].id,parsed.data.orderId??null,parsed.data.orderStageId??null]);
         await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.targetWarehouseId!,locationId:destinationLocationId!,quantity:parsed.data.quantity,unitCost:finalSourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:"TRANSFER_IN",sourceId:d.rows[0].id});
         destination=d.rows[0];
         await client.query("UPDATE stock_movements SET reference_type='TRANSFER',reference_id=$1 WHERE id=$2",[destination.id,source.rows[0].id]);

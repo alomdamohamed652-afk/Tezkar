@@ -2,6 +2,7 @@
 
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {Sidebar,usePermissions} from "../../components/sidebar";
+import {formatMoney} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 import {api} from "../../lib/api";
 
@@ -47,7 +48,7 @@ export default function EarningsPage(){
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل البونص أو الخصم")}
  }
 
- const money=(value:string|number)=>Number(value).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2});
+ const money=(value:string|number)=>formatMoney(value);
  const totals=useMemo(()=>adjustments.reduce((a,x)=>({bonus:a.bonus+(x.adjustment_type==="BONUS"?Number(x.amount):0),deduction:a.deduction+(x.adjustment_type==="DEDUCTION"?Number(x.amount):0)}),{bonus:0,deduction:0}),[adjustments]);
 
  return <div className="app-shell"><Sidebar active="/earnings"/><main className="main">
@@ -78,7 +79,7 @@ export default function EarningsPage(){
 
    <section className="card"><div className="card-header"><h2 className="card-title">دفتر المستحقات</h2></div>
     <div className="table-wrap"><table><thead><tr>{!isWorker&&<th>الموظف</th>}<th>الرقم</th><th>النوع</th><th>إضافة</th><th>خصم</th><th>البيان</th><th>المرجع</th><th>التاريخ</th></tr></thead>
-    <tbody>{entries.map(entry=><tr key={entry.id}>{!isWorker&&<td>{entry.employee_code} — {entry.employee_name}</td>}<td>{entry.code}</td><td>{entry.entry_type==="PRODUCTION_APPROVAL"?"اعتماد إنتاج":entry.entry_type==="WORKER_PAYMENT"?"قبض عامل":"تعديل"}</td><td>{entry.credit_amount!=="0.0000"?money(entry.credit_amount):"—"}</td><td>{entry.debit_amount!=="0.0000"?money(entry.debit_amount):"—"}</td><td>{entry.notes||"—"}</td><td>{entry.production_code??entry.payment_code??"—"}</td><td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td></tr>)}{!entries.length&&<tr><td colSpan={isWorker?7:8}>لا توجد حركات حتى الآن.</td></tr>}</tbody></table></div>
+    <tbody>{entries.map(entry=><tr key={entry.id}>{!isWorker&&<td>{entry.employee_code} — {entry.employee_name}</td>}<td>{entry.code}</td><td>{entry.entry_type==="PRODUCTION_APPROVAL"?"اعتماد إنتاج":entry.entry_type==="WORKER_PAYMENT"?"قبض عامل":Number(entry.credit_amount)>0?"إضافة مستحق":"خصم"}</td><td>{entry.credit_amount!=="0.0000"?money(entry.credit_amount):"—"}</td><td>{entry.debit_amount!=="0.0000"?money(entry.debit_amount):"—"}</td><td>{entry.notes||"—"}</td><td>{entry.production_code??entry.payment_code??"—"}</td><td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td></tr>)}{!entries.length&&<tr><td colSpan={isWorker?7:8}>لا توجد حركات حتى الآن.</td></tr>}</tbody></table></div>
    </section>
   </section>
  </main></div>;

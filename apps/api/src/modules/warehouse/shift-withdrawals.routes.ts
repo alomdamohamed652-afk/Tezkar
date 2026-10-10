@@ -179,12 +179,8 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
     if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",422);
     const warehouse=await client.query("SELECT id FROM warehouses WHERE id=$1 AND is_active=TRUE",[item.warehouseId]);
     if(!warehouse.rowCount)throw new AppError("WAREHOUSE_NOT_FOUND","المخزن غير موجود أو غير نشط",422);
-    if(p.data.orderStageId){
-      const stage=await client.query("SELECT output_product_id FROM order_stages WHERE id=$1",[p.data.orderStageId]);
-      if(stage.rows[0]?.output_product_id && stage.rows[0].output_product_id!==item.productId){
-        throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","الصنف لا يطابق المنتج الناتج من مرحلة الطلب",409);
-      }
-    }
+    // A stage withdrawal represents consumed inputs, not the stage output. Input
+    // products must be allowed to differ from order_stages.output_product_id.
     const available=await client.query(
       "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0",
       [item.productId,item.warehouseId]

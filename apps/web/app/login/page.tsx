@@ -3,7 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+import { API_BASE as API } from "../../lib/api-base";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -40,7 +40,7 @@ export default function LoginPage() {
       <div className="auth-shell">
         <section className="auth-showcase" aria-label="نظام تذكار">
           <div className="auth-showcase-top">
-            <div className="auth-logo-mark">ت</div>
+            <div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
             <div>
               <strong>تذكار</strong>
               <span>إدارة المصنع</span>
@@ -63,7 +63,7 @@ export default function LoginPage() {
 
         <section className="auth-card" aria-labelledby="login-title">
           <div className="auth-mobile-brand">
-            <div className="auth-logo-mark">ت</div>
+            <div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
             <div><strong>تذكار</strong><span>إدارة المصنع</span></div>
           </div>
 
@@ -130,10 +130,6 @@ export default function LoginPage() {
             <span>اتصال آمن — بيانات حسابك لا تظهر في الصفحة</span>
           </div>
 
-          <div className="auth-note">
-            <b>أول تشغيل؟</b>
-            <span>استخدم حساب المدير المؤقت، وبعد الدخول سيطلب منك النظام إعداد حساب المدير الجديد.</span>
-          </div>
         </section>
       </div>
     </main>

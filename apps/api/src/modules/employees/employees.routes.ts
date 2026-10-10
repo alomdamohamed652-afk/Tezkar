@@ -145,12 +145,28 @@ export async function employeeRoutes(app: FastifyInstance) {
     return { data: updated };
   });
 
+  app.post("/api/employees/:id/activate",{preHandler:[authenticateRequest,requirePermission("employees.edit")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const r=await withTransaction(async client=>{
+      const before=await client.query("SELECT id,code,full_name,is_active FROM employees WHERE id=$1 FOR UPDATE",[id]);
+      if(!before.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+      const user=await client.query("SELECT id FROM users WHERE employee_id=$1 FOR UPDATE",[id]);
+      if(!user.rowCount)throw new AppError("EMPLOYEE_ACCOUNT_NOT_FOUND","لا يوجد حساب دخول مرتبط بالموظف؛ راجع بيانات الحساب قبل التفعيل",409);
+      const employee=await client.query("UPDATE employees SET is_active=TRUE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
+      await client.query("UPDATE users SET is_active=TRUE,updated_at=now() WHERE employee_id=$1",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"activate",module:"employees",entityType:"employee",entityId:id,beforeData:before.rows[0],afterData:employee.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return employee.rows[0];
+    });
+    return {data:r};
+  });
+
   app.delete("/api/employees/:id",{preHandler:[authenticateRequest,requirePermission("employees.delete")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const r=await withTransaction(async client=>{
       const e=await client.query("UPDATE employees SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
       if(!e.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
       await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE employee_id=$1",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"employees",entityType:"employee",entityId:id,afterData:e.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return e.rows[0];
     });
     return {data:r};

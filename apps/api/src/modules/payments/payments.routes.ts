@@ -5,10 +5,16 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 
 const requestSchema = z.object({
   amount: z.number().positive(),
-  method: z.string().trim().min(1).max(50)
+  method: z.string().trim().min(1).max(50),
+  transferReference: z.string().trim().min(3).max(120).nullable().optional()
+}).superRefine((value, ctx) => {
+  if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(value.method) && !value.transferReference?.trim()) {
+    ctx.addIssue({ code: "custom", path: ["transferReference"], message: "رقم التحويل أو الحساب مطلوب لطريقة القبض المختارة" });
+  }
 });
 const paymentMethodSchema = z.object({
   code: z.string().trim().regex(/^[A-Z0-9_]{2,50}$/),
@@ -49,6 +55,26 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
     [employeeId]
   );
   return Number(r.rows[0]?.balance ?? 0);
+}
+
+async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,amount:number,requestCode:string,paymentId:string){
+  const canAll=await hasPermission(client,userId,"cash_custody.create","all");
+  const canOwn=await hasPermission(client,userId,"cash_custody.create_own","own");
+  if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","لا يمكن صرف طلب القبض دون صلاحية تسجيل خصم من العهدة النقدية",403);
+  if(!canAll){
+    const owner=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
+    if(!canOwn||owner.rows[0]?.employee_id!==custodyEmployeeId)throw new AppError("CASH_CUSTODY_SCOPE_DENIED","يمكنك الخصم من عهدتك النقدية فقط",403);
+  }
+  await lockEmployee(client,custodyEmployeeId);
+  const existing=await client.query("SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 LIMIT 1",[paymentId]);
+  if(existing.rowCount)return existing.rows[0];
+  const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=CURRENT_DATE",[custodyEmployeeId]);
+  if(amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة النقدية لا يكفي لصرف طلب القبض. تم إيقاف العملية دون ترحيل أي جزء منها.",409);
+  const row=await client.query(
+    "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT',$5,$6) RETURNING *",
+    [custodyEmployeeId,amount,"صرف طلب القبض "+requestCode,"خصم تلقائي مرتبط بسند صرف العامل. رقم السند: "+paymentId,paymentId,userId]
+  );
+  return row.rows[0];
 }
 
 export async function paymentsRoutes(app:FastifyInstance){
@@ -119,9 +145,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(open.rowCount) throw new AppError("OPEN_REQUEST_EXISTS","يوجد طلب قبض مفتوح بالفعل",409);
 
       const inserted=await client.query(
-        `INSERT INTO payment_requests(employee_id,amount,method,requested_by)
-         VALUES($1,$2,$3,$4) RETURNING *`,
-        [user.employee_id,parsed.data.amount,parsed.data.method,request.user!.userId]);
+        `INSERT INTO payment_requests(employee_id,amount,method,transfer_reference,requested_by)
+         VALUES($1,$2,$3,$4,$5) RETURNING *`,
+        [user.employee_id,parsed.data.amount,parsed.data.method,parsed.data.transferReference?.trim() || null,request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:user.employee_id,action:"create",module:"payments",entityType:"payment_request",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return inserted.rows[0];
       });
@@ -136,19 +162,63 @@ export async function paymentsRoutes(app:FastifyInstance){
     preHandler:[authenticateRequest,requirePermission("payment_requests.approve")]
   },async(request)=>{
     const id=(request.params as {id:string}).id;
+    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional()}).safeParse(request.body??{});
+    if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
+      const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
+      if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
+      await lockEmployee(client,owner.rows[0].employee_id);
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
-      await lockEmployee(client,current.rows[0].employee_id);
       if(current.rows[0].status!=="PENDING") throw new AppError("INVALID_STATUS","حالة الطلب لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId) throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد طلب قبض أنشأته بنفسك",409);
       const balance=await getBalance(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
+
+      // Approval means the finance user confirms that the money was actually paid.
+      // Record the payment and ledger debit atomically to keep the available balance accurate.
+      const payment=await client.query(
+        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
+      await client.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
+         VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
+         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
+        [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId,
+         current.rows[0].transfer_reference ? "صرف طلب قبض "+current.rows[0].code+" — مرجع التحويل: "+current.rows[0].transfer_reference : "صرف طلب قبض "+current.rows[0].code]);
+
+      const custodyEmployeeId=actionBody.data.cashCustodyEmployeeId??request.user!.employeeId;
+      if(!custodyEmployeeId)throw new AppError("CASH_CUSTODY_EMPLOYEE_REQUIRED","اختار الموظف صاحب العهدة التي سيُخصم منها المبلغ",422);
+      await recordCashCustodyOut(client,request.user!.userId,custodyEmployeeId,Number(payment.rows[0].amount),String(current.rows[0].code),String(payment.rows[0].id));
+
+      let allocationRemaining=Number(payment.rows[0].amount);
+      const productions=await client.query(
+        `SELECT pe.id,
+                GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+                  COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+           FROM production_entries pe
+          WHERE pe.employee_id=$1 AND pe.status='APPROVED'
+          ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC
+          FOR UPDATE`,
+        [payment.rows[0].employee_id]);
+      for(const production of productions.rows){
+        if(allocationRemaining<=0.000001) break;
+        const take=Math.min(allocationRemaining,Number(production.remaining));
+        if(take<=0.000001) continue;
+        await client.query(
+          `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
+           VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
+           DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
+          [payment.rows[0].id,production.id,take]);
+        allocationRemaining-=take;
+      }
       const updated=await client.query(
-        `UPDATE payment_requests SET status='APPROVED',reviewed_by=$1,reviewed_at=now(),updated_at=now() WHERE id=$2 RETURNING *`,
-        [request.user!.userId,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return updated.rows[0];
+        `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
+          WHERE id=$3 RETURNING *`,
+        [request.user!.userId,payment.rows[0].id,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:payment.rows[0].id,amount:payment.rows[0].amount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {request:updated.rows[0],payment:payment.rows[0]};
     });
     return {data:row};
   });
@@ -176,17 +246,22 @@ export async function paymentsRoutes(app:FastifyInstance){
     preHandler:[authenticateRequest,requirePermission("worker_payments.pay")]
   },async(request)=>{
     const id=(request.params as {id:string}).id;
+    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional()}).safeParse(request.body??{});
+    if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
+      const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
+      if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
+      // Keep the same employee -> request lock order used by request creation and approval.
+      await lockEmployee(client,owner.rows[0].employee_id);
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       if(current.rows[0].status!=="APPROVED") throw new AppError("INVALID_STATUS","يجب اعتماد الطلب قبل الدفع",409);
-      await lockEmployee(client,current.rows[0].employee_id);
       const balance=await getBalance(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
       const payment=await client.query(
-        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by)
-         VALUES($1,$2,$3,$4,$5) RETURNING *`,
-        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId]);
+        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [payment.rows[0].id,id]);
@@ -195,8 +270,12 @@ export async function paymentsRoutes(app:FastifyInstance){
            employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes
          )
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
-         ON CONFLICT (worker_payment_id) DO NOTHING`,
+         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
+
+      const custodyEmployeeId=actionBody.data.cashCustodyEmployeeId??request.user!.employeeId;
+      if(!custodyEmployeeId)throw new AppError("CASH_CUSTODY_EMPLOYEE_REQUIRED","اختار الموظف صاحب العهدة التي سيُخصم منها المبلغ",422);
+      await recordCashCustodyOut(client,request.user!.userId,custodyEmployeeId,Number(payment.rows[0].amount),String(current.rows[0].code),String(payment.rows[0].id));
 
       let allocationRemaining = Number(payment.rows[0].amount);
       const productions = await client.query(

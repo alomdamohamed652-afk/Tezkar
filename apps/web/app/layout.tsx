@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "تذكار | إدارة وتشغيل المصنع",
   description: "نظام تذكار لإدارة وتشغيل المصنع والمخازن والإنتاج والحسابات",
-  icons: { icon: "/tezkar-mark.svg" }
+  icons: { icon: "https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" }
 };
 
 export default function RootLayout({

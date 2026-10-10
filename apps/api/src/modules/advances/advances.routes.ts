@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -21,27 +22,36 @@ const createSchema=z.object({
 const rejectSchema=z.object({reason:z.string().trim().min(2).max(500)});
 const repaySchema=z.object({
   amount:z.number().positive(),
-  repaymentType:z.enum(["FIXED_INSTALLMENT","PRODUCTION_PERCENTAGE","CUSTOM"]).default("CUSTOM"),
+  repaymentType:z.literal("CUSTOM").default("CUSTOM"),
   paymentDate:z.string().date().optional(),
   notes:z.string().trim().max(500).optional()
 });
 
 export async function advanceRoutes(app:FastifyInstance){
-  app.get("/api/advances",{preHandler:[requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
+  // Dedicated employee picker for the advances workflow. Do not depend on employees.view,
+  // which is a separate permission and may not be granted to finance/advances operators.
+  app.get("/api/advances/eligible-employees",{preHandler:[authenticateRequest,requireAnyPermission(["advances.create","all"],["advances.view","all"])]},async()=>{
+    const result=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+    return {data:result.rows};
+  });
+  app.get("/api/advances",{preHandler:[authenticateRequest,requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
     const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","PAID","CANCELLED"]).optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
     const user=request.user!;
+    const scopeClient=await pool.connect();
+    let canViewAll=false;
+    try{canViewAll=await hasPermission(scopeClient,user.userId,"advances.view","all")}finally{scopeClient.release()}
     const worker=await pool.query("SELECT u.employee_id,EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1 AND r.code='worker' AND r.is_active=TRUE) AS is_worker FROM users u WHERE u.id=$1",[user.userId]);
+    const isWorker=Boolean(worker.rows[0]?.is_worker);
     const params:unknown[]=[];const where:string[]=[];
-    if(worker.rows[0]?.is_worker){
-      if(!worker.rows[0].employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+    if(!canViewAll){
+      if(!worker.rows[0]?.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
       params.push(worker.rows[0].employee_id);where.push("a.employee_id=$"+params.length);
-      where.push("a.status='PAID'");
-      where.push("a.repayment_status='OPEN'");
-    } else if(q.data.employeeId){
+      if(isWorker){where.push("a.status='PAID'");where.push("a.repayment_status='OPEN'")}
+    }else if(q.data.employeeId){
       params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);
     }
-    if(q.data.status&&!worker.rows[0]?.is_worker){params.push(q.data.status);where.push("a.status=$"+params.length);}
+    if(q.data.status&&(!isWorker||canViewAll)){params.push(q.data.status);where.push("a.status=$"+params.length);}
     const r=await pool.query(
       `SELECT a.*,e.code AS employee_code,e.full_name AS employee_name,
               COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
@@ -121,7 +131,7 @@ export async function advanceRoutes(app:FastifyInstance){
   });
 
   app.post("/api/advances/:id/repayments",{preHandler:[authenticateRequest,requirePermission("advances.repay")]},async(request,reply)=>{
-    const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات السداد غير صحيحة",422);
+    const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","السداد اليدوي يقبل دفعات مخصصة فقط؛ الأقساط الثابتة ونسبة الإنتاج تُسجل آليًا",422);
     const result=await withTransaction(async client=>{
       const advance=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!advance.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
