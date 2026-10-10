@@ -1,78 +1,72 @@
-# TEZKAR Deployment
+# TEZKAR Deployment — Railway Only
 
 ## Production topology
 
-- Vercel: `apps/web`
-- Render: `apps/api`
-- PostgreSQL: managed production PostgreSQL
-- Frontend calls the API through `NEXT_PUBLIC_API_URL`
-- API allows only the exact frontend origin through `WEB_ORIGIN`
+All production services run on Railway:
 
-## Vercel
+- **Web:** Next.js app from `apps/web`
+- **API:** Fastify app from `apps/api`
+- **Database:** Railway PostgreSQL
+- **Browser-to-API traffic:** same-origin `/api/*` requests proxied by Next.js to the API over Railway's private network
 
-Create a Vercel project from this repository.
+Do not configure a separate frontend hosting provider. The repository's supported production deployment target is Railway.
 
-- Root Directory: `apps/web`
+## Railway service setup
+
+Create or use three services in the same Railway project and production environment:
+
+### Web service
+
+- Root directory: repository root (the monorepo uses the root pnpm workspace)
 - Node.js: 24.x
-- Build Command: `pnpm build` (or the detected Next.js build)
-- Install Command: `pnpm install --no-frozen-lockfile`
-- Environment:
-  - `NEXT_PUBLIC_API_URL=https://<api-host>`
+- Install command: `corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --no-frozen-lockfile`
+- Build command: `pnpm --filter @tezkar/web build`
+- Start command: `pnpm --filter @tezkar/web start`
+- Set `API_PROXY_TARGET` at build time to the API service's private Railway address, for example `http://<api-private-domain>:4000`.
+- Do not set `NEXT_PUBLIC_API_URL`; production uses the Web service's same-origin `/api/*` proxy.
 
-Do not put `DATABASE_URL`, `SESSION_SECRET`, or any other server secret in `NEXT_PUBLIC_*`.
+### API service
 
-## Render API
+- Root directory: repository root
+- Node.js: 24.x
+- Install command: `corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --no-frozen-lockfile`
+- Build command: `pnpm --filter @tezkar/api build`
+- Start command: `pnpm --filter @tezkar/api start`
+- Health check path: `/api/health`
+- Set `API_PORT=4000` so the API listens on the same port used by the private proxy target.
+- Set `WEB_ORIGIN` to the exact public origin of the Railway Web service, including `https://` and without a trailing slash.
+- Set `DATABASE_URL` using the Railway PostgreSQL connection string.
+- Set `SESSION_SECRET` to a random secret of at least 32 characters.
+- Set `SESSION_COOKIE_SAMESITE=lax` and `DB_POOL_MAX=10`.
 
-The repository contains `render.yaml`.
+Keep database credentials and session secrets only in Railway server-side service variables. Never expose them through `NEXT_PUBLIC_*` variables.
 
-Required production variables:
+### PostgreSQL service
 
-- `NODE_ENV=production`
-- `DATABASE_URL=<managed postgres connection string>`
-- `WEB_ORIGIN=https://<vercel-domain-or-custom-domain>`
-- `SESSION_SECRET=<random value of at least 32 characters>`
-- `SESSION_COOKIE_SAMESITE=lax`
-- `DB_POOL_MAX=10`
+Use the PostgreSQL service and persistent storage managed by Railway. Attach the API's `DATABASE_URL` to the correct Railway database. Do not point production to a local database or a separate hosting provider.
 
-Build:
+## Database release procedure
 
-`pnpm install --no-frozen-lockfile && pnpm --filter @tezkar/api build`
+Before deploying a release that contains database migrations:
 
-Start:
+1. Confirm the target Railway environment and PostgreSQL service.
+2. Review the migration files and confirm they are additive/backward-compatible where required.
+3. Run `pnpm --filter @tezkar/api migrate` against the intended Railway environment.
+4. Verify the migration command completed successfully and the API health check reports database `ok`.
+5. Run the release checks below before treating the release as complete.
 
-`pnpm --filter @tezkar/api start`
-
-Before the first production login, run migrations:
-
-`pnpm --filter @tezkar/api migrate`
-
-Then bootstrap the initial admin only if the production database is empty:
-
-`pnpm --filter @tezkar/api bootstrap`
-
-## Railway same-origin API proxy
-
-The browser should call the Web service's own `/api/*` paths. Set `API_PROXY_TARGET=https://<api-host>` on the Web service at build time and leave `NEXT_PUBLIC_API_URL` empty. The Next.js rewrite forwards those requests to the API, keeping the session cookie first-party. Keep `SESSION_COOKIE_SAMESITE=lax` on the API. If `NEXT_PUBLIC_API_URL` is set to a non-empty URL, the legacy cross-origin mode remains active.
-
-## Cookie topology
-
-Preferred production setup is same-site custom subdomains, for example:
-
-- `https://app.example.com`
-- `https://api.example.com`
-
-Keep `SESSION_COOKIE_SAMESITE=lax` in that topology.
-
-If the frontend and API are on genuinely different sites, use `SESSION_COOKIE_SAMESITE=none` and HTTPS. Keep CORS restricted to the exact frontend origin.
+Run `pnpm --filter @tezkar/api bootstrap` only when the production database is empty and the initial administrator has not already been created. Never rerun bootstrap against an established production database as a routine deployment step.
 
 ## Release checks
 
 1. API `/api/health` reports database `ok`.
 2. Login creates the HTTP-only `tezkar_session` cookie.
-3. `/api/auth/me` works from the browser.
+3. `/api/auth/me` works from the browser through the Web service's `/api/*` path.
 4. Production creation/approval creates exactly one earnings ledger entry.
 5. Payment cannot exceed the current ledger balance.
 6. Advance payout creates a debit in the earnings ledger.
 7. Warehouse OUT cannot make a location balance negative.
 8. Warehouse transfer creates matching OUT/IN movement records.
-9. CI passes typecheck and build on Node 24.
+9. Finance collection retries with the same idempotency key do not create duplicate revenue.
+10. Accounting allocation totals exactly match the expenses to the cent.
+11. GitHub CI passes typecheck, tests, and build on Node 24.
