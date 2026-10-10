@@ -176,7 +176,7 @@ await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return 
  });
 
  app.get("/api/rates",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{
-  const r=await pool.query("SELECT r.id,r.code,r.rate,r.effective_range,r.is_active,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name,g.name AS rate_group_name,wt.name AS wage_type_name,u.name AS unit_name FROM rates r LEFT JOIN products p ON p.id=r.product_id JOIN stages s ON s.id=r.stage_id LEFT JOIN production_types pt ON pt.id=r.production_type_id LEFT JOIN rate_groups g ON g.id=r.rate_group_id JOIN wage_types wt ON wt.id=r.wage_type_id JOIN units u ON u.id=r.unit_id ORDER BY s.name,p.name,pt.name,r.created_at DESC LIMIT 500");
+  const r=await pool.query("SELECT r.id,r.code,r.rate,r.effective_range,r.is_active,r.product_id,r.stage_id,r.production_type_id,r.rate_group_id,r.wage_type_id,r.unit_id,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name,g.name AS rate_group_name,wt.name AS wage_type_name,u.name AS unit_name FROM rates r LEFT JOIN products p ON p.id=r.product_id JOIN stages s ON s.id=r.stage_id LEFT JOIN production_types pt ON pt.id=r.production_type_id LEFT JOIN rate_groups g ON g.id=r.rate_group_id JOIN wage_types wt ON wt.id=r.wage_type_id JOIN units u ON u.id=r.unit_id ORDER BY s.name,p.name,pt.name,r.created_at DESC LIMIT 500");
   return {data:r.rows};
  });
 
