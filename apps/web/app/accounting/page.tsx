@@ -137,7 +137,7 @@ export default function AccountingPage() {
     setError("");setMessage("");
     try {
       await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null})});
-      setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId?" وتم خصمه من عهدة الموظف":""));await load();if(orderId)await loadProfit(orderId);
+      setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId?" وتم خصمه من عهدة الموظف":""));await load();await loadLedger();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
   }
 
@@ -148,7 +148,7 @@ export default function AccountingPage() {
     }
     try{
       await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({orderId:collectionForm.orderId,employeeId:collectionForm.employeeId,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null})});
-      setCollectionForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل تحصيل العميل كإيراد للطلبية ووارد في عهدة الموظف");await load();
+      setCollectionForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل تحصيل العميل كإيراد للطلبية ووارد في عهدة الموظف");await load();await loadLedger();
     }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل التحصيل")}
   }
 
@@ -156,7 +156,7 @@ export default function AccountingPage() {
     setError("");setMessage("");
     try {
       await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({orderId:rForm.orderId||null,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null})});
-      setRForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل الإيراد");await load();if(orderId)await loadProfit(orderId);
+      setRForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل الإيراد");await load();await loadLedger();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإيراد")}
   }
 
