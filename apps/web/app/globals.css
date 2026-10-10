@@ -488,10 +488,20 @@ th{
   font-size:12px;
   font-weight:800;
 }
-td{color:#475569;background:#fff}
+td{
+  color:#475569;
+  background:#fff;
+  transition:background-color .12s ease;
+}
 td.strong{color:var(--ink);font-weight:700}
-tbody tr:hover td{background:#fbfdff}
+tbody tr:nth-child(odd) td{background:#fff}
+tbody tr:nth-child(even) td{background:linear-gradient(90deg,#f2f6fc 0%,#e8eff8 100%)}
+tbody tr:nth-child(even) td:first-child{box-shadow:inset -4px 0 0 #bfdbfe}
+tbody tr:hover td{background:#dceafe}
+tbody tr:hover td:first-child{box-shadow:inset -3px 0 0 #3b82f6}
 tbody tr:last-child td{border-bottom:0}
+tbody td:nth-child(n){font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){td{transition:none}}
 .mono{
   font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
   direction:ltr;
@@ -1250,3 +1260,52 @@ tbody tr:last-child td{border-bottom:0}
 
 .auth-logo-mark img{display:block;width:100%;height:100%;object-fit:contain;padding:5px;border-radius:inherit}
 .print-brand img{display:inline-block;width:54px;height:54px;object-fit:contain;vertical-align:middle;margin-inline-end:8px}
+
+
+/* Operational tables: subtle alternating rows make dense production, stock,
+   payment and delivery lists easier to scan without overpowering status badges. */
+.table-wrap tbody tr:nth-child(odd){background:#fff}
+.table-wrap tbody tr:nth-child(even){background:#f5f8fd}
+.table-wrap tbody tr{transition:background-color .12s ease}
+.table-wrap tbody tr:hover{background:#eaf2ff}
+.table-wrap tbody td{border-bottom:1px solid #e7edf5}
+.table-wrap tbody tr:last-child td{border-bottom:0}
+.table-wrap td.money,.table-wrap td.numeric,.table-wrap th.numeric,
+.numeric-value{font-variant-numeric:tabular-nums;white-space:nowrap}
+.table-wrap td.money{font-weight:650}
+.table-wrap tbody tr:focus-within{background:#eaf2ff}
+.table-wrap tbody tr td:first-child{border-inline-start:2px solid transparent}
+.table-wrap tbody tr:hover td:first-child{border-inline-start-color:#60a5fa}
+
+/* Delivery-note print layout: stronger company identity, compact barcode and full item detail table. */
+.print-brand{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:5mm;font-size:25px;font-weight:900;color:#0f172a}
+.print-brand img{width:78px;height:78px;object-fit:contain;flex:0 0 78px;margin:0}
+.print-brand div{display:grid;gap:2px;text-align:right}
+.print-brand strong{font-size:25px;line-height:1.2}
+.print-brand span{font-size:12px;color:#475569;font-weight:600}
+.print-barcode{width:min(100%,75mm);margin:0 auto 2mm;}
+.print-barcode svg{display:block;width:100%;}
+.print-delivery-lines{width:100%;border-collapse:collapse;margin:3mm 0;font-size:10px}
+.print-delivery-lines th,.print-delivery-lines td{border:1px solid #cbd5e1;padding:5px 4px;text-align:right;vertical-align:top}
+.print-delivery-lines thead{background:#f1f5f9}
+.print-section-title{font-size:13px;margin:4mm 0 2mm}
+.print-extra{margin:2mm 0;padding:2mm;border:1px solid #e2e8f0;border-radius:2mm;font-size:10px;white-space:pre-wrap}
+@media print{
+ .print-delivery-lines tr{break-inside:avoid}
+ .print-brand{margin-bottom:3mm}
+ .print-brand img{width:78px;height:78px}
+}
+
+.price-change-workers{display:grid;gap:4px;max-height:120px;overflow:auto;min-width:160px}
+.price-change-workers>div{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:3px 5px;border-radius:5px;background:#f1f5f9;font-size:10px}
+.price-change-workers strong{font-weight:800;color:var(--ink)}
+.price-change-workers span{white-space:nowrap;color:var(--muted)}
+
+.delivery-lines-section{display:grid;gap:12px;padding:14px;border:1px solid #dbe5f1;border-radius:12px;background:#f8fafc}
+.delivery-lines-section>.section-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.delivery-line-editor{padding:12px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;display:grid;gap:10px}
+.delivery-line-heading{display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:#334155}
+.delivery-line-heading>span{font-size:12px;color:var(--muted);margin-inline-start:auto}
+.delivery-line-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media(max-width:900px){.delivery-line-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.delivery-line-fields{grid-template-columns:minmax(0,1fr)}.delivery-lines-section>.section-title{align-items:flex-start;flex-direction:column}}

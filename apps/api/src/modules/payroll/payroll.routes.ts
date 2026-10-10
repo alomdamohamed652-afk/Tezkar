@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { calculatePayrollDeduction } from "./payroll-calculation.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -16,6 +17,9 @@ const profileSchema = z.object({
 const adjustmentSchema = z.object({
   bonusAmount: z.number().min(0).max(100000000).optional(),
   deductionAmount: z.number().min(0).max(100000000).optional(),
+  deductionMode: z.enum(["FIXED", "PERCENTAGE"]).optional(),
+  deductionPercentage: z.number().positive().max(100).optional(),
+  deductionBasis: z.enum(["BASE_SALARY", "BASE_PLUS_BONUS"]).optional(),
   notes: z.string().trim().max(1000).nullable().optional()
 });
 const paymentSchema = z.object({
@@ -66,11 +70,25 @@ export async function payrollRoutes(app: FastifyInstance) {
     const period = await pool.query("SELECT * FROM payroll_periods WHERE period_month=$1::date", [month]);
     if (!period.rowCount) return { data: { period: null, items: [], totals: { employees: 0, net: 0, paid: 0, remaining: 0 } } };
     const items = await pool.query(`SELECT i.*,e.code AS employee_code,e.full_name AS employee_name,d.name AS department_name,
-      COALESCE(p.paid,0) AS paid_amount,GREATEST(i.net_amount-COALESCE(p.paid,0),0) AS remaining_amount
+      COALESCE(p.paid,0) AS paid_amount,GREATEST(i.net_amount-COALESCE(p.paid,0),0) AS remaining_amount,
+      COALESCE(ae.amount,0) AS recorded_expense_amount
       FROM payroll_items i JOIN employees e ON e.id=i.employee_id LEFT JOIN departments d ON d.id=e.department_id
       LEFT JOIN (SELECT payroll_item_id,SUM(amount) AS paid FROM payroll_payments GROUP BY payroll_item_id) p ON p.payroll_item_id=i.id
+      LEFT JOIN accounting_expenses ae ON ae.id=i.accounting_expense_id
       WHERE i.period_id=$1 ORDER BY e.full_name`, [period.rows[0].id]);
-    const totals = items.rows.reduce((a, x) => ({ employees:a.employees+1, net:a.net+Number(x.net_amount), paid:a.paid+Number(x.paid_amount), remaining:a.remaining+Number(x.remaining_amount) }), { employees:0, net:0, paid:0, remaining:0 });
+    const totals = items.rows.reduce((a, x) => ({
+      employees:a.employees+1,
+      net:a.net+Number(x.net_amount),
+      paid:a.paid+Number(x.paid_amount),
+      remaining:a.remaining+Number(x.remaining_amount),
+      recordedExpense:a.recordedExpense+Number(x.recorded_expense_amount),
+      // Keep missing links separate from amount mismatches: a missing expense has no
+      // recorded amount to compare, so it must not inflate the linked-difference total.
+      expenseDifference:a.expenseDifference+(x.accounting_expense_id ? Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount)) : 0),
+      missingExpenseCount:a.missingExpenseCount+(Number(x.net_amount)>0&&!x.accounting_expense_id?1:0),
+      missingExpenseAmount:a.missingExpenseAmount+(!x.accounting_expense_id&&Number(x.net_amount)>0?Number(x.net_amount):0),
+      expenseMismatchCount:a.expenseMismatchCount+(x.accounting_expense_id && Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount))>0.01?1:0)
+    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0, missingExpenseAmount:0, expenseMismatchCount:0 });
     return { data: { period: period.rows[0], items: items.rows, totals } };
   });
 
@@ -121,16 +139,34 @@ export async function payrollRoutes(app: FastifyInstance) {
   app.patch("/api/payroll/items/:id", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const id = (request.params as {id:string}).id;
     const parsed = adjustmentSchema.safeParse(request.body);
-    if (!parsed.success || (parsed.data.bonusAmount===undefined && parsed.data.deductionAmount===undefined && parsed.data.notes===undefined)) throw new AppError("VALIDATION_ERROR", "بيانات تعديل مسير الراتب غير صحيحة", 422);
+    if (!parsed.success || (parsed.data.bonusAmount===undefined && parsed.data.deductionAmount===undefined && parsed.data.deductionMode===undefined && parsed.data.deductionPercentage===undefined && parsed.data.deductionBasis===undefined && parsed.data.notes===undefined)) throw new AppError("VALIDATION_ERROR", "بيانات تعديل مسير الراتب غير صحيحة", 422);
     return withTransaction(async client => {
       const before = await client.query("SELECT i.*,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
       if (!before.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
       if (before.rows[0].period_status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "لا يمكن تعديل مسير راتب معتمد", 409);
       const bonus = parsed.data.bonusAmount ?? Number(before.rows[0].bonus_amount);
-      const deduction = parsed.data.deductionAmount ?? Number(before.rows[0].deduction_amount);
+      const deductionMode = parsed.data.deductionMode ?? before.rows[0].deduction_mode ?? "FIXED";
+      const deductionBasis = parsed.data.deductionBasis ?? before.rows[0].deduction_basis ?? "BASE_SALARY";
+      const deductionPercentage = parsed.data.deductionPercentage ?? (before.rows[0].deduction_percentage===null ? null : Number(before.rows[0].deduction_percentage));
+      let deduction: number;
+      if (deductionMode === "PERCENTAGE" && (deductionPercentage === null || deductionPercentage === undefined)) {
+        throw new AppError("DEDUCTION_PERCENTAGE_REQUIRED", "حدد نسبة الخصم أولًا", 422);
+      }
+      try {
+        deduction = calculatePayrollDeduction({
+          baseSalary: Number(before.rows[0].base_salary),
+          bonusAmount: bonus,
+          mode: deductionMode,
+          basis: deductionBasis,
+          percentage: deductionPercentage,
+          fixedAmount: parsed.data.deductionAmount ?? Number(before.rows[0].deduction_amount)
+        }).amount;
+      } catch {
+        throw new AppError("DEDUCTION_PERCENTAGE_INVALID", "نسبة الخصم يجب أن تكون أكبر من صفر وحتى ١٠٠٪", 422);
+      }
       if (Number(before.rows[0].base_salary)+bonus < deduction) throw new AppError("PAYROLL_NET_NEGATIVE", "الخصومات أكبر من إجمالي الراتب والمكافآت", 422);
-      const updated = await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2,notes=$3 WHERE id=$4 RETURNING *",
-        [bonus,deduction,parsed.data.notes===undefined?before.rows[0].notes:parsed.data.notes,id]);
+      const updated = await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2,deduction_mode=$3,deduction_percentage=$4,deduction_basis=$5,notes=$6 WHERE id=$7 RETURNING *",
+        [bonus,deduction,deductionMode,deductionMode==="PERCENTAGE"?deductionPercentage:null,deductionBasis,parsed.data.notes===undefined?before.rows[0].notes:parsed.data.notes,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"adjust",module:"payroll",entityType:"payroll_item",entityId:id,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { data: updated.rows[0] };
     });

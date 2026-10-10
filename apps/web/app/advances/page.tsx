@@ -17,7 +17,7 @@ export default function AdvancesPage(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
    const a=await api<{data:Advance[]}>("/api/advances"+suffix);setItems(a.data);
-   if(has("advances.create")&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/employees")).data);
+   if(has("advances.create")&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/advances/eligible-employees")).data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل السلف")}
  }
  useEffect(()=>{void load()},[employeeId]);

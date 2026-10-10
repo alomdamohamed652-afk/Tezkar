@@ -633,6 +633,115 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(deleteProduction.json().data.status, "CANCELLED");
     const activeProduction = await app.inject({ method: "GET", url: "/api/production", headers: { cookie: submitter.cookie } });
     assert.ok(!activeProduction.json().data.some((x: {id:string}) => x.id === pendingProductionId), "cancelled production must be hidden from the default list");
+    
+    // Verify all three price scopes: new-only leaves old operations untouched,
+    // unpaid-only updates only operations with no payment allocation recorded, and ALL posts
+    // separate auditable ledger adjustments without rewriting approved snapshots.
+    const priceOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Price change integration order", orderDate: "2099-01-08",
+        stages: [{ stageName: "Price change stage", sequenceNo: 1, outputProductName: "Price change product", plannedQuantity: 20, stageRate: 20, stageRateMethod: "PER_PIECE" }] }
+    });
+    assert.equal(priceOrder.statusCode, 201, priceOrder.body);
+    const priceOrderId = priceOrder.json().data.id as string;
+    const priceStage = await apiPool.query(
+      "SELECT os.id,os.stage_id,os.output_product_id,os.stage_rate FROM order_stages os WHERE os.order_id=$1",
+      [priceOrderId]
+    );
+    const priceProduction = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: { employeeId: submitterEmployee, orderStageId: priceStage.rows[0].id,
+        stageId: priceStage.rows[0].stage_id, productId: priceStage.rows[0].output_product_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-08", quantity: 10 }
+    });
+    assert.equal(priceProduction.statusCode, 201, priceProduction.body);
+    const priceProductionId = priceProduction.json().data.id as string;
+    const approvedPriceProduction = await app.inject({
+      method: "POST", url: "/api/production/" + priceProductionId + "/approve",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(approvedPriceProduction.statusCode, 200, approvedPriceProduction.body);
+    const originalPriceEarning = await apiPool.query(
+      "SELECT earning_amount FROM production_entries WHERE id=$1", [priceProductionId]
+    );
+    assert.equal(Number(originalPriceEarning.rows[0].earning_amount), 200);
+
+    const newOnlyChange = await app.inject({
+      method: "POST", url: "/api/orders/" + priceOrderId + "/price-changes",
+      headers: { cookie: submitter.cookie },
+      payload: { orderStageId: priceStage.rows[0].id, newRate: 22, scope: "NEW_ONLY", reason: "Integration new-only price" }
+    });
+    assert.equal(newOnlyChange.statusCode, 201, newOnlyChange.body);
+    assert.equal(newOnlyChange.json().data.affected_entries, 0);
+    const oldEntryAfterNewOnly = await apiPool.query("SELECT earning_amount FROM production_entries WHERE id=$1", [priceProductionId]);
+    assert.equal(Number(oldEntryAfterNewOnly.rows[0].earning_amount), 200, "new-only price changes must not rewrite existing production");
+    const newOnlyStageRate = await apiPool.query("SELECT stage_rate FROM order_stages WHERE id=$1", [priceStage.rows[0].id]);
+    assert.equal(Number(newOnlyStageRate.rows[0].stage_rate), 22);
+
+    const secondPriceProduction = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: { employeeId: submitterEmployee, orderStageId: priceStage.rows[0].id,
+        stageId: priceStage.rows[0].stage_id, productId: priceStage.rows[0].output_product_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-09", quantity: 10 }
+    });
+    assert.equal(secondPriceProduction.statusCode, 201, secondPriceProduction.body);
+    const secondPriceProductionId = secondPriceProduction.json().data.id as string;
+    const secondApproved = await app.inject({
+      method: "POST", url: "/api/production/" + secondPriceProductionId + "/approve",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(secondApproved.statusCode, 200, secondApproved.body);
+    const secondOriginalEarning = await apiPool.query("SELECT earning_amount FROM production_entries WHERE id=$1", [secondPriceProductionId]);
+    assert.equal(Number(secondOriginalEarning.rows[0].earning_amount), 220, "new production must use the new stage price");
+
+    const unpaidOnlyChange = await app.inject({
+      method: "POST", url: "/api/orders/" + priceOrderId + "/price-changes",
+      headers: { cookie: submitter.cookie },
+      payload: { orderStageId: priceStage.rows[0].id, newRate: 25, scope: "UNPAID_ONLY", reason: "Integration unpaid price" }
+    });
+    assert.equal(unpaidOnlyChange.statusCode, 201, unpaidOnlyChange.body);
+    assert.equal(unpaidOnlyChange.json().data.affected_entries, 2);
+    assert.equal(Number(unpaidOnlyChange.json().data.total_delta), 80);
+    const unpaidCredits = await apiPool.query(
+      "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE '%Integration unpaid price%'",
+      [submitterEmployee]
+    );
+    assert.equal(Number(unpaidCredits.rows[0].credits), 80);
+    assert.equal(Number(unpaidCredits.rows[0].debits), 0);
+
+    const allChange = await app.inject({
+      method: "POST", url: "/api/orders/" + priceOrderId + "/price-changes",
+      headers: { cookie: submitter.cookie },
+      payload: { orderStageId: priceStage.rows[0].id, newRate: 30, scope: "ALL", reason: "Integration all price" }
+    });
+    assert.equal(allChange.statusCode, 201, allChange.body);
+    assert.equal(allChange.json().data.affected_entries, 2);
+    assert.equal(Number(allChange.json().data.total_delta), 100);
+    const finalStageRate = await apiPool.query("SELECT stage_rate FROM order_stages WHERE id=$1", [priceStage.rows[0].id]);
+    assert.equal(Number(finalStageRate.rows[0].stage_rate), 30);
+    const approvedSnapshots = await apiPool.query(
+      "SELECT id,earning_amount FROM production_entries WHERE id=ANY($1::uuid[]) ORDER BY id",
+      [[priceProductionId,secondPriceProductionId]]
+    );
+    assert.deepEqual(approvedSnapshots.rows.map((row: {earning_amount:string|number})=>Number(row.earning_amount)).sort((a:number,b:number)=>a-b),[200,220],
+      "approved production snapshots must remain unchanged after price changes");
+    const allCredits = await apiPool.query(
+      "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE '%Integration all price%'",
+      [submitterEmployee]
+    );
+    assert.equal(Number(allCredits.rows[0].credits), 100);
+    assert.equal(Number(allCredits.rows[0].debits), 0);
+    const priceHistory = await app.inject({
+      method: "GET", url: "/api/orders/" + priceOrderId + "/price-changes",
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(priceHistory.statusCode, 200, priceHistory.body);
+    assert.equal(priceHistory.json().data.length, 3);
+    assert.equal(priceHistory.json().data[0].reason, "Integration all price");
+    assert.equal(Number(priceHistory.json().data[0].affected[0].delta_amount), 50);
+    assert.equal(priceHistory.json().data[1].reason, "Integration unpaid price");
+    assert.equal(priceHistory.json().data[2].reason, "Integration new-only price");
+
   } finally {
     if (app) await app.close();
     if (apiPool) await apiPool.end();
