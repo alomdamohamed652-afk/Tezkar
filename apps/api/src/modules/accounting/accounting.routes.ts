@@ -30,6 +30,10 @@ const revenueSchema=z.object({
 const idSchema=z.object({orderId:z.string().uuid()});
 
 export async function accountingRoutes(app:FastifyInstance){
+ app.get("/api/accounting/eligible-employees",{preHandler:[authenticateRequest,requirePermission("finance.ledger.view")]},async()=>{
+  const r=await pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+  return {data:r.rows};
+ });
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر المصروفات غير صحيح",422);
