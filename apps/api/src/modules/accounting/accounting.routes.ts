@@ -104,6 +104,90 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
 
+ const ledgerFilterSchema=z.object({
+  from:z.string().date().optional(),
+  to:z.string().date().optional(),
+  direction:z.enum(["IN","OUT"]).optional(),
+  employeeId:z.string().uuid().optional(),
+  orderId:z.string().uuid().optional(),
+  sourceType:z.string().trim().max(60).optional(),
+  q:z.string().trim().max(160).optional(),
+  limit:z.coerce.number().int().min(1).max(500).default(200)
+ }).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"});
+ const ledgerSql=`
+  SELECT 'CASH-'||c.id::text AS id,c.code,c.transaction_date AS transaction_date,c.direction,c.amount,
+    c.description,
+    CASE WHEN c.transfer_id IS NOT NULL THEN 'CUSTODY_TRANSFER' ELSE COALESCE(c.source_type,'CASH_CUSTODY') END AS source_type,
+    CASE
+      WHEN c.transfer_id IS NOT NULL THEN 'تحويل بين العهد'
+      WHEN c.source_type='ORDER_REVENUE' THEN 'تحصيل عميل / إيراد طلبية'
+      WHEN c.source_type='ACCOUNTING_EXPENSE' THEN 'صرف مصروف'
+      WHEN c.source_type='MANAGER_TOPUP' THEN 'توريد عهدة من المدير المالي'
+      ELSE 'حركة عهدة نقدية'
+    END AS source_label,
+    c.employee_id,e.full_name AS employee_name,
+    COALESCE(rv.order_id,ex.order_id) AS order_id,o.code AS order_code,o.order_name,
+    c.created_by,u.username AS created_by_username,c.notes,
+    (c.transfer_id IS NOT NULL) AS is_internal_transfer
+   FROM cash_custody_transactions c
+   JOIN employees e ON e.id=c.employee_id
+   LEFT JOIN users u ON u.id=c.created_by
+   LEFT JOIN order_revenues rv ON c.source_type='ORDER_REVENUE' AND c.source_id=rv.id
+   LEFT JOIN accounting_expenses ex ON c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=ex.id
+   LEFT JOIN production_orders o ON o.id=COALESCE(rv.order_id,ex.order_id)
+  UNION ALL
+  SELECT 'EXP-'||x.id::text AS id,x.code,x.expense_date AS transaction_date,'OUT' AS direction,x.amount,
+    x.description,'ACCOUNTING_EXPENSE' AS source_type,
+    CASE WHEN x.expense_type='ADMINISTRATIVE' THEN 'مصروف إداري' ELSE 'مصروف مباشر / عام' END AS source_label,
+    x.paid_from_employee_id,e.full_name AS employee_name,x.order_id,o.code AS order_code,o.order_name,
+    x.created_by,u.username AS created_by_username,x.category AS notes,FALSE AS is_internal_transfer
+   FROM accounting_expenses x
+   LEFT JOIN employees e ON e.id=x.paid_from_employee_id
+   LEFT JOIN users u ON u.id=x.created_by
+   LEFT JOIN production_orders o ON o.id=x.order_id
+  WHERE x.cash_custody_transaction_id IS NULL
+  UNION ALL
+  SELECT 'REV-'||r.id::text AS id,r.code,r.revenue_date AS transaction_date,'IN' AS direction,r.amount,
+    COALESCE(NULLIF(r.notes,''),'إيراد مسجل: '||r.source) AS description,'ORDER_REVENUE' AS source_type,
+    CASE WHEN r.source='CUSTOMER_COLLECTION' THEN 'تحصيل من عميل' ELSE 'إيراد مسجل' END AS source_label,
+    r.collected_by_employee_id AS employee_id,e.full_name AS employee_name,r.order_id,o.code AS order_code,o.order_name,
+    r.created_by,u.username AS created_by_username,r.notes,FALSE AS is_internal_transfer
+   FROM order_revenues r
+   LEFT JOIN employees e ON e.id=r.collected_by_employee_id
+   LEFT JOIN users u ON u.id=r.created_by
+   LEFT JOIN production_orders o ON o.id=r.order_id
+  WHERE r.cash_custody_transaction_id IS NULL
+ `;
+ app.get("/api/accounting/ledger",{preHandler:[authenticateRequest,requirePermission("finance.ledger.view")]},async(request)=>{
+  const parsed=ledgerFilterSchema.safeParse(request.query);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر سجل المالية غير صحيحة",422);
+  const q=parsed.data;
+  const params:unknown[]=[];const where:string[]=[];
+  const add=(clause:string,value:unknown)=>{params.push(value);where.push(clause.replace("?", "$"+params.length));};
+  if(q.from)add("l.transaction_date >= ?::date",q.from);
+  if(q.to)add("l.transaction_date <= ?::date",q.to);
+  if(q.direction)add("l.direction = ?",q.direction);
+  if(q.employeeId)add("l.employee_id = ?",q.employeeId);
+  if(q.orderId)add("l.order_id = ?",q.orderId);
+  if(q.sourceType)add("l.source_type = ?",q.sourceType);
+  if(q.q){params.push("%"+q.q+"%");const n=params.length;where.push(`(l.code ILIKE ${n} OR l.description ILIKE ${n} OR COALESCE(l.notes,'') ILIKE ${n} OR COALESCE(l.employee_name,'') ILIKE ${n} OR COALESCE(l.created_by_username,'') ILIKE ${n} OR COALESCE(l.order_code,'') ILIKE ${n} OR COALESCE(l.order_name,'') ILIKE ${n} OR l.source_label ILIKE ${n})`);}
+  const whereSql=where.length?" WHERE "+where.join(" AND "):"";
+  const [rows,summary]=await Promise.all([
+   pool.query(`SELECT l.* FROM (${ledgerSql}) l${whereSql} ORDER BY l.transaction_date DESC,l.code DESC LIMIT ${params.length+1}`,[...params,q.limit]),
+   pool.query(`SELECT COUNT(*)::int AS movement_count,
+      COALESCE(SUM(amount) FILTER(WHERE direction='IN'),0) AS total_in,
+      COALESCE(SUM(amount) FILTER(WHERE direction='OUT'),0) AS total_out,
+      COALESCE(SUM(amount) FILTER(WHERE direction='IN'),0)-COALESCE(SUM(amount) FILTER(WHERE direction='OUT'),0) AS net,
+      COALESCE(SUM(amount) FILTER(WHERE direction='IN' AND source_type='ORDER_REVENUE'),0) AS company_income,
+      COALESCE(SUM(amount) FILTER(WHERE direction='OUT' AND source_type='ACCOUNTING_EXPENSE'),0) AS recorded_expenses,
+      COALESCE(SUM(amount) FILTER(WHERE direction='IN' AND is_internal_transfer),0) AS internal_transfer_in,
+      COALESCE(SUM(amount) FILTER(WHERE direction='OUT' AND is_internal_transfer),0) AS internal_transfer_out
+     FROM (${ledgerSql}) l${whereSql}`,params)
+  ]);
+  return {data:rows.rows,summary:summary.rows[0],filters:{from:q.from??null,to:q.to??null,direction:q.direction??null,employeeId:q.employeeId??null,orderId:q.orderId??null,sourceType:q.sourceType??null,q:q.q??null,limit:q.limit}};
+ });
+
+
  const periodSchema=z.object({
   name:z.string().trim().min(2).max(120),
   periodStart:z.string().date(),
