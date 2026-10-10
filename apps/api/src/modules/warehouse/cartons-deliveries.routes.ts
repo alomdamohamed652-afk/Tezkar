@@ -62,6 +62,26 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
 
+ app.get("/api/orders/:id/delivery-availability",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
+  const orderId=(request.params as {id:string}).id;
+  const order=await pool.query("SELECT id FROM production_orders WHERE id=$1",[orderId]);
+  if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+  const r=await pool.query(`SELECT p.id AS product_id,p.code AS product_code,p.name AS product_name,u.name AS unit_name,
+    COALESCE(ol.quantity,0)::numeric AS ordered_quantity,
+    COALESCE(prod.quantity,0)::numeric AS approved_production,
+    COALESCE(reserved.quantity,0)::numeric AS reserved_delivery,
+    GREATEST(0,COALESCE(prod.quantity,0)-COALESCE(reserved.quantity,0))::numeric AS approved_remaining,
+    COALESCE(stock.quantity,0)::numeric AS warehouse_stock,
+    GREATEST(0,COALESCE(stock.quantity,0)-COALESCE(stock_reserved.quantity,0))::numeric AS unreserved_stock
+   FROM production_order_lines ol JOIN products p ON p.id=ol.product_id JOIN units u ON u.id=p.unit_id
+   LEFT JOIN LATERAL (SELECT SUM(pe.quantity) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=ol.order_id AND pe.product_id=ol.product_id AND pe.status='APPROVED') prod ON TRUE
+   LEFT JOIN LATERAL (SELECT SUM(dl.quantity) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id WHERE dp.order_id=ol.order_id AND dl.product_id=ol.product_id AND dp.status IN ('READY','RELEASED')) reserved ON TRUE
+   LEFT JOIN LATERAL (SELECT SUM(sb.quantity) AS quantity FROM stock_balances sb JOIN warehouses w ON w.id=sb.warehouse_id WHERE sb.product_id=ol.product_id AND w.warehouse_type='FINISHED_GOODS') stock ON TRUE
+   LEFT JOIN LATERAL (SELECT SUM(dl.quantity) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id JOIN warehouses w ON w.id=dl.warehouse_id WHERE dp.status='READY' AND dl.product_id=ol.product_id AND w.warehouse_type='FINISHED_GOODS') stock_reserved ON TRUE
+   WHERE ol.order_id=$1 ORDER BY p.name`,[orderId]);
+  return {data:r.rows.map(x=>({...x,available_to_deliver:Math.min(Number(x.approved_remaining),Number(x.unreserved_stock))}))};
+ });
+
  app.post("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request,reply)=>{
   const parsed=deliverySchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إذن التسليم غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
@@ -88,7 +108,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
         WHERE dp.order_id=$1 AND dl.product_id=$2 AND dp.status IN ('READY','RELEASED')`,
       [parsed.data.orderId,line.productId]);
     const productionAvailable=Number(produced.rows[0].quantity)-Number(reserved.rows[0].quantity);
-    if(Number(line.quantity)>productionAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION","كمية إذن التسليم تتجاوز الإنتاج المعتمد المتبقي للطلبية",409);
+    if(Number(line.quantity)>productionAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION",`الكمية المطلوبة (${Number(line.quantity).toLocaleString("en-US")}) أكبر من الإنتاج المعتمد المتبقي (${Math.max(0,productionAvailable).toLocaleString("en-US")}). راجع إنتاج الصنف المعتمد والتسليمات السابقة أو الأذونات الجاهزة.`,409);
 
     const stock=await client.query(
       `SELECT quantity
