@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -252,10 +253,11 @@ export async function custodyRoutes(app:FastifyInstance){
   const orderCollectionSchema=z.object({
     employeeId:z.string().uuid().optional(),
     orderId:z.string().uuid(),
-    amount:z.number().positive(),
+    amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
     transactionDate:z.string().date().optional(),
     description:z.string().trim().min(2).max(500),
-    notes:z.string().trim().max(1000).nullable().optional()
+    notes:z.string().trim().max(1000).nullable().optional(),
+    idempotencyKey:z.string().uuid()
   });
 
   // Customer collection is one atomic business event: company revenue plus cash
@@ -270,17 +272,49 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
       const order=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
-      const duplicate=await client.query("SELECT id FROM order_revenues WHERE order_id=$1 AND collected_by_employee_id=$2 AND amount=$3 AND revenue_date=$4 AND source='CUSTOMER_COLLECTION' LIMIT 1 FOR SHARE",[p.data.orderId,employeeId,p.data.amount,date]);
-      if(duplicate.rowCount)throw new AppError("DUPLICATE_ORDER_COLLECTION","يوجد تحصيل بنفس الطلبية والموظف والمبلغ والتاريخ بالفعل؛ راجع الحركات قبل التسجيل مرة أخرى",409);
+      // Idempotency is keyed by the caller's operation identifier, never by amount/date.
+      // Two legitimate collections may have identical business fields.
+      if(p.data.idempotencyKey){
+        const prior=await client.query(
+          "SELECT r.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM order_revenues r LEFT JOIN cash_custody_transactions c ON c.id=r.cash_custody_transaction_id WHERE r.idempotency_key=$1 FOR SHARE OF r",
+          [p.data.idempotencyKey]
+        );
+        if(prior.rowCount){
+          const existing=prior.rows[0];
+          const matches=existing.idempotency_payload_hash===idempotencyPayloadHash;
+          if(!matches)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لتحصيل ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
+          return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
+        }
+      }
       const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
-      const revenue=await client.query(
-        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6,$7) RETURNING *",
-        [p.data.orderId,codeResult.rows[0].code,p.data.amount,date,p.data.notes??null,request.user!.userId,employeeId]
-      );
+      let revenue;
+      if(p.data.idempotencyKey){
+        revenue=await client.query(
+          "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6 ,$7,$8,$9) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
+          [p.data.orderId,codeResult.rows[0].code,p.data.amount,date,p.data.notes??null,request.user!.userId,employeeId,p.data.idempotencyKey,idempotencyPayloadHash]
+        );
+        if(!revenue.rowCount){
+          const prior=await client.query(
+            "SELECT r.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM order_revenues r LEFT JOIN cash_custody_transactions c ON c.id=r.cash_custody_transaction_id WHERE r.idempotency_key=$1 FOR SHARE OF r",
+            [p.data.idempotencyKey]
+          );
+          if(!prior.rowCount)throw new AppError("COLLECTION_RETRY_CONFLICT","تعذر استرجاع التحصيل السابق؛ أعد المحاولة بنفس المفتاح.",409);
+          const existing=prior.rows[0];
+          const matches=existing.idempotency_payload_hash===idempotencyPayloadHash;
+          if(!matches)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لتحصيل ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
+          return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
+        }
+      } else {
+        revenue=await client.query(
+          "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6,$7) RETURNING *",
+          [p.data.orderId,codeResult.rows[0].code,p.data.amount,date,p.data.notes??null,request.user!.userId,employeeId]
+        );
+      }
       const cash=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3,$4,$5,'ORDER_REVENUE',$6,$7) RETURNING *",
         [employeeId,p.data.amount,date,p.data.description,p.data.notes??null,revenue.rows[0].id,request.user!.userId]
