@@ -66,14 +66,16 @@ CREATE INDEX IF NOT EXISTS idx_accounting_allocations_order
 
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('finance.period_close.view','finance','period_close','view','all'),
- ('finance.period_close.create','finance','period_close','create','all'),
- ('cash_custody.order_collection','finance','cash_custody','order_collection','own')
+ ('finance.period_close.create','finance','period_close','create','all')
 ON CONFLICT(code) DO NOTHING;
 
+-- Grant settlement access to roles that already have accounting permissions.
 INSERT INTO role_permissions(role_id,permission_id)
-SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
-WHERE r.code IN ('admin','manager','finance','accountant')
-  AND p.code IN ('finance.period_close.view','finance.period_close.create','cash_custody.order_collection')
+SELECT DISTINCT existing_rp.role_id,new_permission.id
+FROM role_permissions existing_rp
+JOIN permissions existing_permission ON existing_permission.id=existing_rp.permission_id
+JOIN permissions new_permission ON new_permission.code IN ('finance.period_close.view','finance.period_close.create')
+WHERE existing_permission.code IN ('finance.expenses.view','finance.expenses.create','finance.revenues.view','finance.revenues.create','finance.profitability.view')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version)
