@@ -29,10 +29,11 @@ const groups:NavGroup[]=[
   {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
-  {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own"],conditional:"custody"},
+  {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own"],conditional:"custody"},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
  ]},
  {label:"الإدارة",items:[
+  {icon:"◷",label:"سجل النظام",href:"/audit-logs",permissions:["audit.view"]},
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
@@ -55,11 +56,10 @@ export function Sidebar({active}:{active:string}){
  useEffect(()=>{let alive=true;if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});if(permissions?.some(p=>p==="payment_requests.view"||p==="worker_payments.view"))api<{data:{status:string}[]}>("/api/payment-requests").then(r=>{if(alive)setPendingPaymentCount(r.data.filter(x=>x.status==="PENDING"||x.status==="APPROVED").length)}).catch(()=>{if(alive)setPendingPaymentCount(0)});return()=>{alive=false}},[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null)return false;
-   if(item.conditional==="custody"&&session?.activeRecords?.custody)return true;
    if(!item.permissions?.some(p=>permissions.includes(p)))return false;
    if(!item.conditional)return true;
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
-   if(item.conditional==="custody"&&permissions.includes("custody.view"))return true;
+   if(item.conditional==="custody"&&(permissions.includes("custody.view")||permissions.includes("cash_custody.view")))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
