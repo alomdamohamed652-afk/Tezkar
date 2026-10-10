@@ -15,7 +15,7 @@ type Line={productId:string;warehouseId:string;quantity:string;notes:string};
 type Row={id:string;code:string;withdrawal_date:string;shift_code:string;shift_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;line_count:number;total_quantity:number};
 
 export default function ShiftWithdrawalsPage(){
- const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]);
+ const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[allOrders,setAllOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]);
  const [shiftId,setShiftId]=useState(""),[employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[notes,setNotes]=useState("");
  const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);
 
@@ -24,12 +24,12 @@ export default function ShiftWithdrawalsPage(){
    const [s,e,p,w,st,o,os,r]=await Promise.all([
     api<{data:Item[]}>("/api/shifts"),api<{data:Employee[]}>("/api/employees"),api<{data:Product[]}>("/api/products"),
     api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Stock[]}>("/api/warehouse/stock"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),
-    api<{data:Row[]}>("/api/shift-withdrawals")
+    api<{data:Row[]}>("/api/shift-withdrawals"+(new URLSearchParams({... (filterFrom?{from:filterFrom}:{}),...(filterTo?{to:filterTo}:{}),...(filterShiftId?{shiftId:filterShiftId}:{}),...(filterEmployeeId?{employeeId:filterEmployeeId}:{}),...(filterOrderId?{orderId:filterOrderId}:{}),...(filterProductId?{productId:filterProductId}:{}),...(filterSearch.trim()?{q:filterSearch.trim()}: {})}).toString()?"?"+new URLSearchParams({... (filterFrom?{from:filterFrom}:{}),...(filterTo?{to:filterTo}:{}),...(filterShiftId?{shiftId:filterShiftId}:{}),...(filterEmployeeId?{employeeId:filterEmployeeId}:{}),...(filterOrderId?{orderId:filterOrderId}:{}),...(filterProductId?{productId:filterProductId}:{}),...(filterSearch.trim()?{q:filterSearch.trim()}: {})}).toString():""))
    ]);
-   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setStock(st.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setOrderStages(os.data);setRows(r.data);
+   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setStock(st.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setAllOrders(o.data);setOrderStages(os.data);setRows(r.data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مسحوبات الورديات")}
  }
- useEffect(()=>{void load()},[]);
+ useEffect(()=>{void load()},[filterFrom,filterTo,filterShiftId,filterEmployeeId,filterOrderId,filterProductId,filterSearch]);
 
  useEffect(()=>{
   setEmployeeId("");
@@ -99,8 +99,17 @@ export default function ShiftWithdrawalsPage(){
    </form>
 
    <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{rows.length}</span></div>
-    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead>
-     <tbody>{rows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!rows.length&&<tr><td colSpan={7}>لا توجد مسحوبات.</td></tr>}</tbody>
+    <div className="form-grid finance-four-grid" style={{padding:16}}>
+     <label>من تاريخ<input type="date" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)}/></label><label>إلى تاريخ<input type="date" value={filterTo} onChange={e=>setFilterTo(e.target.value)}/></label>
+     <label>الوردية<select value={filterShiftId} onChange={e=>setFilterShiftId(e.target.value)}><option value="">كل الورديات</option>{shifts.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+     <label>الموظف المسؤول<select value={filterEmployeeId} onChange={e=>setFilterEmployeeId(e.target.value)}><option value="">كل الموظفين</option>{employees.map(x=><option key={x.id} value={x.id}>{x.full_name}</option>)}</select></label>
+     <label>الطلبية<select value={filterOrderId} onChange={e=>setFilterOrderId(e.target.value)}><option value="">كل الطلبيات</option>{allOrders.map(x=><option key={x.id} value={x.id}>{x.code} — {x.order_name}</option>)}</select></label>
+     <label>المنتج<select value={filterProductId} onChange={e=>setFilterProductId(e.target.value)}><option value="">كل المنتجات</option>{products.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+     <label>بحث بالكود أو البيان أو الحساب<input value={filterSearch} onChange={e=>setFilterSearch(e.target.value)} placeholder="الكود أو اسم الحساب أو المنتج"/></label>
+     <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>{setFilterFrom("");setFilterTo("");setFilterShiftId("");setFilterEmployeeId("");setFilterOrderId("");setFilterProductId("");setFilterSearch("")}}>مسح الفلاتر</button></div>
+    </div>
+    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th>الحساب المسجّل</th><th></th></tr></thead>
+     <tbody>{rows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td>{r.created_by_username||"—"}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!rows.length&&<tr><td colSpan={9}>لا توجد مسحوبات مطابقة للفلاتر.</td></tr>}</tbody>
     </table></div>
    </section>
   </section></main></div>;
