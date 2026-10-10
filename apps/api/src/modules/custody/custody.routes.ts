@@ -18,10 +18,13 @@ const createSchema=z.object({
 });
 
 const settleSchema=z.object({
-  returnedQuantity:z.number().positive(),
+  returnedQuantity:z.number().nonnegative().default(0),
+  lostQuantity:z.number().nonnegative().default(0),
   damageValue:z.number().nonnegative().default(0),
   shortageValue:z.number().nonnegative().default(0),
   notes:z.string().trim().max(1000).nullable().optional()
+}).superRefine((v,ctx)=>{
+  if(v.returnedQuantity+v.lostQuantity<=0)ctx.addIssue({code:"custom",path:["returnedQuantity"],message:"يجب تسجيل كمية مرتجعة أو مفقودة"});
 });
 
 async function workerInfo(userId:string){
@@ -81,15 +84,20 @@ export async function custodyRoutes(app:FastifyInstance){
   });
   app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
+    const scopeClient=await pool.connect();
+    let canViewAll=false;
+    try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all")}finally{scopeClient.release()}
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
-    if(user?.is_worker){
-      if(!user.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(user.employee_id);where.push("c.employee_id=$"+params.length);where.push("c.status IN ('ACTIVE','PARTIAL_RETURNED')");
+    if(!canViewAll){
+      if(!user?.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(user.employee_id);where.push("c.employee_id=$"+params.length);
+      if(user.is_worker)where.push("c.status IN ('ACTIVE','PARTIAL_RETURNED')");
     }
     const r=await pool.query(
       `SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,
               COALESCE((SELECT SUM(returned_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0) AS returned_quantity,
-              GREATEST(c.quantity-COALESCE((SELECT SUM(returned_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0),0) AS remaining_quantity
+              COALESCE((SELECT SUM(lost_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0) AS lost_quantity,
+              GREATEST(c.quantity-COALESCE((SELECT SUM(returned_quantity+lost_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0),0) AS remaining_quantity
          FROM employee_custodies c JOIN employees e ON e.id=c.employee_id
         WHERE ${where.join(" AND ")}
         ORDER BY c.created_at DESC LIMIT 500`,params);
@@ -112,11 +120,20 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:r});
   });
 
-  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest,requirePermission("custody.view")]},async(request)=>{
+  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;
+    const user=await workerInfo(request.user!.userId);
+    const scopeClient=await pool.connect();
+    let canViewAll=false;
+    try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all")}finally{scopeClient.release()}
+    const params:unknown[]=[id];let scope="";
+    if(!canViewAll){
+      if(!user?.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(user.employee_id);scope=" AND cs.employee_id=$2";
+    }
     const r=await pool.query(
-      "SELECT cs.*,u.username AS settled_by_username FROM custody_settlements cs JOIN users u ON u.id=cs.settled_by WHERE cs.custody_id=$1 ORDER BY cs.settled_at DESC",
-      [id]
+      `SELECT cs.*,u.username AS settled_by_username FROM custody_settlements cs JOIN users u ON u.id=cs.settled_by WHERE cs.custody_id=$1${scope} ORDER BY cs.settled_at DESC`,
+      params
     );
     return {data:r.rows};
   });
@@ -127,15 +144,16 @@ export async function custodyRoutes(app:FastifyInstance){
     const result=await withTransaction(async client=>{
       const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);
       if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
-      if(["RETURNED","CANCELLED","LOST"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","العهدة مغلقة بالفعل",409);
-      const returned=await client.query("SELECT COALESCE(SUM(returned_quantity),0) AS q FROM custody_settlements WHERE custody_id=$1",[id]);
+      if(["RETURNED","CANCELLED","DAMAGED","LOST"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","العهدة مغلقة بالفعل",409);
+      const returned=await client.query("SELECT COALESCE(SUM(returned_quantity+lost_quantity),0) AS q FROM custody_settlements WHERE custody_id=$1",[id]);
       const already=Number(returned.rows[0].q||0);const remaining=Number(custody.rows[0].quantity)-already;
-      if(p.data.returnedQuantity>remaining+1e-9)throw new AppError("CUSTODY_RETURN_EXCEEDS_BALANCE","الكمية المرتجعة أكبر من المتبقي في العهدة",409);
-      const next=remaining-p.data.returnedQuantity;
-      const status=next<=1e-9?(p.data.shortageValue>0?"LOST":p.data.damageValue>0?"DAMAGED":"FULL"):"PARTIAL";
+      const accounted=p.data.returnedQuantity+p.data.lostQuantity;
+      if(accounted>remaining+1e-9)throw new AppError("CUSTODY_RETURN_EXCEEDS_BALANCE","الكمية المرتجعة أو المفقودة أكبر من المتبقي في العهدة",409);
+      const next=remaining-accounted;
+      const status=next<=1e-9?(p.data.lostQuantity>0?"LOST":p.data.damageValue>0||p.data.shortageValue>0?"DAMAGED":"FULL"):"PARTIAL";
       const x=await client.query(
-        "INSERT INTO custody_settlements(custody_id,employee_id,returned_quantity,damage_value,shortage_value,status,notes,settled_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
-        [id,custody.rows[0].employee_id,p.data.returnedQuantity,p.data.damageValue,p.data.shortageValue,status,p.data.notes??null,request.user!.userId]
+        "INSERT INTO custody_settlements(custody_id,employee_id,returned_quantity,lost_quantity,damage_value,shortage_value,status,notes,settled_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+        [id,custody.rows[0].employee_id,p.data.returnedQuantity,p.data.lostQuantity,p.data.damageValue,p.data.shortageValue,status,p.data.notes??null,request.user!.userId]
       );
       const custodyStatus=next<=1e-9?(status==="LOST"?"LOST":status==="DAMAGED"?"DAMAGED":"RETURNED"):"PARTIAL_RETURNED";
       const updated=await client.query("UPDATE employee_custodies SET status=$1,returned_at=CASE WHEN $2='RETURNED' OR $2='LOST' OR $2='DAMAGED' THEN now() ELSE returned_at END,updated_at=now() WHERE id=$3 RETURNING *",[custodyStatus,status,id]);
@@ -187,8 +205,16 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
-      // Serialize duplicate checks per employee so concurrent requests cannot both pass an empty lookup.
-      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
+      // Serialize balance and duplicate checks per employee to prevent concurrent overspending.
+      const employeeLock=await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
+      if(!employeeLock.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",422);
+      if(p.data.direction==="OUT"){
+        const balance=await client.query(
+          "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",
+          [employeeId,date]
+        );
+        if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المبلغ المطلوب صرفه أكبر من رصيد العهدة المتاح في هذا التاريخ",409);
+      }
       const dup=await client.query(`SELECT id,code,description FROM cash_custody_transactions
         WHERE employee_id=$1 AND direction=$2 AND amount=$3 AND transaction_date=$4
         ORDER BY created_at DESC LIMIT 10 FOR SHARE`,

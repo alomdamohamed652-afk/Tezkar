@@ -4,7 +4,7 @@ import {api,ApiError} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 import {SearchableSelect} from "../../components/searchable-select";
 
-type Custody={id:string;code:string;employee_name:string;custody_type:string;description:string;quantity:number;unit_value:number;total_value:number;status:string;issued_at:string;due_date:string|null;returned_quantity:number;remaining_quantity:number};
+type Custody={id:string;code:string;employee_name:string;custody_type:string;description:string;quantity:number;unit_value:number;total_value:number;status:string;issued_at:string;due_date:string|null;returned_quantity:number;lost_quantity:number;remaining_quantity:number};
 type Employee={id:string;full_name:string;code:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتجع جزئي",RETURNED:"مُسواة",DAMAGED:"تالف",LOST:"مفقودة",CANCELLED:"ملغاة"};
@@ -43,7 +43,7 @@ export default function CustodyPage(){
   }
   await api("/api/cash-custody",{method:"POST",body:JSON.stringify(payload)});
   setCashAmount("");setCashDescription("");setCashNotes("");setDuplicateOpen(false);setDuplicateMatches([]);
-  setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data);
+  if(has("cash_custody.view")||has("cash_custody.view_own"))setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل حركة العهدة النقدية")}finally{setCashSaving(false)}
 }
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
@@ -51,11 +51,16 @@ export default function CustodyPage(){
   setEmployeeId("");setType("");setDescription("");setQuantity("");setUnitValue("");setDueDate("");setNotes("");await load();
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل العهدة")}finally{setSaving(false)}}
  async function settle(x:Custody){
-  const raw=window.prompt("الكمية المرتجعة — المتبقي "+x.remaining_quantity);if(raw===null)return;
-  const q=Number(normalizeNumber(raw));if(!Number.isFinite(q)||q<=0||q>x.remaining_quantity){setError("كمية المرتجع غير صحيحة");return}
-  const damage=window.prompt("قيمة التلف إن وجدت","0");if(damage===null)return;
-  const shortage=window.prompt("قيمة العجز إن وجد","0");if(shortage===null)return;
-  try{await api("/api/custodies/"+x.id+"/settlements",{method:"POST",body:JSON.stringify({returnedQuantity:q,damageValue:Number(normalizeNumber(damage)),shortageValue:Number(normalizeNumber(shortage))})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسوية العهدة")}
+  const raw=window.prompt("الكمية المرتجعة — المتبقي "+x.remaining_quantity,"0");if(raw===null)return;
+  const q=Number(normalizeNumber(raw));
+  const lostRaw=window.prompt("الكمية المفقودة إن وجدت","0");if(lostRaw===null)return;
+  const lost=Number(normalizeNumber(lostRaw));
+  if(!Number.isFinite(q)||q<0||!Number.isFinite(lost)||lost<0||q+lost<=0||q+lost>x.remaining_quantity){setError("راجع الكمية المرتجعة والمفقودة؛ يجب أن تكونا صحيحتين ومجموعهما لا يتجاوز المتبقي");return}
+  const damageRaw=window.prompt("قيمة التلف إن وجدت","0");if(damageRaw===null)return;
+  const shortageRaw=window.prompt("قيمة العجز المالي إن وجد","0");if(shortageRaw===null)return;
+  const damage=Number(normalizeNumber(damageRaw)),shortage=Number(normalizeNumber(shortageRaw));
+  if(!Number.isFinite(damage)||damage<0||!Number.isFinite(shortage)||shortage<0){setError("قيمة التلف أو العجز غير صحيحة");return}
+  try{await api("/api/custodies/"+x.id+"/settlements",{method:"POST",body:JSON.stringify({returnedQuantity:q,lostQuantity:lost,damageValue:damage,shortageValue:shortage})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسوية العهدة")}
  }
  return <div className="app-shell"><Sidebar active="/custody"/><main className="main"><header className="topbar"><div><h1 className="page-title">عهد الموظفين</h1><p className="page-subtitle">تسجيل العهدة على الموظف، متابعة المتبقي، ثم تسويتها بسجل مستقل.</p></div></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
@@ -72,14 +77,14 @@ export default function CustodyPage(){
   <div className="form-actions"><button className="primary-button" disabled={saving||!employeeId}>{saving?"جارٍ الحفظ...":"تسجيل العهدة"}</button></div>
  </form>}
  <section className="card"><div className="card-header"><div><h2 className="card-title">سجل العهد</h2><div className="form-hint">المرتجع والتلف والعجز لا يمسحون السجل الأصلي.</div></div><span className="count-badge">{items.length}</span></div>
-  <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>نوع العهدة</th><th>الوصف</th><th>الأصل</th><th>المرتجع</th><th>المتبقي</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>
-  {items.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="strong">{x.employee_name}</td><td>{x.custody_type}</td><td>{x.description}</td><td>{Number(x.quantity).toLocaleString("ar-EG")}</td><td>{Number(x.returned_quantity||0).toLocaleString("ar-EG")}</td><td>{Number(x.remaining_quantity||0).toLocaleString("ar-EG")}</td><td><span className="status">{labels[x.status]||x.status}</span></td><td>{x.remaining_quantity>0&&has("custody.settle")&&<button className="secondary-btn" onClick={()=>settle(x)}>تسوية / مرتجع</button>}</td></tr>)}
-  {!items.length&&<tr><td colSpan={9}>لا توجد عهد مسجلة.</td></tr>}</tbody></table></div>
+  <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>نوع العهدة</th><th>الوصف</th><th>الأصل</th><th>المرتجع</th><th>المفقود</th><th>المتبقي</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>
+  {items.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="strong">{x.employee_name}</td><td>{x.custody_type}</td><td>{x.description}</td><td>{Number(x.quantity).toLocaleString("ar-EG")}</td><td>{Number(x.returned_quantity||0).toLocaleString("ar-EG")}</td><td>{Number(x.lost_quantity||0).toLocaleString("ar-EG")}</td><td>{Number(x.remaining_quantity||0).toLocaleString("ar-EG")}</td><td><span className="status">{labels[x.status]||x.status}</span></td><td>{x.remaining_quantity>0&&has("custody.settle")&&<button className="secondary-btn" onClick={()=>settle(x)}>تسوية / مرتجع</button>}</td></tr>)}
+  {!items.length&&<tr><td colSpan={10}>لا توجد عهد مسجلة.</td></tr>}</tbody></table></div>
  </section>
 
  <section className="card" style={{marginTop:16}}>
   <div className="card-header"><div><h2 className="card-title">العهدة النقدية</h2><div className="form-hint">الداخل والخارج يسجلان كحركات مستقلة، والرصيد يحسب تلقائيًا. المحاسب/الأدمن يستطيعان إدارة عهد الجميع، وصاحب العهدة يدير عهدته فقط.</div></div><span className="count-badge">{cash.length}</span></div>
-  <form className="form-grid" onSubmit={submitCash}>
+  {(has("cash_custody.create")||has("cash_custody.create_own"))&&<form className="form-grid" onSubmit={submitCash}>
    <label>اتجاه الحركة<select value={cashDirection} onChange={e=>setCashDirection(e.target.value as "IN"|"OUT")}><option value="IN">داخل إلى العهدة</option><option value="OUT">صرف من العهدة</option></select></label>
    {(has("cash_custody.create")||has("cash_custody.view")||has("custody.create")||has("custody.view"))?<label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>:<div className="form-hint">الحركة هتتسجل على عهدتك الشخصية حسب صلاحيات حسابك.</div>}
    <label>المبلغ<input inputMode="decimal" value={cashAmount} onChange={e=>setCashAmount(e.target.value)} required/></label>
@@ -87,8 +92,8 @@ export default function CustodyPage(){
    <label style={{gridColumn:"1/-1"}}>البيان<input value={cashDescription} onChange={e=>setCashDescription(e.target.value)} placeholder="مثال: إضافة عهدة نقدية / صرف مشتريات" required/></label>
    <label style={{gridColumn:"1/-1"}}>ملاحظات<input value={cashNotes} onChange={e=>setCashNotes(e.target.value)}/></label>
    <div className="form-actions"><button className="primary-button" disabled={cashSaving||!cashAmount||!cashDescription.trim()}>{cashSaving?"جارٍ التسجيل...":"تسجيل الحركة"}</button></div>
-  </form>
-  <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>النوع</th><th>المبلغ</th><th>التاريخ</th><th>البيان</th><th>الرصيد بعد الحركة</th></tr></thead><tbody>{cash.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_name}</td><td>{x.direction==="IN"?"داخل":"خارج"}</td><td className="money">{Number(x.amount).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>{x.transaction_date}</td><td>{x.description}</td><td className="money">{Number(x.balance).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>)}{!cash.length&&<tr><td colSpan={7}>لا توجد حركات نقدية.</td></tr>}</tbody></table></div>
+  </form>}
+  {(has("cash_custody.view")||has("cash_custody.view_own"))&&<div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>النوع</th><th>المبلغ</th><th>التاريخ</th><th>البيان</th><th>الرصيد بعد الحركة</th></tr></thead><tbody>{cash.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_name}</td><td>{x.direction==="IN"?"داخل":"خارج"}</td><td className="money">{Number(x.amount).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>{x.transaction_date}</td><td>{x.description}</td><td className="money">{Number(x.balance).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>)}{!cash.length&&<tr><td colSpan={7}>لا توجد حركات نقدية.</td></tr>}</tbody></table></div>}
  </section>
  {duplicateOpen&&<div className="modal-backdrop" onClick={()=>setDuplicateOpen(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}>
    <div className="card-header"><div><h2 className="card-title">تأكيد حركة مكررة</h2><div className="form-hint">وجد النظام حركة أو أكثر مشابهة. هل تريد تسجيل الحركة الجديدة رغم ذلك؟</div></div><button type="button" className="secondary-btn" onClick={()=>setDuplicateOpen(false)}>إغلاق</button></div>
