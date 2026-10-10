@@ -257,7 +257,7 @@ export async function custodyRoutes(app:FastifyInstance){
     transactionDate:z.string().date().optional(),
     description:z.string().trim().min(2).max(500),
     notes:z.string().trim().max(1000).nullable().optional(),
-    idempotencyKey:z.string().uuid().optional()
+    idempotencyKey:z.string().uuid()
   });
 
   // Customer collection is one atomic business event: company revenue plus cash
