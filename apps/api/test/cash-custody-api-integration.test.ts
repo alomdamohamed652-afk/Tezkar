@@ -88,6 +88,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const unprivilegedEmployee = (await apiPool.query(
         "INSERT INTO employees(full_name) VALUES ('Cash Custody Unprivileged Employee') RETURNING id"
       )).rows[0];
+      const ownScopeEmployee = (await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES ('Own Scope Test Employee') RETURNING id"
+      )).rows[0];
       const unprivilegedUsername = "cashnoperm-" + randomBytes(4).toString("hex");
       const unprivilegedPassword = "Test-Cash-No-Permission-2026!";
       await apiPool.query(
@@ -116,7 +119,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const ownScopePassword="Test-Own-Scope-2026!";
       const ownScopeUser=(await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
-        [ownScopeUsername,hashPassword(ownScopePassword),employeeB.id]
+        [ownScopeUsername,hashPassword(ownScopePassword),ownScopeEmployee.id]
       )).rows[0];
       await apiPool.query(
         "INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)",
@@ -127,7 +130,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [ownScopeRole.id]
       );
 
-      // Seed one custody record per employee; own-scope users must not see both.
+      // Seed records for distinct employees; each login is linked to only one employee.
+      await apiPool.query(
+        "INSERT INTO employee_custodies(employee_id,custody_type,description,quantity,unit_value,total_value,created_by) VALUES($1,'Test','Own scope custody',1,30,30,$2)",
+        [ownScopeEmployee.id,ownScopeUser.id]
+      );
       await apiPool.query(
         "INSERT INTO employee_custodies(employee_id,custody_type,description,quantity,unit_value,total_value,created_by) VALUES($1,'Test','Employee A custody',1,10,10,$2),($3,'Test','Employee B custody',1,20,20,$4)",
         [employeeA.id,worker.id,employeeB.id,manager.id]
@@ -161,7 +168,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(ownCustodies.statusCode, 200, ownCustodies.body);
       assert.equal(ownCustodies.json().data.length, 1);
-      assert.equal(ownCustodies.json().data[0].employee_id, employeeB.id);
+      assert.equal(ownCustodies.json().data[0].employee_id, ownScopeEmployee.id);
 
       const employeeACustody=(await apiPool.query(
         "SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Employee A custody'",
@@ -178,14 +185,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       await apiPool.query(
         "INSERT INTO advance_requests(employee_id,amount,reason,requested_by) VALUES($1,75,'Own scope integration test',$2)",
-        [employeeB.id,manager.id]
+        [ownScopeEmployee.id,manager.id]
       );
       const ownAdvances = await app.inject({
         method: "GET", url: "/api/advances", headers: { cookie: ownScopeCookie }
       });
       assert.equal(ownAdvances.statusCode, 200, ownAdvances.body);
       assert.equal(ownAdvances.json().data.length, 1);
-      assert.equal(ownAdvances.json().data[0].employee_id, employeeB.id);
+      assert.equal(ownAdvances.json().data[0].employee_id, ownScopeEmployee.id);
 
       const unauthenticated = await app.inject({ method: "GET", url: "/api/cash-custody" });
       assert.equal(unauthenticated.statusCode, 401);
