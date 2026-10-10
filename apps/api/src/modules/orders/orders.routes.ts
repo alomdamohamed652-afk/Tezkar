@@ -360,7 +360,7 @@ export async function orderRoutes(app: FastifyInstance) {
       if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","المرحلة لا تتبع هذه الطلبية",404);
       const oldRate=stage.rows[0].stage_rate==null?null:Number(stage.rows[0].stage_rate);
       const newRate=parsed.data.newRate;
-      await client.query("UPDATE order_stages SET stage_rate=$1,updated_at=now() WHERE id=$2",[newRate,parsed.data.orderStageId]);
+      await client.query("UPDATE order_stages SET stage_rate=$1 WHERE id=$2",[newRate,parsed.data.orderStageId]);
       const created=await client.query(
         "INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,scope,reason,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
         [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.scope,parsed.data.reason,request.user!.userId]
