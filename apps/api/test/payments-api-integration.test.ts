@@ -96,7 +96,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(custodyDebit.rows[0].direction,"OUT");
       assert.equal(Number(custodyDebit.rows[0].amount),150);
       assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
-      assert.match(custodyDebit.rows[0].description,/REQ-|طلب قبض/);
+      assert.match(custodyDebit.rows[0].description,/صرف طلب القبض/);
 
       const balance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(balance.statusCode,200,balance.body);
