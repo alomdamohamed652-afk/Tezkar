@@ -31,7 +31,7 @@ export async function auditRoutes(app:FastifyInstance){
     if(q.entityType)add("a.entity_type = ?",q.entityType);
     if(q.q){
       params.push("%"+q.q+"%");const n=params.length;
-      where.push(`(COALESCE(u.username,'') ILIKE $${n} OR COALESCE(e.full_name,'') ILIKE $${n} OR a.module ILIKE $${n} OR a.entity_type ILIKE $${n} OR a.action ILIKE $${n} OR COALESCE(a.entity_id::text,'') ILIKE $${n} OR COALESCE(a.request_id,'') ILIKE $${n} OR COALESCE(a.before_data::text,'') ILIKE $${n} OR COALESCE(a.after_data::text,'') ILIKE $${n} OR COALESCE(a.metadata::text,'') ILIKE $${n})`);
+      where.push(`(COALESCE(u.username,'') ILIKE $${n} OR COALESCE(e.full_name,'') ILIKE $${n} OR a.module ILIKE $${n} OR a.entity_type ILIKE $${n} OR a.action ILIKE $${n} OR COALESCE(a.entity_id::text,'') ILIKE $${n} OR COALESCE(a.request_id::text,'') ILIKE $${n} OR COALESCE(a.before_data::text,'') ILIKE $${n} OR COALESCE(a.after_data::text,'') ILIKE $${n} OR COALESCE(a.metadata::text,'') ILIKE $${n})`);
     }
     const whereSql=where.length?" WHERE "+where.join(" AND "):"";
     const result=await pool.query(`SELECT a.id,a.actor_user_id,a.actor_employee_id,a.action,a.module,a.entity_type,a.entity_id,a.request_id,a.ip_address,a.user_agent,a.before_data,a.after_data,a.metadata,a.created_at,
