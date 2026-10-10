@@ -28,9 +28,8 @@ export default function WarehousePage(){
  async function load(){
   setError("");
   try{const qs=new URLSearchParams();if(warehouseId)qs.set("warehouseId",warehouseId);if(from)qs.set("from",from);if(to)qs.set("to",to);const suffix=qs.toString()?"?"+qs.toString():"";const [w,l,p,o,u,s,m,c,lotData]=await Promise.all([api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Product[]}>("/api/products"),api<{data:Order[]}>("/api/orders"),api<{data:Unit[]}>("/api/units"),api<{data:Stock[]}>("/api/warehouse/stock"+suffix),api<{data:Movement[]}>("/api/warehouse/movements"+suffix),api<{data:Cost}>("/api/warehouse/dashboard"+suffix),api<{data:Lot[]}>("/api/warehouse/lots"+(warehouseId?"?warehouseId="+warehouseId:""))]);setWarehouses(w.data.filter(x=>x.is_active));setLocations(l.data);setProducts(p.data);setOrders(o.data);setUnits(u.data);if(!quickProductUnit)setQuickProductUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"");setStock(s.data);setMovements(m.data);setLots(lotData.data);setCost(c.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
- useEffect(()=>{void load()},[from,to]);
+ useEffect(()=>{void load()},[from,to,warehouseId]);
  useEffect(()=>{if(year){setFrom(year+"-01-01");setTo(year+"-12-31")}},[year]);
- useEffect(()=>{if(warehouseId)void load()},[warehouseId]);
 
  const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId),targetLocations=locations.filter(x=>x.warehouse_id===targetWarehouseId),productOptions=useMemo(()=>products.filter(x=>x.id).map(x=>({value:x.id,label:x.name,meta:x.code})),[products]),warehouseOptions=useMemo(()=>warehouses.map(x=>({value:x.id,label:x.name,meta:warehouseTypes[x.warehouse_type]})),[warehouses]),orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]),visibleProducts=useMemo(()=>products.filter(x=>(productTypeFilter==="ALL"||x.product_type===productTypeFilter)&&(x.code+" "+x.name).toLocaleLowerCase("ar-EG").includes(productSearch.trim().toLocaleLowerCase("ar-EG"))),[products,productSearch,productTypeFilter]);
 
