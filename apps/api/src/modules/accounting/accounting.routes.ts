@@ -168,16 +168,16 @@ export async function accountingRoutes(app:FastifyInstance){
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
    for(const expense of expenses.rows){
     const amountMinor=toMinorUnits(expense.amount);
-    let allocatedMinor=0;
+    const rawShares=eligibleOrders.map(order=>amountMinor*Number(order.cost||0)/totalCost);
+    const shares=rawShares.map(Math.floor);
+    let centsRemaining=amountMinor-shares.reduce((sum,value)=>sum+value,0);
+    const remainderOrder=rawShares.map((raw,index)=>({index,remainder:raw-shares[index]})).sort((a,b)=>b.remainder-a.remainder);
+    for(let i=0;i<centsRemaining;i++)shares[remainderOrder[i].index]+=1;
     for(let i=0;i<eligibleOrders.length;i++){
      const order=eligibleOrders[i];
-     const shareMinor=i===eligibleOrders.length-1
-       ? amountMinor-allocatedMinor
-       : Math.round(amountMinor*Number(order.cost||0)/totalCost);
-     allocatedMinor+=shareMinor;
-     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,shareMinor/100,request.user!.userId]);
+     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,shares[i]/100,request.user!.userId]);
     }
-    if(allocatedMinor!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
+    if(shares.reduce((sum,value)=>sum+value,0)!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
    }
    const result=await client.query("SELECT COALESCE(SUM(amount),0) AS allocated FROM accounting_expense_allocations WHERE period_id=$1",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*orders.rows.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
