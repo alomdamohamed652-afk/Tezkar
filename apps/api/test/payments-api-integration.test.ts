@@ -140,21 +140,26 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{movementType:"OUT",productId:product.json().data.id,warehouseId:warehouse.json().data.id,locationId:location.json().data.id,quantity:3,notes:"isolated stock consumption test"}
       });
       assert.equal(stockOut.statusCode,201,stockOut.body);
+      const stockAdjustmentOut=await app.inject({
+        method:"POST",url:"/api/warehouse/movements",headers:{cookie:managerCookie},
+        payload:{movementType:"ADJUSTMENT",adjustmentDirection:"OUT",productId:product.json().data.id,warehouseId:warehouse.json().data.id,locationId:location.json().data.id,quantity:2,notes:"isolated outbound adjustment test"}
+      });
+      assert.equal(stockAdjustmentOut.statusCode,201,stockAdjustmentOut.body);
       const stock=await app.inject({
         method:"GET",url:"/api/warehouse/stock?productId="+product.json().data.id,headers:{cookie:managerCookie}
       });
       assert.equal(stock.statusCode,200,stock.body);
       assert.equal(stock.json().data.length,1);
-      assert.equal(Number(stock.json().data[0].quantity),7);
-      assert.equal(Number(stock.json().data[0].inventory_value),35);
+      assert.equal(Number(stock.json().data[0].quantity),5);
+      assert.equal(Number(stock.json().data[0].inventory_value),25);
       const stockDashboard=await app.inject({
         method:"GET",url:"/api/warehouse/dashboard?warehouseId="+warehouse.json().data.id,headers:{cookie:managerCookie}
       });
       assert.equal(stockDashboard.statusCode,200,stockDashboard.body);
       assert.equal(Number(stockDashboard.json().data.total_in),50);
-      assert.equal(Number(stockDashboard.json().data.total_out),15);
-      assert.equal(Number(stockDashboard.json().data.net),35);
-      assert.equal(Number(stockDashboard.json().data.current_value),35);
+      assert.equal(Number(stockDashboard.json().data.total_out),25,"outbound adjustment must be counted as stock leaving");
+      assert.equal(Number(stockDashboard.json().data.net),25,"net stock movement value must include outbound adjustment");
+      assert.equal(Number(stockDashboard.json().data.current_value),25);
       const minimumUpdate=await app.inject({
         method:"PATCH",url:"/api/products/"+product.json().data.id+"/minimum-stock",
         headers:{cookie:managerCookie},payload:{minimumStock:0}
