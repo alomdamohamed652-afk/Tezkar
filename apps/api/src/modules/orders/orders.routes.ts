@@ -398,6 +398,12 @@ export async function orderRoutes(app: FastifyInstance) {
       const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_product=COALESCE($10,is_final_product),order_item_id=CASE WHEN $10=FALSE OR $5='CANCELLED' THEN NULL ELSE order_item_id END WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalProduct??null,id]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
       if((p.isFinalProduct!==undefined && p.isFinalProduct!==current.rows[0].is_final_product) || (current.rows[0].is_final_product && (p.outputProductName!==undefined || p.outputProductId!==undefined || p.plannedQuantity!==undefined || p.status==="CANCELLED"))) await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
+      if(current.rows[0].order_item_id && (p.isFinalProduct===false || p.status==="CANCELLED")) {
+        await client.query(
+          "DELETE FROM production_order_lines pol WHERE pol.id=$1 AND pol.order_id=$2 AND NOT EXISTS(SELECT 1 FROM order_stages os WHERE os.order_item_id=pol.id)",
+          [current.rows[0].order_item_id,current.rows[0].order_id]
+        );
+      }
       const refreshed=await client.query("SELECT * FROM order_stages WHERE id=$1",[id]);
       return refreshed.rows[0];
     });
