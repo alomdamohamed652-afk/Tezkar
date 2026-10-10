@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect,useMemo,useState} from "react";
+import {FormEvent,useEffect,useMemo,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 
@@ -38,7 +38,7 @@ export default function SettingsPage(){
  const filteredEmployees=employees.filter(x=>(x.full_name+" "+x.code).toLowerCase().includes(query.toLowerCase()));
 
  async function savePermissions(){try{await api("/api/roles/"+roleId+"/permissions",{method:"PUT",body:JSON.stringify({permissionIds:rolePermissionIds})});setMessage("تم حفظ صلاحيات الدور");}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
- async function createStandaloneUser(event:React.FormEvent<HTMLFormElement>){event.preventDefault();setCreatingUser(true);setError("");setMessage("");try{await api("/api/users",{method:"POST",body:JSON.stringify({username:newUsername.trim(),password:newPassword,employeeId:null,roleCode:newUserRoleCode})});setMessage("تم إنشاء حساب المستخدم المستقل بنجاح، بدون إنشاء سجل موظف.");setNewUsername("");setNewPassword("");setShowCreateUser(false);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء حساب المستخدم")}finally{setCreatingUser(false)}}
+ async function createStandaloneUser(event:FormEvent<HTMLFormElement>){event.preventDefault();setCreatingUser(true);setError("");setMessage("");try{await api("/api/users",{method:"POST",body:JSON.stringify({username:newUsername.trim(),password:newPassword,employeeId:null,roleCode:newUserRoleCode})});setMessage("تم إنشاء حساب المستخدم المستقل بنجاح، بدون إنشاء سجل موظف.");setNewUsername("");setNewPassword("");setShowCreateUser(false);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء حساب المستخدم")}finally{setCreatingUser(false)}}
  async function deactivateUser(id:string){if(!confirm("تعطيل الحساب؟ لن يستطيع تسجيل الدخول بعد ذلك."))return;try{await api("/api/users/"+id,{method:"DELETE"});setMessage("تم تعطيل الحساب");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الحساب")}}
  async function deactivateEmployee(id:string){if(!confirm("تعطيل الموظف وحسابه المرتبط؟"))return;try{await api("/api/employees/"+id,{method:"DELETE"});setMessage("تم تعطيل الموظف");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
 
