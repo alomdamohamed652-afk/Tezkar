@@ -64,6 +64,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",[manager.id]);
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[worker.id]);
       await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING");
+      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening cash custody',$2)",[managerEmployee.id,manager.id]);
       await apiPool.query(
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',500,$2,'test-only earned balance')",
         [workerEmployee.id,manager.id]);
@@ -90,6 +91,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(approved.json().data.request.status,"PAID");
       assert.ok(approved.json().data.request.paid_payment_id);
       assert.equal(approved.json().data.payment.transfer_reference,"IP-TEST-2026-001");
+      const custodyDebit=await apiPool.query("SELECT direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
+      assert.equal(custodyDebit.rowCount,1,"payment must create exactly one linked cash-custody debit");
+      assert.equal(custodyDebit.rows[0].direction,"OUT");
+      assert.equal(Number(custodyDebit.rows[0].amount),150);
+      assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
+      assert.match(custodyDebit.rows[0].description,/REQ-|طلب قبض/);
 
       const balance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(balance.statusCode,200,balance.body);
