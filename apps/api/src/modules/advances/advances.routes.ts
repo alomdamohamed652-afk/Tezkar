@@ -59,7 +59,7 @@ export async function advanceRoutes(app:FastifyInstance){
     if(q.data.repaymentStatus){params.push(q.data.repaymentStatus);where.push("a.repayment_status=$"+params.length);}
     if(q.data.from){params.push(q.data.from);where.push("a.created_at::date >= $"+params.length+"::date");}
     if(q.data.to){params.push(q.data.to);where.push("a.created_at::date <= $"+params.length+"::date");}
-    if(q.data.q){params.push("%"+q.data.q+"%");const n=params.length;where.push(`(a.code ILIKE ${n} OR a.reason ILIKE ${n} OR e.full_name ILIKE ${n} OR e.code ILIKE ${n} OR COALESCE(requester.username,'') ILIKE ${n})`);}
+    if(q.data.q){params.push("%"+q.data.q+"%");const n=params.length;where.push(`(a.code ILIKE $${n} OR a.reason ILIKE $${n} OR e.full_name ILIKE $${n} OR e.code ILIKE $${n} OR COALESCE(requester.username,'') ILIKE $${n})`);}
     const r=await pool.query(
       `SELECT a.*,e.code AS employee_code,e.full_name AS employee_name,
               requester.username AS requested_by_username,reviewer.username AS reviewed_by_username,payer.username AS paid_by_username,
