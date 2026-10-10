@@ -186,13 +186,30 @@ export async function warehouseRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/warehouse/movements",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
-    const parsed=z.object({warehouseId:z.string().uuid().optional(),productId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(300).default(100)}).safeParse(request.query);
+    const parsed=z.object({
+      warehouseId:z.string().uuid().optional(),productId:z.string().uuid().optional(),
+      orderId:z.string().uuid().optional(),
+      movementType:z.enum(["IN","OUT","TRANSFER_IN","TRANSFER_OUT","RETURN","ADJUSTMENT"]).optional(),
+      from:z.string().date().optional(),to:z.string().date().optional(),
+      q:z.string().trim().max(160).optional(),limit:z.coerce.number().int().min(1).max(300).default(100)
+    }).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","فلاتر الحركات غير صحيحة",422);
     const params:unknown[]=[]; const where:string[]=[];
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("m.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("m.product_id=$"+params.length);}
+    if(parsed.data.orderId){params.push(parsed.data.orderId);where.push("m.order_id=$"+params.length);}
+    if(parsed.data.movementType){params.push(parsed.data.movementType);where.push("m.movement_type=$"+params.length);}
+    if(parsed.data.from){params.push(parsed.data.from);where.push("m.created_at::date >= $"+params.length+"::date");}
+    if(parsed.data.to){params.push(parsed.data.to);where.push("m.created_at::date <= $"+params.length+"::date");}
+    if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(p.name ILIKE ${n} OR p.code ILIKE ${n} OR m.code ILIKE ${n} OR COALESCE(m.carton_code,'') ILIKE ${n} OR COALESCE(m.batch_code,'') ILIKE ${n} OR COALESCE(m.notes,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n} OR COALESCE(o.code,'') ILIKE ${n} OR COALESCE(o.order_name,'') ILIKE ${n})`);}
     params.push(parsed.data.limit);
-    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC LIMIT $"+params.length,params);
+    const result=await pool.query(`SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.order_id,
+      p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,l.name AS location_name,u.name AS unit_name,
+      o.code AS order_code,o.order_name,creator.username AS created_by_username
+      FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id
+      JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id
+      LEFT JOIN production_orders o ON o.id=m.order_id LEFT JOIN users creator ON creator.id=m.created_by
+      ${where.length?"WHERE "+where.join(" AND "):""} ORDER BY m.created_at DESC LIMIT ${params.length}`,params);
     return {data:result.rows};
   });
 
