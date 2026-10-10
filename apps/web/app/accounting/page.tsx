@@ -18,7 +18,7 @@ type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocation
 type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;margin_percent:number|null};
-type CashTx = {id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
+type CashTx = {id:string;code:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر" } as Record<string,string>)[source]||source);
@@ -290,7 +290,7 @@ export default function AccountingPage() {
       </tbody></table></div>
      </section>}
      {tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own"))&&<section className="card">
-      {has("cash_custody.create")&&<section className="nested-card">
+      {has("cash_custody.create")&&has("finance.expenses.create")&&<section className="nested-card">
        <div className="card-header"><div><h2 className="card-title">إضافة رصيد عهدة من خارج حسابات الشركة</h2><div className="form-hint">للمدير المالي فقط. تزيد رصيد الموظف ولا تُسجل إيرادًا أو تحصيلًا من عميل.</div></div></div>
        <div className="form-grid finance-four-grid">
         <label>الموظف<select value={topUpForm.employeeId} onChange={e=>setTopUpForm({...topUpForm,employeeId:e.target.value})}><option value="">اختر صاحب العهدة</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
@@ -309,7 +309,7 @@ export default function AccountingPage() {
        <article className="card stat neutral"><div className="stat-label">عدد الحركات</div><div className="stat-value">{cashTransactions.length}</div></article>
       </div>
       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الاتجاه</th><th>الموظف</th><th>الطلبية / التحويل / طلب القبض</th><th>بيان الحركة</th><th>ملاحظات</th><th>المسجل بواسطة</th><th>الرصيد التراكمي</th><th>المبلغ</th></tr></thead><tbody>
-       {cashTransactions.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.transaction_date}</td><td>{x.direction==="IN"?"وارد للعهدة":"صادر من العهدة"}</td><td>{x.employee_name}</td><td>{x.payment_request_code?"طلب قبض "+x.payment_request_code:x.order_code?x.order_code+" — "+(x.order_name||""):x.transfer_code||"—"}</td><td>{x.description}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td><td className="money">{n(x.balance)}</td><td className="money">{n(x.amount)}</td></tr>)}
+       {cashTransactions.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.transaction_date}</td><td>{x.direction==="IN"?"وارد للعهدة":"صادر من العهدة"}</td><td>{x.employee_name}</td><td>{x.source_type==="EXTERNAL_TOP_UP"?"إضافة رصيد خارجي":x.payment_request_code?"طلب قبض "+x.payment_request_code:x.order_code?x.order_code+" — "+(x.order_name||""):x.transfer_code||"—"}</td><td>{x.description}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td><td className="money">{n(x.balance)}</td><td className="money">{n(x.amount)}</td></tr>)}
        {!cashTransactions.length&&<tr><td colSpan={10}>لا توجد حركات عهدة ظاهرة حسب صلاحيات الحساب.</td></tr>}
       </tbody></table></div>
      </section>}
