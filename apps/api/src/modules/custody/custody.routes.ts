@@ -47,6 +47,14 @@ async function workerInfo(userId:string){
   return r.rows[0]??null;
 }
 
+const topUpSchema=z.object({
+  employeeId:z.string().uuid(),
+  amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
+  transactionDate:z.string().date().optional(),
+  description:z.string().trim().min(2).max(500),
+  notes:z.string().trim().max(1000).nullable().optional()
+});
+
 const cashSchema=z.object({
   employeeId:z.string().uuid().optional(),
   direction:z.enum(["IN","OUT"]),
@@ -333,6 +341,26 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:row});
   });
 
+  // External funding is a custody balance increase, not company revenue.
+  // Only users with all-scope financial custody access may record it.
+  app.post("/api/cash-custody/top-ups",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
+    const p=topUpSchema.safeParse(request.body);
+    if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات إضافة رصيد العهدة غير صحيحة",422);
+    const row=await withTransaction(async client=>{
+      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
+      if(!access.isFinance)throw new AppError("FINANCE_SCOPE_REQUIRED","إضافة رصيد من خارج حسابات الشركة متاحة للمدير المالي فقط",403);
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const duplicate=await client.query("SELECT id FROM cash_custody_transactions WHERE employee_id=$1 AND direction='IN' AND amount=$2 AND transaction_date=$3 AND source_type='EXTERNAL_TOP_UP' LIMIT 1 FOR SHARE",[p.data.employeeId,p.data.amount,date]);
+      if(duplicate.rowCount)throw new AppError("DUPLICATE_CUSTODY_TOP_UP","توجد إضافة رصيد بنفس الموظف والمبلغ والتاريخ؛ راجع الحركة السابقة قبل التسجيل",409);
+      const tx=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6) RETURNING *",[p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"external_top_up",module:"cash_custody",entityType:"cash_custody_transaction",entityId:tx.rows[0].id,afterData:tx.rows[0],metadata:{companyRevenue:false},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return tx.rows[0];
+    });
+    return reply.code(201).send({data:row});
+  });
+
   app.post("/api/cash-custody/check-duplicate",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request)=>{
     const p=cashSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات حركة العهدة غير صحيحة",422);
@@ -356,6 +384,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const row=await withTransaction(async client=>{
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
+      if(p.data.direction==="IN"&&!access.isFinance)throw new AppError("FINANCE_SCOPE_REQUIRED","إضافة رصيد للعهدة متاحة للمدير المالي فقط؛ التحصيل من العميل له إجراء مستقل",403);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
       // Serialize balance and duplicate checks per employee to prevent concurrent overspending.
       const employeeLock=await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);

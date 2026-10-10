@@ -8,6 +8,7 @@ import { writeAudit } from "../audit/audit.service.js";
 
 const expenseSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
+  orderStageId:z.string().uuid().nullable().optional(),
   category:z.string().trim().min(2).max(100),
   description:z.string().trim().min(2).max(300),
   amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
@@ -16,8 +17,11 @@ const expenseSchema=z.object({
   expenseType:z.enum(["DIRECT","ADMINISTRATIVE"]).default("DIRECT"),
   paidFromEmployeeId:z.string().uuid().nullable().optional()
 }).superRefine((v,ctx)=>{
-  if(v.expenseType==="ADMINISTRATIVE"&&v.orderId){
-    ctx.addIssue({code:"custom",path:["orderId"],message:"المصروف الإداري يوزع على الطلبيات وقت التصفية ولا يرتبط بطلبية واحدة"});
+  if(v.expenseType==="ADMINISTRATIVE"&&(v.orderId||v.orderStageId)){
+    ctx.addIssue({code:"custom",path:["orderId"],message:"المصروف الإداري يوزع على الطلبيات وقت التصفية ولا يرتبط بطلبية أو مرحلة واحدة"});
+  }
+  if(v.orderStageId&&!v.orderId){
+    ctx.addIssue({code:"custom",path:["orderId"],message:"اختيار مرحلة إنتاج يتطلب اختيار الطلبية أولًا"});
   }
 });
 const revenueSchema=z.object({
@@ -35,9 +39,11 @@ export async function accountingRoutes(app:FastifyInstance){
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر المصروفات غير صحيح",422);
   const params:unknown[]=[];let where="";
   if(q.data.orderId){params.push(q.data.orderId);where=" WHERE e.order_id=$1 ";}
-  const r=await pool.query(`SELECT e.*,o.code AS order_code,o.order_name,u.username AS created_by_username
+  const r=await pool.query(`SELECT e.*,o.code AS order_code,o.order_name,os.sequence_no AS stage_sequence_no,st.name AS stage_name,u.username AS created_by_username
     FROM accounting_expenses e
     LEFT JOIN production_orders o ON o.id=e.order_id
+    LEFT JOIN order_stages os ON os.id=e.order_stage_id
+    LEFT JOIN stages st ON st.id=os.stage_id
     LEFT JOIN users u ON u.id=e.created_by
     ${where} ORDER BY e.expense_date DESC,e.created_at DESC`,params);
   return {data:r.rows};
@@ -54,7 +60,13 @@ export async function accountingRoutes(app:FastifyInstance){
     const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);
     if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
    }
-   let r=await client.query("INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,COALESCE($5,current_date),$6,$7,$8,$9) RETURNING *",[p.data.orderId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
+   if(p.data.orderStageId){
+     const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);
+     if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);
+     if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
+     if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
+    }
+    let r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10) RETURNING *",[p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
    if(p.data.paidFromEmployeeId){
     // Administrative/direct expense payment is an actual custody OUT movement.
     // Expenses may drive custody negative as requested; this is distinct from an

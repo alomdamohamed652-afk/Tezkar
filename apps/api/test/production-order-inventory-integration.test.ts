@@ -416,8 +416,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(profitability.json().data.laborCost), 505);
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
+    // Resolve the exact final-product order line so delivery and stock-out remain line-specific.
+    const finalOrderLine = await apiPool.query("SELECT id FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id LIMIT 1",[orderId,finalStage.output_product_id]);
+    assert.equal(finalOrderLine.rowCount,1);
     // Availability is a read-only diagnostic: it must explain production and location stock separately.
-    const availabilityUrl = "/api/delivery-permissions/availability?orderId=" + orderId
+    const availabilityUrl = "/api/delivery-permissions/availability?orderId=" + orderId + "&orderItemId=" + finalOrderLine.rows[0].id
       + "&productId=" + finalStage.output_product_id
       + "&warehouseId=" + expectedFinished.id
       + "&locationId=" + finalSaved.rows[0].location_id;
@@ -435,7 +438,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
       payload: {
         orderId, destination: "Integration test destination",
-        lines: [{ productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+        lines: [{ orderItemId: finalOrderLine.rows[0].id, productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
           locationId: finalSaved.rows[0].location_id, quantity: 4 }]
       }
     });
@@ -484,13 +487,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(afterDelivery.rows[0].quantity), 6);
     assert.equal(Number(afterDelivery.rows[0].inventory_value), 183);
     const deliveryMovement = await apiPool.query(
-      "SELECT movement_type,quantity,reference_type,reference_id,order_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      "SELECT movement_type,quantity,reference_type,reference_id,order_id,order_item_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
       [deliveryId]
     );
     assert.equal(deliveryMovement.rowCount, 1);
     assert.equal(deliveryMovement.rows[0].movement_type, "OUT");
     assert.equal(Number(deliveryMovement.rows[0].quantity), 4);
     assert.equal(deliveryMovement.rows[0].order_id, orderId);
+    assert.equal(deliveryMovement.rows[0].order_item_id, finalOrderLine.rows[0].id, "delivery stock-out must retain the exact final-product line");
 
     const duplicateRelease = await app.inject({
       method: "POST", url: "/api/delivery-permissions/" + deliveryId + "/release",

@@ -15,10 +15,10 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[]};
-type Expense = { id: string; code: string; order_code: string | null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
+type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;margin_percent:number|null};
-type CashTx = {id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
+type CashTx = {id:string;code:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر" } as Record<string,string>)[source]||source);
@@ -33,7 +33,9 @@ export default function AccountingPage() {
   const [revenues,setRevenues]=useState<Revenue[]>([]);
   const [orderFinance,setOrderFinance]=useState<OrderFinanceRow[]>([]);
   const [cashTransactions,setCashTransactions]=useState<CashTx[]>([]);
-  const [eForm,setEForm]=useState({category:"تشغيل",description:"",amount:"",orderId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
+  const [eForm,setEForm]=useState({category:"تشغيل",description:"",amount:"",orderId:"",orderStageId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
+  const [expenseStages,setExpenseStages]=useState<Array<{id:string;stage_name:string;sequence_no:number;status:string}>>([]);
+  const [topUpForm,setTopUpForm]=useState({employeeId:"",amount:"",transactionDate:new Date().toISOString().slice(0,10),description:"إضافة رصيد عهدة من خارج حسابات الشركة",notes:""});
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
   const [collectionForm,setCollectionForm]=useState({orderId:"",employeeId:"",amount:"",description:"تحصيل من العميل",notes:""});
   const collectionIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
@@ -60,6 +62,14 @@ export default function AccountingPage() {
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
+  useEffect(()=>{
+    let active=true;
+    if(!eForm.orderId||eForm.expenseType!=="DIRECT"){setExpenseStages([]);return;}
+    api<{data:{stages:Array<{id:string;stage_name:string;sequence_no:number;status:string}>}}>(`/api/orders/${eForm.orderId}`)
+      .then(r=>{if(active)setExpenseStages(r.data.stages||[])})
+      .catch(()=>{if(active)setExpenseStages([])});
+    return()=>{active=false};
+  },[eForm.orderId,eForm.expenseType]);
   useEffect(()=>{
     let active=true;
     api<{data:Employee[]}>("/api/custodies/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
@@ -110,9 +120,20 @@ export default function AccountingPage() {
   async function addExpense() {
     setError("");setMessage("");
     try {
-      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null})});
+      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null})});
       setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId?" وتم خصمه من عهدة الموظف":""));await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
+  }
+
+  async function addExternalTopUp(){
+    setError("");setMessage("");
+    if(!topUpForm.employeeId||!topUpForm.amount||!topUpForm.description.trim()){setError("اختر الموظف واكتب المبلغ والبيان");return;}
+    try{
+      await api("/api/cash-custody/top-ups",{method:"POST",body:JSON.stringify({employeeId:topUpForm.employeeId,amount:Number(topUpForm.amount),transactionDate:topUpForm.transactionDate,description:topUpForm.description.trim(),notes:topUpForm.notes.trim()||null})});
+      setTopUpForm(v=>({...v,amount:"",notes:""}));
+      setMessage("تمت إضافة رصيد العهدة. لم يُسجل المبلغ كإيراد للشركة.");
+      await load();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر إضافة رصيد العهدة")}
   }
 
   async function addOrderCollection(){
@@ -180,7 +201,7 @@ export default function AccountingPage() {
        </section>
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الخارج</h2><button className="link-button" onClick={()=>setTab("out")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {expenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
+         {expenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}{x.stage_name?" — "+x.stage_name:""}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
          {!expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات.</td></tr>}
         </tbody></table></div>
        </section>
@@ -211,10 +232,11 @@ export default function AccountingPage() {
      </section>}
 
      {tab==="out"&&<section className="card">
-      <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة والمصروفات المرتبطة بالطلبات.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة أو المرتبطة بطلبية ومرحلة محددة. لو بتسدد مستحقات عمال مسجلة بالفعل، استخدم مدفوعات العمال بدل تسجيل مصروف جديد لتجنب تكرار التكلفة.</div></div></div>
       {has("finance.expenses.create")&&<div className="form-grid finance-four-grid">
-       <label>نوع المصروف<select value={eForm.expenseType} onChange={e=>setEForm({...eForm,expenseType:e.target.value as "DIRECT"|"ADMINISTRATIVE",orderId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderId})}><option value="DIRECT">مصروف مباشر</option><option value="ADMINISTRATIVE">مصروف إداري — يوزع وقت التصفية</option></select></label>
-       {eForm.expenseType==="DIRECT"&&<label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>}
+       <label>نوع المصروف<select value={eForm.expenseType} onChange={e=>setEForm({...eForm,expenseType:e.target.value as "DIRECT"|"ADMINISTRATIVE",orderId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderId,orderStageId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderStageId})}><option value="DIRECT">مصروف مباشر</option><option value="ADMINISTRATIVE">مصروف إداري — يوزع وقت التصفية</option></select></label>
+       {eForm.expenseType==="DIRECT"&&<label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value,orderStageId:""})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>}
+        {eForm.expenseType==="DIRECT"&&eForm.orderId&&<label>مرحلة الإنتاج <span className="optional">اختياري</span><select value={eForm.orderStageId} onChange={e=>setEForm({...eForm,orderStageId:e.target.value})}><option value="">تكلفة على الطلبية بالكامل</option>{expenseStages.filter(s=>s.status!=="CANCELLED").map(s=><option key={s.id} value={s.id}>{s.sequence_no}. {s.stage_name}</option>)}</select></label>}
        <label>الدفع من عهدة موظف <span className="optional">اختياري</span><select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value})}><option value="">ليس من عهدة موظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
        <label>التصنيف<input value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}/></label>
        <label>الوصف<input value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value})}/></label>
@@ -268,6 +290,17 @@ export default function AccountingPage() {
       </tbody></table></div>
      </section>}
      {tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own"))&&<section className="card">
+      {has("cash_custody.create")&&has("finance.expenses.create")&&<section className="nested-card">
+       <div className="card-header"><div><h2 className="card-title">إضافة رصيد عهدة من خارج حسابات الشركة</h2><div className="form-hint">للمدير المالي فقط. تزيد رصيد الموظف ولا تُسجل إيرادًا أو تحصيلًا من عميل.</div></div></div>
+       <div className="form-grid finance-four-grid">
+        <label>الموظف<select value={topUpForm.employeeId} onChange={e=>setTopUpForm({...topUpForm,employeeId:e.target.value})}><option value="">اختر صاحب العهدة</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+        <label>المبلغ<input type="number" min="0.01" step="0.01" value={topUpForm.amount} onChange={e=>setTopUpForm({...topUpForm,amount:e.target.value})}/></label>
+        <label>التاريخ<input type="date" value={topUpForm.transactionDate} onChange={e=>setTopUpForm({...topUpForm,transactionDate:e.target.value})}/></label>
+        <label>البيان<input value={topUpForm.description} onChange={e=>setTopUpForm({...topUpForm,description:e.target.value})}/></label>
+        <label>ملاحظات <span className="optional">اختياري</span><input value={topUpForm.notes} onChange={e=>setTopUpForm({...topUpForm,notes:e.target.value})}/></label>
+       </div>
+       <div className="form-actions"><button className="primary-button" onClick={addExternalTopUp}>إضافة الرصيد</button></div>
+      </section>}
       <div className="card-header"><div><h2 className="card-title">سجل حركة العهدة النقدية</h2><div className="form-hint">كل وارد وصادر وتحويل، مع الموظف والبيان والطلبية إن وجدت واسم الحساب الذي سجّل الحركة. العهدة لا تُجمع مرة أخرى ضمن إيرادات الشركة.</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث</button></div>
       <div className="stats finance-stats">
        <article className="card stat accent"><div className="stat-label">إجمالي الوارد المعروض</div><div className="stat-value">{n(cashTransactions.filter(x=>x.direction==="IN").reduce((sum,x)=>sum+Number(x.amount||0),0))}</div></article>
@@ -276,7 +309,7 @@ export default function AccountingPage() {
        <article className="card stat neutral"><div className="stat-label">عدد الحركات</div><div className="stat-value">{cashTransactions.length}</div></article>
       </div>
       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الاتجاه</th><th>الموظف</th><th>الطلبية / التحويل / طلب القبض</th><th>بيان الحركة</th><th>ملاحظات</th><th>المسجل بواسطة</th><th>الرصيد التراكمي</th><th>المبلغ</th></tr></thead><tbody>
-       {cashTransactions.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.transaction_date}</td><td>{x.direction==="IN"?"وارد للعهدة":"صادر من العهدة"}</td><td>{x.employee_name}</td><td>{x.payment_request_code?"طلب قبض "+x.payment_request_code:x.order_code?x.order_code+" — "+(x.order_name||""):x.transfer_code||"—"}</td><td>{x.description}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td><td className="money">{n(x.balance)}</td><td className="money">{n(x.amount)}</td></tr>)}
+       {cashTransactions.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.transaction_date}</td><td>{x.direction==="IN"?"وارد للعهدة":"صادر من العهدة"}</td><td>{x.employee_name}</td><td>{x.source_type==="EXTERNAL_TOP_UP"?"إضافة رصيد خارجي":x.payment_request_code?"طلب قبض "+x.payment_request_code:x.order_code?x.order_code+" — "+(x.order_name||""):x.transfer_code||"—"}</td><td>{x.description}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td><td className="money">{n(x.balance)}</td><td className="money">{n(x.amount)}</td></tr>)}
        {!cashTransactions.length&&<tr><td colSpan={10}>لا توجد حركات عهدة ظاهرة حسب صلاحيات الحساب.</td></tr>}
       </tbody></table></div>
      </section>}
