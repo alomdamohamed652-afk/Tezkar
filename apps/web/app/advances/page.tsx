@@ -11,16 +11,25 @@ const labels:Record<string,string>={PENDING:"قيد الاعتماد",APPROVED:"
 const repaymentLabels:Record<string,string>={FIXED_INSTALLMENT:"قسط ثابت",PRODUCTION_PERCENTAGE:"نسبة من الإنتاج",CUSTOM:"دفعات مخصصة"};
 
 export default function AdvancesPage(){
- const {has}=usePermissions();
+ const {has,permissions}=usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[method,setMethod]=useState("CUSTOM"),[installment,setInstallment]=useState(""),[percentage,setPercentage]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  async function load(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
    const a=await api<{data:Advance[]}>("/api/advances"+suffix);setItems(a.data);
-   if(has("advances.create")&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/advances/eligible-employees")).data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل السلف")}
  }
  useEffect(()=>{void load()},[employeeId]);
+ // Load the picker independently from the advances ledger. The session permissions arrive
+ // asynchronously, and creating an advance must not depend on permission to view the ledger.
+ useEffect(()=>{
+  if(!permissions?.includes("advances.create"))return;
+  let active=true;
+  api<{data:Employee[]}>("/api/advances/eligible-employees")
+   .then(r=>{if(active)setEmployees(r.data)})
+   .catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل قائمة الموظفين")});
+  return()=>{active=false};
+ },[permissions]);
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
   await api("/api/advances",{method:"POST",body:JSON.stringify({
    employeeId,amount:Number(normalizeNumber(amount)),reason,repaymentMethod:method,

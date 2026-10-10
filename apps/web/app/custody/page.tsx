@@ -10,7 +10,7 @@ const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦
 const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتجع جزئي",RETURNED:"مُسواة",DAMAGED:"تالف",LOST:"مفقودة",CANCELLED:"ملغاة"};
 
 export default function CustodyPage(){
- const {has}=usePermissions();
+ const {has,permissions}=usePermissions();
  type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number};
  const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[cashEmployeeId,setCashEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
@@ -19,10 +19,20 @@ export default function CustodyPage(){
 
   const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
   setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
-  if((has("custody.create")||has("custody.view")||has("cash_custody.create")||has("cash_custody.view"))&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
  useEffect(()=>{void load()},[employeeId]);
+ // Load employee options independently from the custody ledger so a ledger-view error
+ // cannot block the picker. Support both all-scope and own-scope permissions.
+ useEffect(()=>{
+  const pickerPermissions=["custody.create","custody.create_own","custody.view","custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.view","cash_custody.view_own"];
+  if(!permissions?.some(code=>pickerPermissions.includes(code)))return;
+  let active=true;
+  api<{data:Employee[]}>("/api/custodies/eligible-employees")
+   .then(r=>{if(active)setEmployees(r.data)})
+   .catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل قائمة الموظفين للعهد")});
+  return()=>{active=false};
+ },[permissions]);
  async function submitCash(e:FormEvent,confirmDuplicate=false){
  e.preventDefault();setCashSaving(true);setError("");
  try{
