@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
+import {formatMoney} from "../../lib/format";
 
 type Summary={production:{entries:number;quantity:string;earnings:string};stock:{lines:number;quantity:string};earnings:{earned:string;debited:string;balance:string};pendingPayments:number;pendingAdvances:number};
 type Audit={id:number;occurred_at:string;action:string;module:string;entity_type:string;username:string|null;employee_name:string|null};
@@ -24,7 +25,7 @@ export default function ReportsPage(){
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل التقارير");}
   })()},[canAudit]);
 
-  const n=(x:string|number)=>Number(x||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
+  const n=(x:string|number)=>formatMoney(x);
 
   return (
     <div className="app-shell">
