@@ -26,7 +26,7 @@ export default function AdvancesPage(){
  // Load the picker independently from the advances ledger. The session permissions arrive
  // asynchronously, and creating an advance must not depend on permission to view the ledger.
  useEffect(()=>{
-  if(!permissions?.includes("advances.create"))return;
+  if(!permissions?.some(code=>code==="advances.create"||code==="advances.view"))return;
   let active=true;
   api<{data:Employee[]}>("/api/advances/eligible-employees")
    .then(r=>{if(active)setEmployees(r.data)})
