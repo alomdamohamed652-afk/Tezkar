@@ -8,7 +8,7 @@ const securityHeaders = [
 ];
 
 function resolveProxyTarget(): string {
-  const explicit = process.env.API_PROXY_TARGET?.trim().replace(/\\/+$/, "");
+  const explicit = process.env.API_PROXY_TARGET?.trim().replace(/\/+$/, "");
   if (explicit) return explicit;
   if (process.env.NODE_ENV !== "production") return "http://localhost:4000";
   throw new Error("API_PROXY_TARGET is required for production builds.");
