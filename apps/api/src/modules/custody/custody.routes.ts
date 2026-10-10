@@ -78,7 +78,8 @@ export async function custodyRoutes(app:FastifyInstance){
         ["custody.create","all"],["custody.create_own","own"],
         ["custody.view","all"],["custody.view_own","own"],
         ["cash_custody.create","all"],["cash_custody.create_own","own"],
-        ["cash_custody.view","all"],["cash_custody.view_own","own"]
+        ["cash_custody.view","all"],["cash_custody.view_own","own"],
+        ["custody.transfer","all"],["cash_custody.transfer","all"]
       ];
       let hasAny=false;let hasAll=false;
       for(const [code,scope] of permissionScopes){
