@@ -111,21 +111,29 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    for(const line of parsed.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[line.productId]);if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","منتج في الإذن غير موجود",422);
     await assertLocation(client,line.warehouseId,line.locationId);
-    const orderLine=await client.query("SELECT COALESCE(SUM(quantity),0) AS quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2",[parsed.data.orderId,line.productId]);
+    let orderLine;
+    if(line.orderItemId){
+      orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND id=$2 AND product_id=$3",[parsed.data.orderId,line.orderItemId,line.productId]);
+      if(!orderLine.rowCount)throw new AppError("ORDER_ITEM_MISMATCH","سطر المنتج لا يتبع الطلبية أو لا يطابق الصنف",422);
+    }else{
+      orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id",[parsed.data.orderId,line.productId]);
+      if(orderLine.rowCount>1)throw new AppError("ORDER_ITEM_REQUIRED","الصنف مكرر في الطلبية؛ اختر سطر المنتج النهائي المحدد",422);
+    }
     if(!orderLine.rowCount || Number(orderLine.rows[0].quantity)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","المنتج المحدد ليس ضمن منتجات الطلبية",422);
+    const resolvedOrderItemId=orderLine.rows[0].id;
 
     const produced=await client.query(
       `SELECT COALESCE(SUM(pe.quantity),0) AS quantity
          FROM production_entries pe
          JOIN order_stages os ON os.id=pe.order_stage_id
-        WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED'`,
-      [parsed.data.orderId,line.productId]);
+        WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3`,
+      [parsed.data.orderId,line.productId,resolvedOrderItemId]);
     const reserved=await client.query(
       `SELECT COALESCE(SUM(dl.quantity),0) AS quantity
          FROM delivery_permission_lines dl
          JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
-        WHERE dp.order_id=$1 AND dl.product_id=$2 AND dp.status IN ('READY','RELEASED')`,
-      [parsed.data.orderId,line.productId]);
+        WHERE dp.order_id=$1 AND dl.product_id=$2 AND (dl.order_item_id=$3 OR dl.order_item_id IS NULL) AND dp.status IN ('READY','RELEASED')`,
+      [parsed.data.orderId,line.productId,resolvedOrderItemId]);
     const productionAvailable=Number(produced.rows[0].quantity)-Number(reserved.rows[0].quantity);
     if(Number(line.quantity)>productionAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION","كمية إذن التسليم تتجاوز الإنتاج المعتمد المتبقي للطلبية",409);
 
@@ -144,7 +152,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     const stockAvailable=Number(stock.rows[0]?.quantity??0)-Number(reservedAtLocation.rows[0].quantity);
     if(Number(line.quantity)>stockAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","كمية إذن التسليم تتجاوز رصيد المخزن المتاح بعد الأذونات الجاهزة",409);
 
-    await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,carton_weight,piece_count,sample_quantity,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",[d.rows[0].id,line.productId,line.warehouseId,line.locationId,line.quantity,product.rows[0].unit_id,line.cartonCode??null,line.cartonWeight??null,line.pieceCount??null,line.sampleQuantity??null,line.details??null]);
+    await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,order_item_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,carton_weight,piece_count,sample_quantity,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",[d.rows[0].id,resolvedOrderItemId,line.productId,line.warehouseId,line.locationId,line.quantity,product.rows[0].unit_id,line.cartonCode??null,line.cartonWeight??null,line.pieceCount??null,line.sampleQuantity??null,line.details??null]);
    }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"delivery_permission",entityId:d.rows[0].id,afterData:d.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return d.rows[0];
