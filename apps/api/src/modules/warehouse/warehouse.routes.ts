@@ -201,7 +201,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(parsed.data.movementType){params.push(parsed.data.movementType);where.push("m.movement_type=$"+params.length);}
     if(parsed.data.from){params.push(parsed.data.from);where.push("m.created_at::date >= $"+params.length+"::date");}
     if(parsed.data.to){params.push(parsed.data.to);where.push("m.created_at::date <= $"+params.length+"::date");}
-    if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(p.name ILIKE ${n} OR p.code ILIKE ${n} OR m.code ILIKE ${n} OR COALESCE(m.carton_code,'') ILIKE ${n} OR COALESCE(m.batch_code,'') ILIKE ${n} OR COALESCE(m.notes,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n} OR COALESCE(o.code,'') ILIKE ${n} OR COALESCE(o.order_name,'') ILIKE ${n})`);}
+    if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(p.name ILIKE $${n} OR p.code ILIKE $${n} OR m.code ILIKE $${n} OR COALESCE(m.carton_code,'') ILIKE $${n} OR COALESCE(m.batch_code,'') ILIKE $${n} OR COALESCE(m.notes,'') ILIKE $${n} OR COALESCE(creator.username,'') ILIKE $${n} OR COALESCE(o.code,'') ILIKE $${n} OR COALESCE(o.order_name,'') ILIKE $${n})`);}
     params.push(parsed.data.limit);
     const result=await pool.query(`SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.order_id,
       p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,l.name AS location_name,u.name AS unit_name,
