@@ -20,7 +20,7 @@ END $$;
 
 -- Backfill only when product identity is unambiguous within the order.
 WITH candidates AS (
-  SELECT dl.id AS delivery_line_id, MIN(pol.id) AS order_item_id
+  SELECT dl.id AS delivery_line_id, (array_agg(pol.id ORDER BY pol.id))[1] AS order_item_id
     FROM delivery_permission_lines dl
     JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
     JOIN production_order_lines pol ON pol.order_id=dp.order_id AND pol.product_id=dl.product_id
@@ -35,7 +35,7 @@ UPDATE delivery_permission_lines dl
 
 -- Link historical delivery stock-outs only when a permission has one matching product line.
 WITH candidates AS (
-  SELECT sm.id AS movement_id, MIN(dl.order_item_id) AS order_item_id
+  SELECT sm.id AS movement_id, (array_agg(dl.order_item_id ORDER BY dl.order_item_id))[1] AS order_item_id
     FROM stock_movements sm
     JOIN delivery_permission_lines dl ON dl.delivery_permission_id=sm.reference_id
                                       AND dl.product_id=sm.product_id
