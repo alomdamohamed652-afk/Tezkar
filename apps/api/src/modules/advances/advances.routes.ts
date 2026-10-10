@@ -22,7 +22,7 @@ const createSchema=z.object({
 const rejectSchema=z.object({reason:z.string().trim().min(2).max(500)});
 const repaySchema=z.object({
   amount:z.number().positive(),
-  repaymentType:z.enum(["FIXED_INSTALLMENT","PRODUCTION_PERCENTAGE","CUSTOM"]).default("CUSTOM"),
+  repaymentType:z.literal("CUSTOM").default("CUSTOM"),
   paymentDate:z.string().date().optional(),
   notes:z.string().trim().max(500).optional()
 });
@@ -131,7 +131,7 @@ export async function advanceRoutes(app:FastifyInstance){
   });
 
   app.post("/api/advances/:id/repayments",{preHandler:[authenticateRequest,requirePermission("advances.repay")]},async(request,reply)=>{
-    const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات السداد غير صحيحة",422);
+    const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","السداد اليدوي يقبل دفعات مخصصة فقط؛ الأقساط الثابتة ونسبة الإنتاج تُسجل آليًا",422);
     const result=await withTransaction(async client=>{
       const advance=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!advance.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
