@@ -802,21 +802,25 @@ export async function productionRoutes(app: FastifyInstance) {
 
     return { data: row };
   });  app.get("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.view")]},async(request)=>{
-    const q=z.object({employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
+    const q=z.object({employeeId:z.string().uuid().optional(),shiftId:z.string().uuid().optional(),adjustmentType:z.enum(["BONUS","DEDUCTION"]).optional(),from:z.string().date().optional(),to:z.string().date().optional(),q:z.string().trim().max(160).optional()}).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر البونص والخصم غير صحيحة",422);
     const params:unknown[]=[];const where:string[]=["(a.production_entry_id IS NULL OR p.status <> 'CANCELLED')"];
     if(q.data.employeeId){params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);}
-    if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
-    if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}
+    if(q.data.shiftId){params.push(q.data.shiftId);where.push("a.shift_id=$"+params.length);}
+    if(q.data.adjustmentType){params.push(q.data.adjustmentType);where.push("a.adjustment_type=$"+params.length);}
+    if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date >= $"+params.length+"::date");}
+    if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date <= $"+params.length+"::date");}
+    if(q.data.q){params.push("%"+q.data.q+"%");const n=params.length;where.push(`(a.code ILIKE ${n} OR a.reason ILIKE ${n} OR e.full_name ILIKE ${n} OR e.code ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
     const r=await pool.query(`
       SELECT a.id,a.code,a.adjustment_date,a.adjustment_type,a.amount,a.reason,
              e.code AS employee_code,e.full_name AS employee_name,
-             s.code AS shift_code,s.name AS shift_name,
-             p.code AS production_code
+             s.code AS shift_code,s.name AS shift_name,p.code AS production_code,
+             creator.username AS created_by_username
         FROM employee_earnings_adjustments a
         JOIN employees e ON e.id=a.employee_id
         LEFT JOIN shifts s ON s.id=a.shift_id
         LEFT JOIN production_entries p ON p.id=a.production_entry_id
+        LEFT JOIN users creator ON creator.id=a.created_by
        ${where.length?"WHERE "+where.join(" AND "):""}
        ORDER BY a.adjustment_date DESC,a.created_at DESC LIMIT 300`,params);
     return {data:r.rows};
