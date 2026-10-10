@@ -163,6 +163,47 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
 
+      // A collection retry with the same idempotency key must return the original pair,
+      // while a separate operation with identical amount/date/business fields is valid.
+      const collectionOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Idempotency integration order",manager.id]
+      )).rows[0];
+      const collectionPayload={
+        orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.50,
+        transactionDate:"2099-02-10",description:"Customer collection idempotency test",
+        notes:"Same request retry",idempotencyKey:randomBytes(16).toString("hex")
+      };
+      const collectionKey=(await import("node:crypto")).randomUUID();
+      collectionPayload.idempotencyKey=collectionKey;
+      const collectionFirst=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
+      });
+      assert.equal(collectionFirst.statusCode,201,collectionFirst.body);
+      const collectionRetry=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
+      });
+      assert.equal(collectionRetry.statusCode,201,collectionRetry.body);
+      assert.equal(collectionRetry.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      assert.equal(collectionRetry.json().data.cashCustody.id,collectionFirst.json().data.cashCustody.id);
+      const collectionChanged={...collectionPayload,amount:126};
+      const reusedKey=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionChanged
+      });
+      assert.equal(reusedKey.statusCode,409,reusedKey.body);
+      assert.equal(reusedKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const independentCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
+        payload:{...collectionPayload,idempotencyKey:randomBytes(16).toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,"$1-$2-$3-$4-$5")}
+      });
+      assert.equal(independentCollection.statusCode,201,independentCollection.body);
+      assert.notEqual(independentCollection.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      const collectionCounts=await apiPool.query(
+        "SELECT COUNT(*)::int AS revenue_count FROM order_revenues WHERE order_id=$1 AND source='CUSTOMER_COLLECTION'",
+        [collectionOrder.id]
+      );
+      assert.equal(collectionCounts.rows[0].revenue_count,2);
+
       // An employee with no custody permission can view only their assigned active custody.
       const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
       assert.equal(assignedCustody.statusCode,200,assignedCustody.body);
