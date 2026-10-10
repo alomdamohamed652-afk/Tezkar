@@ -322,11 +322,21 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const managerEntry = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: managerCookie },
         payload: {
-          employeeId: employeeA.id, direction: "IN", amount: 25,
+          employeeId: employeeA.id, direction: "IN", amount: 25, sourceType: "MANAGER_TOPUP",
           transactionDate: "2099-01-11", description: "Manager records additional custody"
         }
       });
       assert.equal(managerEntry.statusCode, 201, managerEntry.body);
+      assert.equal(managerEntry.json().data.source_type,"MANAGER_TOPUP");
+
+      const managerTopupLedger=await app.inject({
+        method:"GET",url:"/api/accounting/ledger?from=2099-01-11&to=2099-01-11&direction=IN&sourceType=MANAGER_TOPUP&q=Manager%20records",
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(managerTopupLedger.statusCode,200,managerTopupLedger.body);
+      assert.equal(managerTopupLedger.json().data.length,1);
+      assert.equal(Number(managerTopupLedger.json().summary.total_in),25);
+      assert.equal(Number(managerTopupLedger.json().summary.company_income),0,"manager custody top-up is not company revenue");
 
       const audit = await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
@@ -356,6 +366,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [employeeB.id]
       );
       assert.ok(Number(negativeCustody.rows[0].balance)<0,"an approved expense may make custody negative");
+
+      const expenseLedger=await app.inject({
+        method:"GET",url:"/api/accounting/ledger?from=2099-01-10&to=2099-01-10&direction=OUT&q=Negative%20custody",
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(expenseLedger.statusCode,200,expenseLedger.body);
+      assert.equal(expenseLedger.json().data.length,1,"custody-paid expense must not be counted twice");
+      assert.equal(expenseLedger.json().data[0].source_type,"ACCOUNTING_EXPENSE");
+      assert.equal(expenseLedger.json().data[0].employee_id,employeeB.id);
+      assert.equal(Number(expenseLedger.json().summary.recorded_expenses),1000);
 
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
