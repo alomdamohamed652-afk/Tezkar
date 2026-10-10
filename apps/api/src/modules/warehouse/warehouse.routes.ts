@@ -52,8 +52,11 @@ async function changeBalance(client: import("pg").PoolClient, productId: string,
   const cost = movementUnitCost == null ? currentAvg : movementUnitCost;
   let nextValue = currentValue;
   if (delta > 0) nextValue = currentValue + delta * cost;
-  else if (delta < 0) nextValue = Math.max(0,currentValue - Math.abs(delta) * currentAvg);
-  const nextAvg = next > 0 ? nextValue / next : 0;
+  // Outbound movements consume FIFO inventory lots below. Keep the current value
+  // here and subtract the actual lot cost exactly once after lot consumption.
+  // Subtracting average cost here as well would double-decrement inventory value.
+  else if (delta < 0) nextValue = currentValue;
+  const nextAvg = next > 0 ? (delta < 0 ? currentAvg : nextValue / next) : 0;
   if (locked.rowCount) {
     await client.query("UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[Math.max(0,next),nextAvg,nextValue,productId,warehouseId,locationId]);
   } else {
