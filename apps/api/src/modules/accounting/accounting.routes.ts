@@ -219,17 +219,17 @@ export async function accountingRoutes(app:FastifyInstance){
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
    pool.query(`SELECT
-     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0)
-     +COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS value,
+     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS value,
      COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'",[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS value FROM production_entries WHERE order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$1) AND status='APPROVED'",[p.data.orderId])
   ]);
   const revenueValue=Number(revenue.rows[0].value||0);
   const explicitExpenses=Number(expenses.rows[0].value||0);
+  const administrativeAllocation=Number(expenses.rows[0].administrative_allocation||0);
   const materialValue=Number(stockOut.rows[0].value||0);
   const laborValue=Number(labor.rows[0].value||0);
-  const totalCost=explicitExpenses+materialValue+laborValue;
-  return {data:{order:order.rows[0],revenue:revenueValue,expenses:explicitExpenses,materialCost:materialValue,laborCost:laborValue,totalCost,profit:revenueValue-totalCost,marginPercent:revenueValue>0?((revenueValue-totalCost)/revenueValue)*100:null}};
+  const totalCost=explicitExpenses+administrativeAllocation+materialValue+laborValue;
+  return {data:{order:order.rows[0],revenue:revenueValue,expenses:explicitExpenses,administrativeAllocation,materialCost:materialValue,laborCost:laborValue,totalCost,profit:revenueValue-totalCost,marginPercent:revenueValue>0?((revenueValue-totalCost)/revenueValue)*100:null}};
  });
 }
