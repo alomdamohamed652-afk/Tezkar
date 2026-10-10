@@ -146,7 +146,7 @@ export default function ProductionPage(){
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
     <label>الطلبية<SearchableSelect value={orderId} onChange={selectOrder} options={orderOptions} placeholder="اختر الطلبية" searchPlaceholder="ابحث باسم الطلبية"/></label>
     <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder={orderId?"اختر مرحلة من الطلبية":"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
-    <label>المنتج (اختياري — يتحدد تلقائيًا من المرحلة)<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختيار المنتج" searchPlaceholder="ابحث عن المنتج"/></label>
+    <label>المنتج<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختيار المنتج" searchPlaceholder="ابحث عن المنتج"/></label>
     
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={selectShift} options={shiftOptions} placeholder="اختر الوردية"/></label>
