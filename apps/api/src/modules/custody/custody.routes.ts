@@ -144,7 +144,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const result=await withTransaction(async client=>{
       const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);
       if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
-      if(["RETURNED","CANCELLED","LOST"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","العهدة مغلقة بالفعل",409);
+      if(["RETURNED","CANCELLED","DAMAGED","LOST"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","العهدة مغلقة بالفعل",409);
       const returned=await client.query("SELECT COALESCE(SUM(returned_quantity+lost_quantity),0) AS q FROM custody_settlements WHERE custody_id=$1",[id]);
       const already=Number(returned.rows[0].q||0);const remaining=Number(custody.rows[0].quantity)-already;
       const accounted=p.data.returnedQuantity+p.data.lostQuantity;
