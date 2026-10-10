@@ -549,19 +549,35 @@ export async function orderRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
+    const parsed=z.object({from:z.string().date().optional(),to:z.string().date().optional(),machineId:z.string().uuid().optional(),productId:z.string().uuid().optional(),employeeId:z.string().uuid().optional(),shiftId:z.string().uuid().optional(),orderId:z.string().uuid().optional(),stageId:z.string().uuid().optional(),q:z.string().trim().max(160).optional()}).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر إنتاج الماكينات غير صحيحة",422);
+    const params:unknown[]=[];const where:string[]=[];
+    if(parsed.data.from){params.push(parsed.data.from);where.push("mp.work_date >= $"+params.length+"::date");}
+    if(parsed.data.to){params.push(parsed.data.to);where.push("mp.work_date <= $"+params.length+"::date");}
+    if(parsed.data.machineId){params.push(parsed.data.machineId);where.push("mp.machine_id=$"+params.length);}
+    if(parsed.data.productId){params.push(parsed.data.productId);where.push("mp.product_id=$"+params.length);}
+    if(parsed.data.employeeId){params.push(parsed.data.employeeId);where.push("mp.employee_id=$"+params.length);}
+    if(parsed.data.shiftId){params.push(parsed.data.shiftId);where.push("mp.shift_id=$"+params.length);}
+    if(parsed.data.orderId){params.push(parsed.data.orderId);where.push("os.order_id=$"+params.length);}
+    if(parsed.data.stageId){params.push(parsed.data.stageId);where.push("os.stage_id=$"+params.length);}
+    if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(mp.code ILIKE ${n} OR mp.notes ILIKE ${n} OR m.name ILIKE ${n} OR p.name ILIKE ${n} OR COALESCE(e.full_name,'') ILIKE ${n} OR COALESCE(o.code,'') ILIKE ${n} OR COALESCE(o.order_name,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
     const r=await pool.query(
       `SELECT mp.id,mp.code,mp.work_date,mp.quantity,mp.notes,m.code AS machine_code,m.name AS machine_name,
               p.code AS product_code,p.name AS product_name,e.full_name AS employee_name,
-              o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
+              o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name,
+              sh.name AS shift_name,creator.username AS created_by_username
          FROM machine_productions mp
          JOIN machines m ON m.id=mp.machine_id
          JOIN products p ON p.id=mp.product_id
          LEFT JOIN employees e ON e.id=mp.employee_id
+         LEFT JOIN shifts sh ON sh.id=mp.shift_id
+         LEFT JOIN users creator ON creator.id=mp.created_by
          LEFT JOIN order_stages os ON os.id=mp.order_stage_id
          LEFT JOIN production_orders o ON o.id=os.order_id
          LEFT JOIN stages s ON s.id=os.stage_id
          LEFT JOIN production_types pt ON pt.id=mp.production_type_id
-        ORDER BY mp.created_at DESC LIMIT 500`);
+        ${where.length?"WHERE "+where.join(" AND "):""}
+        ORDER BY mp.created_at DESC LIMIT 500`,params);
     return {data:r.rows};
   });
 
