@@ -100,6 +100,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       const periodResult = await client.query("INSERT INTO payroll_periods(period_month,generated_by) VALUES($1::date,$2) ON CONFLICT(period_month) DO UPDATE SET period_month=EXCLUDED.period_month RETURNING *", [month,request.user!.userId]);
       const period = periodResult.rows[0];
       if (period.status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة معتمدة أو مغلقة ولا يمكن إعادة توليدها", 409);
+      // A draft period may be regenerated; remove its uncommitted fixed-installment allocations first.
+      await client.query("DELETE FROM payroll_advance_deductions WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$1)",[period.id]);
+      await client.query("UPDATE payroll_items SET advance_repayment_amount=0 WHERE period_id=$1",[period.id]);
       // Prorate each salary profile by the calendar days it was effective in this month.
       // The latest overlapping profile is retained as the item's reference profile, while
       // base_salary is the rounded sum across all profile periods for the employee.
@@ -129,6 +132,42 @@ export async function payrollRoutes(app: FastifyInstance) {
         SELECT $1,e.id,t.salary_profile_id,t.base_salary
         FROM employees e JOIN employee_totals t ON t.employee_id=e.id
         ON CONFLICT(period_id,employee_id) DO NOTHING`, [period.id,month]);
+      // Fixed monthly installments are allocated only to the take-home pay available in this draft.
+      // Repayments are committed when the payroll period is approved, not on draft generation.
+      const payrollItems = await client.query(
+        "SELECT id,employee_id,base_salary,bonus_amount,deduction_amount FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",
+        [period.id]
+      );
+      for (const item of payrollItems.rows) {
+        let available = Math.max(0,Number(item.base_salary)+Number(item.bonus_amount)-Number(item.deduction_amount));
+        if (available <= 0) continue;
+        const advances = await client.query(
+          `SELECT a.*,
+                  GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding
+             FROM advance_requests a
+            WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+              AND a.repayment_method='FIXED_INSTALLMENT' AND a.installment_amount>0
+              AND a.paid_at < ($2::date + INTERVAL '1 month')
+            ORDER BY a.paid_at,a.created_at,a.id
+            FOR UPDATE OF a`,
+          [item.employee_id,month]
+        );
+        let allocated = 0;
+        for (const advance of advances.rows) {
+          if (available <= 0) break;
+          const outstanding = Number(advance.outstanding);
+          const installmentAmount = Number(advance.installment_amount);
+          const amount = Math.round(Math.min(outstanding,installmentAmount,available)*100)/100;
+          if (amount <= 0) continue;
+          await client.query(
+            "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,$3,'FIXED_INSTALLMENT')",
+            [item.id,advance.id,amount]
+          );
+          allocated += amount;
+          available = Math.max(0,available-amount);
+        }
+        if (allocated > 0) await client.query("UPDATE payroll_items SET advance_repayment_amount=$1 WHERE id=$2",[Math.round(allocated*100)/100,item.id]);
+      }
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [period.id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"generate",module:"payroll",entityType:"payroll_period",entityId:period.id,afterData:{period,count:Number(count.rows[0].count)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { period, generatedItems:Number(count.rows[0].count) };
@@ -164,7 +203,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       } catch {
         throw new AppError("DEDUCTION_PERCENTAGE_INVALID", "نسبة الخصم يجب أن تكون أكبر من صفر وحتى ١٠٠٪", 422);
       }
-      if (Number(before.rows[0].base_salary)+bonus < deduction) throw new AppError("PAYROLL_NET_NEGATIVE", "الخصومات أكبر من إجمالي الراتب والمكافآت", 422);
+      if (Number(before.rows[0].base_salary)+bonus < deduction+Number(before.rows[0].advance_repayment_amount??0)) throw new AppError("PAYROLL_NET_NEGATIVE", "إجمالي الخصومات والسلف أكبر من الراتب والمكافآت", 422);
       const updated = await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2,deduction_mode=$3,deduction_percentage=$4,deduction_basis=$5,notes=$6 WHERE id=$7 RETURNING *",
         [bonus,deduction,deductionMode,deductionMode==="PERCENTAGE"?deductionPercentage:null,deductionBasis,parsed.data.notes===undefined?before.rows[0].notes:parsed.data.notes,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"adjust",module:"payroll",entityType:"payroll_item",entityId:id,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -180,14 +219,42 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
       if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
-      const salaryItems = await client.query(`SELECT i.id,i.net_amount,i.accounting_expense_id,e.full_name
+      const salaryItems = await client.query(`SELECT i.id,i.net_amount,(i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
       for (const item of salaryItems.rows) {
-        if (Number(item.net_amount) <= 0 || item.accounting_expense_id) continue;
+        if (Number(item.salary_expense_amount) <= 0 || item.accounting_expense_id) continue;
         const expense = await client.query(`INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by)
           VALUES(NULL,'SALARIES',$1,$2,$3::date,'PAYROLL',$4) RETURNING id`,
-          [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,item.net_amount,period.rows[0].period_month,request.user!.userId]);
+          [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,item.salary_expense_amount,period.rows[0].period_month,request.user!.userId]);
         await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
+      }
+      // Commit each precomputed fixed installment exactly once when the payroll is approved.
+      const advanceDeductions = await client.query(
+        `SELECT d.*,a.amount AS advance_amount,a.repayment_status,a.code AS advance_code,a.employee_id,
+                i.period_id,p.period_month
+           FROM payroll_advance_deductions d
+           JOIN advance_requests a ON a.id=d.advance_id
+           JOIN payroll_items i ON i.id=d.payroll_item_id
+           JOIN payroll_periods p ON p.id=i.period_id
+          WHERE i.period_id=$1
+          ORDER BY a.id
+          FOR UPDATE OF a,i`,
+        [id]
+      );
+      for (const deduction of advanceDeductions.rows) {
+        if (deduction.repayment_status !== "OPEN") throw new AppError("ADVANCE_NOT_OPEN","السلفة المرتبطة بالمسير لم تعد مفتوحة؛ أعد مراجعة المسير",409);
+        const paid = await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
+        const remaining = Number(deduction.advance_amount)-Number(paid.rows[0].amount);
+        if (Number(deduction.amount) > remaining+0.0001) throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد السلفة بعد تجهيز المسير؛ أعد توليد المسير قبل الاعتماد",409);
+        const repayment = await client.query(
+          `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
+           VALUES($1,$2,'FIXED_INSTALLMENT',(($3::date + INTERVAL '1 month - 1 day')::date),$4,$5,$6)
+           RETURNING id`,
+          [deduction.advance_id,deduction.amount,deduction.period_month,`خصم قسط سلفة ${deduction.advance_code} من مسير ${String(deduction.period_month).slice(0,7)}`,request.user!.userId,deduction.payroll_item_id]
+        );
+        const nextRemaining = remaining-Number(deduction.amount);
+        await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[nextRemaining<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
+        await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"automatic_repayment",module:"advances",entityType:"advance_request",entityId:deduction.advance_id,metadata:{repaymentId:repayment.rows[0].id,payrollItemId:deduction.payroll_item_id,amount:Number(deduction.amount),remaining:Math.max(0,nextRemaining)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       }
       const updated = await client.query("UPDATE payroll_periods SET status='APPROVED',approved_by=$1,approved_at=now() WHERE id=$2 RETURNING *", [request.user!.userId,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"payroll",entityType:"payroll_period",entityId:id,beforeData:period.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
