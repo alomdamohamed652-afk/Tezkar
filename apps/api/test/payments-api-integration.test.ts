@@ -36,9 +36,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -54,6 +54,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     await app.register(accountingRoutes);
     await app.register(operationsMasterRoutes);
     await app.register(warehouseRoutes);
+    await app.register(orderRoutes);
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
@@ -82,6 +83,41 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
+      const productSuffix=randomBytes(4).toString("hex");
+      const multiProductOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{
+          orderName:"Multi-final-product test "+productSuffix,
+          customerName:"Isolated integration test",
+          lines:[],
+          stages:[
+            {stageName:"Prepare A "+productSuffix,outputProductName:"WIP A "+productSuffix,sequenceNo:1,plannedQuantity:10,stageRate:1,stageRateMethod:"PER_PIECE",isFinalProduct:false},
+            {stageName:"Finish A "+productSuffix,outputProductName:"Finished A "+productSuffix,sequenceNo:2,plannedQuantity:10,stageRate:2,stageRateMethod:"PER_PIECE",isFinalProduct:true},
+            {stageName:"Prepare B "+productSuffix,outputProductName:"WIP B "+productSuffix,sequenceNo:3,plannedQuantity:20,stageRate:1,stageRateMethod:"PER_PIECE",isFinalProduct:false},
+            {stageName:"Finish B "+productSuffix,outputProductName:"Finished B "+productSuffix,sequenceNo:4,plannedQuantity:20,stageRate:2,stageRateMethod:"PER_PIECE",isFinalProduct:true}
+          ]
+        }
+      });
+      assert.equal(multiProductOrder.statusCode,201,multiProductOrder.body);
+      const multiOrderId=multiProductOrder.json().data.id;
+      const finalLines=await apiPool.query(
+        "SELECT p.name,pol.quantity,os.is_final_product FROM production_order_lines pol JOIN products p ON p.id=pol.product_id LEFT JOIN order_stages os ON os.order_id=pol.order_id AND os.output_product_id=pol.product_id AND os.is_final_product=TRUE WHERE pol.order_id=$1 ORDER BY p.name",
+        [multiOrderId]
+      );
+      assert.equal(finalLines.rowCount,2,"one order must retain each distinct final product");
+      assert.deepEqual(finalLines.rows.map(row=>({name:row.name,quantity:Number(row.quantity)})),[
+        {name:"Finished A "+productSuffix,quantity:10},
+        {name:"Finished B "+productSuffix,quantity:20}
+      ]);
+      assert.ok(finalLines.rows.every(row=>row.is_final_product===true));
+      const multiDashboard=await app.inject({method:"GET",url:"/api/orders/"+multiOrderId+"/dashboard",headers:{cookie:managerCookie}});
+      assert.equal(multiDashboard.statusCode,200,multiDashboard.body);
+      assert.equal(multiDashboard.json().data.finalProducts.length,2);
+      assert.equal(multiDashboard.json().data.finalProduct,null,"single-product compatibility field must be null for multi-product orders");
+      const finalStageRows=await apiPool.query("SELECT sequence_no,is_final_product FROM order_stages WHERE order_id=$1 ORDER BY sequence_no",[multiOrderId]);
+      assert.deepEqual(finalStageRows.rows.map(row=>({sequence:Number(row.sequence_no),isFinal:row.is_final_product})),[
+        {sequence:1,isFinal:false},{sequence:2,isFinal:true},{sequence:3,isFinal:false},{sequence:4,isFinal:true}
+      ]);
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}
