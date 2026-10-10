@@ -18,6 +18,7 @@ type Expense = { id: string; code: string; order_code: string | null; category: 
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null };
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
+const revenueSourceLabel=(source:string)=>({"CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر"}[source]||source);
 
 export default function AccountingPage() {
   const { has } = usePermissions();
@@ -157,7 +158,7 @@ export default function AccountingPage() {
       <div className="grid">
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الداخل</h2><button className="link-button" onClick={()=>setTab("in")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.source}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
+         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
          {!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}
         </tbody></table></div>
        </section>
@@ -190,7 +191,7 @@ export default function AccountingPage() {
        <label>ملاحظات<input value={rForm.notes} onChange={e=>setRForm({...rForm,notes:e.target.value})}/></label>
       </div>}
       {has("finance.revenues.create")&&<div className="form-actions"><button className="primary-button" onClick={addRevenue}>تسجيل الإيراد</button></div>}
-      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>{revenues.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code}</td><td>{x.source}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}{!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>{revenues.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}{!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}</tbody></table></div>
      </section>}
 
      {tab==="out"&&<section className="card">
