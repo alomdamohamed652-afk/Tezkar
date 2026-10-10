@@ -54,6 +54,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
+      const emptyCustodianEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Empty Cash Custodian') RETURNING id")).rows[0];
       const managerUsername="paymgr-"+randomBytes(4).toString("hex");
       const workerUsername="paywrk-"+randomBytes(4).toString("hex");
       const manager=(await apiPool.query(
@@ -123,6 +124,29 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(nextRequest.statusCode,201,nextRequest.body,"paid requests must not block a new request");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE payment_request_id=$1",[requestId])).rows[0].count),1);
+
+      // Retrying an already-paid request must not create a second payment or custody debit.
+      const repeatedApproval=await app.inject({
+        method:"POST",url:`/api/payment-requests/${requestId}/approve`,headers:{cookie:managerCookie}
+      });
+      assert.equal(repeatedApproval.statusCode,409,repeatedApproval.body);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE payment_request_id=$1",[requestId])).rows[0].count),1);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id])).rows[0].count),1);
+
+      // Insufficient custody must roll back the payment, ledger debit and request status together.
+      const blockedApproval=await app.inject({
+        method:"POST",url:`/api/payment-requests/${nextRequest.json().data.id}/approve`,
+        headers:{cookie:managerCookie},payload:{cashCustodyEmployeeId:emptyCustodianEmployee.id}
+      });
+      assert.equal(blockedApproval.statusCode,409,blockedApproval.body);
+      assert.equal(blockedApproval.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      const blockedState=await apiPool.query(
+        "SELECT pr.status,(SELECT COUNT(*)::int FROM worker_payments wp WHERE wp.payment_request_id=pr.id) AS payments,(SELECT COUNT(*)::int FROM employee_earnings_ledger el WHERE el.entry_type='WORKER_PAYMENT' AND el.employee_id=pr.employee_id) AS payment_ledger_entries FROM payment_requests pr WHERE pr.id=$1",
+        [nextRequest.json().data.id]
+      );
+      assert.equal(blockedState.rows[0].status,"PENDING");
+      assert.equal(Number(blockedState.rows[0].payments),0,"failed custody debit must roll back worker payment");
+      assert.equal(Number(blockedState.rows[0].payment_ledger_entries),1,"failed custody debit must not add an earnings debit");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
