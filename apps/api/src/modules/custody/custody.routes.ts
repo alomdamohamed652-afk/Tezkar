@@ -220,7 +220,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const params:unknown[]=[]; const where:string[]=[];
       if(!access.isFinance){params.push(access.employeeId);where.push("c.employee_id=$"+params.length);}
       const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,ct.code AS transfer_code,
-        creator.username AS created_by_username,creator.display_name AS created_by_display_name,
+        creator.username AS created_by_username,
         rev.code AS revenue_code,rev.order_id,ord.code AS order_code,ord.order_name,
         SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END) OVER (
           PARTITION BY c.employee_id
