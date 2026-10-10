@@ -1371,3 +1371,23 @@ select[multiple] option:checked{background:var(--primary-soft) linear-gradient(0
 .notification-date{font-size:11px;color:var(--muted)}
 .notification-open{color:var(--primary);font-size:12px;font-weight:800;white-space:nowrap}
 @media(max-width:560px){.notification-item{padding:13px 11px;gap:8px}.notification-open{display:none}}
+
+
+/* Searchable multi-select: designed for touch screens and long employee lists. */
+.search-multi-select{position:relative;display:grid;gap:8px;min-width:0}
+.search-multi-select>.search-select-trigger{width:100%;min-height:44px;text-align:right}
+.search-multi-select .search-select-menu{z-index:80;max-height:min(420px,65vh);overflow:hidden;display:flex;flex-direction:column}
+.search-multi-actions{display:flex;justify-content:space-between;gap:8px;padding:8px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.search-multi-actions button,.search-multi-clear{border:0;background:transparent;color:var(--primary);font-size:12px;font-weight:750;padding:5px}
+.search-multi-option{display:flex;align-items:center;gap:10px;padding:10px 12px;min-height:48px;border-bottom:1px solid var(--border);cursor:pointer}
+.search-multi-option:hover,.search-multi-option.selected{background:var(--primary-soft)}
+.search-multi-option input[type=checkbox]{width:18px;height:18px;flex:0 0 18px;accent-color:var(--primary)}
+.search-multi-copy{display:grid;gap:1px;min-width:0}
+.search-multi-copy strong{font-weight:700;overflow-wrap:anywhere}
+.search-multi-copy small{font-size:11px;color:var(--muted);direction:ltr;text-align:right}
+.search-multi-chips{display:flex;flex-wrap:wrap;gap:6px}
+.search-multi-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 9px;border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:12px}
+.search-multi-chip span{font-size:16px;line-height:1}
+.search-multi-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-top:1px solid var(--border);background:var(--surface)}
+.search-multi-footer>span{font-size:12px;color:var(--muted)}
+@media(max-width:560px){.search-multi-select .search-select-menu{position:relative;inset:auto;width:100%;max-height:50vh;box-shadow:none}.search-multi-option{min-height:52px}}
