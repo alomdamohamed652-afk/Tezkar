@@ -185,6 +185,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.equal(Number(unchangedRepeatedLine.rows[0].planned_quantity),3);
       assert.equal(Number(unchangedRepeatedLine.rows[0].line_quantity),3);
+
+      const firstRepeatedStage=(await apiPool.query("SELECT id,order_item_id FROM order_stages WHERE order_id=$1 ORDER BY sequence_no LIMIT 1",[repeatedOrderId])).rows[0];
+      const unmarkFinal=await app.inject({
+        method:"PATCH",url:"/api/order-stages/"+firstRepeatedStage.id,
+        headers:{cookie:managerCookie},payload:{isFinalProduct:false}
+      });
+      assert.equal(unmarkFinal.statusCode,200,unmarkFinal.body);
+      assert.equal(unmarkFinal.json().data.order_item_id,null);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM production_order_lines WHERE order_id=$1",[repeatedOrderId])).rows[0].count),1,
+        "unmarking a final stage must remove its now-orphaned line without recreating the remaining line");
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}
