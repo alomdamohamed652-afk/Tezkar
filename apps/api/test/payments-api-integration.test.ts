@@ -102,6 +102,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(globalSearch.statusCode,200,globalSearch.body);
       assert.ok(globalSearch.json().data.some((item:{type:string})=>item.type==="طلب قبض"),"central search should find the payment request code");
       assert.ok(globalSearch.json().data.some((item:{type:string})=>item.type==="حركة عهدة"),"central search should find the linked cash-custody debit");
+      const delivery=(await apiPool.query("INSERT INTO delivery_permissions(destination,created_by) VALUES('Test search destination',$1) RETURNING code",[manager.id])).rows[0];
+      const deliverySearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(delivery.code),headers:{cookie:managerCookie}});
+      assert.equal(deliverySearch.statusCode,200,deliverySearch.body);
+      assert.ok(deliverySearch.json().data.some((item:{type:string;code:string})=>item.type==="إذن تسليم"&&item.code===delivery.code),"central search should find delivery slips without relying on an order_id column");
 
       const balance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(balance.statusCode,200,balance.body);
