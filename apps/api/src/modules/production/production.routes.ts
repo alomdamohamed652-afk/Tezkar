@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { createUserNotification } from "../notifications/notifications.service.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
@@ -648,6 +649,15 @@ export async function productionRoutes(app: FastifyInstance) {
           [current.employee_id,credit,debit,null,request.user!.userId,adjustment.reason]
         );
         await client.query("UPDATE employee_earnings_adjustments SET ledger_id=$1 WHERE id=$2",[ledger.rows[0].id,adjustment.id]);
+      }
+
+      if (current.submitted_by && current.submitted_by !== request.user!.userId) {
+        await createUserNotification(client, {
+          userId: current.submitted_by, type: "PRODUCTION_APPROVED",
+          title: "تم اعتماد سجل الإنتاج",
+          body: `تم اعتماد إنتاج ${current.code} بكمية ${Number(current.quantity).toLocaleString("ar-EG")}`,
+          href: "/production", entityType: "production_entry", entityId: id
+        });
       }
 
       await writeAudit(client, {
