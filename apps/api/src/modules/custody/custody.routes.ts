@@ -150,7 +150,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const accounted=p.data.returnedQuantity+p.data.lostQuantity;
       if(accounted>remaining+1e-9)throw new AppError("CUSTODY_RETURN_EXCEEDS_BALANCE","الكمية المرتجعة أو المفقودة أكبر من المتبقي في العهدة",409);
       const next=remaining-accounted;
-      const status=next<=1e-9?(p.data.lostQuantity>0||p.data.shortageValue>0?"LOST":p.data.damageValue>0?"DAMAGED":"FULL"):"PARTIAL";
+      const status=next<=1e-9?(p.data.lostQuantity>0?"LOST":p.data.damageValue>0||p.data.shortageValue>0?"DAMAGED":"FULL"):"PARTIAL";
       const x=await client.query(
         "INSERT INTO custody_settlements(custody_id,employee_id,returned_quantity,lost_quantity,damage_value,shortage_value,status,notes,settled_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
         [id,custody.rows[0].employee_id,p.data.returnedQuantity,p.data.lostQuantity,p.data.damageValue,p.data.shortageValue,status,p.data.notes??null,request.user!.userId]
