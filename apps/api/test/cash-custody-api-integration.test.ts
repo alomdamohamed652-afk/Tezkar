@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -172,10 +172,8 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const collectionPayload={
         orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.50,
         transactionDate:"2099-02-10",description:"Customer collection idempotency test",
-        notes:"Same request retry",idempotencyKey:randomBytes(16).toString("hex")
+        notes:"Same request retry",idempotencyKey:randomUUID()
       };
-      const collectionKey=(await import("node:crypto")).randomUUID();
-      collectionPayload.idempotencyKey=collectionKey;
       const collectionFirst=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
       });
@@ -194,7 +192,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(reusedKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
       const independentCollection=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
-        payload:{...collectionPayload,idempotencyKey:randomBytes(16).toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,"$1-$2-$3-$4-$5")}
+        payload:{...collectionPayload,idempotencyKey:randomUUID()}
       });
       assert.equal(independentCollection.statusCode,201,independentCollection.body);
       assert.notEqual(independentCollection.json().data.revenue.id,collectionFirst.json().data.revenue.id);
