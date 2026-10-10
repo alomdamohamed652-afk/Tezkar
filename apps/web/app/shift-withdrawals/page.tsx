@@ -2,6 +2,7 @@
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar} from "../../components/sidebar";
+import {formatQuantity} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
@@ -89,7 +90,7 @@ export default function ShiftWithdrawalsPage(){
      <label style={{gridColumn:"1/-1"}}>الملاحظات<input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="بيان المسحوب أو سبب الصرف"/></label>
     </div>
     <div className="withdrawal-lines">{lines.map((x,i)=><div className="withdrawal-line" key={i}>
-      <div><SearchableSelect value={x.productId} onChange={v=>update(i,"productId",v)} options={productOptionsFor(x)} placeholder="اختر صنفًا متاحًا" searchPlaceholder="ابحث باسم الصنف أو الكود"/>{x.productId&&x.warehouseId&&<small className="form-hint">المتاح: {stockQuantity(x).toLocaleString("ar-EG")}</small>}</div>
+      <div><SearchableSelect value={x.productId} onChange={v=>update(i,"productId",v)} options={productOptionsFor(x)} placeholder="اختر صنفًا متاحًا" searchPlaceholder="ابحث باسم الصنف أو الكود"/>{x.productId&&x.warehouseId&&<small className="form-hint">المتاح: {formatQuantity(stockQuantity(x),0)}</small>}</div>
       <SearchableSelect value={x.warehouseId} onChange={v=>update(i,"warehouseId",v)} options={warehouseOptionsFor(x)} placeholder={x.productId?"مخازن بها الصنف":"اختر المخزن لعرض أصنافه"}/>
       <input type="number" min="0.001" step="0.001" value={x.quantity} onChange={e=>update(i,"quantity",e.target.value)} placeholder="العدد"/>
       <input value={x.notes} onChange={e=>update(i,"notes",e.target.value)} placeholder="بيان الصنف (اختياري)"/>

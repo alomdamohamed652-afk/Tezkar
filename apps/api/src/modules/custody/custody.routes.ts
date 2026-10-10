@@ -220,15 +220,22 @@ export async function custodyRoutes(app:FastifyInstance){
       const params:unknown[]=[]; const where:string[]=[];
       if(!access.isFinance){params.push(access.employeeId);where.push("c.employee_id=$"+params.length);}
       const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,ct.code AS transfer_code,
+        creator.username AS created_by_username,
+        rev.code AS revenue_code,rev.order_id,ord.code AS order_code,ord.order_name,preq.code AS payment_request_code,wp.id AS worker_payment_id,
         SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END) OVER (
           PARTITION BY c.employee_id
           ORDER BY c.transaction_date,c.created_at,c.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS balance
         FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
+        LEFT JOIN users creator ON creator.id=c.created_by
         LEFT JOIN cash_custody_transfers ct ON ct.id=c.transfer_id
+        LEFT JOIN order_revenues rev ON c.source_type='ORDER_REVENUE' AND rev.id=c.source_id
+        LEFT JOIN production_orders ord ON ord.id=rev.order_id
+        LEFT JOIN worker_payments wp ON c.source_type='WORKER_PAYMENT' AND wp.id=c.source_id
+        LEFT JOIN payment_requests preq ON preq.id=wp.payment_request_id
         ${where.length?"WHERE "+where.join(" AND "):""}
-        ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC LIMIT 500`,params);
+        ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC`,params);
       return {data:r.rows};
     }finally{client.release();}
   });

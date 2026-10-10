@@ -39,7 +39,7 @@ export async function accountingRoutes(app:FastifyInstance){
     FROM accounting_expenses e
     LEFT JOIN production_orders o ON o.id=e.order_id
     LEFT JOIN users u ON u.id=e.created_by
-    ${where} ORDER BY e.expense_date DESC,e.created_at DESC LIMIT 500`,params);
+    ${where} ORDER BY e.expense_date DESC,e.created_at DESC`,params);
   return {data:r.rows};
  });
 
@@ -70,7 +70,7 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
  app.get("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.view")]},async()=>{
-  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by ORDER BY r.revenue_date DESC,r.created_at DESC LIMIT 500");
+  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by ORDER BY r.revenue_date DESC,r.created_at DESC");
   return {data:r.rows};
  });
 
@@ -240,13 +240,34 @@ export async function accountingRoutes(app:FastifyInstance){
   })};
  });
 
+
+ app.get("/api/accounting/orders-dashboard",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
+  const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional()}).safeParse(request.query);
+  if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر حالة الطلبيات غير صحيح",422);
+  const params:unknown[]=[];const where:string[]=[];
+  if(q.data.status){params.push(q.data.status);where.push("o.status=$1");}
+  const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,
+    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS revenue,
+    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0) AS direct_expenses,
+    COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED'),0) AS administrative_allocation,
+    COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0) AS material_cost,
+    COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS labor_cost
+    FROM production_orders o ${where.length?"WHERE "+where.join(" AND "):""} ORDER BY o.created_at DESC`,params);
+  const data=result.rows.map(row=>{
+   const revenue=Number(row.revenue||0),direct=Number(row.direct_expenses||0),admin=Number(row.administrative_allocation||0),material=Number(row.material_cost||0),labor=Number(row.labor_cost||0);
+   const totalCost=direct+admin+material+labor;
+   return {...row,revenue,direct_expenses:direct,administrative_allocation:admin,material_cost:material,labor_cost:labor,total_cost:totalCost,profit:revenue-totalCost,margin_percent:revenue>0?((revenue-totalCost)/revenue)*100:null};
+  });
+  return {data,summary:{orders:data.length,revenue:data.reduce((s,r)=>s+r.revenue,0),cost:data.reduce((s,r)=>s+r.total_cost,0),profit:data.reduce((s,r)=>s+r.profit,0)}};
+ });
+
  app.get("/api/accounting/orders/:orderId/profitability",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
   const p=idSchema.safeParse(request.params);if(!p.success)throw new AppError("VALIDATION_ERROR","الطلبية غير صحيحة",422);
   const order=await pool.query("SELECT id,code,order_name,status,customer_name FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
    pool.query(`SELECT
-     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS value,
+     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1 AND expense_type='DIRECT'),0) AS value,
      COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'",[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS value FROM production_entries WHERE order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$1) AND status='APPROVED'",[p.data.orderId])

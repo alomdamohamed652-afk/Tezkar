@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 
 const requestSchema = z.object({
   amount: z.number().positive(),
@@ -54,6 +55,26 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
     [employeeId]
   );
   return Number(r.rows[0]?.balance ?? 0);
+}
+
+async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,amount:number,requestCode:string,paymentId:string){
+  const canAll=await hasPermission(client,userId,"cash_custody.create","all");
+  const canOwn=await hasPermission(client,userId,"cash_custody.create_own","own");
+  if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","لا يمكن صرف طلب القبض دون صلاحية تسجيل خصم من العهدة النقدية",403);
+  if(!canAll){
+    const owner=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
+    if(!canOwn||owner.rows[0]?.employee_id!==custodyEmployeeId)throw new AppError("CASH_CUSTODY_SCOPE_DENIED","يمكنك الخصم من عهدتك النقدية فقط",403);
+  }
+  await lockEmployee(client,custodyEmployeeId);
+  const existing=await client.query("SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 LIMIT 1",[paymentId]);
+  if(existing.rowCount)return existing.rows[0];
+  const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=CURRENT_DATE",[custodyEmployeeId]);
+  if(amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة النقدية لا يكفي لصرف طلب القبض. تم إيقاف العملية دون ترحيل أي جزء منها.",409);
+  const row=await client.query(
+    "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT',$5,$6) RETURNING *",
+    [custodyEmployeeId,amount,"صرف طلب القبض "+requestCode,"خصم تلقائي مرتبط بسند صرف العامل. رقم السند: "+paymentId,paymentId,userId]
+  );
+  return row.rows[0];
 }
 
 export async function paymentsRoutes(app:FastifyInstance){
@@ -141,6 +162,8 @@ export async function paymentsRoutes(app:FastifyInstance){
     preHandler:[authenticateRequest,requirePermission("payment_requests.approve")]
   },async(request)=>{
     const id=(request.params as {id:string}).id;
+    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional()}).safeParse(request.body??{});
+    if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
       if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
@@ -164,6 +187,10 @@ export async function paymentsRoutes(app:FastifyInstance){
          ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId,
          current.rows[0].transfer_reference ? "صرف طلب قبض "+current.rows[0].code+" — مرجع التحويل: "+current.rows[0].transfer_reference : "صرف طلب قبض "+current.rows[0].code]);
+
+      const custodyEmployeeId=actionBody.data.cashCustodyEmployeeId??request.user!.employeeId;
+      if(!custodyEmployeeId)throw new AppError("CASH_CUSTODY_EMPLOYEE_REQUIRED","اختار الموظف صاحب العهدة التي سيُخصم منها المبلغ",422);
+      await recordCashCustodyOut(client,request.user!.userId,custodyEmployeeId,Number(payment.rows[0].amount),String(current.rows[0].code),String(payment.rows[0].id));
 
       let allocationRemaining=Number(payment.rows[0].amount);
       const productions=await client.query(
@@ -219,6 +246,8 @@ export async function paymentsRoutes(app:FastifyInstance){
     preHandler:[authenticateRequest,requirePermission("worker_payments.pay")]
   },async(request)=>{
     const id=(request.params as {id:string}).id;
+    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional()}).safeParse(request.body??{});
+    if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
       if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
@@ -243,6 +272,10 @@ export async function paymentsRoutes(app:FastifyInstance){
          VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
          ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
         [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
+
+      const custodyEmployeeId=actionBody.data.cashCustodyEmployeeId??request.user!.employeeId;
+      if(!custodyEmployeeId)throw new AppError("CASH_CUSTODY_EMPLOYEE_REQUIRED","اختار الموظف صاحب العهدة التي سيُخصم منها المبلغ",422);
+      await recordCashCustodyOut(client,request.user!.userId,custodyEmployeeId,Number(payment.rows[0].amount),String(current.rows[0].code),String(payment.rows[0].id));
 
       let allocationRemaining = Number(payment.rows[0].amount);
       const productions = await client.query(

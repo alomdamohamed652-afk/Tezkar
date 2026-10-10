@@ -52,8 +52,11 @@ async function changeBalance(client: import("pg").PoolClient, productId: string,
   const cost = movementUnitCost == null ? currentAvg : movementUnitCost;
   let nextValue = currentValue;
   if (delta > 0) nextValue = currentValue + delta * cost;
-  else if (delta < 0) nextValue = Math.max(0,currentValue - Math.abs(delta) * currentAvg);
-  const nextAvg = next > 0 ? nextValue / next : 0;
+  // Outbound movements consume FIFO inventory lots below. Keep the current value
+  // here and subtract the actual lot cost exactly once after lot consumption.
+  // Subtracting average cost here as well would double-decrement inventory value.
+  else if (delta < 0) nextValue = currentValue;
+  const nextAvg = next > 0 ? (delta < 0 ? currentAvg : nextValue / next) : 0;
   if (locked.rowCount) {
     await client.query("UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[Math.max(0,next),nextAvg,nextValue,productId,warehouseId,locationId]);
   } else {
@@ -167,7 +170,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const params:unknown[]=[]; const where=["b.quantity > 0"];
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("b.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("b.product_id=$"+params.length);}
-    const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
+    const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,w.warehouse_type,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
     return {data:result.rows};
   });
 
@@ -203,7 +206,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(q.data.from){params.push(q.data.from);where.push("created_at::date >= $"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("created_at::date <= $"+params.length);}
     if(q.data.warehouseId){params.push(q.data.warehouseId);where.push("warehouse_id=$"+params.length);}
-    const r=await pool.query("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN','ADJUSTMENT') THEN total_cost ELSE 0 END),0) AS total_in,COALESCE(SUM(CASE WHEN movement_type IN ('OUT','TRANSFER_OUT') THEN total_cost ELSE 0 END),0) AS total_out,COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN','ADJUSTMENT') THEN total_cost ELSE -total_cost END),0) AS net FROM stock_movements WHERE "+where.join(" AND "),params);
+    const r=await pool.query("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN') OR (movement_type='ADJUSTMENT' AND reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN total_cost ELSE 0 END),0) AS total_in,COALESCE(SUM(CASE WHEN movement_type IN ('OUT','TRANSFER_OUT') OR (movement_type='ADJUSTMENT' AND reference_type='ADJUSTMENT_OUT') THEN total_cost ELSE 0 END),0) AS total_out,COALESCE(SUM(CASE WHEN movement_type IN ('IN','RETURN','TRANSFER_IN') OR (movement_type='ADJUSTMENT' AND reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN total_cost ELSE -total_cost END),0) AS net FROM stock_movements WHERE "+where.join(" AND "),params);
     const current=await pool.query("SELECT COALESCE(SUM(inventory_value),0) AS current_value,COUNT(*)::int AS lines FROM stock_balances WHERE quantity>0"+(q.data.warehouseId?" AND warehouse_id=$1":"") ,q.data.warehouseId?[q.data.warehouseId]:[]);
     return {data:{...r.rows[0],current_value:current.rows[0].current_value,stock_lines:current.rows[0].lines}};
   });
@@ -260,7 +263,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
       const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT"||(parsed.data.movementType==="ADJUSTMENT"&&parsed.data.adjustmentDirection==="OUT"))?-parsed.data.quantity:parsed.data.quantity;
       const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
       const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,delta,effectiveUnitCost);
-      const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null]);
+      const adjustmentReferenceType=parsed.data.movementType==="ADJUSTMENT"?"ADJUSTMENT_"+parsed.data.adjustmentDirection:null;
+      const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id,reference_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null,adjustmentReferenceType]);
       let finalSourceCost=sourceCost;
       if(delta<0){
         const consumed=await consumeInventoryLots(client,{movementId:source.rows[0].id,productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity});
