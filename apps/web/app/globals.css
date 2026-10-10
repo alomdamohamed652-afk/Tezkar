@@ -1350,7 +1350,7 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 }
 
 /* Warehouse stock control: bounded lists, clear minimum-stock states */
-.warehouse-products-desktop{max-height:560px;overflow:auto;overscroll-behavior:contain}
+.warehouse-products-desktop{display:none;max-height:560px;overflow:auto;overscroll-behavior:contain}
 .warehouse-products-desktop table{min-width:1120px}
 .warehouse-products-desktop thead th{position:sticky;top:0;z-index:2;background:var(--surface-2)}
 .warehouse-products-desktop tbody tr.stock-row-low{background:rgba(220,38,38,.055)}
