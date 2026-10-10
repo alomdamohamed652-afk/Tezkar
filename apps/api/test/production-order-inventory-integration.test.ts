@@ -138,6 +138,39 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(orderResponse.statusCode, 201, orderResponse.body);
+
+    // One order may contain multiple final products, each designated on its own stage.
+    const multiSuffix = randomBytes(4).toString("hex");
+    const multiFinalOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: {
+        orderName: "Multi final product order " + multiSuffix,
+        customerName: "Test-only multi-product customer",
+        orderDate: "2099-01-02",
+        stages: [
+          { stageName: "Multi final prep " + multiSuffix, sequenceNo: 1, outputProductName: "Multi intermediate " + multiSuffix, plannedQuantity: 12, stageRate: 2, stageRateMethod: "PER_PIECE" },
+          { stageName: "Multi final A " + multiSuffix, sequenceNo: 2, outputProductName: "Multi final product A " + multiSuffix, isFinalProduct: true, plannedQuantity: 5, stageRate: 3, stageRateMethod: "PER_PIECE" },
+          { stageName: "Multi final B " + multiSuffix, sequenceNo: 3, outputProductName: "Multi final product B " + multiSuffix, isFinalProduct: true, plannedQuantity: 7, stageRate: 4, stageRateMethod: "PER_PIECE" }
+        ]
+      }
+    });
+    assert.equal(multiFinalOrder.statusCode, 201, multiFinalOrder.body);
+    const multiOrderId = multiFinalOrder.json().data.id as string;
+    const multiLines = await apiPool.query(
+      "SELECT p.name AS product_name,pol.quantity FROM production_order_lines pol JOIN products p ON p.id=pol.product_id WHERE pol.order_id=$1 ORDER BY p.name",
+      [multiOrderId]
+    );
+    assert.equal(multiLines.rowCount, 2, "order lines should include both explicitly selected final products, not the intermediate stage output");
+    assert.deepEqual(multiLines.rows.map((line: {product_name:string;quantity:string|number})=>({name:line.product_name,quantity:Number(line.quantity)})), [
+      {name:"Multi final product A "+multiSuffix,quantity:5},
+      {name:"Multi final product B "+multiSuffix,quantity:7}
+    ]);
+    const markedFinalStages = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM order_stages WHERE order_id=$1 AND is_final_product=TRUE",
+      [multiOrderId]
+    );
+    assert.equal(markedFinalStages.rows[0].count, 2);
+
     const orderId = orderResponse.json().data.id as string;
     const stagesResult = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id,os.sequence_no,os.stage_rate,os.stage_rate_method,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",
