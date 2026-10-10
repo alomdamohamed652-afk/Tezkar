@@ -17,12 +17,19 @@ export default function AdvancesPage(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
    const a=await api<{data:Advance[]}>("/api/advances"+suffix);setItems(a.data);
-   if(has("advances.create")&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/advances/eligible-employees")).data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل السلف")}
  }
- // Permissions are loaded asynchronously by usePermissions. Reload when they arrive so
- // the eligible-employee picker is populated on the first visit, not only after a filter change.
- useEffect(()=>{void load()},[employeeId,permissions]);
+ useEffect(()=>{void load()},[employeeId]);
+ // Load the picker independently from the advances ledger. The session permissions arrive
+ // asynchronously, and creating an advance must not depend on permission to view the ledger.
+ useEffect(()=>{
+  if(!permissions?.includes("advances.create"))return;
+  let active=true;
+  api<{data:Employee[]}>("/api/advances/eligible-employees")
+   .then(r=>{if(active)setEmployees(r.data)})
+   .catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل قائمة الموظفين")});
+  return()=>{active=false};
+ },[permissions]);
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
   await api("/api/advances",{method:"POST",body:JSON.stringify({
    employeeId,amount:Number(normalizeNumber(amount)),reason,repaymentMethod:method,
