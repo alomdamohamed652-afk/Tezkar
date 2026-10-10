@@ -635,7 +635,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.ok(!activeProduction.json().data.some((x: {id:string}) => x.id === pendingProductionId), "cancelled production must be hidden from the default list");
     
     // Verify all three price scopes: new-only leaves old operations untouched,
-    // unpaid-only updates operations with outstanding balances, and ALL posts
+    // unpaid-only updates only operations with no payment allocation recorded, and ALL posts
     // separate auditable ledger adjustments without rewriting approved snapshots.
     const priceOrder = await app.inject({
       method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
