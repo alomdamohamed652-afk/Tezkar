@@ -10,7 +10,7 @@ const expenseSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
   category:z.string().trim().min(2).max(100),
   description:z.string().trim().min(2).max(300),
-  amount:z.number().positive(),
+  amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   expenseDate:z.string().date().optional(),
   paymentMethod:z.string().trim().max(50).nullable().optional(),
   expenseType:z.enum(["DIRECT","ADMINISTRATIVE"]).default("DIRECT"),
@@ -22,7 +22,7 @@ const expenseSchema=z.object({
 });
 const revenueSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
-  amount:z.number().positive(),
+  amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   revenueDate:z.string().date().optional(),
   source:z.string().trim().min(2).max(50).default("MANUAL"),
   notes:z.string().trim().max(500).nullable().optional()
@@ -118,6 +118,7 @@ export async function accountingRoutes(app:FastifyInstance){
   }))
  });
  const toMinorUnits=(value:unknown)=>Math.round(Number(value||0)*100);
+ const hasCentPrecision=(value:unknown)=>Math.abs(Number(value||0)*100-toMinorUnits(value))<1e-7;
  app.get("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async()=>{
   const r=await pool.query(`SELECT p.*,
     (SELECT COUNT(*)::int FROM accounting_expense_allocations a WHERE a.period_id=p.id) AS allocation_count,
@@ -167,6 +168,7 @@ export async function accountingRoutes(app:FastifyInstance){
    if(!eligibleOrders.length||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
    for(const expense of expenses.rows){
+    if(!hasCentPrecision(expense.amount))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل التصفية",409);
     const amountMinor=toMinorUnits(expense.amount);
     const rawShares=eligibleOrders.map(order=>amountMinor*Number(order.cost||0)/totalCost);
     const shares=rawShares.map(Math.floor);
@@ -200,6 +202,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const sums=new Map<string,number>();
    for(const item of p.data.allocations)sums.set(item.expenseId,(sums.get(item.expenseId)||0)+toMinorUnits(item.amount));
    for(const expense of expenses.rows){
+    if(!hasCentPrecision(expense.amount))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل التصفية",409);
     if((sums.get(expense.id)||0)!==toMinorUnits(expense.amount))throw new AppError("ALLOCATION_TOTAL_MISMATCH","يجب أن يساوي مجموع توزيع كل مصروف إداري قيمته الأصلية بدقة القرش",422);
    }
    if(p.data.allocations.some(a=>!expenses.rows.some(e=>e.id===a.expenseId)))throw new AppError("INVALID_ALLOCATION_EXPENSE","يوجد مصروف خارج الفترة أو ليس مصروفًا إداريًا",422);
@@ -228,7 +231,7 @@ export async function accountingRoutes(app:FastifyInstance){
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة مقفلة بالفعل",409);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
-   const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
+   const unbalanced=expenses.rows.filter(e=>!hasCentPrecision(e.amount)||toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
