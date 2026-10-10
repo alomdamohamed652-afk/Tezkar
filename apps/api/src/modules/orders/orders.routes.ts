@@ -374,7 +374,7 @@ export async function orderRoutes(app: FastifyInstance) {
                   COALESCE((SELECT pci.revised_earning FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id ORDER BY pci.created_at DESC,pci.id DESC LIMIT 1),pe.earning_amount) AS effective_earning
              FROM production_entries pe
             WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')
-            ${parsed.data.scope==="UNPAID_ONLY"?"AND COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0) < (COALESCE((SELECT pci.revised_earning FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id ORDER BY pci.created_at DESC,pci.id DESC LIMIT 1),pe.earning_amount) + COALESCE(pe.bonus_amount,0) - COALESCE(pe.deduction_amount,0))":""}
+            ${parsed.data.scope==="UNPAID_ONLY"?"AND COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0) = 0":""}
             ORDER BY pe.created_at,pe.id
             FOR UPDATE OF pe`,
           [parsed.data.orderStageId]
