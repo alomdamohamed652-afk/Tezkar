@@ -74,7 +74,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     COALESCE(stock.quantity,0)::numeric AS warehouse_stock,
     GREATEST(0,COALESCE(stock.quantity,0)-COALESCE(stock_reserved.quantity,0))::numeric AS unreserved_stock
    FROM production_order_lines ol JOIN products p ON p.id=ol.product_id JOIN units u ON u.id=p.unit_id
-   LEFT JOIN LATERAL (SELECT SUM(pe.quantity) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=ol.order_id AND pe.product_id=ol.product_id AND pe.status='APPROVED') prod ON TRUE
+   LEFT JOIN LATERAL (SELECT SUM(pe.quantity) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=ol.order_id AND COALESCE(os.output_product_id,pe.product_id)=ol.product_id AND pe.status='APPROVED') prod ON TRUE
    LEFT JOIN LATERAL (SELECT SUM(dl.quantity) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id WHERE dp.order_id=ol.order_id AND dl.product_id=ol.product_id AND dp.status IN ('READY','RELEASED')) reserved ON TRUE
    LEFT JOIN LATERAL (SELECT SUM(sb.quantity) AS quantity FROM stock_balances sb JOIN warehouses w ON w.id=sb.warehouse_id WHERE sb.product_id=ol.product_id AND w.warehouse_type='FINISHED_GOODS') stock ON TRUE
    LEFT JOIN LATERAL (SELECT SUM(dl.quantity) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id JOIN warehouses w ON w.id=dl.warehouse_id WHERE dp.status='READY' AND dl.product_id=ol.product_id AND w.warehouse_type='FINISHED_GOODS') stock_reserved ON TRUE
@@ -99,7 +99,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
       `SELECT COALESCE(SUM(pe.quantity),0) AS quantity
          FROM production_entries pe
          JOIN order_stages os ON os.id=pe.order_stage_id
-        WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED'`,
+        WHERE os.order_id=$1 AND COALESCE(os.output_product_id,pe.product_id)=$2 AND pe.status='APPROVED'`,
       [parsed.data.orderId,line.productId]);
     const reserved=await client.query(
       `SELECT COALESCE(SUM(dl.quantity),0) AS quantity
