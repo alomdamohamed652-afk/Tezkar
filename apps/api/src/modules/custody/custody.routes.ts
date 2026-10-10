@@ -274,6 +274,8 @@ export async function custodyRoutes(app:FastifyInstance){
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const duplicate=await client.query("SELECT id FROM order_revenues WHERE order_id=$1 AND collected_by_employee_id=$2 AND amount=$3 AND revenue_date=$4 AND source='CUSTOMER_COLLECTION' LIMIT 1 FOR SHARE",[p.data.orderId,employeeId,p.data.amount,date]);
+      if(duplicate.rowCount)throw new AppError("DUPLICATE_ORDER_COLLECTION","يوجد تحصيل بنفس الطلبية والموظف والمبلغ والتاريخ بالفعل؛ راجع الحركات قبل التسجيل مرة أخرى",409);
       const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
       const revenue=await client.query(
         "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6,$7) RETURNING *",
