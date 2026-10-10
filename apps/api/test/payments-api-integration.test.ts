@@ -36,9 +36,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -52,6 +52,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     await app.register(paymentsRoutes);
     await app.register(globalSearchRoutes);
     await app.register(accountingRoutes);
+    await app.register(operationsMasterRoutes);
+    await app.register(warehouseRoutes);
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
@@ -108,6 +110,57 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const deliverySearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(delivery.code),headers:{cookie:managerCookie}});
       assert.equal(deliverySearch.statusCode,200,deliverySearch.body);
       assert.ok(deliverySearch.json().data.some((item:{type:string;code:string})=>item.type==="إذن تسليم"&&item.code===delivery.code),"central search should find delivery slips without relying on an order_id column");
+
+      // Exercise product minimum-stock persistence and reconcile stock movement value.
+      const unit=(await apiPool.query("SELECT id FROM units WHERE is_active=TRUE ORDER BY code LIMIT 1")).rows[0];
+      assert.ok(unit,"migrations should seed at least one active unit");
+      const product=await app.inject({
+        method:"POST",url:"/api/products",headers:{cookie:managerCookie},
+        payload:{name:"Stock threshold test "+randomBytes(4).toString("hex"),productType:"RAW_MATERIAL",unitId:unit.id,minimumStock:8,trackInventory:true}
+      });
+      assert.equal(product.statusCode,201,product.body);
+      assert.equal(Number(product.json().data.minimum_stock),8);
+      const warehouse=await app.inject({
+        method:"POST",url:"/api/warehouses",headers:{cookie:managerCookie},
+        payload:{name:"Stock reconciliation test "+randomBytes(4).toString("hex"),warehouseType:"RAW_MATERIAL"}
+      });
+      assert.equal(warehouse.statusCode,201,warehouse.body);
+      const location=await app.inject({
+        method:"POST",url:"/api/warehouse/locations",headers:{cookie:managerCookie},
+        payload:{warehouseId:warehouse.json().data.id,code:"TEST-"+randomBytes(3).toString("hex"),name:"Test shelf"}
+      });
+      assert.equal(location.statusCode,201,location.body);
+      const stockIn=await app.inject({
+        method:"POST",url:"/api/warehouse/movements",headers:{cookie:managerCookie},
+        payload:{movementType:"IN",productId:product.json().data.id,warehouseId:warehouse.json().data.id,locationId:location.json().data.id,quantity:10,unitCost:5,notes:"isolated stock test"}
+      });
+      assert.equal(stockIn.statusCode,201,stockIn.body);
+      const stockOut=await app.inject({
+        method:"POST",url:"/api/warehouse/movements",headers:{cookie:managerCookie},
+        payload:{movementType:"OUT",productId:product.json().data.id,warehouseId:warehouse.json().data.id,locationId:location.json().data.id,quantity:3,notes:"isolated stock consumption test"}
+      });
+      assert.equal(stockOut.statusCode,201,stockOut.body);
+      const stock=await app.inject({
+        method:"GET",url:"/api/warehouse/stock?productId="+product.json().data.id,headers:{cookie:managerCookie}
+      });
+      assert.equal(stock.statusCode,200,stock.body);
+      assert.equal(stock.json().data.length,1);
+      assert.equal(Number(stock.json().data[0].quantity),7);
+      assert.equal(Number(stock.json().data[0].inventory_value),35);
+      const stockDashboard=await app.inject({
+        method:"GET",url:"/api/warehouse/dashboard?warehouseId="+warehouse.json().data.id,headers:{cookie:managerCookie}
+      });
+      assert.equal(stockDashboard.statusCode,200,stockDashboard.body);
+      assert.equal(Number(stockDashboard.json().data.total_in),50);
+      assert.equal(Number(stockDashboard.json().data.total_out),15);
+      assert.equal(Number(stockDashboard.json().data.net),35);
+      assert.equal(Number(stockDashboard.json().data.current_value),35);
+      const minimumUpdate=await app.inject({
+        method:"PATCH",url:"/api/products/"+product.json().data.id+"/minimum-stock",
+        headers:{cookie:managerCookie},payload:{minimumStock:0}
+      });
+      assert.equal(minimumUpdate.statusCode,200,minimumUpdate.body);
+      assert.equal(Number(minimumUpdate.json().data.minimum_stock),0,"zero is a valid explicit stock threshold");
 
       // Verify direct expense plus closed-period administrative allocation is counted once.
       const financeOrder=(await apiPool.query(
