@@ -190,12 +190,19 @@ export async function accountingRoutes(app:FastifyInstance){
    const validOrders=await client.query("SELECT id FROM production_orders WHERE status<>'CANCELLED'");
    const orderIds=new Set(validOrders.rows.map(r=>r.id));
    if(p.data.allocations.some(a=>!orderIds.has(a.orderId)))throw new AppError("INVALID_ALLOCATION_ORDER","يوجد اختيار طلبية غير صالح",422);
-   await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   const grouped=new Map<string,{expenseId:string;orderId:string;amount:number}>();
    for(const a of p.data.allocations){
+    const key=a.expenseId+":"+a.orderId;
+    const current=grouped.get(key);
+    if(current)current.amount=Number((current.amount+a.amount).toFixed(4));
+    else grouped.set(key,{expenseId:a.expenseId,orderId:a.orderId,amount:a.amount});
+   }
+   await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   for(const a of grouped.values()){
     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,a.expenseId,a.orderId,a.amount,request.user!.userId]);
    }
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:p.data.allocations.length},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return {periodId:id,allocationCount:p.data.allocations.length};
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:grouped.size},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,allocationCount:grouped.size};
   })};
  });
  app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
