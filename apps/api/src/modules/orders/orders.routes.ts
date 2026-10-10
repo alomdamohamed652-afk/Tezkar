@@ -562,7 +562,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if(parsed.data.stageId){params.push(parsed.data.stageId);where.push("os.stage_id=$"+params.length);}
     if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(mp.code ILIKE ${n} OR mp.notes ILIKE ${n} OR m.name ILIKE ${n} OR p.name ILIKE ${n} OR COALESCE(e.full_name,'') ILIKE ${n} OR COALESCE(o.code,'') ILIKE ${n} OR COALESCE(o.order_name,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
     const r=await pool.query(
-      `SELECT mp.id,mp.code,mp.work_date,mp.quantity,mp.notes,m.code AS machine_code,m.name AS machine_name,
+      `SELECT mp.id,mp.code,mp.work_date,mp.quantity,mp.notes,mp.machine_id,mp.product_id,mp.employee_id,mp.shift_id,os.stage_id,os.order_id,m.code AS machine_code,m.name AS machine_name,
               p.code AS product_code,p.name AS product_name,e.full_name AS employee_name,
               o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name,
               sh.name AS shift_name,creator.username AS created_by_username
