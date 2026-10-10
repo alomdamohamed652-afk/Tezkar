@@ -384,6 +384,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const row=await withTransaction(async client=>{
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
+      if(p.data.direction==="IN"&&!access.isFinance)throw new AppError("FINANCE_SCOPE_REQUIRED","إضافة رصيد للعهدة متاحة للمدير المالي فقط؛ التحصيل من العميل له إجراء مستقل",403);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
       // Serialize balance and duplicate checks per employee to prevent concurrent overspending.
       const employeeLock=await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
