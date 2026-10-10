@@ -43,7 +43,7 @@ export default function CustodyPage(){
   }
   await api("/api/cash-custody",{method:"POST",body:JSON.stringify(payload)});
   setCashAmount("");setCashDescription("");setCashNotes("");setDuplicateOpen(false);setDuplicateMatches([]);
-  setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data);
+  if(has("cash_custody.view")||has("cash_custody.view_own"))setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل حركة العهدة النقدية")}finally{setCashSaving(false)}
 }
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
