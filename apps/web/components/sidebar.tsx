@@ -52,6 +52,8 @@ export function Sidebar({active}:{active:string}){
  const {permissions,session}=usePermissions();
  const [pendingTaskCount,setPendingTaskCount]=useState(0);
  const [pendingPaymentCount,setPendingPaymentCount]=useState(0);
+ const [unreadNotificationCount,setUnreadNotificationCount]=useState(0);
+ useEffect(()=>{let alive=true;const refresh=()=>api<{data:unknown[];unreadCount:number}>("/api/notifications?limit=1").then(r=>{if(alive)setUnreadNotificationCount(r.unreadCount)}).catch(()=>{if(alive)setUnreadNotificationCount(0)});void refresh();const timer=window.setInterval(()=>void refresh(),60000);return()=>{alive=false;window.clearInterval(timer)}},[]);
  useEffect(()=>{let alive=true;if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});if(permissions?.some(p=>p==="payment_requests.view"||p==="worker_payments.view"))api<{data:{status:string}[]}>("/api/payment-requests").then(r=>{if(alive)setPendingPaymentCount(r.data.filter(x=>x.status==="PENDING"||x.status==="APPROVED").length)}).catch(()=>{if(alive)setPendingPaymentCount(0)});return()=>{alive=false}},[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null||!item.permissions?.some(p=>permissions.includes(p)))return false;
@@ -78,6 +80,7 @@ export function Sidebar({active}:{active:string}){
     </div>)}
    </div>
    <div className="sidebar-footer">
+    <a className={"nav-item"+(active==="/notifications"?" active":"")} href="/notifications"><span className="nav-icon">♢</span><span className="nav-label">الإشعارات</span>{unreadNotificationCount>0&&<span className="nav-count-badge">{unreadNotificationCount>99?"99+":unreadNotificationCount}</span>}</a>
     <a className={"nav-item"+(active==="/account"?" active":"")} href="/account"><span className="nav-icon">◉</span><span className="nav-label">حسابي</span></a>
     <button className="nav-item logout-item" onClick={logout}><span className="nav-icon">↪</span><span className="nav-label">تسجيل الخروج</span></button>
    </div>
