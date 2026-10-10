@@ -1309,3 +1309,24 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .delivery-line-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 @media(max-width:900px){.delivery-line-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.delivery-line-fields{grid-template-columns:minmax(0,1fr)}.delivery-lines-section>.section-title{align-items:flex-start;flex-direction:column}}
+
+
+.audit-json {
+  max-width: 100%;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  direction: ltr;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted, var(--surface));
+}
+.audit-json + summary,
+details > summary {
+  cursor: pointer;
+}
