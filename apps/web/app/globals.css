@@ -1293,3 +1293,8 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
  .print-brand{margin-bottom:3mm}
  .print-brand img{width:68px;height:68px}
 }
+
+.price-change-workers{display:grid;gap:4px;max-height:120px;overflow:auto;min-width:160px}
+.price-change-workers>div{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:3px 5px;border-radius:5px;background:#f1f5f9;font-size:10px}
+.price-change-workers strong{font-weight:800;color:var(--ink)}
+.price-change-workers span{white-space:nowrap;color:var(--muted)}
