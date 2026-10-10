@@ -38,8 +38,11 @@ export async function auditRoutes(app:FastifyInstance){
       COALESCE(u.username,'حساب غير متاح') AS actor_username,e.full_name AS actor_employee_name
       FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id LEFT JOIN employees e ON e.id=a.actor_employee_id
       ${whereSql} ORDER BY a.created_at DESC,a.id DESC LIMIT $${params.length+1}`,[...params,q.limit]);
-    const modules=await pool.query("SELECT DISTINCT module FROM audit_log ORDER BY module");
-    const actions=await pool.query("SELECT DISTINCT action FROM audit_log ORDER BY action");
-    return {data:result.rows,filters:{from:q.from??null,to:q.to??null,module:q.module??null,action:q.action??null,actorUserId:q.actorUserId??null,entityType:q.entityType??null,q:q.q??null,limit:q.limit},options:{modules:modules.rows.map(r=>r.module),actions:actions.rows.map(r=>r.action)}};
+    const [modules,actions,actors]=await Promise.all([
+      pool.query("SELECT DISTINCT module FROM audit_log ORDER BY module"),
+      pool.query("SELECT DISTINCT action FROM audit_log ORDER BY action"),
+      pool.query("SELECT DISTINCT u.id,u.username FROM audit_log a JOIN users u ON u.id=a.actor_user_id ORDER BY u.username")
+    ]);
+    return {data:result.rows,filters:{from:q.from??null,to:q.to??null,module:q.module??null,action:q.action??null,actorUserId:q.actorUserId??null,entityType:q.entityType??null,q:q.q??null,limit:q.limit},options:{modules:modules.rows.map(r=>r.module),actions:actions.rows.map(r=>r.action),actors:actors.rows}};
   });
 }
