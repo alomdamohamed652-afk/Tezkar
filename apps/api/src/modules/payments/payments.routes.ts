@@ -85,8 +85,17 @@ export async function paymentsRoutes(app:FastifyInstance){
     }
     if(q.data.status){params.push(q.data.status);where.push(`pr.status=$${params.length}`);}
     const r=await pool.query(
-      `SELECT pr.*,e.code employee_code,e.full_name employee_name
+      `SELECT pr.*,e.code employee_code,e.full_name employee_name,
+              COALESCE(prefs.preference_value,'{}'::jsonb) AS employee_payout_details
        FROM payment_requests pr JOIN employees e ON e.id=pr.employee_id
+       LEFT JOIN LATERAL (
+         SELECT up.preference_value
+           FROM users pu
+           JOIN user_preferences up ON up.user_id=pu.id AND up.preference_key='payout-details'
+          WHERE pu.employee_id=e.id AND pu.is_active=TRUE
+          ORDER BY up.updated_at DESC
+          LIMIT 1
+       ) prefs ON TRUE
        ${where.length?"WHERE "+where.join(" AND "):""}
        ORDER BY pr.requested_at DESC LIMIT 200`,params);
     return {data:r.rows};
