@@ -31,6 +31,7 @@ export default function AccountingPage() {
   const [eForm,setEForm]=useState({category:"تشغيل",description:"",amount:"",orderId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
   const [collectionForm,setCollectionForm]=useState({orderId:"",employeeId:"",amount:"",description:"تحصيل من العميل",notes:""});
+  const collectionIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
   const [selectedPeriodId,setSelectedPeriodId]=useState("");
@@ -112,8 +113,14 @@ export default function AccountingPage() {
     if(!collectionForm.orderId||!collectionForm.employeeId||!collectionForm.amount||!collectionForm.description.trim()){
       setError("اختر الطلبية والموظف واكتب المبلغ والبيان");return;
     }
+    const payload={orderId:collectionForm.orderId,employeeId:collectionForm.employeeId,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null};
+    const fingerprint=JSON.stringify(payload);
+    if(!collectionIdempotency.current||collectionIdempotency.current.fingerprint!==fingerprint){
+      collectionIdempotency.current={fingerprint,key:crypto.randomUUID()};
+    }
     try{
-      await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({orderId:collectionForm.orderId,employeeId:collectionForm.employeeId,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null})});
+      await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:collectionIdempotency.current.key})});
+      collectionIdempotency.current=null;
       setCollectionForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل تحصيل العميل كإيراد للطلبية ووارد في عهدة الموظف");await load();
     }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل التحصيل")}
   }
