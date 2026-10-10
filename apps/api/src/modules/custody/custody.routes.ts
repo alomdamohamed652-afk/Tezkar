@@ -233,7 +233,7 @@ export async function custodyRoutes(app:FastifyInstance){
         LEFT JOIN order_revenues rev ON c.source_type='ORDER_REVENUE' AND rev.id=c.source_id
         LEFT JOIN production_orders ord ON ord.id=rev.order_id
         ${where.length?"WHERE "+where.join(" AND "):""}
-        ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC LIMIT 500`,params);
+        ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC`,params);
       return {data:r.rows};
     }finally{client.release();}
   });
