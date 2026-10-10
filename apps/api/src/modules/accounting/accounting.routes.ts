@@ -42,6 +42,8 @@ export async function accountingRoutes(app:FastifyInstance){
   const r=await pool.query(`SELECT e.*,o.code AS order_code,o.order_name,os.sequence_no AS stage_sequence_no,st.name AS stage_name,u.username AS created_by_username
     FROM accounting_expenses e
     LEFT JOIN production_orders o ON o.id=e.order_id
+    LEFT JOIN order_stages os ON os.id=e.order_stage_id
+    LEFT JOIN stages st ON st.id=os.stage_id
     LEFT JOIN users u ON u.id=e.created_by
     ${where} ORDER BY e.expense_date DESC,e.created_at DESC`,params);
   return {data:r.rows};
