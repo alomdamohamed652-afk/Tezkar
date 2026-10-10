@@ -231,7 +231,7 @@ export async function orderRoutes(app: FastifyInstance) {
       // products with independent production paths in a single customer order.
       if (parsed.data.finalProductName) {
         lineInputs.splice(0, lineInputs.length, { productName: parsed.data.finalProductName, quantity: parsed.data.finalQuantity! });
-      } else if (!lineInputs.length) {
+      } else if (explicitFinalStages.length || !lineInputs.length) {
         if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
         const finalSequence = Math.max(...stages.map(stage => stage.sequenceNo));
         const finalStages = explicitFinalStages.length ? explicitFinalStages : stages.filter(stage => stage.sequenceNo === finalSequence);
@@ -253,7 +253,7 @@ export async function orderRoutes(app: FastifyInstance) {
           }
         }
         if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","حدد منتجًا نهائيًا واحدًا على الأقل من داخل مراحله",422);
-        lineInputs.push(...Array.from(derived.values()));
+        lineInputs.splice(0, lineInputs.length, ...Array.from(derived.values()));
       }
 
       const lineProductIds: Array<{productId:string;quantity:number}> = [];
