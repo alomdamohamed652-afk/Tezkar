@@ -33,7 +33,7 @@ const groups:NavGroup[]=[
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
  ]},
  {label:"الإدارة",items:[
-  {icon:"⌕",label:"البحث المركزي",href:"/search",permissions:["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view","deliveries.view","payroll.view","advances.view","advances.view_own","tasks.view","tasks.view_own","cartons.view"]},
+  {icon:"⌕",label:"البحث المركزي",href:"/search",permissions:["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view","deliveries.view","payroll.view","advances.view","advances.view_own","tasks.view","tasks.view_own","cartons.view","finance.expenses.view","finance.revenues.view","finance.period_close.view"]},
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
