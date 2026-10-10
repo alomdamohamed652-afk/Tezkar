@@ -39,7 +39,7 @@ export async function accountingRoutes(app:FastifyInstance){
     FROM accounting_expenses e
     LEFT JOIN production_orders o ON o.id=e.order_id
     LEFT JOIN users u ON u.id=e.created_by
-    ${where} ORDER BY e.expense_date DESC,e.created_at DESC LIMIT 500`,params);
+    ${where} ORDER BY e.expense_date DESC,e.created_at DESC`,params);
   return {data:r.rows};
  });
 
@@ -70,7 +70,7 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
  app.get("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.view")]},async()=>{
-  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by ORDER BY r.revenue_date DESC,r.created_at DESC LIMIT 500");
+  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by ORDER BY r.revenue_date DESC,r.created_at DESC");
   return {data:r.rows};
  });
 
@@ -252,7 +252,7 @@ export async function accountingRoutes(app:FastifyInstance){
     COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED'),0) AS administrative_allocation,
     COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0) AS material_cost,
     COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS labor_cost
-    FROM production_orders o ${where.length?"WHERE "+where.join(" AND "):""} ORDER BY o.created_at DESC LIMIT 1000`,params);
+    FROM production_orders o ${where.length?"WHERE "+where.join(" AND "):""} ORDER BY o.created_at DESC`,params);
   const data=result.rows.map(row=>{
    const revenue=Number(row.revenue||0),direct=Number(row.direct_expenses||0),admin=Number(row.administrative_allocation||0),material=Number(row.material_cost||0),labor=Number(row.labor_cost||0);
    const totalCost=direct+admin+material+labor;
