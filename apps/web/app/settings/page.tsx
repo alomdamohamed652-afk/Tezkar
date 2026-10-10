@@ -17,6 +17,7 @@ export default function SettingsPage(){
  const [tab,setTab]=useState("permissions"),[roles,setRoles]=useState<Item[]>([]),[permissions,setPermissions]=useState<Permission[]>([]),[roleId,setRoleId]=useState(""),[rolePermissionIds,setRolePermissionIds]=useState<string[]>([]);
  const [users,setUsers]=useState<User[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[departments,setDepartments]=useState<Item[]>([]),[jobs,setJobs]=useState<Item[]>([]);
  const [message,setMessage]=useState(""),[error,setError]=useState(""),[query,setQuery]=useState("");
+ const [showCreateUser,setShowCreateUser]=useState(false),[newUsername,setNewUsername]=useState(""),[newPassword,setNewPassword]=useState(""),[newUserRoleCode,setNewUserRoleCode]=useState(""),[creatingUser,setCreatingUser]=useState(false);
 
  async function load(){
   try{
@@ -26,6 +27,7 @@ export default function SettingsPage(){
    ]);
    setRoles(r.data);setPermissions(p.data);setUsers(u.data);setEmployees(e.data);setDepartments(d.data);setJobs(j.data);
    if(!roleId&&r.data[0])setRoleId(r.data[0].id);
+   if(!newUserRoleCode&&r.data[0])setNewUserRoleCode(r.data[0].code);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإعدادات")}
  }
  useEffect(()=>{void load()},[]);
@@ -36,6 +38,7 @@ export default function SettingsPage(){
  const filteredEmployees=employees.filter(x=>(x.full_name+" "+x.code).toLowerCase().includes(query.toLowerCase()));
 
  async function savePermissions(){try{await api("/api/roles/"+roleId+"/permissions",{method:"PUT",body:JSON.stringify({permissionIds:rolePermissionIds})});setMessage("تم حفظ صلاحيات الدور");}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
+ async function createStandaloneUser(event:React.FormEvent<HTMLFormElement>){event.preventDefault();setCreatingUser(true);setError("");setMessage("");try{await api("/api/users",{method:"POST",body:JSON.stringify({username:newUsername.trim(),password:newPassword,employeeId:null,roleCode:newUserRoleCode})});setMessage("تم إنشاء حساب المستخدم المستقل بنجاح، بدون إنشاء سجل موظف.");setNewUsername("");setNewPassword("");setShowCreateUser(false);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء حساب المستخدم")}finally{setCreatingUser(false)}}
  async function deactivateUser(id:string){if(!confirm("تعطيل الحساب؟ لن يستطيع تسجيل الدخول بعد ذلك."))return;try{await api("/api/users/"+id,{method:"DELETE"});setMessage("تم تعطيل الحساب");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الحساب")}}
  async function deactivateEmployee(id:string){if(!confirm("تعطيل الموظف وحسابه المرتبط؟"))return;try{await api("/api/employees/"+id,{method:"DELETE"});setMessage("تم تعطيل الموظف");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
 
@@ -54,9 +57,10 @@ export default function SettingsPage(){
     <div className="settings-permission-grid">{groups.map(([module,items])=><div key={module} className="permission-group"><div className="permission-group-title">{moduleNames[module]||module}<span>{items.length}</span></div>{items.map(p=><label className="settings-permission" key={p.id}><input type="checkbox" checked={rolePermissionIds.includes(p.id)} onChange={e=>setRolePermissionIds(v=>e.target.checked?[...v,p.id]:v.filter(id=>id!==p.id))}/><div><strong>{actionNames[p.action]||p.action} · {p.entity}</strong><code>{p.code}</code></div></label>)}</div>)}</div>
    </section>}
 
-   {tab==="users"&&<section className="card settings-wide"><div className="card-header settings-card-title"><div><h2 className="card-title">حسابات المستخدمين</h2><div className="settings-help">الحذف هنا آمن: الحساب يتم تعطيله بدل حذف السجل التاريخي.</div></div></div>
-    <div className="settings-toolbar"><input placeholder="بحث بالاسم أو اسم المستخدم أو الدور" value={query} onChange={e=>setQuery(e.target.value)}/><a className="primary-button" href="/employees">إضافة موظف + حساب</a></div>
-    {filteredUsers.map(u=><div className="settings-account-row" key={u.id}><div><strong>{u.full_name||u.username}</strong><div className="form-hint">@{u.username}</div></div><div>{u.employee_code||"حساب إداري"}</div><div>{u.role_codes.join("، ")||"—"}</div><div>{u.is_bootstrap?<span className="status">حساب أساسي</span>:u.is_active?<button className="danger-button" onClick={()=>deactivateUser(u.id)}>تعطيل</button>:<span className="status muted">معطل</span>}</div></div>)}
+   {tab==="users"&&<section className="card settings-wide"><div className="card-header settings-card-title"><div><h2 className="card-title">حسابات المستخدمين</h2><div className="settings-help">يمكن إنشاء حساب مستقل بصلاحيات دخول للنظام دون إنشاء موظف أو ربطه بسجل موظف. تعطيل الحساب يحافظ على السجل التاريخي.</div></div>{has("users.create")&&<button className="primary-button" onClick={()=>setShowCreateUser(v=>!v)}>{showCreateUser?"إلغاء":"＋ إنشاء مستخدم مستقل"}</button>}</div>
+    {showCreateUser&&has("users.create")&&<form className="card form-card" onSubmit={createStandaloneUser}><div className="card-header"><h3 className="card-title">إنشاء حساب مستخدم عادي</h3></div><p className="settings-help">الحساب هيكون له اسم مستخدم وكلمة مرور ودور يحدد صلاحياته، من غير كود موظف أو بيانات تعيين.</p><div className="form-grid"><label>اسم المستخدم<input value={newUsername} onChange={e=>setNewUsername(e.target.value)} minLength={3} maxLength={100} pattern="[A-Za-z0-9._-]+" autoComplete="off" required placeholder="مثال: ahmed.office"/></label><label>كلمة المرور<input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} minLength={12} maxLength={200} autoComplete="new-password" required placeholder="12 حرفًا على الأقل"/></label><label>دور المستخدم والصلاحيات<select value={newUserRoleCode} onChange={e=>setNewUserRoleCode(e.target.value)} required>{roles.map(x=><option key={x.id} value={x.code}>{x.name}</option>)}</select><span className="form-hint">صلاحيات الحساب هي صلاحيات الدور المختار، ويمكن تعديلها من تبويب الصلاحيات والأدوار.</span></label></div><div className="form-actions"><button className="primary-button" disabled={creatingUser||!newUserRoleCode}>{creatingUser?"جارٍ إنشاء الحساب...":"إنشاء الحساب"}</button></div></form>}
+    <div className="settings-toolbar"><input placeholder="بحث بالاسم أو اسم المستخدم أو الدور" value={query} onChange={e=>setQuery(e.target.value)}/><a className="secondary-btn" href="/employees">إضافة موظف + حساب</a></div>
+    {filteredUsers.map(u=><div className="settings-account-row" key={u.id}><div><strong>{u.full_name||u.username}</strong><div className="form-hint">@{u.username}</div></div><div>{u.employee_code||"مستخدم مستقل — بدون موظف"}</div><div>{u.role_codes.join("، ")||"—"}</div><div>{u.is_bootstrap?<span className="status">حساب أساسي</span>:u.is_active?<button className="danger-button" onClick={()=>deactivateUser(u.id)}>تعطيل</button>:<span className="status muted">معطل</span>}</div></div>)}
    </section>}
 
    {tab==="employees"&&<section className="card settings-wide"><div className="card-header settings-card-title"><div><h2 className="card-title">الموظفون</h2><div className="settings-help">تعطيل الموظف يعطل الحساب المرتبط به أيضًا.</div></div></div>
