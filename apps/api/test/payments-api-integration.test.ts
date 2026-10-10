@@ -89,7 +89,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{
           orderName:"Multi-final-product test "+productSuffix,
           customerName:"Isolated integration test",
-          lines:[],
+          // A legacy order-line payload must not override products explicitly selected on stages.
+          lines:[{productName:"Legacy stale line "+productSuffix,quantity:99}],
           stages:[
             {stageName:"Prepare A "+productSuffix,outputProductName:"WIP A "+productSuffix,sequenceNo:1,plannedQuantity:10,stageRate:1,stageRateMethod:"PER_PIECE",isFinalProduct:false},
             {stageName:"Finish A "+productSuffix,outputProductName:"Finished A "+productSuffix,sequenceNo:2,plannedQuantity:10,stageRate:2,stageRateMethod:"PER_PIECE",isFinalProduct:true},
