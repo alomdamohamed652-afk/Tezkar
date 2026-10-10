@@ -355,6 +355,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(profitability.json().data.laborCost), 505);
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
+    // Availability is a read-only diagnostic: it must explain production and location stock separately.
+    const availabilityUrl = "/api/delivery-permissions/availability?orderId=" + orderId
+      + "&productId=" + finalStage.output_product_id
+      + "&warehouseId=" + expectedFinished.id
+      + "&locationId=" + finalSaved.rows[0].location_id;
+    const initialAvailability = await app.inject({
+      method: "GET", url: availabilityUrl, headers: { cookie: approver.cookie }
+    });
+    assert.equal(initialAvailability.statusCode, 200, initialAvailability.body);
+    assert.equal(Number(initialAvailability.json().data.approvedProduction), 10);
+    assert.equal(Number(initialAvailability.json().data.reservedDelivery), 0);
+    assert.equal(Number(initialAvailability.json().data.productionAvailable), 10);
+    assert.equal(Number(initialAvailability.json().data.stockAvailable), 10);
+
     // Complete the production -> delivery workflow in this disposable database.
     const deliveryPermission = await app.inject({
       method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
@@ -367,6 +381,15 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(deliveryPermission.statusCode, 201, deliveryPermission.body);
     const deliveryId = deliveryPermission.json().data.id as string;
     const deliveryCode = deliveryPermission.json().data.code as string;
+
+    const availabilityAfterReservation = await app.inject({
+      method: "GET", url: availabilityUrl, headers: { cookie: approver.cookie }
+    });
+    assert.equal(availabilityAfterReservation.statusCode, 200, availabilityAfterReservation.body);
+    assert.equal(Number(availabilityAfterReservation.json().data.reservedDelivery), 4);
+    assert.equal(Number(availabilityAfterReservation.json().data.productionAvailable), 6);
+    assert.equal(Number(availabilityAfterReservation.json().data.stockReserved), 4);
+    assert.equal(Number(availabilityAfterReservation.json().data.stockAvailable), 6);
 
     const overDelivery = await app.inject({
       method: "POST", url: "/api/delivery-permissions", headers: { cookie: approver.cookie },
