@@ -7,8 +7,10 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 const filtersSchema = z.object({
   employeeId: z.string().uuid().optional(),
+  entryType:z.enum(["PRODUCTION_APPROVAL","WORKER_PAYMENT","ADJUSTMENT"]).optional(),
   from: z.string().date().optional(),
   to: z.string().date().optional(),
+  q:z.string().trim().max(160).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100)
 });
 
@@ -42,10 +44,12 @@ export async function earningsRoutes(app: FastifyInstance) {
     const where = ["l.employee_id=$1"];
     if (q.data.from) { params.push(q.data.from); where.push("l.created_at >= $" + params.length + "::date"); }
     if (q.data.to) { params.push(q.data.to); where.push("l.created_at < ($" + params.length + "::date + INTERVAL '1 day')"); }
+    if (q.data.entryType) { params.push(q.data.entryType); where.push("l.entry_type=$" + params.length); }
+    if (q.data.q) { params.push("%"+q.data.q+"%"); const n=params.length; where.push(`(l.code ILIKE ${n} OR COALESCE(l.notes,'') ILIKE ${n} OR COALESCE(p.code,'') ILIKE ${n} OR COALESCE(w.code,'') ILIKE ${n})`); }
     params.push(q.data.limit);
 
     const result = await pool.query(
-      "SELECT l.id,l.code,l.entry_type,l.credit_amount,l.debit_amount,l.notes,l.created_at,p.code AS production_code,w.code AS payment_code FROM employee_earnings_ledger l LEFT JOIN production_entries p ON p.id=l.production_entry_id LEFT JOIN worker_payments w ON w.id=l.worker_payment_id WHERE " + where.join(" AND ") + " ORDER BY l.created_at DESC,l.id DESC LIMIT $" + params.length,
+      "SELECT l.id,l.code,l.entry_type,l.credit_amount,l.debit_amount,l.notes,l.created_at,p.code AS production_code,w.code AS payment_code,creator.username AS created_by_username FROM employee_earnings_ledger l LEFT JOIN production_entries p ON p.id=l.production_entry_id LEFT JOIN worker_payments w ON w.id=l.worker_payment_id LEFT JOIN users creator ON creator.id=l.created_by WHERE " + where.join(" AND ") + " ORDER BY l.created_at DESC,l.id DESC LIMIT $" + params.length,
       params
     );
     return { data: result.rows };
@@ -62,10 +66,12 @@ export async function earningsRoutes(app: FastifyInstance) {
     if (q.data.employeeId) { params.push(q.data.employeeId); where.push("l.employee_id=$" + params.length); }
     if (q.data.from) { params.push(q.data.from); where.push("l.created_at >= $" + params.length + "::date"); }
     if (q.data.to) { params.push(q.data.to); where.push("l.created_at < ($" + params.length + "::date + INTERVAL '1 day')"); }
+    if (q.data.entryType) { params.push(q.data.entryType); where.push("l.entry_type=$" + params.length); }
+    if (q.data.q) { params.push("%"+q.data.q+"%"); const n=params.length; where.push(`(l.code ILIKE ${n} OR COALESCE(l.notes,'') ILIKE ${n} OR COALESCE(p.code,'') ILIKE ${n} OR COALESCE(w.code,'') ILIKE ${n} OR e.full_name ILIKE ${n} OR e.code ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`); }
     params.push(q.data.limit);
 
     const result = await pool.query(
-      "SELECT l.id,l.code,l.employee_id,e.code AS employee_code,e.full_name AS employee_name,l.entry_type,l.credit_amount,l.debit_amount,l.notes,l.created_at,p.code AS production_code,w.code AS payment_code FROM employee_earnings_ledger l JOIN employees e ON e.id=l.employee_id LEFT JOIN production_entries p ON p.id=l.production_entry_id LEFT JOIN worker_payments w ON w.id=l.worker_payment_id " + (where.length ? "WHERE " + where.join(" AND ") : "") + " ORDER BY l.created_at DESC,l.id DESC LIMIT $" + params.length,
+      "SELECT l.id,l.code,l.employee_id,e.code AS employee_code,e.full_name AS employee_name,l.entry_type,l.credit_amount,l.debit_amount,l.notes,l.created_at,p.code AS production_code,w.code AS payment_code,creator.username AS created_by_username FROM employee_earnings_ledger l JOIN employees e ON e.id=l.employee_id LEFT JOIN production_entries p ON p.id=l.production_entry_id LEFT JOIN worker_payments w ON w.id=l.worker_payment_id LEFT JOIN users creator ON creator.id=l.created_by " + (where.length ? "WHERE " + where.join(" AND ") : "") + " ORDER BY l.created_at DESC,l.id DESC LIMIT $" + params.length,
       params
     );
     return { data: result.rows };
