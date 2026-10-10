@@ -396,8 +396,8 @@ export async function orderRoutes(app: FastifyInstance) {
         }
         for(const item of proposed){
           await client.query(
-            "INSERT INTO order_price_change_items(price_change_id,production_entry_id,employee_id,previous_earning,revised_earning,delta_amount,applied_rate) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(price_change_id,production_entry_id) DO NOTHING",
-            [created.rows[0].id,item.id,item.employee_id,item.previous,item.revised,item.delta,newRate]
+            "INSERT INTO order_price_change_items(price_change_id,production_entry_id,employee_id,previous_earning,revised_earning,delta_amount,ledger_adjustment,applied_rate) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(price_change_id,production_entry_id) DO NOTHING",
+            [created.rows[0].id,item.id,item.employee_id,item.previous,item.revised,item.delta,item.status==="APPROVED",newRate]
           );
           if(item.status==="PENDING"){
             await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
@@ -453,7 +453,7 @@ export async function orderRoutes(app: FastifyInstance) {
       pool.query("SELECT d.id,d.code,d.destination,d.status,d.created_at,d.released_at,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permissions d LEFT JOIN delivery_permission_lines dl ON dl.delivery_permission_id=d.id WHERE d.order_id=$1 GROUP BY d.id ORDER BY d.created_at DESC",[id]),
       pool.query("SELECT wpa.production_entry_id,COALESCE(SUM(wpa.amount),0) AS paid_amount FROM worker_payment_allocations wpa JOIN production_entries pe ON pe.id=wpa.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 GROUP BY wpa.production_entry_id",[id])
     ]);
-    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type='OUT'),0) AS stock_out_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
+    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type='OUT'),0) AS stock_out_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
     const paidMap=new Map<string,number>(payments.rows.map((x:{production_entry_id:string;paid_amount:string|number})=>[x.production_entry_id,Number(x.paid_amount)]));
     const productionWithPayments=production.rows.map((x:{id:string;total_earning_amount?:string|number;earning_amount:string|number})=>({
       ...x,
