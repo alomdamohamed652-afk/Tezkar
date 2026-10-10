@@ -7,7 +7,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const cartonSchema=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().nonnegative(),barcode:z.string().trim().max(120).nullable().optional(),weight:z.number().nonnegative().nullable().optional(),batchCode:z.string().trim().max(100).nullable().optional(),status:z.enum(["OPEN","SEALED","PARTIAL"]).default("OPEN")});
-const deliverySchema=z.object({orderId:z.string().uuid(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),totalWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(2000).nullable().optional(),lines:z.array(z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional(),cartonWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(1000).nullable().optional()})).min(1).max(100)});
+const deliverySchema=z.object({orderId:z.string().uuid(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),totalWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(2000).nullable().optional(),lines:z.array(z.object({orderItemId:z.string().uuid().optional(),productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional(),cartonWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(1000).nullable().optional()})).min(1).max(100)});
 const releaseSchema=z.object({scanCode:z.string().trim().min(4).max(100)});
 
 async function assertLocation(client:import("pg").PoolClient,w:string,l:string){const r=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[l,w]);if(!r.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);}
@@ -63,21 +63,29 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  });
 
  app.get("/api/delivery-permissions/availability",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
-  const parsed=z.object({orderId:z.string().uuid(),productId:z.string().uuid(),warehouseId:z.string().uuid().optional(),locationId:z.string().uuid().optional()}).safeParse(request.query);
+  const parsed=z.object({orderId:z.string().uuid(),orderItemId:z.string().uuid().optional(),productId:z.string().uuid(),warehouseId:z.string().uuid().optional(),locationId:z.string().uuid().optional()}).safeParse(request.query);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الاستعلام عن المتاح غير صحيحة",422);
   if(Boolean(parsed.data.warehouseId)!==Boolean(parsed.data.locationId))throw new AppError("VALIDATION_ERROR","اختر المخزن والمكان معًا لحساب المتاح في المخزن",422);
-  const {orderId,productId,warehouseId,locationId}=parsed.data;
+  const {orderId,orderItemId,productId,warehouseId,locationId}=parsed.data;
   const result=await withTransaction(async(client)=>{
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1",[orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
-   const orderLine=await client.query("SELECT COALESCE(SUM(quantity),0) AS quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2",[orderId,productId]);
-   if(Number(orderLine.rows[0]?.quantity??0)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","الصنف ليس ضمن الطلبية المحددة",422);
+   let orderLine;
+   if(orderItemId){
+    orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND id=$2 AND product_id=$3",[orderId,orderItemId,productId]);
+    if(!orderLine.rowCount)throw new AppError("ORDER_ITEM_MISMATCH","سطر المنتج لا يتبع الطلبية أو لا يطابق الصنف",422);
+   }else{
+    orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id",[orderId,productId]);
+    if(orderLine.rowCount>1)throw new AppError("ORDER_ITEM_REQUIRED","الصنف مكرر في الطلبية؛ اختر سطر المنتج النهائي المحدد",422);
+   }
+   if(!orderLine.rowCount||Number(orderLine.rows[0]?.quantity??0)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","الصنف ليس ضمن الطلبية المحددة",422);
+   const resolvedOrderItemId=orderLine.rows[0].id;
    const produced=await client.query(`SELECT COALESCE(SUM(pe.quantity),0) AS quantity
      FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id
-     WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED'`,[orderId,productId]);
+     WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3`,[orderId,productId,resolvedOrderItemId]);
    const reserved=await client.query(`SELECT COALESCE(SUM(dl.quantity),0) AS quantity
      FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
-     WHERE dp.order_id=$1 AND dl.product_id=$2 AND dp.status IN ('READY','RELEASED')`,[orderId,productId]);
+     WHERE dp.order_id=$1 AND dl.product_id=$2 AND (dl.order_item_id=$3 OR dl.order_item_id IS NULL) AND dp.status IN ('READY','RELEASED')`,[orderId,productId,resolvedOrderItemId]);
    let stockQuantity:number|null=null,stockReserved:number|null=null,stockAvailable:number|null=null;
    if(warehouseId&&locationId){
     await assertLocation(client,warehouseId,locationId);
@@ -88,7 +96,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     stockQuantity=Number(stock.rows[0]?.quantity??0);stockReserved=Number(stockRes.rows[0].quantity);stockAvailable=Math.max(0,stockQuantity-stockReserved);
    }
    const producedQuantity=Number(produced.rows[0].quantity),reservedQuantity=Number(reserved.rows[0].quantity);
-   return {orderId,productId,orderedQuantity:Number(orderLine.rows[0].quantity),approvedProduction:producedQuantity,reservedDelivery:reservedQuantity,productionAvailable:Math.max(0,producedQuantity-reservedQuantity),stockQuantity,stockReserved,stockAvailable};
+   return {orderId,orderItemId:resolvedOrderItemId,productId,orderedQuantity:Number(orderLine.rows[0].quantity),approvedProduction:producedQuantity,reservedDelivery:reservedQuantity,productionAvailable:Math.max(0,producedQuantity-reservedQuantity),stockQuantity,stockReserved,stockAvailable};
   });
   return {data:result};
  });
