@@ -6,6 +6,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
+import { createUserNotification } from "../notifications/notifications.service.js";
 
 const createSchema = z.object({
   title: z.string().trim().min(3).max(240),
@@ -72,6 +73,13 @@ export async function taskRoutes(app: FastifyInstance) {
       const task = inserted.rows[0];
       for (const employeeId of [...new Set(parsed.data.assigneeEmployeeIds)]) {
         await client.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)", [task.id, employeeId, request.user!.userId]);
+        const recipients = await client.query("SELECT id FROM users WHERE employee_id=$1 AND is_active=TRUE", [employeeId]);
+        for (const recipient of recipients.rows) {
+          await createUserNotification(client, {
+            userId: recipient.id, type: "TASK_ASSIGNED", title: "مهمة جديدة اتسندت إليك",
+            body: task.title, href: "/tasks", entityType: "task", entityId: task.id
+          });
+        }
       }
       await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "create", module: "tasks", entityType: "task", entityId: task.id, afterData: task, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
       return task;
