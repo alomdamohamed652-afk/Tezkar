@@ -54,7 +54,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
 
  app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async()=>{
   const r=await pool.query(`SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name,
-    COALESCE(json_agg(jsonb_build_object('id',l.id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY p.name) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
+    COALESCE(json_agg(jsonb_build_object('id',l.id,'order_item_id',l.order_item_id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY p.name) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
     FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id
     LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id
     LEFT JOIN products p ON p.id=l.product_id LEFT JOIN units u ON u.id=l.unit_id
