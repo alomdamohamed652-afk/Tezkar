@@ -62,6 +62,37 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
 
+ app.get("/api/delivery-permissions/availability",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
+  const parsed=z.object({orderId:z.string().uuid(),productId:z.string().uuid(),warehouseId:z.string().uuid().optional(),locationId:z.string().uuid().optional()}).safeParse(request.query);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الاستعلام عن المتاح غير صحيحة",422);
+  if(Boolean(parsed.data.warehouseId)!==Boolean(parsed.data.locationId))throw new AppError("VALIDATION_ERROR","اختر المخزن والمكان معًا لحساب المتاح في المخزن",422);
+  const {orderId,productId,warehouseId,locationId}=parsed.data;
+  const result=await withTransaction(async(client)=>{
+   const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1",[orderId]);
+   if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+   const orderLine=await client.query("SELECT COALESCE(SUM(quantity),0) AS quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2",[orderId,productId]);
+   if(Number(orderLine.rows[0]?.quantity??0)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","الصنف ليس ضمن الطلبية المحددة",422);
+   const produced=await client.query(`SELECT COALESCE(SUM(pe.quantity),0) AS quantity
+     FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id
+     WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED'`,[orderId,productId]);
+   const reserved=await client.query(`SELECT COALESCE(SUM(dl.quantity),0) AS quantity
+     FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
+     WHERE dp.order_id=$1 AND dl.product_id=$2 AND dp.status IN ('READY','RELEASED')`,[orderId,productId]);
+   let stockQuantity:number|null=null,stockReserved:number|null=null,stockAvailable:number|null=null;
+   if(warehouseId&&locationId){
+    await assertLocation(client,warehouseId,locationId);
+    const stock=await client.query("SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",[productId,warehouseId,locationId]);
+    const stockRes=await client.query(`SELECT COALESCE(SUM(dl.quantity),0) AS quantity
+      FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
+      WHERE dl.product_id=$1 AND dl.warehouse_id=$2 AND dl.location_id=$3 AND dp.status='READY'`,[productId,warehouseId,locationId]);
+    stockQuantity=Number(stock.rows[0]?.quantity??0);stockReserved=Number(stockRes.rows[0].quantity);stockAvailable=Math.max(0,stockQuantity-stockReserved);
+   }
+   const producedQuantity=Number(produced.rows[0].quantity),reservedQuantity=Number(reserved.rows[0].quantity);
+   return {orderId,productId,orderedQuantity:Number(orderLine.rows[0].quantity),approvedProduction:producedQuantity,reservedDelivery:reservedQuantity,productionAvailable:Math.max(0,producedQuantity-reservedQuantity),stockQuantity,stockReserved,stockAvailable};
+  });
+  return {data:result};
+ });
+ 
  app.post("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request,reply)=>{
   const parsed=deliverySchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إذن التسليم غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
