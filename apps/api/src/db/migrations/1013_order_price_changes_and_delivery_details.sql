@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS order_price_change_items (
   previous_earning NUMERIC(18,2) NOT NULL,
   revised_earning NUMERIC(18,2) NOT NULL,
   delta_amount NUMERIC(18,2) NOT NULL,
+  ledger_adjustment BOOLEAN NOT NULL DEFAULT FALSE,
   applied_rate NUMERIC(18,4) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(price_change_id, production_entry_id)
