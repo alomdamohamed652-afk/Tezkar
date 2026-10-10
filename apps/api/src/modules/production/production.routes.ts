@@ -174,12 +174,16 @@ export async function productionRoutes(app: FastifyInstance) {
     if (!request.user?.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
     const result = await pool.query(
       `SELECT p.id,p.code,p.work_date,p.quantity,p.earning_amount,p.status,
-              pr.name AS product_name,st.name AS stage_name,sh.name AS shift_name,u.name AS unit_name
+              pr.name AS product_name,st.name AS stage_name,sh.name AS shift_name,u.name AS unit_name,
+              creator.username AS created_by_username,o.code AS order_code,o.order_name
          FROM production_entries p
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
+         LEFT JOIN users creator ON creator.id=p.created_by
+         LEFT JOIN order_stages os ON os.id=p.order_stage_id
+         LEFT JOIN production_orders o ON o.id=os.order_id
         WHERE p.employee_id=$1 AND p.status <> 'CANCELLED'
         ORDER BY p.work_date DESC,p.created_at DESC LIMIT 300`,
       [request.user.employeeId]
