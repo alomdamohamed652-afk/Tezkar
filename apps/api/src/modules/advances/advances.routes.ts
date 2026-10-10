@@ -35,7 +35,11 @@ export async function advanceRoutes(app:FastifyInstance){
     return {data:result.rows};
   });
   app.get("/api/advances",{preHandler:[authenticateRequest,requireAnyPermission(["advances.view","all"],["advances.view_own","own"])]},async(request)=>{
-    const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","PAID","CANCELLED"]).optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
+    const q=z.object({
+      status:z.enum(["PENDING","APPROVED","REJECTED","PAID","CANCELLED"]).optional(),
+      repaymentStatus:z.enum(["OPEN","SETTLED"]).optional(),employeeId:z.string().uuid().optional(),
+      from:z.string().date().optional(),to:z.string().date().optional(),q:z.string().trim().max(160).optional()
+    }).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
     const user=request.user!;
     const scopeClient=await pool.connect();
@@ -52,11 +56,19 @@ export async function advanceRoutes(app:FastifyInstance){
       params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);
     }
     if(q.data.status&&(!isWorker||canViewAll)){params.push(q.data.status);where.push("a.status=$"+params.length);}
+    if(q.data.repaymentStatus){params.push(q.data.repaymentStatus);where.push("a.repayment_status=$"+params.length);}
+    if(q.data.from){params.push(q.data.from);where.push("a.created_at::date >= $"+params.length+"::date");}
+    if(q.data.to){params.push(q.data.to);where.push("a.created_at::date <= $"+params.length+"::date");}
+    if(q.data.q){params.push("%"+q.data.q+"%");const n=params.length;where.push(`(a.code ILIKE ${n} OR a.reason ILIKE ${n} OR e.full_name ILIKE ${n} OR e.code ILIKE ${n} OR COALESCE(requester.username,'') ILIKE ${n})`);}
     const r=await pool.query(
       `SELECT a.*,e.code AS employee_code,e.full_name AS employee_name,
+              requester.username AS requested_by_username,reviewer.username AS reviewed_by_username,payer.username AS paid_by_username,
               COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
               GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount
          FROM advance_requests a JOIN employees e ON e.id=a.employee_id
+         LEFT JOIN users requester ON requester.id=a.requested_by
+         LEFT JOIN users reviewer ON reviewer.id=a.reviewed_by
+         LEFT JOIN users payer ON payer.id=a.paid_by
         ${where.length?"WHERE "+where.join(" AND "):""}
         ORDER BY a.created_at DESC LIMIT 500`,params);
     return {data:r.rows};
