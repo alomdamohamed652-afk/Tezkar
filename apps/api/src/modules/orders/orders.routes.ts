@@ -37,8 +37,10 @@ const orderSchema = z.object({
   lastDeliveryDate: z.string().date().optional(),
   notes: z.string().trim().max(1000).optional(),
   lines: z.array(orderLineSchema).optional().default([]),
-  stages: z.array(orderStageSchema).optional()
-});
+  stages: z.array(orderStageSchema).optional(),
+  finalProductName: z.string().trim().min(2).max(200).optional(),
+  finalQuantity: z.number().positive().optional()
+}).refine(x => Boolean(x.finalProductName) === Boolean(x.finalQuantity), { message: "اسم المنتج النهائي وكميته مطلوبان معًا" });
 
 
 function normalizeBusinessName(value:string):string {
@@ -116,7 +118,7 @@ const machineSchema = z.object({
 });
 
 const machineProductionSchema = z.object({
-  orderStageId: z.string().uuid().nullable().optional(),
+  orderStageId: z.string().uuid(),
   productionTypeId: z.string().uuid().nullable().optional(),
   machineId: z.string().uuid(),
   productId: z.string().uuid(),
@@ -183,8 +185,11 @@ export async function orderRoutes(app: FastifyInstance) {
       const order = created.rows[0];
       const stages = parsed.data.stages ?? [];
       const lineInputs = [...parsed.data.lines];
-      // In the normal UI the product is entered once beside each stage.
-      // Build order lines from stage outputs so the same product is never requested twice.
+      // A designated final product is the single delivery target; intermediate stage outputs are not order quantities.
+      if (parsed.data.finalProductName) {
+        lineInputs.splice(0, lineInputs.length, { productName: parsed.data.finalProductName, quantity: parsed.data.finalQuantity! });
+      }
+      // Backward compatibility for older clients that do not designate a final product.
       if (!lineInputs.length) {
         if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
         const finalSequence=Math.max(...stages.map(s=>s.sequenceNo));
@@ -210,21 +215,31 @@ export async function orderRoutes(app: FastifyInstance) {
         if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","اكتب المنتج الناتج بجانب مرحلة واحدة على الأقل",422);
         lineInputs.push(...Array.from(derived.values()));
       }
+      const lineProductIds: Array<{productId:string;quantity:number}> = [];
       for (const line of lineInputs) {
         const product=await ensureProduct(
           client,
           line.productId ? {productId:line.productId} : {productName:line.productName!}
         );
         const unitId=line.unitId ?? product.unit_id;
+        lineProductIds.push({productId:product.id,quantity:line.quantity});
         await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5)",
           [order.id,product.id,line.quantity,unitId,line.notes ?? null]);
       }
+      const finalSequence = stages.length ? Math.max(...stages.map(s=>s.sequenceNo)) : null;
+      const designatedFinalProductId = parsed.data.finalProductName ? lineProductIds[0]?.productId : null;
       for (const stage of stages) {
         const stageRow=await ensureStage(client,{stageId:stage.stageId,stageName:stage.stageName});
         let outputProductId=stage.outputProductId ?? null;
         if(!outputProductId && stage.outputProductName) {
           const product=await ensureProduct(client,{productName:stage.outputProductName});
           outputProductId=product.id;
+        }
+        if (designatedFinalProductId && stage.sequenceNo===finalSequence) {
+          if (outputProductId && outputProductId!==designatedFinalProductId) {
+            throw new AppError("FINAL_PRODUCT_STAGE_MISMATCH","المنتج الناتج من آخر مرحلة لازم يكون هو نفس المنتج النهائي المحدد للطلبية",422);
+          }
+          outputProductId=designatedFinalProductId;
         }
         await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes,stage_rate,stage_rate_method,production_type_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
           [order.id,stageRow.id,outputProductId,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null,stage.stageRate ?? null,stage.stageRateMethod ?? null,stage.productionTypeId ?? null]);
@@ -508,7 +523,8 @@ export async function orderRoutes(app: FastifyInstance) {
         if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const s=stage.rows[0];
         if(s.status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية ملغاة",409);
-        if(s.output_product_id && s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج لا يطابق المنتج الناتج من مرحلة الطلب",409);
+        if(!s.output_product_id) throw new AppError("ORDER_STAGE_OUTPUT_REQUIRED","اربط منتجًا ناتجًا بمرحلة الطلبية قبل تسجيل إنتاج الماكينة",422);
+        if(s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج المختار لا يطابق المنتج الناتج من المرحلة المحددة",409);
       }
       const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
       const r=await client.query(
