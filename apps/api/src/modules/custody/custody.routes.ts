@@ -102,7 +102,11 @@ export async function custodyRoutes(app:FastifyInstance){
     let canViewAll=false;let canViewOwn=false;
     try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all");canViewOwn=await hasPermission(scopeClient,request.user!.userId,"custody.view_own","own")}finally{scopeClient.release()}
     const assignedOnly=!canViewAll&&!canViewOwn;
-    if(assignedOnly&&!user?.employee_id)throw new AppError("FORBIDDEN","لا توجد عهدة مسجلة على حسابك",403);
+    if(assignedOnly){
+      if(!user?.employee_id)throw new AppError("FORBIDDEN","لا توجد عهدة مسجلة على حسابك",403);
+      const active=await pool.query("SELECT 1 FROM employee_custodies WHERE employee_id=$1 AND status IN ('ACTIVE','PARTIAL_RETURNED') LIMIT 1",[user.employee_id]);
+      if(!active.rowCount)throw new AppError("FORBIDDEN","لا توجد عهدة مفتوحة على حسابك",403);
+    }
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
     if(!canViewAll){
       params.push(user!.employee_id);where.push("c.employee_id=$"+params.length);
