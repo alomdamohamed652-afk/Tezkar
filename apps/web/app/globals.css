@@ -1355,3 +1355,19 @@ select[multiple] option:checked{background:var(--primary-soft) linear-gradient(0
 
 .delivery-availability-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid #bbf7d0;border-radius:999px;background:#f0fdf4;color:#166534;font-size:11px;font-weight:800;white-space:nowrap}
 .delivery-line-heading{flex-wrap:wrap}
+
+
+/* Notification inbox */
+.notification-list{display:grid;gap:0}
+.notification-item{width:100%;display:flex;align-items:flex-start;gap:12px;text-align:right;padding:16px 18px;border:0;border-bottom:1px solid var(--border);background:var(--surface);color:var(--ink)}
+.notification-item:last-child{border-bottom:0}
+.notification-item:hover{background:#f1f6ff}
+.notification-item.unread{background:linear-gradient(90deg,#f4f8ff,#eaf2ff);box-shadow:inset -4px 0 0 #3b82f6}
+.notification-mark{color:#94a3b8;font-size:11px;padding-top:4px}
+.notification-item.unread .notification-mark{color:#2563eb}
+.notification-copy{display:grid;gap:4px;min-width:0;flex:1}
+.notification-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:800}
+.notification-body{color:var(--ink-2);overflow-wrap:anywhere}
+.notification-date{font-size:11px;color:var(--muted)}
+.notification-open{color:var(--primary);font-size:12px;font-weight:800;white-space:nowrap}
+@media(max-width:560px){.notification-item{padding:13px 11px;gap:8px}.notification-open{display:none}}
