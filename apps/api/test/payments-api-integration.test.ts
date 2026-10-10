@@ -163,6 +163,28 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.deepEqual(repeatedLines.rows.map(row=>({planned:Number(row.planned_quantity),line:Number(row.line_quantity)})),[
         {planned:3,line:3},{planned:7,line:7}
       ]);
+
+      // Cross-order associations must be rejected by the composite database FK.
+      await assert.rejects(
+        apiPool.query("UPDATE order_stages SET order_item_id=$1 WHERE id=(SELECT id FROM order_stages WHERE order_id=$2 ORDER BY sequence_no LIMIT 1)",
+          [repeatedLines.rows[0].line_id,multiOrderId]),
+        /foreign key/i
+      );
+
+      // A failed final-line synchronization must roll back both stage and line changes.
+      const invalidQuantityUpdate=await app.inject({
+        method:"PATCH",url:"/api/order-stages/"+(await apiPool.query("SELECT id FROM order_stages WHERE order_id=$1 ORDER BY sequence_no LIMIT 1",[repeatedOrderId])).rows[0].id,
+        headers:{cookie:managerCookie},payload:{plannedQuantity:0}
+      });
+      assert.equal(invalidQuantityUpdate.statusCode,422,invalidQuantityUpdate.body);
+      const unchangedRepeatedLine=await apiPool.query(
+        `SELECT os.planned_quantity,pol.quantity AS line_quantity
+           FROM order_stages os JOIN production_order_lines pol ON pol.id=os.order_item_id AND pol.order_id=os.order_id
+          WHERE os.order_id=$1 AND os.is_final_product=TRUE ORDER BY os.sequence_no LIMIT 1`,
+        [repeatedOrderId]
+      );
+      assert.equal(Number(unchangedRepeatedLine.rows[0].planned_quantity),3);
+      assert.equal(Number(unchangedRepeatedLine.rows[0].line_quantity),3);
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}
