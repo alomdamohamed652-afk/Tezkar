@@ -2,6 +2,7 @@
 
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {Sidebar,usePermissions} from "../../components/sidebar";
+import {formatMoney} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 import {api} from "../../lib/api";
 
@@ -47,7 +48,7 @@ export default function EarningsPage(){
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل البونص أو الخصم")}
  }
 
- const money=(value:string|number)=>Number(value).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2});
+ const money=(value:string|number)=>formatMoney(value);
  const totals=useMemo(()=>adjustments.reduce((a,x)=>({bonus:a.bonus+(x.adjustment_type==="BONUS"?Number(x.amount):0),deduction:a.deduction+(x.adjustment_type==="DEDUCTION"?Number(x.amount):0)}),{bonus:0,deduction:0}),[adjustments]);
 
  return <div className="app-shell"><Sidebar active="/earnings"/><main className="main">
