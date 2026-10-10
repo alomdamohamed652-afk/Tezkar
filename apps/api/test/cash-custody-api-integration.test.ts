@@ -136,6 +136,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [ownScopeEmployee.id,ownScopeUser.id]
       );
       await apiPool.query(
+        "INSERT INTO employee_custodies(employee_id,custody_type,description,quantity,unit_value,total_value,created_by) VALUES($1,'Test','Assigned custody without permission',2,15,30,$2)",
+        [unprivilegedEmployee.id,manager.id]
+      );
+      await apiPool.query(
         "INSERT INTO employee_custodies(employee_id,custody_type,description,quantity,unit_value,total_value,created_by) VALUES($1,'Test','Employee A custody',1,10,10,$2),($3,'Test','Employee B custody',1,20,20,$4)",
         [employeeA.id,worker.id,employeeB.id,manager.id]
       );
@@ -157,6 +161,17 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
 
+      // An employee with no custody permission can view only their assigned active custody.
+      const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
+      assert.equal(assignedCustody.statusCode,200,assignedCustody.body);
+      assert.equal(assignedCustody.json().data.length,1);
+      assert.equal(assignedCustody.json().data[0].description,"Assigned custody without permission");
+      const unprivilegedCustodyId=(await apiPool.query("SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Assigned custody without permission'",[unprivilegedEmployee.id])).rows[0].id;
+      const closeAssignedCustody=await app.inject({method:"POST",url:"/api/custodies/"+unprivilegedCustodyId+"/settlements",headers:{cookie:managerCookie},payload:{returnedQuantity:2,lostQuantity:0,damageValue:0,shortageValue:0}});
+      assert.equal(closeAssignedCustody.statusCode,201,closeAssignedCustody.body);
+      const assignedAfterClose=await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
+      assert.equal(assignedAfterClose.statusCode,403,assignedAfterClose.body);
+
       const managerAdvance = await app.inject({
         method: "POST", url: "/api/advances", headers: { cookie: managerCookie },
         payload: { employeeId: employeeA.id, amount: 50, reason: "RBAC integration test", repaymentMethod: "CUSTOM" }
@@ -174,6 +189,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Employee A custody'",
         [employeeA.id]
       )).rows[0];
+      const custodyTransfer=await app.inject({
+        method:"POST",url:"/api/custodies/"+employeeACustody.id+"/transfer",headers:{cookie:managerCookie},
+        payload:{toEmployeeId:employeeB.id,notes:"Transfer integration test"}
+      });
+      assert.equal(custodyTransfer.statusCode,201,custodyTransfer.body);
+      assert.equal(custodyTransfer.json().data.custody.employee_id,employeeB.id);
+      assert.equal(Number(custodyTransfer.json().data.remainingQuantity),1);
+      const transferHistory=await app.inject({method:"GET",url:"/api/custodies/"+employeeACustody.id+"/transfers",headers:{cookie:managerCookie}});
+      assert.equal(transferHistory.statusCode,200,transferHistory.body);
+      assert.equal(transferHistory.json().data.length,1);
       const lostCustody = await app.inject({
         method: "POST", url: "/api/custodies/"+employeeACustody.id+"/settlements",
         headers: { cookie: managerCookie },
@@ -306,6 +331,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [worker.id]
       );
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions must be audited");
+
+      const cashTransfer=await app.inject({
+        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
+        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:10,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
+      });
+      assert.equal(cashTransfer.statusCode,201,cashTransfer.body);
+      assert.equal(Number(cashTransfer.json().data.transfer.amount),10);
+      assert.equal(cashTransfer.json().data.outgoing.direction,"OUT");
+      assert.equal(cashTransfer.json().data.incoming.direction,"IN");
+      assert.equal(cashTransfer.json().data.outgoing.transfer_id,cashTransfer.json().data.incoming.transfer_id);
     } finally {
       await app.close();
     }

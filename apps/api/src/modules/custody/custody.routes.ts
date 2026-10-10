@@ -17,6 +17,20 @@ const createSchema=z.object({
   notes:z.string().trim().max(1000).nullable().optional()
 });
 
+const transferCustodySchema=z.object({
+  toEmployeeId:z.string().uuid(),
+  notes:z.string().trim().max(1000).nullable().optional()
+});
+
+const cashTransferSchema=z.object({
+  fromEmployeeId:z.string().uuid(),
+  toEmployeeId:z.string().uuid(),
+  amount:z.number().positive(),
+  transactionDate:z.string().date().optional(),
+  description:z.string().trim().min(2).max(500),
+  notes:z.string().trim().max(1000).nullable().optional()
+}).refine(v=>v.fromEmployeeId!==v.toEmployeeId,{message:"لا يمكن التحويل لنفس الموظف",path:["toEmployeeId"]});
+
 const settleSchema=z.object({
   returnedQuantity:z.number().nonnegative().default(0),
   lostQuantity:z.number().nonnegative().default(0),
@@ -64,7 +78,8 @@ export async function custodyRoutes(app:FastifyInstance){
         ["custody.create","all"],["custody.create_own","own"],
         ["custody.view","all"],["custody.view_own","own"],
         ["cash_custody.create","all"],["cash_custody.create_own","own"],
-        ["cash_custody.view","all"],["cash_custody.view_own","own"]
+        ["cash_custody.view","all"],["cash_custody.view_own","own"],
+        ["custody.transfer","all"],["cash_custody.transfer","all"]
       ];
       let hasAny=false;let hasAll=false;
       for(const [code,scope] of permissionScopes){
@@ -82,22 +97,28 @@ export async function custodyRoutes(app:FastifyInstance){
       return {data:own.rows};
     }finally{client.release();}
   });
-  app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
+  app.get("/api/custodies",{preHandler:[authenticateRequest]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const scopeClient=await pool.connect();
-    let canViewAll=false;
-    try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all")}finally{scopeClient.release()}
+    let canViewAll=false;let canViewOwn=false;
+    try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all");canViewOwn=await hasPermission(scopeClient,request.user!.userId,"custody.view_own","own")}finally{scopeClient.release()}
+    const assignedOnly=!canViewAll&&!canViewOwn;
+    if(assignedOnly){
+      if(!user?.employee_id)throw new AppError("FORBIDDEN","لا توجد عهدة مسجلة على حسابك",403);
+      const active=await pool.query("SELECT 1 FROM employee_custodies WHERE employee_id=$1 AND status IN ('ACTIVE','PARTIAL_RETURNED') LIMIT 1",[user.employee_id]);
+      if(!active.rowCount)throw new AppError("FORBIDDEN","لا توجد عهدة مفتوحة على حسابك",403);
+    }
     const params:unknown[]=[];const where:string[]=["c.status <> 'CANCELLED'"];
     if(!canViewAll){
-      if(!user?.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(user.employee_id);where.push("c.employee_id=$"+params.length);
-      if(user.is_worker)where.push("c.status IN ('ACTIVE','PARTIAL_RETURNED')");
+      params.push(user!.employee_id);where.push("c.employee_id=$"+params.length);
+      if(assignedOnly||user?.is_worker)where.push("c.status IN ('ACTIVE','PARTIAL_RETURNED')");
     }
     const r=await pool.query(
       `SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,
               COALESCE((SELECT SUM(returned_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0) AS returned_quantity,
               COALESCE((SELECT SUM(lost_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0) AS lost_quantity,
-              GREATEST(c.quantity-COALESCE((SELECT SUM(returned_quantity+lost_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0),0) AS remaining_quantity
+              GREATEST(c.quantity-COALESCE((SELECT SUM(returned_quantity+lost_quantity) FROM custody_settlements cs WHERE cs.custody_id=c.id),0),0) AS remaining_quantity,
+              (SELECT COUNT(*) FROM employee_custody_transfers ct WHERE ct.custody_id=c.id) AS transfer_count
          FROM employee_custodies c JOIN employees e ON e.id=c.employee_id
         WHERE ${where.join(" AND ")}
         ORDER BY c.created_at DESC LIMIT 500`,params);
@@ -120,15 +141,16 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:r});
   });
 
-  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
+  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const user=await workerInfo(request.user!.userId);
     const scopeClient=await pool.connect();
-    let canViewAll=false;
-    try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all")}finally{scopeClient.release()}
+    let canViewAll=false;let canViewOwn=false;
+    try{canViewAll=await hasPermission(scopeClient,request.user!.userId,"custody.view","all");canViewOwn=await hasPermission(scopeClient,request.user!.userId,"custody.view_own","own")}finally{scopeClient.release()}
     const params:unknown[]=[id];let scope="";
     if(!canViewAll){
-      if(!user?.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      if(!user?.employee_id)throw new AppError("FORBIDDEN","لا توجد عهدة مرتبطة بحسابك",403);
+      if(!canViewOwn){const active=await pool.query("SELECT 1 FROM employee_custodies WHERE id=$1 AND employee_id=$2 AND status IN ('ACTIVE','PARTIAL_RETURNED')",[id,user.employee_id]);if(!active.rowCount)throw new AppError("FORBIDDEN","لا يمكنك عرض سجل هذه العهدة",403)}
       params.push(user.employee_id);scope=" AND cs.employee_id=$2";
     }
     const r=await pool.query(
@@ -136,6 +158,34 @@ export async function custodyRoutes(app:FastifyInstance){
       params
     );
     return {data:r.rows};
+  });
+
+  app.get("/api/custodies/:id/transfers",{preHandler:[authenticateRequest]},async(request)=>{
+    const id=(request.params as {id:string}).id;const user=await workerInfo(request.user!.userId);const client=await pool.connect();
+    try{
+      const all=await hasPermission(client,request.user!.userId,"custody.view","all");const own=await hasPermission(client,request.user!.userId,"custody.view_own","own");
+      if(!all&&!own){if(!user?.employee_id)throw new AppError("FORBIDDEN","لا يمكنك عرض سجل التحويل",403);const active=await client.query("SELECT 1 FROM employee_custodies WHERE id=$1 AND employee_id=$2 AND status IN ('ACTIVE','PARTIAL_RETURNED')",[id,user.employee_id]);if(!active.rowCount)throw new AppError("FORBIDDEN","لا يمكنك عرض سجل هذه العهدة",403)}
+      const params:unknown[]=[id];let scope="";if(!all){params.push(user!.employee_id);scope=" AND (ct.from_employee_id=$2 OR ct.to_employee_id=$2)"}
+      const rows=await client.query("SELECT ct.*,f.full_name AS from_employee_name,t.full_name AS to_employee_name,u.username AS created_by_username FROM employee_custody_transfers ct JOIN employees f ON f.id=ct.from_employee_id JOIN employees t ON t.id=ct.to_employee_id JOIN users u ON u.id=ct.created_by WHERE ct.custody_id=$1"+scope+" ORDER BY ct.created_at DESC",params);
+      return {data:rows.rows};
+    }finally{client.release()}
+  });
+
+  app.post("/api/custodies/:id/transfer",{preHandler:[authenticateRequest,requirePermission("custody.transfer")]},async(request,reply)=>{
+    const id=(request.params as {id:string}).id;const p=transferCustodySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحويل العهدة غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
+      if(!["ACTIVE","PARTIAL_RETURNED"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","لا يمكن تحويل عهدة مغلقة أو تمت تسويتها",409);
+      const sums=await client.query("SELECT COALESCE(SUM(returned_quantity+lost_quantity),0) AS accounted FROM custody_settlements WHERE custody_id=$1",[id]);const remaining=Number(custody.rows[0].quantity)-Number(sums.rows[0].accounted||0);
+      if(remaining<=0)throw new AppError("CUSTODY_CLOSED","لا توجد كمية متبقية للتحويل",409);
+      if(custody.rows[0].employee_id===p.data.toEmployeeId)throw new AppError("SAME_CUSTODY_OWNER","العهدة مسجلة بالفعل على هذا الموظف",422);
+      const target=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.toEmployeeId]);if(!target.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف المستلم غير موجود أو غير نشط",422);
+      const fromEmployeeId=custody.rows[0].employee_id;
+      const transfer=await client.query("INSERT INTO employee_custody_transfers(custody_id,from_employee_id,to_employee_id,remaining_quantity,notes,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[id,fromEmployeeId,p.data.toEmployeeId,remaining,p.data.notes??null,request.user!.userId]);
+      const updated=await client.query("UPDATE employee_custodies SET employee_id=$1,updated_at=now() WHERE id=$2 RETURNING *",[p.data.toEmployeeId,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"transfer",module:"custody",entityType:"employee_custody",entityId:id,beforeData:custody.rows[0],afterData:updated.rows[0],metadata:{transfer:transfer.rows[0]},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {custody:updated.rows[0],transfer:transfer.rows[0],remainingQuantity:remaining};
+    });return reply.code(201).send({data:result});
   });
 
   app.post("/api/custodies/:id/settlements",{preHandler:[authenticateRequest,requirePermission("custody.settle")]},async(request,reply)=>{
@@ -168,17 +218,34 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,undefined,"cash_custody.view");
       const params:unknown[]=[]; const where:string[]=[];
       if(!access.isFinance){params.push(access.employeeId);where.push("c.employee_id=$"+params.length);}
-      const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,
+      const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,ct.code AS transfer_code,
         SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END) OVER (
           PARTITION BY c.employee_id
           ORDER BY c.transaction_date,c.created_at,c.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS balance
         FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
+        LEFT JOIN cash_custody_transfers ct ON ct.id=c.transfer_id
         ${where.length?"WHERE "+where.join(" AND "):""}
         ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC LIMIT 500`,params);
       return {data:r.rows};
     }finally{client.release();}
+  });
+
+  app.post("/api/cash-custody/transfers",{preHandler:[authenticateRequest,requirePermission("cash_custody.transfer")]},async(request,reply)=>{
+    const p=cashTransferSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحويل العهدة النقدية غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const ids=[p.data.fromEmployeeId,p.data.toEmployeeId].sort();const locked=await client.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE ORDER BY id FOR UPDATE",[ids]);
+      if(locked.rowCount!==2)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف المحول أو المستلم غير موجود أو غير نشط",422);
+      const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[p.data.fromEmployeeId,date]);
+      if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","مبلغ التحويل أكبر من رصيد العهدة النقدية المتاح",409);
+      const transfer=await client.query("INSERT INTO cash_custody_transfers(from_employee_id,to_employee_id,amount,transaction_date,description,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",[p.data.fromEmployeeId,p.data.toEmployeeId,p.data.amount,date,p.data.description,p.data.notes??null,request.user!.userId]);
+      const txOut=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,confirmed_duplicate,created_by,transfer_id) VALUES($1,'OUT',$2,$3,$4,$5,FALSE,$6,$7) RETURNING *",[p.data.fromEmployeeId,p.data.amount,date,"تحويل إلى موظف آخر: "+p.data.description,p.data.notes??null,request.user!.userId,transfer.rows[0].id]);
+      const txIn=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,confirmed_duplicate,created_by,transfer_id) VALUES($1,'IN',$2,$3,$4,$5,FALSE,$6,$7) RETURNING *",[p.data.toEmployeeId,p.data.amount,date,"استلام تحويل عهدة: "+p.data.description,p.data.notes??null,request.user!.userId,transfer.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"transfer",module:"cash_custody",entityType:"cash_custody_transfer",entityId:transfer.rows[0].id,afterData:transfer.rows[0],metadata:{outgoingTransactionId:txOut.rows[0].id,incomingTransactionId:txIn.rows[0].id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {transfer:transfer.rows[0],outgoing:txOut.rows[0],incoming:txIn.rows[0]};
+    });return reply.code(201).send({data:result});
   });
 
   app.post("/api/cash-custody/check-duplicate",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request)=>{

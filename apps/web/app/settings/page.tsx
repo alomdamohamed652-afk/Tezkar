@@ -10,7 +10,7 @@ type User={id:string;code:string;username:string;full_name:string|null;employee_
 type Permission={id:string;code:string;module:string;entity:string;action:string;scope:string|null};
 
 const moduleNames:Record<string,string>={iam:"الحسابات والصلاحيات",hr:"الموارد البشرية",orders:"الطلبات",production:"الإنتاج",warehouse:"المخزن",finance:"المالية",master:"البيانات الأساسية",reports:"التقارير",dashboard:"لوحة التحكم",earnings:"المستحقات",auth:"الحساب"};
-const actionNames:Record<string,string>={view:"عرض",create:"إضافة",edit:"تعديل",delete:"حذف",manage:"إدارة",approve:"اعتماد",reject:"رفض",move:"حركة",dashboard:"لوحة",change_password:"تغيير كلمة المرور"};
+const actionNames:Record<string,string>={view:"عرض",create:"إضافة",edit:"تعديل",delete:"حذف",manage:"إدارة",approve:"اعتماد",reject:"رفض",move:"حركة",transfer:"تحويل",dashboard:"لوحة",change_password:"تغيير كلمة المرور"};
 
 export default function SettingsPage(){
  const {has}=usePermissions();
