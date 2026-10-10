@@ -629,6 +629,46 @@ export async function productionRoutes(app: FastifyInstance) {
         [current.employee_id, current.earning_amount, id, request.user!.userId]
       );
 
+      // Production-percentage advances are recovered from each approved production earning.
+      // The advance row is locked so concurrent approvals cannot over-repay the balance.
+      const percentageAdvance = await client.query(
+        `SELECT a.*,
+                GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding
+           FROM advance_requests a
+          WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+            AND a.repayment_method='PRODUCTION_PERCENTAGE' AND a.production_percentage>0
+            AND a.paid_at::date <= $2::date
+          ORDER BY a.paid_at,a.created_at,a.id
+          LIMIT 1
+          FOR UPDATE OF a`,
+        [current.employee_id,current.work_date]
+      );
+      if (percentageAdvance.rowCount) {
+        const advance = percentageAdvance.rows[0];
+        const outstanding = Number(advance.outstanding);
+        const percentageAmount = Number(current.earning_amount)*Number(advance.production_percentage)/100;
+        const repaymentAmount = Math.round(Math.min(outstanding,percentageAmount)*100)/100;
+        if (repaymentAmount > 0) {
+          const repayment = await client.query(
+            `INSERT INTO advance_repayments(
+               advance_id,amount,repayment_type,payment_date,notes,created_by,source_production_entry_id
+             ) VALUES($1,$2,'PRODUCTION_PERCENTAGE',$3,$4,$5,$6)
+             ON CONFLICT(source_production_entry_id) WHERE source_production_entry_id IS NOT NULL DO NOTHING
+             RETURNING id`,
+            [advance.id,repaymentAmount,current.work_date,`خصم ${Number(advance.production_percentage)}٪ من إنتاج ${current.code} لسداد السلفة ${advance.code}`,request.user!.userId,id]
+          );
+          if (repayment.rowCount) {
+            const nextRemaining = outstanding-repaymentAmount;
+            await client.query(
+              "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4)",
+              [current.employee_id,repaymentAmount,request.user!.userId,`سداد سلفة ${advance.code} من إنتاج ${current.code}`]
+            );
+            await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[nextRemaining<=0.0001?"SETTLED":"OPEN",advance.id]);
+            await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"automatic_production_repayment",module:"advances",entityType:"advance_request",entityId:advance.id,metadata:{repaymentId:repayment.rows[0].id,productionEntryId:id,productionCode:current.code,amount:repaymentAmount,remaining:Math.max(0,nextRemaining)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+          }
+        }
+      }
+
       const adjustments = await client.query(
         `SELECT id,adjustment_type,amount,reason
            FROM employee_earnings_adjustments
