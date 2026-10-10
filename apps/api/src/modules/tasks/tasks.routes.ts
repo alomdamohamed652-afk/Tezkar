@@ -123,14 +123,14 @@ export async function taskRoutes(app: FastifyInstance) {
       if (p.status !== undefined && p.status !== before.rows[0].status) {
         await client.query(
           `INSERT INTO user_notifications(recipient_user_id,notification_type,title,body,entity_type,entity_id,created_by)
-           SELECT DISTINCT recipients.user_id,'TASK_STATUS','تحديث حالة مهمة',$2,'task',$3,$4
+           SELECT DISTINCT recipients.user_id,'TASK_STATUS','تحديث حالة مهمة',$1,'task',$2,$3
              FROM (
                SELECT t.created_by AS user_id FROM tasks t WHERE t.id=$3
                UNION
                SELECT u.id AS user_id FROM task_assignees ta JOIN users u ON u.employee_id=ta.employee_id AND u.is_active=TRUE WHERE ta.task_id=$3
              ) recipients
             WHERE recipients.user_id IS NOT NULL AND recipients.user_id<>$4`,
-          [null, `تم تغيير حالة المهمة «${updated.rows[0].title}» إلى ${p.status}`, id, request.user!.userId]);
+          [`تم تغيير حالة المهمة «${updated.rows[0].title}» إلى ${p.status}`, id, request.user!.userId]);
       }
       await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "update", module: "tasks", entityType: "task", entityId: id, beforeData: before.rows[0], afterData: updated.rows[0], ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
       return { data: updated.rows[0] };
