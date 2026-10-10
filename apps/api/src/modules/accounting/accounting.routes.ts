@@ -187,8 +187,8 @@ export async function accountingRoutes(app:FastifyInstance){
     if(shares.reduce((sum,value)=>sum+value,0)!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
    }
    const result=await client.query("SELECT COALESCE(SUM(amount),0) AS allocated FROM accounting_expense_allocations WHERE period_id=$1",[id]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*orders.rows.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return {periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*orders.rows.length,allocatedAmount:result.rows[0].allocated};
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*eligibleOrders.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*eligibleOrders.length,allocatedAmount:result.rows[0].allocated};
   })};
  });
  app.put("/api/accounting/periods/:id/allocations",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
