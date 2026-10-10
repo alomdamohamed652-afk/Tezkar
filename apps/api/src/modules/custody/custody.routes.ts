@@ -53,7 +53,10 @@ const cashSchema=z.object({
   transactionDate:z.string().date().optional(),
   description:z.string().trim().min(2).max(500),
   notes:z.string().trim().max(1000).nullable().optional(),
+  sourceType:z.enum(["MANAGER_TOPUP","CASH_CUSTODY"]).optional().default("CASH_CUSTODY"),
   confirmDuplicate:z.boolean().optional().default(false)
+}).superRefine((v,ctx)=>{
+  if(v.sourceType==="MANAGER_TOPUP"&&v.direction!=="IN")ctx.addIssue({code:"custom",path:["direction"],message:"توريد المدير المالي يجب أن يكون حركة داخلة"});
 });
 
 async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,permissionCode:"cash_custody.view"|"cash_custody.create"){
@@ -218,13 +221,14 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,undefined,"cash_custody.view");
       const params:unknown[]=[]; const where:string[]=[];
       if(!access.isFinance){params.push(access.employeeId);where.push("c.employee_id=$"+params.length);}
-      const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,ct.code AS transfer_code,
+      const r=await client.query(`SELECT c.*,e.code AS employee_code,e.full_name AS employee_name,creator.username AS created_by_username,ct.code AS transfer_code,
         SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END) OVER (
           PARTITION BY c.employee_id
           ORDER BY c.transaction_date,c.created_at,c.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS balance
         FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
+        LEFT JOIN users creator ON creator.id=c.created_by
         LEFT JOIN cash_custody_transfers ct ON ct.id=c.transfer_id
         ${where.length?"WHERE "+where.join(" AND "):""}
         ORDER BY c.transaction_date DESC,c.created_at DESC,c.id DESC LIMIT 500`,params);
@@ -334,9 +338,9 @@ export async function custodyRoutes(app:FastifyInstance){
         throw new AppError("DUPLICATE_CASH_CUSTODY","توجد حركة عهدة نقدية مشابهة بالفعل. راجعها ثم أكد تسجيل العملية الجديدة.",409);
       }
       const x=await client.query(`INSERT INTO cash_custody_transactions
-        (employee_id,direction,amount,transaction_date,description,notes,confirmed_duplicate,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-        [employeeId,p.data.direction,p.data.amount,date,p.data.description,p.data.notes??null,Boolean(dup.rowCount),request.user!.userId]);
+        (employee_id,direction,amount,transaction_date,description,notes,source_type,confirmed_duplicate,created_by)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [employeeId,p.data.direction,p.data.amount,date,p.data.description,p.data.notes??null,p.data.sourceType,Boolean(dup.rowCount),request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"cash_custody",entityType:"cash_custody_transaction",entityId:x.rows[0].id,afterData:x.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return x.rows[0];
     });
