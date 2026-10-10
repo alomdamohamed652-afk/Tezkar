@@ -17,7 +17,7 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
     await client.query(`SET search_path TO "${schema}"`);
     await client.query("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     await client.query("CREATE TABLE users (id UUID PRIMARY KEY)");
-    await client.query("CREATE TABLE employees (id UUID PRIMARY KEY)");
+    await client.query("CREATE TABLE employees (id UUID PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     await client.query("CREATE TABLE production_orders (id UUID PRIMARY KEY)");
     await client.query("CREATE TABLE order_stages (id UUID PRIMARY KEY)");
     await client.query("CREATE TABLE production_entries (id UUID PRIMARY KEY)");
@@ -26,7 +26,8 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
 
     for (const [file, version] of [
       ["1013_order_price_changes_and_delivery_details.sql", "1013_order_price_changes_and_delivery_details"],
-      ["1014_production_shift_leader.sql", "1014_production_shift_leader"]
+      ["1014_production_shift_leader.sql", "1014_production_shift_leader"],
+      ["1015_employee_payout_preferences.sql", "1015_employee_payout_preferences"]
     ]) {
       const sql = await readFile(new URL("../src/db/migrations/" + file, import.meta.url), "utf8");
       await client.query("BEGIN");
@@ -50,7 +51,7 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
       "delivery_permissions.sample_quantity", "delivery_permissions.details",
       "delivery_permission_lines.carton_weight", "delivery_permission_lines.piece_count",
       "delivery_permission_lines.sample_quantity", "delivery_permission_lines.details",
-      "production_entries.shift_leader_employee_id", "order_price_changes.scope",
+      "production_entries.shift_leader_employee_id", "employees.instapay_handle", "employees.vodafone_cash_number", "employees.preferred_payment_method", "order_price_changes.scope",
       "order_price_change_items.delta_amount", "order_price_change_items.ledger_adjustment"
     ]) assert.ok(available.has(column), "missing migrated column " + column);
 
@@ -73,7 +74,7 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
       /order_price_changes_scope_check/
     );
     const applied = await client.query("SELECT version FROM schema_migrations WHERE version IN ('1013_order_price_changes_and_delivery_details','1014_production_shift_leader')");
-    assert.equal(applied.rowCount, 2);
+    assert.equal(applied.rowCount, 3);
   } finally {
     await client.query("RESET search_path");
     await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
