@@ -171,11 +171,16 @@ export async function accountingRoutes(app:FastifyInstance){
     const rawShares=eligibleOrders.map(order=>amountMinor*Number(order.cost||0)/totalCost);
     const shares=rawShares.map(Math.floor);
     let centsRemaining=amountMinor-shares.reduce((sum,value)=>sum+value,0);
-    const remainderOrder=rawShares.map((raw,index)=>({index,remainder:raw-shares[index]})).sort((a,b)=>b.remainder-a.remainder);
-    for(let i=0;i<centsRemaining;i++)shares[remainderOrder[i].index]+=1;
+    const remainderOrder=rawShares.map((raw,index)=>({index,remainder:raw-(shares[index]??0)})).sort((a,b)=>b.remainder-a.remainder);
+    for(let i=0;i<centsRemaining;i++){
+     const remainder=remainderOrder[i];
+     if(remainder)shares[remainder.index]=(shares[remainder.index]??0)+1;
+    }
     for(let i=0;i<eligibleOrders.length;i++){
      const order=eligibleOrders[i];
-     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,shares[i]/100,request.user!.userId]);
+     const share=shares[i];
+     if(!order||share===undefined)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
+     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,share/100,request.user!.userId]);
     }
     if(shares.reduce((sum,value)=>sum+value,0)!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
    }
