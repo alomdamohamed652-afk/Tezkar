@@ -36,9 +36,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -51,6 +51,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     await app.register(authRoutes);
     await app.register(paymentsRoutes);
     await app.register(globalSearchRoutes);
+    await app.register(accountingRoutes);
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
@@ -107,6 +108,63 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const deliverySearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(delivery.code),headers:{cookie:managerCookie}});
       assert.equal(deliverySearch.statusCode,200,deliverySearch.body);
       assert.ok(deliverySearch.json().data.some((item:{type:string;code:string})=>item.type==="إذن تسليم"&&item.code===delivery.code),"central search should find delivery slips without relying on an order_id column");
+
+      // Verify direct expense plus closed-period administrative allocation is counted once.
+      const financeOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Profitability no-double-count test order",manager.id]
+      )).rows[0];
+      const revenue=await app.inject({
+        method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+        payload:{orderId:financeOrder.id,amount:100,revenueDate:"2099-02-12",source:"MANUAL",notes:"test revenue"}
+      });
+      assert.equal(revenue.statusCode,201,revenue.body);
+      const directExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:financeOrder.id,category:"اختبار",description:"Direct cost no-double-count test",amount:25,expenseDate:"2099-02-10",expenseType:"DIRECT"}
+      });
+      assert.equal(directExpense.statusCode,201,directExpense.body);
+      const adminExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"اختبار إداري",description:"Administrative allocation no-double-count test",amount:30,expenseDate:"2099-02-11",expenseType:"ADMINISTRATIVE"}
+      });
+      assert.equal(adminExpense.statusCode,201,adminExpense.body);
+      const financePeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"No-double-count test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
+      });
+      assert.equal(financePeriod.statusCode,201,financePeriod.body);
+      const allocations=await app.inject({
+        method:"PUT",url:`/api/accounting/periods/${financePeriod.json().data.id}/allocations`,
+        headers:{cookie:managerCookie},
+        payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
+      });
+      assert.equal(allocations.statusCode,200,allocations.body);
+      const closePeriod=await app.inject({
+        method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/close`,
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(closePeriod.statusCode,200,closePeriod.body);
+      const profitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${financeOrder.id}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(profitability.statusCode,200,profitability.body);
+      assert.equal(Number(profitability.json().data.revenue),100);
+      assert.equal(Number(profitability.json().data.expenses),25,"only direct expenses belong in direct expense total");
+      assert.equal(Number(profitability.json().data.administrativeAllocation),30);
+      assert.equal(Number(profitability.json().data.totalCost),55,"administrative expense must not be counted both directly and through allocation");
+      assert.equal(Number(profitability.json().data.profit),45);
+      const financeDashboard=await app.inject({
+        method:"GET",url:"/api/accounting/orders-dashboard",headers:{cookie:managerCookie}
+      });
+      assert.equal(financeDashboard.statusCode,200,financeDashboard.body);
+      const dashboardOrder=financeDashboard.json().data.find((item:{id:string})=>item.id===financeOrder.id);
+      assert.ok(dashboardOrder,"finance dashboard should include the test order");
+      assert.equal(Number(dashboardOrder.direct_expenses),25);
+      assert.equal(Number(dashboardOrder.administrative_allocation),30);
+      assert.equal(Number(dashboardOrder.total_cost),55);
+      assert.equal(Number(dashboardOrder.profit),45);
 
       const balance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(balance.statusCode,200,balance.body);
