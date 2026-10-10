@@ -6,7 +6,7 @@ import {SearchableSelect} from "../../components/searchable-select";
 import {api} from "../../lib/api";
 
 type Summary={total_earned:string;total_paid:string;remaining:string};
-type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null};
+type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null;created_by_username?:string|null};
 type Employee={id:string;code:string;name:string};
 type Shift={id:string;code:string;name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null};
@@ -17,18 +17,21 @@ export default function EarningsPage(){
  const [employees,setEmployees]=useState<Employee[]>([]),[shifts,setShifts]=useState<Shift[]>([]);
  const [employeeId,setEmployeeId]=useState(""),[shiftId,setShiftId]=useState(""),[type,setType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10));
  const [isWorker,setIsWorker]=useState(false),[error,setError]=useState(""),[message,setMessage]=useState("");
+ const [ledgerFilters,setLedgerFilters]=useState({employeeId:"",entryType:"",from:"",to:"",q:""});
 
  async function load(){
   setError("");
   try{
    const me=await api<{data:{roleCodes:string[]}}>("/api/auth/me");
    const worker=me.data.roleCodes.includes("worker");setIsWorker(worker);
+   const q=new URLSearchParams();if(!worker&&ledgerFilters.employeeId)q.set("employeeId",ledgerFilters.employeeId);if(ledgerFilters.entryType)q.set("entryType",ledgerFilters.entryType);if(ledgerFilters.from)q.set("from",ledgerFilters.from);if(ledgerFilters.to)q.set("to",ledgerFilters.to);if(ledgerFilters.q.trim())q.set("q",ledgerFilters.q.trim());
+   const suffix=q.toString()?"?"+q.toString():"";
    if(worker){
-    const [s,l]=await Promise.all([api<{data:Summary}>("/api/earnings/my-summary"),api<{data:Entry[]}>("/api/earnings/my-ledger")]);
+    const [s,l]=await Promise.all([api<{data:Summary}>("/api/earnings/my-summary"),api<{data:Entry[]}>("/api/earnings/my-ledger"+suffix)]);
     setSummary(s.data);setEntries(l.data);
    }else{
     const [l,a,e,s]=await Promise.all([
-      api<{data:Entry[]}>("/api/earnings"),
+      api<{data:Entry[]}>("/api/earnings"+suffix),
       api<{data:Adjustment[]}>("/api/production/adjustments"),
       api<{data:Employee[]}>("/api/employees"),
       api<{data:Shift[]}>("/api/shifts")
@@ -37,7 +40,7 @@ export default function EarningsPage(){
    }
   }catch(e){setError(e instanceof Error?e.message:"حدث خطأ أثناء تحميل سجل المستحقات");}
  }
- useEffect(()=>{void load()},[]);
+ useEffect(()=>{void load()},[ledgerFilters]);
 
  async function addAdjustment(e:FormEvent){
   e.preventDefault();setError("");setMessage("");
@@ -77,8 +80,15 @@ export default function EarningsPage(){
    {summary&&<section className="stats finance-stats"><article className="card stat"><div className="stat-label">إجمالي المستحق</div><div className="stat-value">{money(summary.total_earned)}</div></article><article className="card stat"><div className="stat-label">إجمالي المدفوع</div><div className="stat-value">{money(summary.total_paid)}</div></article><article className="card stat accent"><div className="stat-label">المتبقي</div><div className="stat-value">{money(summary.remaining)}</div></article></section>}
 
    <section className="card"><div className="card-header"><h2 className="card-title">دفتر المستحقات</h2></div>
-    <div className="table-wrap"><table><thead><tr>{!isWorker&&<th>الموظف</th>}<th>الرقم</th><th>النوع</th><th>إضافة</th><th>خصم</th><th>البيان</th><th>المرجع</th><th>التاريخ</th></tr></thead>
-    <tbody>{entries.map(entry=><tr key={entry.id}>{!isWorker&&<td>{entry.employee_code} — {entry.employee_name}</td>}<td>{entry.code}</td><td>{entry.entry_type==="PRODUCTION_APPROVAL"?"اعتماد إنتاج":entry.entry_type==="WORKER_PAYMENT"?"قبض عامل":Number(entry.credit_amount)>0?"إضافة مستحق":"خصم"}</td><td>{entry.credit_amount!=="0.0000"?money(entry.credit_amount):"—"}</td><td>{entry.debit_amount!=="0.0000"?money(entry.debit_amount):"—"}</td><td>{entry.notes||"—"}</td><td>{entry.production_code??entry.payment_code??"—"}</td><td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td></tr>)}{!entries.length&&<tr><td colSpan={isWorker?7:8}>لا توجد حركات حتى الآن.</td></tr>}</tbody></table></div>
+    <div className="form-grid finance-four-grid" style={{padding:16}}>
+     {!isWorker&&<label>الموظف<select value={ledgerFilters.employeeId} onChange={e=>setLedgerFilters(v=>({...v,employeeId:e.target.value}))}><option value="">كل الموظفين</option>{employees.map(x=><option key={x.id} value={x.id}>{x.name} — {x.code}</option>)}</select></label>}
+     <label>نوع الحركة<select value={ledgerFilters.entryType} onChange={e=>setLedgerFilters(v=>({...v,entryType:e.target.value}))}><option value="">كل أنواع الحركات</option><option value="PRODUCTION_APPROVAL">اعتماد إنتاج</option><option value="WORKER_PAYMENT">قبض عامل</option><option value="ADJUSTMENT">تسوية / بونص / خصم</option></select></label>
+     <label>من تاريخ<input type="date" value={ledgerFilters.from} onChange={e=>setLedgerFilters(v=>({...v,from:e.target.value}))}/></label><label>إلى تاريخ<input type="date" value={ledgerFilters.to} onChange={e=>setLedgerFilters(v=>({...v,to:e.target.value}))}/></label>
+     <label>بحث بالكود أو البيان أو الحساب<input value={ledgerFilters.q} onChange={e=>setLedgerFilters(v=>({...v,q:e.target.value}))} placeholder="اسم الموظف أو البيان أو المرجع"/></label>
+     <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>setLedgerFilters({employeeId:"",entryType:"",from:"",to:"",q:""})}>مسح الفلاتر</button></div>
+    </div>
+    <div className="table-wrap"><table><thead><tr>{!isWorker&&<th>الموظف</th>}<th>الرقم</th><th>النوع</th><th>إضافة</th><th>خصم</th><th>البيان</th><th>المرجع</th><th>التاريخ</th><th>الحساب المسجّل</th></tr></thead>
+    <tbody>{entries.map(entry=><tr key={entry.id}>{!isWorker&&<td>{entry.employee_code} — {entry.employee_name}</td>}<td>{entry.code}</td><td>{entry.entry_type==="PRODUCTION_APPROVAL"?"اعتماد إنتاج":entry.entry_type==="WORKER_PAYMENT"?"قبض عامل":Number(entry.credit_amount)>0?"إضافة مستحق":"خصم"}</td><td>{entry.credit_amount!=="0.0000"?money(entry.credit_amount):"—"}</td><td>{entry.debit_amount!=="0.0000"?money(entry.debit_amount):"—"}</td><td>{entry.notes||"—"}</td><td>{entry.production_code??entry.payment_code??"—"}</td><td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td><td>{entry.created_by_username||"—"}</td></tr>)}{!entries.length&&<tr><td colSpan={isWorker?8:9}>لا توجد حركات مطابقة للفلاتر.</td></tr>}</tbody></table></div>
    </section>
   </section>
  </main></div>;
