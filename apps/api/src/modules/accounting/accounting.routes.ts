@@ -246,7 +246,6 @@ export async function accountingRoutes(app:FastifyInstance){
    const totalCost=orders.rows.reduce((sum,row)=>sum+Number(row.cost||0),0);
    if(!orders.rowCount||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
-   const positiveCostOrderIds=new Set(orders.rows.filter(row=>Number(row.cost||0)>0).map(row=>row.id));
    const lastPositiveCostOrderId=[...orders.rows].reverse().find(row=>Number(row.cost||0)>0)?.id;
    for(const expense of expenses.rows){
     const amount=Number(expense.amount);
