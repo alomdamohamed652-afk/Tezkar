@@ -377,13 +377,29 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(expenseLedger.json().data[0].employee_id,employeeB.id);
       assert.equal(Number(expenseLedger.json().summary.recorded_expenses),1000);
 
+      const periodExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"مصروف إداري",description:"Period close allocation guard",amount:250,expenseType:"ADMINISTRATIVE",expenseDate:"2099-02-15"}
+      });
+      assert.equal(periodExpense.statusCode,201,periodExpense.body);
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
-      const closedPeriod=await app.inject({
+      const blockedClose=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(blockedClose.statusCode,409,blockedClose.body);
+      assert.equal(blockedClose.json().error.code,"UNALLOCATED_ADMIN_EXPENSES","period must not close until all administrative expenses are allocated");
+
+      const emptyPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Empty period close test",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
+      });
+      assert.equal(emptyPeriod.statusCode,201,emptyPeriod.body);
+      const closedPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+emptyPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
