@@ -45,7 +45,7 @@ BEGIN
       ADD CONSTRAINT order_stages_order_item_order_fk
       FOREIGN KEY (order_id, order_item_id)
       REFERENCES production_order_lines(order_id, id)
-      ON DELETE RESTRICT;
+      ON DELETE NO ACTION;
   END IF;
 END $$;
 
