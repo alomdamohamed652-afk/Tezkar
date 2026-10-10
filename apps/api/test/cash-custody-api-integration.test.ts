@@ -335,6 +335,26 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions must be audited");
 
+      const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
+      const externalTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"External funding test",notes:"Not company revenue"}
+      });
+      assert.equal(externalTopUp.statusCode,201,externalTopUp.body);
+      assert.equal(externalTopUp.json().data.direction,"IN");
+      assert.equal(externalTopUp.json().data.source_type,"EXTERNAL_TOP_UP");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count),revenueCountBeforeTopUp,"external custody funding must not create company revenue");
+      const repeatedTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"Duplicate external funding test"}
+      });
+      assert.equal(repeatedTopUp.statusCode,409,repeatedTopUp.body);
+      const workerTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:workerCookie},
+        payload:{employeeId:employeeA.id,amount:50,transactionDate:"2099-01-14",description:"Must be forbidden"}
+      });
+      assert.equal(workerTopUp.statusCode,403,workerTopUp.body);
+
       const cashTransfer=await app.inject({
         method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
         payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:10,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
