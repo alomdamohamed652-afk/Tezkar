@@ -495,9 +495,9 @@ td{
 }
 td.strong{color:var(--ink);font-weight:700}
 tbody tr:nth-child(odd) td{background:#fff}
-tbody tr:nth-child(even) td{background:linear-gradient(90deg,#f8faff 0%,#f3f6fb 100%)}
-tbody tr:nth-child(even) td:first-child{box-shadow:inset -3px 0 0 #dbeafe}
-tbody tr:hover td{background:#eaf2ff}
+tbody tr:nth-child(even) td{background:linear-gradient(90deg,#f2f6fc 0%,#e8eff8 100%)}
+tbody tr:nth-child(even) td:first-child{box-shadow:inset -4px 0 0 #bfdbfe}
+tbody tr:hover td{background:#dceafe}
 tbody tr:hover td:first-child{box-shadow:inset -3px 0 0 #3b82f6}
 tbody tr:last-child td{border-bottom:0}
 tbody td:nth-child(n){font-variant-numeric:tabular-nums}
@@ -1279,11 +1279,11 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 
 /* Delivery-note print layout: stronger company identity, compact barcode and full item detail table. */
 .print-brand{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:5mm;font-size:25px;font-weight:900;color:#0f172a}
-.print-brand img{width:68px;height:68px;object-fit:contain;flex:0 0 68px;margin:0}
+.print-brand img{width:78px;height:78px;object-fit:contain;flex:0 0 78px;margin:0}
 .print-brand div{display:grid;gap:2px;text-align:right}
 .print-brand strong{font-size:25px;line-height:1.2}
 .print-brand span{font-size:12px;color:#475569;font-weight:600}
-.print-barcode{width:min(100%,100mm);margin:0 auto 2mm;}
+.print-barcode{width:min(100%,75mm);margin:0 auto 2mm;}
 .print-barcode svg{display:block;width:100%;}
 .print-delivery-lines{width:100%;border-collapse:collapse;margin:3mm 0;font-size:10px}
 .print-delivery-lines th,.print-delivery-lines td{border:1px solid #cbd5e1;padding:5px 4px;text-align:right;vertical-align:top}
@@ -1293,7 +1293,7 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 @media print{
  .print-delivery-lines tr{break-inside:avoid}
  .print-brand{margin-bottom:3mm}
- .print-brand img{width:68px;height:68px}
+ .print-brand img{width:78px;height:78px}
 }
 
 .price-change-workers{display:grid;gap:4px;max-height:120px;overflow:auto;min-width:160px}
