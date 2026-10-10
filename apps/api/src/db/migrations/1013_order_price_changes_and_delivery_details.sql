@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS order_price_change_items (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(price_change_id, production_entry_id)
 );
+ALTER TABLE order_price_change_items ADD COLUMN IF NOT EXISTS ledger_adjustment BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE INDEX IF NOT EXISTS idx_order_price_changes_order ON order_price_changes(order_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_order_price_change_items_entry ON order_price_change_items(production_entry_id,created_at DESC);
 
