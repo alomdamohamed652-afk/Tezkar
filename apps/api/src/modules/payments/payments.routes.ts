@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { createUserNotification } from "../notifications/notifications.service.js";
 
 const requestSchema = z.object({
   amount: z.number().positive(),
@@ -229,6 +230,12 @@ export async function paymentsRoutes(app:FastifyInstance){
         `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
           WHERE id=$3 RETURNING *`,
         [request.user!.userId,payment.rows[0].id,id]);
+      await createUserNotification(client, {
+        userId: current.rows[0].requested_by, type: "PAYMENT_PAID",
+        title: "تم اعتماد وصرف طلب القبض",
+        body: `تم صرف ${Number(payment.rows[0].amount).toLocaleString("ar-EG",{maximumFractionDigits:2})} جنيه للطلب ${current.rows[0].code}`,
+        href: "/payments", entityType: "payment_request", entityId: id
+      });
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:payment.rows[0].id,amount:payment.rows[0].amount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {request:updated.rows[0],payment:payment.rows[0]};
     });
@@ -248,6 +255,12 @@ export async function paymentsRoutes(app:FastifyInstance){
       const updated=await client.query(
         `UPDATE payment_requests SET status='REJECTED',rejection_reason=$1,reviewed_by=$2,reviewed_at=now(),updated_at=now() WHERE id=$3 RETURNING *`,
         [parsed.data.reason,request.user!.userId,id]);
+      await createUserNotification(client, {
+        userId: current.rows[0].requested_by, type: "PAYMENT_REQUEST_REJECTED",
+        title: "تم رفض طلب القبض",
+        body: `طلب ${current.rows[0].code}: ${parsed.data.reason}`,
+        href: "/payments", entityType: "payment_request", entityId: id
+      });
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reject",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
@@ -275,6 +288,12 @@ export async function paymentsRoutes(app:FastifyInstance){
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [payment.rows[0].id,id]);
+      await createUserNotification(client, {
+        userId: current.rows[0].requested_by, type: "PAYMENT_PAID",
+        title: "تم صرف طلب القبض",
+        body: `تم صرف ${Number(payment.rows[0].amount).toLocaleString("ar-EG",{maximumFractionDigits:2})} جنيه للطلب ${current.rows[0].code}`,
+        href: "/payments", entityType: "payment_request", entityId: id
+      });
       await client.query(
         `INSERT INTO employee_earnings_ledger(
            employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes
