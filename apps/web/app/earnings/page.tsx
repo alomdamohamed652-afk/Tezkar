@@ -9,7 +9,7 @@ type Summary={total_earned:string;total_paid:string;remaining:string};
 type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null;created_by_username?:string|null};
 type Employee={id:string;code:string;name:string};
 type Shift={id:string;code:string;name:string};
-type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null};
+type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null;created_by_username?:string|null};
 
 export default function EarningsPage(){
  const {has}=usePermissions();
@@ -18,6 +18,7 @@ export default function EarningsPage(){
  const [employeeId,setEmployeeId]=useState(""),[shiftId,setShiftId]=useState(""),[type,setType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10));
  const [isWorker,setIsWorker]=useState(false),[error,setError]=useState(""),[message,setMessage]=useState("");
  const [ledgerFilters,setLedgerFilters]=useState({employeeId:"",entryType:"",from:"",to:"",q:""});
+ const [adjustmentFilters,setAdjustmentFilters]=useState({employeeId:"",shiftId:"",type:"",from:"",to:"",q:""});
 
  async function load(){
   setError("");
@@ -32,7 +33,7 @@ export default function EarningsPage(){
    }else{
     const [l,a,e,s]=await Promise.all([
       api<{data:Entry[]}>("/api/earnings"+suffix),
-      api<{data:Adjustment[]}>("/api/production/adjustments"),
+      api<{data:Adjustment[]}>("/api/production/adjustments"+(new URLSearchParams({... (adjustmentFilters.employeeId?{employeeId:adjustmentFilters.employeeId}:{}),...(adjustmentFilters.shiftId?{shiftId:adjustmentFilters.shiftId}:{}),...(adjustmentFilters.type?{adjustmentType:adjustmentFilters.type}:{}),...(adjustmentFilters.from?{from:adjustmentFilters.from}:{}),...(adjustmentFilters.to?{to:adjustmentFilters.to}:{}),...(adjustmentFilters.q.trim()?{q:adjustmentFilters.q.trim()}: {})}).toString()?"?"+new URLSearchParams({... (adjustmentFilters.employeeId?{employeeId:adjustmentFilters.employeeId}:{}),...(adjustmentFilters.shiftId?{shiftId:adjustmentFilters.shiftId}:{}),...(adjustmentFilters.type?{adjustmentType:adjustmentFilters.type}:{}),...(adjustmentFilters.from?{from:adjustmentFilters.from}:{}),...(adjustmentFilters.to?{to:adjustmentFilters.to}:{}),...(adjustmentFilters.q.trim()?{q:adjustmentFilters.q.trim()}: {})}).toString():"")),
       api<{data:Employee[]}>("/api/employees"),
       api<{data:Shift[]}>("/api/shifts")
     ]);
@@ -40,7 +41,7 @@ export default function EarningsPage(){
    }
   }catch(e){setError(e instanceof Error?e.message:"حدث خطأ أثناء تحميل سجل المستحقات");}
  }
- useEffect(()=>{void load()},[ledgerFilters]);
+ useEffect(()=>{void load()},[ledgerFilters,adjustmentFilters]);
 
  async function addAdjustment(e:FormEvent){
   e.preventDefault();setError("");setMessage("");
@@ -72,8 +73,16 @@ export default function EarningsPage(){
       <article className="card stat accent"><div className="stat-label">إجمالي البونص</div><div className="stat-value">{money(totals.bonus)}</div></article>
       <article className="card stat warning"><div className="stat-label">إجمالي الخصومات</div><div className="stat-value">{money(totals.deduction)}</div></article>
     </div>
-    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>الوردية</th><th>النوع</th><th>المبلغ</th><th>البيان</th><th>التاريخ</th></tr></thead><tbody>
-     {adjustments.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_code} — {x.employee_name}</td><td>{x.shift_name||"عام"}</td><td>{x.adjustment_type==="BONUS"?"بونص":"خصم"}</td><td className="money">{money(x.amount)}</td><td>{x.reason}</td><td>{x.adjustment_date}</td></tr>)}{!adjustments.length&&<tr><td colSpan={7}>لا توجد بونصات أو خصومات مسجلة.</td></tr>}
+    <div className="form-grid finance-four-grid" style={{padding:16}}>
+     <label>الموظف<select value={adjustmentFilters.employeeId} onChange={e=>setAdjustmentFilters(v=>({...v,employeeId:e.target.value}))}><option value="">كل الموظفين</option>{employees.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+     <label>الوردية<select value={adjustmentFilters.shiftId} onChange={e=>setAdjustmentFilters(v=>({...v,shiftId:e.target.value}))}><option value="">كل الورديات</option>{shifts.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+     <label>نوع الحركة<select value={adjustmentFilters.type} onChange={e=>setAdjustmentFilters(v=>({...v,type:e.target.value}))}><option value="">بونص وخصم</option><option value="BONUS">بونص</option><option value="DEDUCTION">خصم</option></select></label>
+     <label>بحث بالكود أو السبب أو الحساب<input value={adjustmentFilters.q} onChange={e=>setAdjustmentFilters(v=>({...v,q:e.target.value}))} placeholder="اسم الموظف أو السبب"/></label>
+     <label>من تاريخ<input type="date" value={adjustmentFilters.from} onChange={e=>setAdjustmentFilters(v=>({...v,from:e.target.value}))}/></label><label>إلى تاريخ<input type="date" value={adjustmentFilters.to} onChange={e=>setAdjustmentFilters(v=>({...v,to:e.target.value}))}/></label>
+     <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>setAdjustmentFilters({employeeId:"",shiftId:"",type:"",from:"",to:"",q:""})}>مسح الفلاتر</button></div>
+    </div>
+    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>الوردية</th><th>النوع</th><th>المبلغ</th><th>البيان</th><th>التاريخ</th><th>الحساب المسجّل</th></tr></thead><tbody>
+     {adjustments.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_code} — {x.employee_name}</td><td>{x.shift_name||"عام"}</td><td>{x.adjustment_type==="BONUS"?"بونص":"خصم"}</td><td className="money">{money(x.amount)}</td><td>{x.reason}</td><td>{x.adjustment_date}</td><td>{x.created_by_username||"—"}</td></tr>)}{!adjustments.length&&<tr><td colSpan={8}>لا توجد بونصات أو خصومات مطابقة للفلاتر.</td></tr>}
     </tbody></table></div>
    </section>}
 
