@@ -140,7 +140,7 @@ export async function orderRoutes(app: FastifyInstance) {
       `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,
               COALESCE((SELECT COUNT(*)::int FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS line_count,
               COALESCE((SELECT SUM(ol.quantity) FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS ordered_quantity,
-              COALESCE((SELECT SUM(os.completed_quantity) FROM order_stages os WHERE os.order_id=o.id),0) AS completed_quantity
+              COALESCE((SELECT SUM(os.completed_quantity) FROM order_stages os WHERE os.order_id=o.id AND os.sequence_no=(SELECT MAX(os2.sequence_no) FROM order_stages os2 WHERE os2.order_id=o.id)),0) AS completed_quantity
          FROM production_orders o
          ${where}
         ORDER BY o.created_at DESC
@@ -461,9 +461,10 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const order=await pool.query("SELECT o.* FROM production_orders o WHERE o.id=$1",[id]);
     if(!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
-    const [stages,production,movements,deliveries,payments,orderLines]=await Promise.all([
+    const [stages,production,machineProduction,movements,deliveries,payments,orderLines]=await Promise.all([
       pool.query("SELECT os.id,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.production_type_id,os.notes,s.name AS stage_name,p.name AS output_product_name FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",[id]),
-      pool.query("SELECT pe.id,pe.code,pe.product_id,pe.work_date,pe.quantity,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,pe.total_earning_amount,pe.status,e.full_name AS employee_name,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name,COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id AND pci.ledger_adjustment=TRUE),0) AS price_adjustment_amount FROM production_entries pe JOIN employees e ON e.id=pe.employee_id JOIN products p ON p.id=pe.product_id JOIN stages s ON s.id=pe.stage_id LEFT JOIN production_types pt ON pt.id=pe.production_type_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status <> 'CANCELLED' ORDER BY pe.work_date DESC,pe.created_at DESC LIMIT 500",[id]),
+      pool.query("SELECT pe.id,pe.code,pe.product_id,os.id AS order_stage_id,pe.work_date,pe.quantity,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,pe.total_earning_amount,pe.status,e.full_name AS employee_name,p.name AS product_name,s.name AS stage_name,pt.name AS production_type_name,COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id AND pci.ledger_adjustment=TRUE),0) AS price_adjustment_amount FROM production_entries pe JOIN employees e ON e.id=pe.employee_id JOIN products p ON p.id=pe.product_id JOIN stages s ON s.id=pe.stage_id LEFT JOIN production_types pt ON pt.id=pe.production_type_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status <> 'CANCELLED' ORDER BY pe.work_date DESC,pe.created_at DESC LIMIT 500",[id]),
+      pool.query("SELECT mp.id,mp.product_id,os.id AS order_stage_id,mp.quantity,p.name AS product_name,s.name AS stage_name FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id JOIN products p ON p.id=mp.product_id JOIN stages s ON s.id=os.stage_id WHERE os.order_id=$1 ORDER BY s.name,p.name",[id]),
       pool.query("SELECT sm.code,sm.movement_type,sm.quantity,sm.unit_cost,sm.total_cost,sm.created_at,p.name AS product_name,w.name AS warehouse_name FROM stock_movements sm JOIN products p ON p.id=sm.product_id JOIN warehouses w ON w.id=sm.warehouse_id WHERE sm.order_id=$1 AND sm.movement_type='OUT' ORDER BY sm.created_at DESC LIMIT 500",[id]),
       pool.query("SELECT d.id,d.code,d.destination,d.status,d.created_at,d.released_at,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permissions d LEFT JOIN delivery_permission_lines dl ON dl.delivery_permission_id=d.id WHERE d.order_id=$1 GROUP BY d.id ORDER BY d.created_at DESC",[id]),
       pool.query("SELECT wpa.production_entry_id,COALESCE(SUM(wpa.amount),0) AS paid_amount FROM worker_payment_allocations wpa JOIN production_entries pe ON pe.id=wpa.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 GROUP BY wpa.production_entry_id",[id]),
@@ -476,7 +477,7 @@ export async function orderRoutes(app: FastifyInstance) {
       paid_amount:paidMap.get(x.id)??0,
       remaining_amount:Math.max(0,Number(x.total_earning_amount??x.earning_amount)+Number(x.price_adjustment_amount??0)-Number(paidMap.get(x.id)??0))
     }));
-    return {data:{order:order.rows[0],finalProduct:orderLines.rows[0]??null,stages:stages.rows,production:productionWithPayments,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]}};
+    return {data:{order:order.rows[0],finalProduct:orderLines.rows[0]??null,stages:stages.rows,production:productionWithPayments,machineProduction:machineProduction.rows,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]}};
   });
 
   app.get("/api/machines", { preHandler: [authenticateRequest, requirePermission("machines.view")] }, async () => {
