@@ -232,7 +232,7 @@ export default function AccountingPage() {
      </section>}
 
      {tab==="out"&&<section className="card">
-      <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة والمصروفات المرتبطة بالطلبات.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة أو المرتبطة بطلبية ومرحلة محددة. لو بتسدد مستحقات عمال مسجلة بالفعل، استخدم مدفوعات العمال بدل تسجيل مصروف جديد لتجنب تكرار التكلفة.</div></div></div>
       {has("finance.expenses.create")&&<div className="form-grid finance-four-grid">
        <label>نوع المصروف<select value={eForm.expenseType} onChange={e=>setEForm({...eForm,expenseType:e.target.value as "DIRECT"|"ADMINISTRATIVE",orderId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderId,orderStageId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderStageId})}><option value="DIRECT">مصروف مباشر</option><option value="ADMINISTRATIVE">مصروف إداري — يوزع وقت التصفية</option></select></label>
        {eForm.expenseType==="DIRECT"&&<label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>}
