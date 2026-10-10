@@ -140,10 +140,12 @@ export async function productionRoutes(app: FastifyInstance) {
               pt.name AS production_type_name,
               sh.code AS shift_code,sh.name AS shift_name,
               u.code AS unit_code,u.name AS unit_name,
-              p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id
+              p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id,
+              creator.username AS created_by_username
          FROM production_entries p
          JOIN employees e ON e.id=p.employee_id
          LEFT JOIN employees sle ON sle.id=p.shift_leader_employee_id
+         LEFT JOIN users creator ON creator.id=p.created_by
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
