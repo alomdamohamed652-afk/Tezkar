@@ -46,13 +46,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
     process.env.SESSION_SECRET = "test-only-cash-custody-session-secret";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { custodyRoutes }, { advanceRoutes }, { accountingRoutes },
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { custodyRoutes }, { advanceRoutes }, { accountingRoutes }, { ordersRoutes },
       { hashPassword }, poolModule] = await Promise.all([
       import("fastify"), import("@fastify/cookie"),
       import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/custody/custody.routes.js"),
       import("../src/modules/advances/advances.routes.js"),
       import("../src/modules/accounting/accounting.routes.js"),
+      import("../src/modules/orders/orders.routes.js"),
       import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
@@ -67,6 +68,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
     await app.register(custodyRoutes);
     await app.register(advanceRoutes);
     await app.register(accountingRoutes);
+    await app.register(ordersRoutes);
 
     try {
       const employeeA = (await apiPool.query(
@@ -376,6 +378,31 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(expenseLedger.json().data[0].source_type,"ACCOUNTING_EXPENSE");
       assert.equal(expenseLedger.json().data[0].employee_id,employeeB.id);
       assert.equal(Number(expenseLedger.json().summary.recorded_expenses),1000);
+
+      const customerOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Customer collection integration order",customerName:"Test customer",finalProductName:"Customer collection test product",finalQuantity:100}
+      });
+      assert.equal(customerOrder.statusCode,201,customerOrder.body);
+      const customerCollectionPayload={orderId:customerOrder.json().data.id,employeeId:employeeA.id,amount:375,transactionDate:"2099-01-12",description:"Customer payment collected for order",notes:"Collection integration test"};
+      const customerCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:customerCollectionPayload
+      });
+      assert.equal(customerCollection.statusCode,201,customerCollection.body);
+      assert.equal(customerCollection.json().data.revenue.source,"CUSTOMER_COLLECTION");
+      assert.equal(customerCollection.json().data.cashCustody.direction,"IN");
+      assert.equal(customerCollection.json().data.cashCustody.source_type,"ORDER_REVENUE");
+      assert.equal(Number(customerCollection.json().data.revenue.amount),375);
+      assert.equal(Number(customerCollection.json().data.cashCustody.amount),375);
+      const duplicateCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:customerCollectionPayload
+      });
+      assert.equal(duplicateCollection.statusCode,409,duplicateCollection.body);
+      assert.equal(duplicateCollection.json().error.code,"DUPLICATE_ORDER_COLLECTION");
+      const revenueCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues WHERE order_id=$1 AND source='CUSTOMER_COLLECTION'",[customerOrder.json().data.id]);
+      const custodyCollectionCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ORDER_REVENUE' AND source_id=$1",[customerCollection.json().data.revenue.id]);
+      assert.equal(revenueCount.rows[0].count,1,"one collection must create one company revenue record");
+      assert.equal(custodyCollectionCount.rows[0].count,1,"one collection must create one incoming custody movement");
 
       const periodExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
