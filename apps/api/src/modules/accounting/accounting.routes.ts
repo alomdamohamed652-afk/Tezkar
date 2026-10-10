@@ -111,8 +111,13 @@ export async function accountingRoutes(app:FastifyInstance){
   notes:z.string().trim().max(1000).nullable().optional()
  }).refine(v=>v.periodEnd>=v.periodStart,{message:"تاريخ نهاية الفترة يجب أن يكون بعد بدايتها",path:["periodEnd"]});
  const allocationSchema=z.object({
-  allocations:z.array(z.object({expenseId:z.string().uuid(),orderId:z.string().uuid(),amount:z.number().nonnegative()})).min(1)
+  allocations:z.array(z.object({
+   expenseId:z.string().uuid(),
+   orderId:z.string().uuid(),
+   amount:z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"مبلغ التوزيع يجب أن يكون بحد أقصى منزلتين عشريتين"})
+  }))
  });
+ const toMinorUnits=(value:unknown)=>Math.round(Number(value||0)*100);
  app.get("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async()=>{
   const r=await pool.query(`SELECT p.*,
     (SELECT COUNT(*)::int FROM accounting_expense_allocations a WHERE a.period_id=p.id) AS allocation_count,
@@ -123,6 +128,8 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request,reply)=>{
   const p=periodSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الفترة المالية غير صحيحة",422);
   const row=await withTransaction(async client=>{
+   // Serialize period creation so concurrent requests cannot both pass the overlap check.
+   await client.query("SELECT pg_advisory_xact_lock(hashtext('tezkar_accounting_period_overlap'))");
    const overlap=await client.query("SELECT id FROM accounting_periods WHERE period_start<=$2::date AND period_end>=$1::date LIMIT 1",[p.data.periodStart,p.data.periodEnd]);
    if(overlap.rowCount)throw new AppError("ACCOUNTING_PERIOD_OVERLAP","الفترة تتداخل مع فترة مالية مسجلة بالفعل",409);
    const r=await client.query("INSERT INTO accounting_periods(name,period_start,period_end,notes,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[p.data.name,p.data.periodStart,p.data.periodEnd,p.data.notes??null,request.user!.userId]);
@@ -155,18 +162,22 @@ export async function accountingRoutes(app:FastifyInstance){
     +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
     +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS cost
     FROM production_orders o WHERE o.status<>'CANCELLED' ORDER BY o.code`);
-   const totalCost=orders.rows.reduce((sum,row)=>sum+Number(row.cost||0),0);
-   if(!orders.rowCount||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
+   const eligibleOrders=orders.rows.filter(row=>Number(row.cost||0)>0);
+   const totalCost=eligibleOrders.reduce((sum,row)=>sum+Number(row.cost||0),0);
+   if(!eligibleOrders.length||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
    for(const expense of expenses.rows){
-    const amount=Number(expense.amount);
-    let allocated=0;
-    for(let i=0;i<orders.rows.length;i++){
-     const order=orders.rows[i];
-     const share=i===orders.rows.length-1?Number((amount-allocated).toFixed(4)):Number((amount*Number(order.cost||0)/totalCost).toFixed(4));
-     allocated+=share;
-     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,share,request.user!.userId]);
+    const amountMinor=toMinorUnits(expense.amount);
+    let allocatedMinor=0;
+    for(let i=0;i<eligibleOrders.length;i++){
+     const order=eligibleOrders[i];
+     const shareMinor=i===eligibleOrders.length-1
+       ? amountMinor-allocatedMinor
+       : Math.round(amountMinor*Number(order.cost||0)/totalCost);
+     allocatedMinor+=shareMinor;
+     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,shareMinor/100,request.user!.userId]);
     }
+    if(allocatedMinor!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
    }
    const result=await client.query("SELECT COALESCE(SUM(amount),0) AS allocated FROM accounting_expense_allocations WHERE period_id=$1",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*orders.rows.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -182,9 +193,9 @@ export async function accountingRoutes(app:FastifyInstance){
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2",[period.rows[0].period_start,period.rows[0].period_end]);
    const sums=new Map<string,number>();
-   for(const item of p.data.allocations)sums.set(item.expenseId,(sums.get(item.expenseId)||0)+item.amount);
+   for(const item of p.data.allocations)sums.set(item.expenseId,(sums.get(item.expenseId)||0)+toMinorUnits(item.amount));
    for(const expense of expenses.rows){
-    if(Math.abs((sums.get(expense.id)||0)-Number(expense.amount))>0.01)throw new AppError("ALLOCATION_TOTAL_MISMATCH","يجب أن يساوي مجموع توزيع كل مصروف إداري قيمة المصروف نفسه",422);
+    if((sums.get(expense.id)||0)!==toMinorUnits(expense.amount))throw new AppError("ALLOCATION_TOTAL_MISMATCH","يجب أن يساوي مجموع توزيع كل مصروف إداري قيمته الأصلية بدقة القرش",422);
    }
    if(p.data.allocations.some(a=>!expenses.rows.some(e=>e.id===a.expenseId)))throw new AppError("INVALID_ALLOCATION_EXPENSE","يوجد مصروف خارج الفترة أو ليس مصروفًا إداريًا",422);
    const validOrders=await client.query("SELECT id FROM production_orders WHERE status<>'CANCELLED'");
@@ -212,7 +223,7 @@ export async function accountingRoutes(app:FastifyInstance){
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة مقفلة بالفعل",409);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
-   const unbalanced=expenses.rows.filter(e=>Math.abs(Number(e.amount)-Number(e.allocated))>0.01);
+   const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
