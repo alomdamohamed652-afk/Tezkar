@@ -34,7 +34,7 @@ export default function TasksPage(){
     <label>عنوان المهمة<input value={title} onChange={e=>setTitle(e.target.value)} required minLength={3} maxLength={240} placeholder="مثال: مراجعة مخزون الخامات"/></label>
     <label>الأولوية<select value={priority} onChange={e=>setPriority(e.target.value)}>{Object.entries(priorities).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
     <label>تاريخ الاستحقاق<input type="date" min={today()} value={dueDate} onChange={e=>setDueDate(e.target.value)}/></label>
-    <label>الموظفون المكلفون<select multiple value={assignees} onChange={e=>setAssignees(Array.from(e.target.selectedOptions).map(o=>o.value))} style={{minHeight:112}}>{employees.map(x=><option key={x.id} value={x.id}>{x.full_name} · {x.code}</option>)}</select><small>يمكن اختيار أكثر من موظف بالضغط المطوّل أو Ctrl.</small></label>
+    <label>الموظفون المكلفون<select multiple value={assignees} onChange={e=>setAssignees(Array.from(e.target.selectedOptions).map(o=>o.value))} style={{minHeight:112}}>{employees.map(x=><option key={x.id} value={x.id}>{x.full_name}</option>)}</select><small>اختار الموظفين بالاسم الظاهر في حساباتهم. استخدم Ctrl أو الضغط المطوّل لاختيار أكثر من موظف.</small></label>
     <label style={{gridColumn:"1 / -1"}}>التفاصيل<textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3} maxLength={4000} placeholder="المطلوب، خطوات التنفيذ، وأي ملاحظات..."/></label>
    </div><div className="form-actions"><button className="primary-button" disabled={saving||title.trim().length<3}>{saving?"جارٍ الحفظ...":"حفظ المهمة"}</button></div></form>}
    <section className="card"><div className="card-header"><h2 className="card-title">قائمة المهام</h2><span className="count-badge">{visible.length}</span></div>
