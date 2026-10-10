@@ -119,6 +119,82 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.deepEqual(finalStageRows.rows.map(row=>({sequence:Number(row.sequence_no),isFinal:row.is_final_product})),[
         {sequence:1,isFinal:false},{sequence:2,isFinal:true},{sequence:3,isFinal:false},{sequence:4,isFinal:true}
       ]);
+
+      const finalStageLineLinks=await apiPool.query(
+        `SELECT os.id AS stage_id,os.order_item_id,os.output_product_id,os.planned_quantity,
+                pol.id AS line_id,pol.product_id AS line_product_id,pol.quantity AS line_quantity
+           FROM order_stages os
+           LEFT JOIN production_order_lines pol ON pol.id=os.order_item_id AND pol.order_id=os.order_id
+          WHERE os.order_id=$1 AND os.is_final_product=TRUE
+          ORDER BY os.sequence_no`,
+        [multiOrderId]
+      );
+      assert.equal(finalStageLineLinks.rowCount,2);
+      assert.ok(finalStageLineLinks.rows.every(row=>row.line_id&&row.order_item_id===row.line_id),"each final stage must reference a real line in this order");
+      assert.ok(finalStageLineLinks.rows.every(row=>row.output_product_id===row.line_product_id),"stage output and linked order line must use the same product");
+      assert.ok(finalStageLineLinks.rows.every(row=>Number(row.planned_quantity)===Number(row.line_quantity)),"each line quantity must match its own final stage");
+
+      // The same catalog product can appear as two distinct deliverables/lines.
+      const repeatedProductName="Repeated final product "+productSuffix;
+      const repeatedOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{
+          orderName:"Repeated final product lines "+productSuffix,
+          lines:[],
+          stages:[
+            {stageName:"Repeated finish one "+productSuffix,outputProductName:repeatedProductName,sequenceNo:1,plannedQuantity:3,stageRate:1,stageRateMethod:"PER_PIECE",isFinalProduct:true},
+            {stageName:"Repeated finish two "+productSuffix,outputProductName:repeatedProductName,sequenceNo:2,plannedQuantity:7,stageRate:1,stageRateMethod:"PER_PIECE",isFinalProduct:true}
+          ]
+        }
+      });
+      assert.equal(repeatedOrder.statusCode,201,repeatedOrder.body);
+      const repeatedOrderId=repeatedOrder.json().data.id;
+      const repeatedLines=await apiPool.query(
+        `SELECT os.order_item_id,os.planned_quantity,pol.id AS line_id,pol.product_id,pol.quantity AS line_quantity
+           FROM order_stages os
+           JOIN production_order_lines pol ON pol.id=os.order_item_id AND pol.order_id=os.order_id
+          WHERE os.order_id=$1 AND os.is_final_product=TRUE
+          ORDER BY os.sequence_no`,
+        [repeatedOrderId]
+      );
+      assert.equal(repeatedLines.rowCount,2,"same catalog product on two stages must remain two separate order lines");
+      assert.notEqual(repeatedLines.rows[0].line_id,repeatedLines.rows[1].line_id);
+      assert.equal(repeatedLines.rows[0].product_id,repeatedLines.rows[1].product_id);
+      assert.deepEqual(repeatedLines.rows.map(row=>({planned:Number(row.planned_quantity),line:Number(row.line_quantity)})),[
+        {planned:3,line:3},{planned:7,line:7}
+      ]);
+
+      // Cross-order associations must be rejected by the composite database FK.
+      await assert.rejects(
+        apiPool.query("UPDATE order_stages SET order_item_id=$1 WHERE id=(SELECT id FROM order_stages WHERE order_id=$2 ORDER BY sequence_no LIMIT 1)",
+          [repeatedLines.rows[0].line_id,multiOrderId]),
+        /foreign key/i
+      );
+
+      // A failed final-line synchronization must roll back both stage and line changes.
+      const invalidQuantityUpdate=await app.inject({
+        method:"PATCH",url:"/api/order-stages/"+(await apiPool.query("SELECT id FROM order_stages WHERE order_id=$1 ORDER BY sequence_no LIMIT 1",[repeatedOrderId])).rows[0].id,
+        headers:{cookie:managerCookie},payload:{plannedQuantity:0}
+      });
+      assert.equal(invalidQuantityUpdate.statusCode,422,invalidQuantityUpdate.body);
+      const unchangedRepeatedLine=await apiPool.query(
+        `SELECT os.planned_quantity,pol.quantity AS line_quantity
+           FROM order_stages os JOIN production_order_lines pol ON pol.id=os.order_item_id AND pol.order_id=os.order_id
+          WHERE os.order_id=$1 AND os.is_final_product=TRUE ORDER BY os.sequence_no LIMIT 1`,
+        [repeatedOrderId]
+      );
+      assert.equal(Number(unchangedRepeatedLine.rows[0].planned_quantity),3);
+      assert.equal(Number(unchangedRepeatedLine.rows[0].line_quantity),3);
+
+      const firstRepeatedStage=(await apiPool.query("SELECT id,order_item_id FROM order_stages WHERE order_id=$1 ORDER BY sequence_no LIMIT 1",[repeatedOrderId])).rows[0];
+      const unmarkFinal=await app.inject({
+        method:"PATCH",url:"/api/order-stages/"+firstRepeatedStage.id,
+        headers:{cookie:managerCookie},payload:{isFinalProduct:false}
+      });
+      assert.equal(unmarkFinal.statusCode,200,unmarkFinal.body);
+      assert.equal(unmarkFinal.json().data.order_item_id,null);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM production_order_lines WHERE order_id=$1",[repeatedOrderId])).rows[0].count),1,
+        "unmarking a final stage must remove its now-orphaned line without recreating the remaining line");
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}

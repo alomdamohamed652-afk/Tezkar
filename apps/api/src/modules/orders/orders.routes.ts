@@ -127,27 +127,26 @@ async function syncOrderLinesFromFinalStages(client:any, orderId:string) {
     throw new AppError("ORDER_FINAL_PRODUCTS_LOCKED","لا يمكن تغيير المنتجات النهائية بعد بدء الإنتاج أو تسجيل حركة مخزنية أو تسليم؛ حفاظًا على مطابقة السجلات.",409);
   }
   const result = await client.query(
-    `SELECT os.output_product_id,os.planned_quantity,p.unit_id
-       FROM order_stages os
-       JOIN products p ON p.id=os.output_product_id
+    `SELECT os.id AS stage_id,os.order_item_id,os.output_product_id,os.planned_quantity,p.unit_id
+       FROM order_stages os LEFT JOIN products p ON p.id=os.output_product_id
       WHERE os.order_id=$1 AND os.is_final_product=TRUE AND os.status <> 'CANCELLED'
       ORDER BY os.sequence_no,os.id`,
     [orderId]
   );
   if (!result.rowCount) throw new AppError("ORDER_FINAL_PRODUCTS_REQUIRED","حدد منتجًا نهائيًا واحدًا على الأقل داخل مراحل الطلبية",422);
-  const grouped = new Map<string,{quantity:number;unitId:string}>();
   for (const row of result.rows) {
     const quantity = Number(row.planned_quantity);
-    if (!row.output_product_id || !Number.isFinite(quantity) || quantity <= 0) {
+    if (!row.output_product_id || !row.unit_id || !Number.isFinite(quantity) || quantity <= 0) {
       throw new AppError("ORDER_FINAL_PRODUCT_INVALID","كل مرحلة نهائية تحتاج منتجًا وكمية مخططة موجبة",422);
     }
-    const current = grouped.get(row.output_product_id) ?? {quantity:0,unitId:row.unit_id};
-    current.quantity += quantity;
-    grouped.set(row.output_product_id,current);
-  }
-  await client.query("DELETE FROM production_order_lines WHERE order_id=$1",[orderId]);
-  for (const [productId,line] of grouped) {
-    await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id) VALUES($1,$2,$3,$4)",[orderId,productId,line.quantity,line.unitId]);
+    if (row.order_item_id) {
+      await client.query("UPDATE production_order_lines SET product_id=$1,quantity=$2,unit_id=$3 WHERE id=$4 AND order_id=$5",
+        [row.output_product_id,quantity,row.unit_id,row.order_item_id,orderId]);
+    } else {
+      const line = await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id) VALUES($1,$2,$3,$4) RETURNING id",
+        [orderId,row.output_product_id,quantity,row.unit_id]);
+      await client.query("UPDATE order_stages SET order_item_id=$1 WHERE id=$2",[line.rows[0].id,row.stage_id]);
+    }
   }
 }
 
@@ -225,6 +224,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const stages = parsed.data.stages ?? [];
       const explicitFinalStages = stages.filter(stage => stage.isFinalProduct);
       const lineInputs = [...parsed.data.lines];
+      let finalStageLineIndexes: number[] = [];
 
       // Older clients may still submit one order-level final product. New clients
       // mark one or more stage outputs as final, supporting multiple finished
@@ -235,40 +235,32 @@ export async function orderRoutes(app: FastifyInstance) {
         if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
         const finalSequence = Math.max(...stages.map(stage => stage.sequenceNo));
         const finalStages = explicitFinalStages.length ? explicitFinalStages : stages.filter(stage => stage.sequenceNo === finalSequence);
-        const derived = new Map<string,{productId?:string;productName?:string;quantity:number;notes?:string}>();
-        for (const stage of finalStages) {
-          if (!stage.outputProductId && !stage.outputProductName) continue;
-          if (stage.plannedQuantity == null || stage.plannedQuantity <= 0) {
-            throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة لكل منتج نهائي",422);
-          }
-          const key = stage.outputProductId ?? normalizeBusinessName(stage.outputProductName!);
-          const current = derived.get(key);
-          if (current) current.quantity += stage.plannedQuantity;
-          else {
-            const entry:{productId?:string;productName?:string;quantity:number;notes?:string} = {quantity:stage.plannedQuantity};
-            if (stage.outputProductId) entry.productId = stage.outputProductId;
-            else if (stage.outputProductName) entry.productName = stage.outputProductName;
-            if (stage.notes) entry.notes = stage.notes;
-            derived.set(key,entry);
-          }
+        const derived = finalStages.filter(stage => Boolean(stage.outputProductId || stage.outputProductName));
+        for (const stage of derived) {
+          if (stage.plannedQuantity == null || stage.plannedQuantity <= 0) throw new AppError("STAGE_QUANTITY_REQUIRED","الكمية المخططة مطلوبة لكل منتج نهائي",422);
         }
-        if (!derived.size) throw new AppError("ORDER_PRODUCTS_REQUIRED","حدد منتجًا نهائيًا واحدًا على الأقل من داخل مراحله",422);
-        lineInputs.splice(0, lineInputs.length, ...Array.from(derived.values()));
+        if (!derived.length) throw new AppError("ORDER_PRODUCTS_REQUIRED","حدد منتجًا نهائيًا واحدًا على الأقل من داخل مراحله",422);
+        lineInputs.splice(0, lineInputs.length, ...derived.map(stage => ({
+          ...(stage.outputProductId ? {productId:stage.outputProductId} : {productName:stage.outputProductName!}),
+          quantity:stage.plannedQuantity!,
+          ...(stage.notes ? {notes:stage.notes} : {})
+        })));
+        finalStageLineIndexes = derived.map(stage => stages.indexOf(stage));
       }
 
-      const lineProductIds: Array<{productId:string;quantity:number}> = [];
+      const lineProductIds: Array<{lineId:string;productId:string;quantity:number}> = [];
       for (const line of lineInputs) {
         const product = await ensureProduct(client,line.productId ? {productId:line.productId} : {productName:line.productName!});
         const unitId = line.unitId ?? product.unit_id;
-        lineProductIds.push({productId:product.id,quantity:line.quantity});
-        await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5)",
+        const insertedLine = await client.query("INSERT INTO production_order_lines(order_id,product_id,quantity,unit_id,notes) VALUES($1,$2,$3,$4,$5) RETURNING id",
           [order.id,product.id,line.quantity,unitId,line.notes ?? null]);
+        lineProductIds.push({lineId:insertedLine.rows[0].id,productId:product.id,quantity:line.quantity});
       }
 
       const finalSequence = stages.length ? Math.max(...stages.map(stage => stage.sequenceNo)) : null;
       const designatedFinalProductId = parsed.data.finalProductName ? lineProductIds[0]?.productId : null;
       const legacyFinalSelection = !parsed.data.finalProductName && explicitFinalStages.length === 0;
-      for (const stage of stages) {
+      for (const [stageIndex, stage] of stages.entries()) {
         const stageRow = await ensureStage(client,{stageId:stage.stageId,stageName:stage.stageName});
         let outputProductId = stage.outputProductId ?? null;
         if (!outputProductId && stage.outputProductName) outputProductId = (await ensureProduct(client,{productName:stage.outputProductName})).id;
@@ -283,8 +275,16 @@ export async function orderRoutes(app: FastifyInstance) {
         if (isFinalProduct && (!outputProductId || stage.plannedQuantity == null || stage.plannedQuantity <= 0)) {
           throw new AppError("STAGE_FINAL_OUTPUT_REQUIRED","حدد المنتج النهائي وكمية موجبة للمرحلة النهائية",422);
         }
-        await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes,stage_rate,stage_rate_method,production_type_id,is_final_product) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-          [order.id,stageRow.id,outputProductId,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null,stage.stageRate ?? null,stage.stageRateMethod ?? null,stage.productionTypeId ?? null,isFinalProduct]);
+        let orderItemId: string | null = null;
+        if (isFinalProduct) {
+          const mappedLineIndex = finalStageLineIndexes.indexOf(stageIndex);
+          if (mappedLineIndex >= 0) orderItemId = lineProductIds[mappedLineIndex]?.lineId ?? null;
+          else if (designatedFinalProductId && stage.sequenceNo === finalSequence) orderItemId = lineProductIds[0]?.lineId ?? null;
+          else orderItemId = lineProductIds.find(line => line.productId === outputProductId)?.lineId ?? null;
+          if (!orderItemId) throw new AppError("FINAL_ORDER_LINE_REQUIRED","تعذر ربط المرحلة النهائية بسطر المنتج الخاص بها في الطلبية",422);
+        }
+        await client.query("INSERT INTO order_stages(order_id,order_item_id,stage_id,output_product_id,sequence_no,planned_quantity,notes,stage_rate,stage_rate_method,production_type_id,is_final_product) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+          [order.id,orderItemId,stageRow.id,outputProductId,stage.sequenceNo,stage.plannedQuantity ?? null,stage.notes ?? null,stage.stageRate ?? null,stage.stageRateMethod ?? null,stage.productionTypeId ?? null,isFinalProduct]);
         if (outputProductId) await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stageRow.id,outputProductId]);
       }
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"production_order",entityId:order.id,afterData:order,ipAddress:request.ip,userAgent:request.headers["user-agent"] ?? null});
@@ -364,7 +364,8 @@ export async function orderRoutes(app: FastifyInstance) {
       const x=await client.query("INSERT INTO order_stages(order_id,stage_id,output_product_id,sequence_no,planned_quantity,notes,stage_rate,stage_rate_method,production_type_id,is_final_product) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[orderId,stage.id,outputProductId,parsed.data.sequenceNo,parsed.data.plannedQuantity??null,parsed.data.notes??null,parsed.data.stageRate??null,parsed.data.stageRateMethod??null,parsed.data.productionTypeId??null,parsed.data.isFinalProduct]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
       if(parsed.data.isFinalProduct)await syncOrderLinesFromFinalStages(client,orderId);
-      return x.rows[0];
+      const refreshed=await client.query("SELECT * FROM order_stages WHERE id=$1",[x.rows[0].id]);
+      return refreshed.rows[0];
     });
     return reply.code(201).send({data:r.rows[0]});
   });
@@ -394,10 +395,17 @@ export async function orderRoutes(app: FastifyInstance) {
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
-      const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_product=COALESCE($10,is_final_product) WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalProduct??null,id]);
+      const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_product=COALESCE($10,is_final_product),order_item_id=CASE WHEN $10=FALSE OR $5='CANCELLED' THEN NULL ELSE order_item_id END WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalProduct??null,id]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
       if((p.isFinalProduct!==undefined && p.isFinalProduct!==current.rows[0].is_final_product) || (current.rows[0].is_final_product && (p.outputProductName!==undefined || p.outputProductId!==undefined || p.plannedQuantity!==undefined || p.status==="CANCELLED"))) await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
-      return x.rows[0];
+      if(current.rows[0].order_item_id && (p.isFinalProduct===false || p.status==="CANCELLED")) {
+        await client.query(
+          "DELETE FROM production_order_lines pol WHERE pol.id=$1 AND pol.order_id=$2 AND NOT EXISTS(SELECT 1 FROM order_stages os WHERE os.order_item_id=pol.id)",
+          [current.rows[0].order_item_id,current.rows[0].order_id]
+        );
+      }
+      const refreshed=await client.query("SELECT * FROM order_stages WHERE id=$1",[id]);
+      return refreshed.rows[0];
     });
     return {data:r};
   });
