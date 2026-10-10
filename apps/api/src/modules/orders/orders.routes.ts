@@ -50,6 +50,26 @@ function normalizeBusinessName(value:string):string {
     .toLocaleLowerCase("ar-EG");
 }
 
+
+function calculateStageEarning(method:string,rate:number,entry:{quantity:string|number;hours_worked:string|number|null;base_amount:string|number|null}):number{
+  const quantity=Number(entry.quantity);
+  let value:number;
+  switch(method){
+    case "PER_PIECE": value=quantity*rate; break;
+    case "PER_1000": value=quantity/1000*rate; break;
+    case "PER_DAY": value=rate; break;
+    case "PER_HOUR":
+      if(entry.hours_worked==null)throw new AppError("HOURS_WORKED_REQUIRED","لا يمكن إعادة حساب أجر بالساعة لأن عدد الساعات غير مسجل",422);
+      value=Number(entry.hours_worked)*rate;break;
+    case "PERCENTAGE":
+      if(entry.base_amount==null)throw new AppError("BASE_AMOUNT_REQUIRED","لا يمكن إعادة حساب أجر النسبة لأن قيمة الأساس غير مسجلة",422);
+      value=Number(entry.base_amount)*rate/100;break;
+    default: throw new AppError("WAGE_METHOD_UNSUPPORTED","طريقة حساب الأجر غير مدعومة لتغيير سعر الطلبية",422);
+  }
+  if(!Number.isFinite(value)||value<0)throw new AppError("PRICE_CALCULATION_ERROR","تعذر حساب السعر الجديد للعملية",422);
+  return Math.round((value+Number.EPSILON)*100)/100;
+}
+
 async function ensureProduct(client:any, input:{productId?:string|undefined;productName?:string|undefined}) {
   if(input.productId){
     const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
@@ -321,6 +341,105 @@ export async function orderRoutes(app: FastifyInstance) {
       return x.rows[0];
     });
     return {data:r};
+  });
+
+  app.post("/api/orders/:id/price-changes", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request, reply) => {
+    const orderId=(request.params as {id:string}).id;
+    const parsed=z.object({
+      orderStageId:z.string().uuid(),
+      newRate:z.number().nonnegative(),
+      scope:z.enum(["NEW_ONLY","UNPAID_ONLY","ALL"]),
+      reason:z.string().trim().min(2).max(500)
+    }).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تغيير سعر الطلبية غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تغيير سعر طلبية ملغاة",409);
+      const stage=await client.query("SELECT * FROM order_stages WHERE id=$1 AND order_id=$2 FOR UPDATE",[parsed.data.orderStageId,orderId]);
+      if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","المرحلة لا تتبع هذه الطلبية",404);
+      const oldRate=stage.rows[0].stage_rate==null?null:Number(stage.rows[0].stage_rate);
+      const newRate=parsed.data.newRate;
+      await client.query("UPDATE order_stages SET stage_rate=$1,updated_at=now() WHERE id=$2",[newRate,parsed.data.orderStageId]);
+      const created=await client.query(
+        "INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,scope,reason,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+        [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.scope,parsed.data.reason,request.user!.userId]
+      );
+      let affected=0,totalDelta=0;
+      if(parsed.data.scope!=="NEW_ONLY"){
+        const entries=await client.query(
+          `SELECT pe.id,pe.employee_id,pe.status,pe.quantity,pe.hours_worked,pe.base_amount,
+                  pe.wage_type_method_snapshot,pe.rate_snapshot,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,
+                  COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0) AS paid_amount,
+                  COALESCE((SELECT pci.revised_earning FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id ORDER BY pci.created_at DESC,pci.id DESC LIMIT 1),pe.earning_amount) AS effective_earning
+             FROM production_entries pe
+            WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')
+            ${parsed.data.scope==="UNPAID_ONLY"?"AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id AND wpa.amount>0)":""}
+            ORDER BY pe.created_at,pe.id
+            FOR UPDATE OF pe`,
+          [parsed.data.orderStageId]
+        );
+        const proposed=entries.rows.map((entry:any)=>{
+          const previous=Number(entry.effective_earning);
+          const revised=calculateStageEarning(String(entry.wage_type_method_snapshot),newRate,entry);
+          const delta=Math.round((revised-previous+Number.EPSILON)*100)/100;
+          const paid=Number(entry.paid_amount);
+          const revisedTotal=revised+Number(entry.bonus_amount||0)-Number(entry.deduction_amount||0);
+          if(revisedTotal+0.0001<paid)throw new AppError("PRICE_BELOW_PAID_AMOUNT","السعر الجديد سيجعل مستحق العملية أقل من المبلغ المصروف بالفعل. راجع السعر قبل الحفظ.",409);
+          return {...entry,previous,revised,delta,paid};
+        });
+        const debitsByEmployee=new Map<string,number>();
+        for(const item of proposed){if(item.status==="APPROVED"&&item.delta<0)debitsByEmployee.set(item.employee_id,(debitsByEmployee.get(item.employee_id)||0)+Math.abs(item.delta));}
+        for(const [employeeId,needed] of debitsByEmployee){
+          const balance=await client.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS remaining FROM employee_earnings_ledger WHERE employee_id=$1",[employeeId]);
+          if(Number(balance.rows[0]?.remaining||0)+0.0001<needed)throw new AppError("INSUFFICIENT_EARNINGS_BALANCE","خفض السعر سيخصم أكثر من الرصيد المتاح لأحد العمال. تم إلغاء العملية بالكامل لحماية حساباتهم.",409);
+        }
+        for(const item of proposed){
+          await client.query(
+            "INSERT INTO order_price_change_items(price_change_id,production_entry_id,employee_id,previous_earning,revised_earning,delta_amount,applied_rate) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(price_change_id,production_entry_id) DO NOTHING",
+            [created.rows[0].id,item.id,item.employee_id,item.previous,item.revised,item.delta,newRate]
+          );
+          if(item.status==="PENDING"){
+            await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
+          }else if(Math.abs(item.delta)>=0.005){
+            const credit=item.delta>0?item.delta:0;
+            const debit=item.delta<0?Math.abs(item.delta):0;
+            await client.query(
+              "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ORDER_PRICE_CHANGE',$2,$3,$4,$5,$6)",
+              [item.employee_id,credit,debit,item.id,request.user!.userId,"تغيير سعر الطلبية "+order.rows[0].code+" / "+stage.rows[0].id+" — "+parsed.data.reason]
+            );
+          }
+          affected++;
+          totalDelta+=item.delta;
+        }
+      }
+      const updated=await client.query("UPDATE order_price_changes SET affected_entries=$1,total_delta=$2 WHERE id=$3 RETURNING *",[affected,Math.round((totalDelta+Number.EPSILON)*100)/100,created.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"price_change",module:"orders",entityType:"order_price_change",entityId:updated.rows[0].id,beforeData:{stageRate:oldRate},afterData:updated.rows[0],metadata:{orderCode:order.rows[0].code,stageId:parsed.data.orderStageId,scope:parsed.data.scope,reason:parsed.data.reason,affectedEntries:affected,totalDelta},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return reply.code(201).send({data:result});
+  });
+
+  app.get("/api/orders/:id/price-changes", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
+    const orderId=(request.params as {id:string}).id;
+    const result=await pool.query(
+      `SELECT pc.id,pc.code,pc.order_stage_id,pc.previous_rate,pc.new_rate,pc.scope,pc.reason,pc.affected_entries,pc.total_delta,pc.created_at,
+              s.name AS stage_name,u.username AS created_by_username,
+              COALESCE(json_agg(jsonb_build_object('employee_name',e.full_name,'production_code',pe.code,'previous_earning',pci.previous_earning,'revised_earning',pci.revised_earning,'delta_amount',pci.delta_amount) ORDER BY e.full_name,pe.code) FILTER (WHERE pci.id IS NOT NULL),'[]') AS affected
+         FROM order_price_changes pc
+         JOIN order_stages os ON os.id=pc.order_stage_id
+         JOIN stages s ON s.id=os.stage_id
+         JOIN users u ON u.id=pc.created_by
+         LEFT JOIN order_price_change_items pci ON pci.price_change_id=pc.id
+         LEFT JOIN employees e ON e.id=pci.employee_id
+         LEFT JOIN production_entries pe ON pe.id=pci.production_entry_id
+        WHERE pc.order_id=$1
+        GROUP BY pc.id,s.name,u.username
+        ORDER BY pc.created_at DESC
+        LIMIT 100`,
+      [orderId]
+    );
+    return {data:result.rows};
   });
 
   app.get("/api/orders/:id/dashboard", { preHandler: [authenticateRequest, requirePermission("orders.dashboard")] }, async (request) => {
