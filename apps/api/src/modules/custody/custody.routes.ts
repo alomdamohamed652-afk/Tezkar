@@ -287,7 +287,7 @@ export async function custodyRoutes(app:FastifyInstance){
           const matches=existing.order_id===p.data.orderId &&
             existing.collected_by_employee_id===employeeId &&
             Math.round(Number(existing.amount)*100)===Math.round(p.data.amount*100) &&
-            String(existing.revenue_date).slice(0,10)===date &&
+            (!p.data.transactionDate || String(existing.revenue_date).slice(0,10)===date) &&
             (existing.notes??null)===(p.data.notes??null) &&
             existing.custody_description===p.data.description &&
             (existing.custody_notes??null)===(p.data.notes??null);
@@ -312,7 +312,7 @@ export async function custodyRoutes(app:FastifyInstance){
           const matches=existing.order_id===p.data.orderId &&
             existing.collected_by_employee_id===employeeId &&
             Math.round(Number(existing.amount)*100)===Math.round(p.data.amount*100) &&
-            String(existing.revenue_date).slice(0,10)===date &&
+            (!p.data.transactionDate || String(existing.revenue_date).slice(0,10)===date) &&
             (existing.notes??null)===(p.data.notes??null) &&
             existing.custody_description===p.data.description &&
             (existing.custody_notes??null)===(p.data.notes??null);
