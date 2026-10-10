@@ -51,7 +51,7 @@ test("order-price and delivery-detail migrations apply safely in an isolated sch
       "delivery_permission_lines.carton_weight", "delivery_permission_lines.piece_count",
       "delivery_permission_lines.sample_quantity", "delivery_permission_lines.details",
       "production_entries.shift_leader_employee_id", "order_price_changes.scope",
-      "order_price_change_items.delta_amount"
+      "order_price_change_items.delta_amount", "order_price_change_items.ledger_adjustment"
     ]) assert.ok(available.has(column), "missing migrated column " + column);
 
     const userId = randomUUID(), employeeId = randomUUID(), orderId = randomUUID(), stageId = randomUUID(), entryId = randomUUID();
