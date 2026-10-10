@@ -51,7 +51,7 @@ export async function receiptRoutes(app:FastifyInstance){
   if(parsed.data.from){params.push(parsed.data.from);where.push("wr.receipt_date >= $"+params.length+"::date");}
   if(parsed.data.to){params.push(parsed.data.to);where.push("wr.receipt_date <= $"+params.length+"::date");}
   if(parsed.data.source){params.push("%"+parsed.data.source+"%");where.push("wr.source ILIKE $"+params.length);}
-  if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(wr.code ILIKE ${n} OR wr.source ILIKE ${n} OR COALESCE(wr.notes,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
+  if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(wr.code ILIKE $${n} OR wr.source ILIKE $${n} OR COALESCE(wr.notes,'') ILIKE $${n} OR COALESCE(creator.username,'') ILIKE $${n})`);}
   const r=await pool.query(
    `SELECT wr.id,wr.code,wr.receipt_date,wr.source,wr.notes,wr.created_at,creator.username AS created_by_username,
            COUNT(wrl.id)::int AS line_count,COALESCE(SUM(wrl.quantity*wrl.unit_cost),0) AS total_cost
