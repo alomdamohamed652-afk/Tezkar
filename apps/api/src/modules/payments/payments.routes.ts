@@ -75,18 +75,28 @@ export async function paymentsRoutes(app:FastifyInstance){
   app.get("/api/payment-requests",{
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   },async(request)=>{
-    const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","CANCELLED","PAID"]).optional()}).safeParse(request.query);
+    const q=z.object({
+      status:z.enum(["PENDING","APPROVED","REJECTED","CANCELLED","PAID"]).optional(),
+      employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional(),q:z.string().trim().max(160).optional()
+    }).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
     if(!q.success) throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
     const user=await isWorker(request.user!.userId);
     const params:unknown[]=[]; const where:string[]=[];
     if(user?.is_worker){
       if(!user.employee_id) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(user.employee_id); where.push(`pr.employee_id=$${params.length}`);
-    }
-    if(q.data.status){params.push(q.data.status);where.push(`pr.status=$${params.length}`);}
+      params.push(user.employee_id); where.push(`pr.employee_id=${params.length}`);
+    }else if(q.data.employeeId){params.push(q.data.employeeId);where.push(`pr.employee_id=${params.length}`);}
+    if(q.data.status){params.push(q.data.status);where.push(`pr.status=${params.length}`);}
+    if(q.data.from){params.push(q.data.from);where.push(`pr.requested_at::date >= ${params.length}::date`);}
+    if(q.data.to){params.push(q.data.to);where.push(`pr.requested_at::date <= ${params.length}::date`);}
+    if(q.data.q){params.push("%"+q.data.q+"%");const n=params.length;where.push(`(pr.code ILIKE ${n} OR COALESCE(pr.transfer_reference,'') ILIKE ${n} OR e.full_name ILIKE ${n} OR e.code ILIKE ${n} OR COALESCE(requester.username,'') ILIKE ${n})`);}
     const r=await pool.query(
-      `SELECT pr.*,e.code employee_code,e.full_name employee_name
+      `SELECT pr.*,e.code employee_code,e.full_name employee_name,requester.username AS requested_by_username,reviewer.username AS reviewed_by_username,payer.username AS paid_by_username
        FROM payment_requests pr JOIN employees e ON e.id=pr.employee_id
+       LEFT JOIN users requester ON requester.id=pr.requested_by
+       LEFT JOIN users reviewer ON reviewer.id=pr.reviewed_by
+       LEFT JOIN worker_payments wp ON wp.id=pr.paid_payment_id
+       LEFT JOIN users payer ON payer.id=wp.paid_by
        ${where.length?"WHERE "+where.join(" AND "):""}
        ORDER BY pr.requested_at DESC LIMIT 200`,params);
     return {data:r.rows};
