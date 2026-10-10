@@ -199,6 +199,9 @@ export async function paymentsRoutes(app:FastifyInstance){
         `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
           WHERE id=$3 RETURNING *`,
         [request.user!.userId,payment.rows[0].id,id]);
+      await client.query(
+        "INSERT INTO user_notifications(recipient_user_id,notification_type,title,body,entity_type,entity_id,created_by) SELECT requested_by,'PAYMENT_PAID','تم صرف طلب القبض',$1,'payment_request',$2,$3 FROM payment_requests WHERE id=$2 AND requested_by<>$3",
+        ["تم اعتماد وصرف طلب القبض الخاص بك.", id, request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:payment.rows[0].id,amount:payment.rows[0].amount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {request:updated.rows[0],payment:payment.rows[0]};
     });
@@ -218,6 +221,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       const updated=await client.query(
         `UPDATE payment_requests SET status='REJECTED',rejection_reason=$1,reviewed_by=$2,reviewed_at=now(),updated_at=now() WHERE id=$3 RETURNING *`,
         [parsed.data.reason,request.user!.userId,id]);
+      await client.query(
+        "INSERT INTO user_notifications(recipient_user_id,notification_type,title,body,entity_type,entity_id,created_by) SELECT requested_by,'PAYMENT_REJECTED','تم رفض طلب القبض',$1,'payment_request',$2,$3 FROM payment_requests WHERE id=$2 AND requested_by<>$3",
+        ["سبب الرفض: " + parsed.data.reason, id, request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reject",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
