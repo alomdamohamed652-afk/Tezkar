@@ -1325,3 +1325,16 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .payment-payout-details{display:grid;gap:3px;margin-top:8px;padding:9px 10px;border:1px solid #dbeafe;border-radius:9px;background:#eff6ff;color:#1e3a8a;font-size:11px;white-space:normal;min-width:180px}
 .payment-payout-details strong{font-size:11px}
 @media(max-width:600px){.task-assignee-list{grid-template-columns:minmax(0,1fr)}}
+
+
+.notification-list{display:grid;gap:0}
+.notification-item{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:16px 18px;border-bottom:1px solid var(--border);background:#fff}
+.notification-item:nth-child(even){background:#f7f9fd}
+.notification-item.unread{border-inline-start:4px solid #3b82f6;background:#eff6ff}
+.notification-item:last-child{border-bottom:0}
+.notification-copy{display:grid;gap:5px;min-width:0}
+.notification-heading{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.notification-heading strong{font-size:14px;color:var(--ink)}
+.notification-copy p{margin:0;color:var(--ink-2);font-size:13px;overflow-wrap:anywhere}
+.notification-copy time{color:var(--muted);font-size:11px}
+@media(max-width:600px){.notification-item{flex-direction:column;align-items:stretch}.notification-item .row-actions{justify-content:flex-start}}
