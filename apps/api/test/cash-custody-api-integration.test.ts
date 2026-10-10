@@ -163,6 +163,19 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(ownCustodies.json().data.length, 1);
       assert.equal(ownCustodies.json().data[0].employee_id, employeeB.id);
 
+      const employeeACustody=(await apiPool.query(
+        "SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Employee A custody'",
+        [employeeA.id]
+      )).rows[0];
+      const lostCustody = await app.inject({
+        method: "POST", url: "/api/custodies/"+employeeACustody.id+"/settlements",
+        headers: { cookie: managerCookie },
+        payload: { returnedQuantity: 0, lostQuantity: 1, damageValue: 0, shortageValue: 0 }
+      });
+      assert.equal(lostCustody.statusCode, 201, lostCustody.body);
+      assert.equal(lostCustody.json().data.custody.status, "LOST");
+      assert.equal(Number(lostCustody.json().data.remainingQuantity), 0);
+
       await apiPool.query(
         "INSERT INTO advance_requests(employee_id,amount,reason,requested_by) VALUES($1,75,'Own scope integration test',$2)",
         [employeeB.id,manager.id]
