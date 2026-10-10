@@ -117,7 +117,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
       if(!orderLine.rowCount)throw new AppError("ORDER_ITEM_MISMATCH","سطر المنتج لا يتبع الطلبية أو لا يطابق الصنف",422);
     }else{
       orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id",[parsed.data.orderId,line.productId]);
-      if(orderLine.rowCount>1)throw new AppError("ORDER_ITEM_REQUIRED","الصنف مكرر في الطلبية؛ اختر سطر المنتج النهائي المحدد",422);
+      if((orderLine.rowCount??0)>1)throw new AppError("ORDER_ITEM_REQUIRED","الصنف مكرر في الطلبية؛ اختر سطر المنتج النهائي المحدد",422);
     }
     if(!orderLine.rowCount || Number(orderLine.rows[0].quantity)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","المنتج المحدد ليس ضمن منتجات الطلبية",422);
     const resolvedOrderItemId=orderLine.rows[0].id;
@@ -177,7 +177,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
       orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND id=$2 AND product_id=$3",[d.rows[0].order_id,line.order_item_id,line.product_id]);
     }else{
       orderLine=await client.query("SELECT id,quantity FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id",[d.rows[0].order_id,line.product_id]);
-      if(orderLine.rowCount>1)throw new AppError("LEGACY_DELIVERY_LINE_AMBIGUOUS","إذن التسليم القديم لا يحدد سطر المنتج، والصنف مكرر في الطلبية. راجع الربط يدويًا قبل إخراج الإذن.",409);
+      if((orderLine.rowCount??0)>1)throw new AppError("LEGACY_DELIVERY_LINE_AMBIGUOUS","إذن التسليم القديم لا يحدد سطر المنتج، والصنف مكرر في الطلبية. راجع الربط يدويًا قبل إخراج الإذن.",409);
       if((orderLine.rowCount??0)===1){
         await client.query("UPDATE delivery_permission_lines SET order_item_id=$1 WHERE id=$2",[orderLine.rows[0].id,line.id]);
         line.order_item_id=orderLine.rows[0].id;
