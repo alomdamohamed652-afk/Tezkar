@@ -246,13 +246,18 @@ export async function accountingRoutes(app:FastifyInstance){
    const totalCost=orders.rows.reduce((sum,row)=>sum+Number(row.cost||0),0);
    if(!orders.rowCount||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   const positiveCostOrderIds=new Set(orders.rows.filter(row=>Number(row.cost||0)>0).map(row=>row.id));
+   const lastPositiveCostOrderId=[...orders.rows].reverse().find(row=>Number(row.cost||0)>0)?.id;
    for(const expense of expenses.rows){
     const amount=Number(expense.amount);
     let allocated=0;
-    for(let i=0;i<orders.rows.length;i++){
-     const order=orders.rows[i];
-     const share=i===orders.rows.length-1?Number((amount-allocated).toFixed(4)):Number((amount*Number(order.cost||0)/totalCost).toFixed(4));
-     allocated+=share;
+    for(const order of orders.rows){
+     const cost=Number(order.cost||0);
+     let share=0;
+     if(cost>0){
+      share=order.id===lastPositiveCostOrderId?Number((amount-allocated).toFixed(4)):Number((amount*cost/totalCost).toFixed(4));
+      allocated+=share;
+     }
      await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,share,request.user!.userId]);
     }
    }
