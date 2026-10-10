@@ -174,10 +174,10 @@ export async function accountingRoutes(app:FastifyInstance){
   if(q.employeeId)add("l.employee_id = ?",q.employeeId);
   if(q.orderId)add("l.order_id = ?",q.orderId);
   if(q.sourceType)add("l.source_type = ?",q.sourceType);
-  if(q.q){params.push("%"+q.q+"%");const n=params.length;where.push(`(l.code ILIKE ${n} OR l.description ILIKE ${n} OR COALESCE(l.notes,'') ILIKE ${n} OR COALESCE(l.employee_name,'') ILIKE ${n} OR COALESCE(l.created_by_username,'') ILIKE ${n} OR COALESCE(l.order_code,'') ILIKE ${n} OR COALESCE(l.order_name,'') ILIKE ${n} OR l.source_label ILIKE ${n})`);}
+  if(q.q){params.push("%"+q.q+"%");const n=params.length;where.push(`(l.code ILIKE $${n} OR l.description ILIKE $${n} OR COALESCE(l.notes,'') ILIKE $${n} OR COALESCE(l.employee_name,'') ILIKE $${n} OR COALESCE(l.created_by_username,'') ILIKE $${n} OR COALESCE(l.order_code,'') ILIKE $${n} OR COALESCE(l.order_name,'') ILIKE $${n} OR l.source_label ILIKE $${n})`);}
   const whereSql=where.length?" WHERE "+where.join(" AND "):"";
   const [rows,summary]=await Promise.all([
-   pool.query(`SELECT l.* FROM (${ledgerSql}) l${whereSql} ORDER BY l.transaction_date DESC,l.code DESC LIMIT ${params.length+1}`,[...params,q.limit]),
+   pool.query(`SELECT l.* FROM (${ledgerSql}) l${whereSql} ORDER BY l.transaction_date DESC,l.code DESC LIMIT $${params.length+1}`,[...params,q.limit]),
    pool.query(`SELECT COUNT(*)::int AS movement_count,
       COALESCE(SUM(amount) FILTER(WHERE direction='IN'),0) AS total_in,
       COALESCE(SUM(amount) FILTER(WHERE direction='OUT'),0) AS total_out,
