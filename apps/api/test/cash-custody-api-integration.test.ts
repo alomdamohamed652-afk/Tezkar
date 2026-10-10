@@ -245,7 +245,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
           description: "Test custody advance received"
         }
       });
-      assert.equal(ownIncoming.statusCode, 201, ownIncoming.body);
+      assert.equal(ownIncoming.statusCode, 403, ownIncoming.body);
+      assert.equal(ownIncoming.json().error.code,"FINANCE_SCOPE_REQUIRED");
+      const initialManagerTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:100,transactionDate:"2099-01-10",description:"Opening employee custody balance"}
+      });
+      assert.equal(initialManagerTopUp.statusCode,201,initialManagerTopUp.body);
 
       const ownOutgoing = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
@@ -333,7 +339,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
         [worker.id]
       );
-      assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions must be audited");
+      assert.equal(audit.rows[0].count, 3, "all successfully created worker transactions must be audited; external funding is manager-only");
 
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
       const externalTopUp=await app.inject({
