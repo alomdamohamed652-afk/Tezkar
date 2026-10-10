@@ -121,7 +121,7 @@ export async function productionRoutes(app: FastifyInstance) {
     if (workerOnly) {
       if (!request.user!.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED", "حساب العامل غير مرتبط بملف موظف", 403);
       params.push(request.user!.employeeId);
-      where.push(`p.employee_id=${params.length}`);
+      where.push(`p.employee_id=$${params.length}`);
     }
 
     if (query.data.status) { params.push(query.data.status); where.push(`p.status=${params.length}`); }
