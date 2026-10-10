@@ -46,13 +46,13 @@ export default function ProductionPage(){
   if(selectedOrderStage?.stage_rate!=null){
     setResolvedMethod(selectedOrderStage.stage_rate_method||"PER_PIECE");
     setResolvedRate(Number(selectedOrderStage.stage_rate));
-    setRateOverride(String(selectedOrderStage.stage_rate));
+    setRateOverride(Number(selectedOrderStage.stage_rate).toString());
     return;
   }
   if(!productId||!stageId||!shiftId||!workDate){setResolvedMethod("");setResolvedRate(null);setRateOverride("");return}
   const q=new URLSearchParams({productId,stageId,shiftId,workDate});
   if(productionTypeId)q.set("productionTypeId",productionTypeId);
-  api<{data:{method:string;rate:number}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setResolvedRate(Number(r.data.rate));setRateOverride(String(r.data.rate))}).catch(()=>{setResolvedMethod("");setResolvedRate(null);setRateOverride("")});
+  api<{data:{method:string;rate:number}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setResolvedRate(Number(r.data.rate));setRateOverride(Number(r.data.rate).toString())}).catch(()=>{setResolvedMethod("");setResolvedRate(null);setRateOverride("")});
  },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId]);
 
  const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
