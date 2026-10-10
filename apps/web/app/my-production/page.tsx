@@ -2,6 +2,7 @@
 import {useEffect,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar} from "../../components/sidebar";
+import {formatMoney,formatQuantity} from "../../lib/format";
 type Row={id:string;code:string;work_date:string;quantity:string;earning_amount:string;status:string;product_name:string;stage_name:string;shift_name:string;unit_name:string};
 export default function MyProductionPage(){
  const [rows,setRows]=useState<Row[]>([]),[error,setError]=useState("");
