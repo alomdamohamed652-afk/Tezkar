@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -271,6 +272,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
       const order=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
@@ -284,13 +286,7 @@ export async function custodyRoutes(app:FastifyInstance){
         );
         if(prior.rowCount){
           const existing=prior.rows[0];
-          const matches=existing.order_id===p.data.orderId &&
-            existing.collected_by_employee_id===employeeId &&
-            Math.round(Number(existing.amount)*100)===Math.round(p.data.amount*100) &&
-            (!p.data.transactionDate || String(existing.revenue_date).slice(0,10)===date) &&
-            (existing.notes??null)===(p.data.notes??null) &&
-            existing.custody_description===p.data.description &&
-            (existing.custody_notes??null)===(p.data.notes??null);
+          const matches=existing.idempotency_payload_hash===idempotencyPayloadHash;
           if(!matches)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لتحصيل ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
           return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
         }
@@ -299,8 +295,8 @@ export async function custodyRoutes(app:FastifyInstance){
       let revenue;
       if(p.data.idempotencyKey){
         revenue=await client.query(
-          "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id,idempotency_key) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6,$7,$8) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
-          [p.data.orderId,codeResult.rows[0].code,p.data.amount,date,p.data.notes??null,request.user!.userId,employeeId,p.data.idempotencyKey]
+          "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6 ,$7,$8,$9) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
+          [p.data.orderId,codeResult.rows[0].code,p.data.amount,date,p.data.notes??null,request.user!.userId,employeeId,p.data.idempotencyKey,idempotencyPayloadHash]
         );
         if(!revenue.rowCount){
           const prior=await client.query(
@@ -309,13 +305,7 @@ export async function custodyRoutes(app:FastifyInstance){
           );
           if(!prior.rowCount)throw new AppError("COLLECTION_RETRY_CONFLICT","تعذر استرجاع التحصيل السابق؛ أعد المحاولة بنفس المفتاح.",409);
           const existing=prior.rows[0];
-          const matches=existing.order_id===p.data.orderId &&
-            existing.collected_by_employee_id===employeeId &&
-            Math.round(Number(existing.amount)*100)===Math.round(p.data.amount*100) &&
-            (!p.data.transactionDate || String(existing.revenue_date).slice(0,10)===date) &&
-            (existing.notes??null)===(p.data.notes??null) &&
-            existing.custody_description===p.data.description &&
-            (existing.custody_notes??null)===(p.data.notes??null);
+          const matches=existing.idempotency_payload_hash===idempotencyPayloadHash;
           if(!matches)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لتحصيل ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
           return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
         }
