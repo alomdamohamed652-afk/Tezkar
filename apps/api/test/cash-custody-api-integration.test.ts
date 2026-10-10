@@ -253,16 +253,6 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(ownOutgoing.statusCode, 201, ownOutgoing.body);
 
-      const cashTransfer=await app.inject({
-        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
-        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:40,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
-      });
-      assert.equal(cashTransfer.statusCode,201,cashTransfer.body);
-      assert.equal(Number(cashTransfer.json().data.transfer.amount),40);
-      assert.equal(cashTransfer.json().data.outgoing.direction,"OUT");
-      assert.equal(cashTransfer.json().data.incoming.direction,"IN");
-      assert.equal(cashTransfer.json().data.outgoing.transfer_id,cashTransfer.json().data.incoming.transfer_id);
-
       const duplicate = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
         payload: {
@@ -341,6 +331,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [worker.id]
       );
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions must be audited");
+
+      const cashTransfer=await app.inject({
+        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
+        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:10,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
+      });
+      assert.equal(cashTransfer.statusCode,201,cashTransfer.body);
+      assert.equal(Number(cashTransfer.json().data.transfer.amount),10);
+      assert.equal(cashTransfer.json().data.outgoing.direction,"OUT");
+      assert.equal(cashTransfer.json().data.incoming.direction,"IN");
+      assert.equal(cashTransfer.json().data.outgoing.transfer_id,cashTransfer.json().data.incoming.transfer_id);
     } finally {
       await app.close();
     }
