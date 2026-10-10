@@ -2,6 +2,7 @@
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar} from "../../components/sidebar";
+import {formatQuantity} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
