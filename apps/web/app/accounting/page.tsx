@@ -18,7 +18,7 @@ type Expense = { id: string; code: string; order_code: string | null; category: 
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null };
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
-const revenueSourceLabel=(source:string)=>({"CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر"}[source]||source);
+const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
   const { has } = usePermissions();
