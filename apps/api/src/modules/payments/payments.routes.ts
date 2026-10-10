@@ -56,7 +56,46 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   return Number(r.rows[0]?.balance ?? 0);
 }
 
+const payoutPreferencesSchema=z.object({
+  instapayHandle:z.string().trim().max(120).nullable().optional(),
+  vodafoneCashNumber:z.string().trim().max(40).nullable().optional(),
+  preferredPaymentMethod:z.enum(["CASH","VODAFONE_CASH","INSTAPAY","BANK"]).nullable().optional()
+}).superRefine((value,ctx)=>{
+  if(value.instapayHandle && value.instapayHandle.length<3)ctx.addIssue({code:"custom",path:["instapayHandle"],message:"بيانات إنستا باي غير مكتملة"});
+  if(value.vodafoneCashNumber && value.vodafoneCashNumber.length<7)ctx.addIssue({code:"custom",path:["vodafoneCashNumber"],message:"رقم فودافون كاش غير مكتمل"});
+});
+
 export async function paymentsRoutes(app:FastifyInstance){
+  app.get("/api/payments/my-payout-preferences",{
+    preHandler:[authenticateRequest,requirePermission("payment_requests.view","own")]
+  },async(request)=>{
+    const user=await isWorker(request.user!.userId);
+    if(!user?.is_worker||!user.employee_id)throw new AppError("WORKER_ONLY","إعدادات القبض متاحة للعامل المرتبط بحسابه فقط",403);
+    const r=await pool.query("SELECT instapay_handle,vodafone_cash_number,preferred_payment_method FROM employees WHERE id=$1 AND is_active=TRUE",[user.employee_id]);
+    if(!r.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","ملف الموظف غير موجود أو غير نشط",404);
+    return {data:{instapayHandle:r.rows[0].instapay_handle,vodafoneCashNumber:r.rows[0].vodafone_cash_number,preferredPaymentMethod:r.rows[0].preferred_payment_method}};
+  });
+
+  app.put("/api/payments/my-payout-preferences",{
+    preHandler:[authenticateRequest,requirePermission("payment_requests.create","own")]
+  },async(request)=>{
+    const parsed=payoutPreferencesSchema.safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات حساب القبض غير صحيحة",422);
+    const user=await isWorker(request.user!.userId);
+    if(!user?.is_worker||!user.employee_id)throw new AppError("WORKER_ONLY","إعدادات القبض متاحة للعامل المرتبط بحسابه فقط",403);
+    const row=await withTransaction(async(client)=>{
+      const before=await client.query("SELECT id,instapay_handle,vodafone_cash_number,preferred_payment_method FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[user.employee_id]);
+      if(!before.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","ملف الموظف غير موجود أو غير نشط",404);
+      const after=await client.query(
+        "UPDATE employees SET instapay_handle=$1,vodafone_cash_number=$2,preferred_payment_method=$3,updated_at=now() WHERE id=$4 RETURNING instapay_handle,vodafone_cash_number,preferred_payment_method",
+        [parsed.data.instapayHandle?.trim()||null,parsed.data.vodafoneCashNumber?.trim()||null,parsed.data.preferredPaymentMethod??null,user.employee_id]
+      );
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:user.employee_id,action:"update_payout_preferences",module:"payments",entityType:"employee",entityId:user.employee_id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return after.rows[0];
+    });
+    return {data:{instapayHandle:row.instapay_handle,vodafoneCashNumber:row.vodafone_cash_number,preferredPaymentMethod:row.preferred_payment_method}};
+  });
+
   app.get("/api/payment-methods",{
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   },async()=>{
