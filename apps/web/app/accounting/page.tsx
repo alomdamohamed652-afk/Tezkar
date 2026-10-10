@@ -37,7 +37,8 @@ export default function AccountingPage() {
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
   const [selectedPeriodId,setSelectedPeriodId]=useState("");
   const [periodDetail,setPeriodDetail]=useState<PeriodDetail|null>(null);
-  const [periodForm,setPeriodForm]=useState({name:"",periodStart:new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10),periodEnd:new Date().toISOString().slice(0,10),notes:""});
+  const localDate=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+  const [periodForm,setPeriodForm]=useState({name:"",periodStart:localDate(new Date(new Date().getFullYear(),new Date().getMonth(),1)),periodEnd:localDate(new Date()),notes:""});
   const [periodSaving,setPeriodSaving]=useState(false);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
@@ -141,15 +142,20 @@ export default function AccountingPage() {
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
   }
 
-  async function addOrderCollection(){
+  async function addOrderCollection(confirmDuplicate=false){
     setError("");setMessage("");
     if(!collectionForm.orderId||!collectionForm.employeeId||!collectionForm.amount||!collectionForm.description.trim()){
       setError("اختر الطلبية والموظف واكتب المبلغ والبيان");return;
     }
     try{
-      await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({orderId:collectionForm.orderId,employeeId:collectionForm.employeeId,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null})});
+      await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({orderId:collectionForm.orderId,employeeId:collectionForm.employeeId,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null,confirmDuplicate})});
       setCollectionForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل تحصيل العميل كإيراد للطلبية ووارد في عهدة الموظف");await load();await loadLedger();
-    }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل التحصيل")}
+    }catch(e){
+      if(!confirmDuplicate&&e&&typeof e==="object"&&"code" in e&&(e as {code?:string}).code==="DUPLICATE_ORDER_COLLECTION"){
+        if(window.confirm("فيه تحصيل بنفس الطلبية والموظف والمبلغ والتاريخ. هل أنت متأكد إن ده تحصيل جديد ومش تكرار؟"))return addOrderCollection(true);
+      }
+      setError(e instanceof Error?e.message:"تعذر تسجيل التحصيل");
+    }
   }
 
   async function addRevenue() {
