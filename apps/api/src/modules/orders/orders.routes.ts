@@ -132,17 +132,25 @@ const machineProductionSchema = z.object({
 
 export async function orderRoutes(app: FastifyInstance) {
   app.get("/api/orders", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
-    const q = z.object({ status: z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional() }).parse(request.query);
+    const parsed = z.object({
+      status: z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),
+      from:z.string().date().optional(),to:z.string().date().optional(),q:z.string().trim().max(160).optional()
+    }).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر الطلبات غير صحيحة",422);
+    const q=parsed.data;
     const params: unknown[] = [];
-    let where = "WHERE o.status <> 'CANCELLED'";
-    if (q.status) { params.push(q.status); where = "WHERE o.status=$1"; }
+    const where:string[]=[];
+    if(q.status){params.push(q.status);where.push("o.status=$"+params.length);}else where.push("o.status <> 'CANCELLED'");
+    if(q.from){params.push(q.from);where.push("o.order_date >= $"+params.length+"::date");}
+    if(q.to){params.push(q.to);where.push("o.order_date <= $"+params.length+"::date");}
+    if(q.q){params.push("%"+q.q+"%");const n=params.length;where.push(`(o.code ILIKE ${n} OR o.order_name ILIKE ${n} OR COALESCE(o.customer_name,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n})`);}
     const r = await pool.query(
-      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,
+      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,creator.username AS created_by_username,
               COALESCE((SELECT COUNT(*)::int FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS line_count,
               COALESCE((SELECT SUM(ol.quantity) FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS ordered_quantity,
               COALESCE((SELECT SUM(os.completed_quantity) FROM order_stages os WHERE os.order_id=o.id AND os.sequence_no=(SELECT MAX(os2.sequence_no) FROM order_stages os2 WHERE os2.order_id=o.id)),0) AS completed_quantity
-         FROM production_orders o
-         ${where}
+         FROM production_orders o LEFT JOIN users creator ON creator.id=o.created_by
+         WHERE ${where.join(" AND ")}
         ORDER BY o.created_at DESC
         LIMIT 300`, params);
     return { data: r.rows };
