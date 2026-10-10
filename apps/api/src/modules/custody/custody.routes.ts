@@ -248,6 +248,50 @@ export async function custodyRoutes(app:FastifyInstance){
     });return reply.code(201).send({data:result});
   });
 
+
+  const orderCollectionSchema=z.object({
+    employeeId:z.string().uuid().optional(),
+    orderId:z.string().uuid(),
+    amount:z.number().positive(),
+    transactionDate:z.string().date().optional(),
+    description:z.string().trim().min(2).max(500),
+    notes:z.string().trim().max(1000).nullable().optional()
+  });
+
+  // Customer collection is one atomic business event: company revenue plus cash
+  // received into the collecting employee's custody. Internal custody transfers
+  // never pass through this endpoint and therefore never create new revenue.
+  app.post("/api/cash-custody/order-collections",{
+    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]
+  },async(request,reply)=>{
+    const p=orderCollectionSchema.safeParse(request.body);
+    if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحصيل الطلبية غير صحيحة",422);
+    const row=await withTransaction(async client=>{
+      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
+      const employeeId=access.employeeId!;
+      const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const order=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const duplicate=await client.query("SELECT id FROM order_revenues WHERE order_id=$1 AND collected_by_employee_id=$2 AND amount=$3 AND revenue_date=$4 AND source='CUSTOMER_COLLECTION' LIMIT 1 FOR SHARE",[p.data.orderId,employeeId,p.data.amount,date]);
+      if(duplicate.rowCount)throw new AppError("DUPLICATE_ORDER_COLLECTION","يوجد تحصيل بنفس الطلبية والموظف والمبلغ والتاريخ بالفعل؛ راجع الحركات قبل التسجيل مرة أخرى",409);
+      const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
+      const revenue=await client.query(
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,collected_by_employee_id) VALUES($1,$2,$3,$4,'CUSTOMER_COLLECTION',$5,$6,$7) RETURNING *",
+        [p.data.orderId,codeResult.rows[0].code,p.data.amount,date,p.data.notes??null,request.user!.userId,employeeId]
+      );
+      const cash=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3,$4,$5,'ORDER_REVENUE',$6,$7) RETURNING *",
+        [employeeId,p.data.amount,date,p.data.description,p.data.notes??null,revenue.rows[0].id,request.user!.userId]
+      );
+      const updated=await client.query("UPDATE order_revenues SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,revenue.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"order_revenue_collection",entityId:updated.rows[0].id,afterData:{revenue:updated.rows[0],cashCustody:cash.rows[0]},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {revenue:updated.rows[0],cashCustody:cash.rows[0]};
+    });
+    return reply.code(201).send({data:row});
+  });
+
   app.post("/api/cash-custody/check-duplicate",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request)=>{
     const p=cashSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات حركة العهدة غير صحيحة",422);

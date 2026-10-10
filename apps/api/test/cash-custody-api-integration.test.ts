@@ -46,12 +46,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
     process.env.SESSION_SECRET = "test-only-cash-custody-session-secret";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { custodyRoutes }, { advanceRoutes },
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { custodyRoutes }, { advanceRoutes }, { accountingRoutes },
       { hashPassword }, poolModule] = await Promise.all([
       import("fastify"), import("@fastify/cookie"),
       import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/custody/custody.routes.js"),
       import("../src/modules/advances/advances.routes.js"),
+      import("../src/modules/accounting/accounting.routes.js"),
       import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
@@ -65,6 +66,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
     await app.register(authRoutes);
     await app.register(custodyRoutes);
     await app.register(advanceRoutes);
+    await app.register(accountingRoutes);
 
     try {
       const employeeA = (await apiPool.query(
@@ -341,6 +343,30 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(cashTransfer.json().data.outgoing.direction,"OUT");
       assert.equal(cashTransfer.json().data.incoming.direction,"IN");
       assert.equal(cashTransfer.json().data.outgoing.transfer_id,cashTransfer.json().data.incoming.transfer_id);
+      const custodyPaidExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"مصروف إداري",description:"Negative custody expense integration test",amount:1000,expenseType:"ADMINISTRATIVE",paidFromEmployeeId:employeeB.id,expenseDate:"2099-01-10"}
+      });
+      assert.equal(custodyPaidExpense.statusCode,201,custodyPaidExpense.body);
+      assert.equal(custodyPaidExpense.json().data.expense_type,"ADMINISTRATIVE");
+      assert.equal(custodyPaidExpense.json().data.paid_from_employee_id,employeeB.id);
+      assert.ok(custodyPaidExpense.json().data.cash_custody_transaction_id);
+      const negativeCustody=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [employeeB.id]
+      );
+      assert.ok(Number(negativeCustody.rows[0].balance)<0,"an approved expense may make custody negative");
+
+      const period=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
+      });
+      assert.equal(period.statusCode,201,period.body);
+      const closedPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
+      assert.equal(closedPeriod.json().data.status,"CLOSED");
     } finally {
       await app.close();
     }
