@@ -19,12 +19,20 @@ export default function CustodyPage(){
 
   const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
   setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
-  if((has("custody.create")||has("custody.view")||has("cash_custody.create")||has("cash_custody.view"))&&!employees.length)setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
- // Permissions arrive asynchronously; refetch after hydration so the eligible-employee
- // list is loaded on the first visit instead of remaining empty until another interaction.
- useEffect(()=>{void load()},[employeeId,permissions]);
+ useEffect(()=>{void load()},[employeeId]);
+ // Load employee options independently from the custody ledger so a ledger-view error
+ // cannot block the picker. Support both all-scope and own-scope permissions.
+ useEffect(()=>{
+  const pickerPermissions=["custody.create","custody.create_own","custody.view","custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.view","cash_custody.view_own"];
+  if(!permissions?.some(code=>pickerPermissions.includes(code)))return;
+  let active=true;
+  api<{data:Employee[]}>("/api/custodies/eligible-employees")
+   .then(r=>{if(active)setEmployees(r.data)})
+   .catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل قائمة الموظفين للعهد")});
+  return()=>{active=false};
+ },[permissions]);
  async function submitCash(e:FormEvent,confirmDuplicate=false){
  e.preventDefault();setCashSaving(true);setError("");
  try{
