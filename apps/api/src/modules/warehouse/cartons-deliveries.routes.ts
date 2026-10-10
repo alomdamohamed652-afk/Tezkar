@@ -52,13 +52,24 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   return reply.code(201).send({data:row});
  });
 
- app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async()=>{
-  const r=await pool.query(`SELECT d.*,COUNT(l.id)::int AS line_count,o.code AS order_code,o.order_name,
-    COALESCE(json_agg(jsonb_build_object('id',l.id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY p.name) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
+ app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async(request)=>{
+  const parsed=z.object({status:z.enum(["READY","RELEASED","DRAFT","CANCELLED"]).optional(),orderId:z.string().uuid().optional(),productId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional(),q:z.string().trim().max(160).optional()}).refine(v=>!v.from||!v.to||v.from<=v.to,{message:"تاريخ البداية يجب ألا يتجاوز تاريخ النهاية"}).safeParse(request.query);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","فلاتر التسليمات غير صحيحة",422);
+  const params:unknown[]=[];const where:string[]=[];
+  if(parsed.data.status){params.push(parsed.data.status);where.push("d.status=$"+params.length);}
+  if(parsed.data.orderId){params.push(parsed.data.orderId);where.push("d.order_id=$"+params.length);}
+  if(parsed.data.productId){params.push(parsed.data.productId);where.push("l.product_id=$"+params.length);}
+  if(parsed.data.from){params.push(parsed.data.from);where.push("d.created_at::date >= $"+params.length+"::date");}
+  if(parsed.data.to){params.push(parsed.data.to);where.push("d.created_at::date <= $"+params.length+"::date");}
+  if(parsed.data.q){params.push("%"+parsed.data.q+"%");const n=params.length;where.push(`(d.code ILIKE ${n} OR d.destination ILIKE ${n} OR COALESCE(o.code,'') ILIKE ${n} OR COALESCE(o.order_name,'') ILIKE ${n} OR COALESCE(creator.username,'') ILIKE ${n} OR COALESCE(p.name,'') ILIKE ${n})`);}
+  const r=await pool.query(`SELECT d.*,COUNT(DISTINCT l.id)::int AS line_count,o.code AS order_code,o.order_name,creator.username AS created_by_username,
+    COALESCE(json_agg(DISTINCT jsonb_build_object('id',l.id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY jsonb_build_object('id',l.id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name)) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
     FROM delivery_permissions d LEFT JOIN production_orders o ON o.id=d.order_id
     LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id
     LEFT JOIN products p ON p.id=l.product_id LEFT JOIN units u ON u.id=l.unit_id
-    GROUP BY d.id,o.code,o.order_name ORDER BY d.created_at DESC LIMIT 300`);
+    LEFT JOIN users creator ON creator.id=d.created_by
+    ${where.length?"WHERE "+where.join(" AND "):""}
+    GROUP BY d.id,o.code,o.order_name,creator.username ORDER BY d.created_at DESC LIMIT 300`,params);
   return {data:r.rows};
  });
 
