@@ -14,20 +14,24 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[]};
-type Expense = { id: string; code: string; order_code: string | null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null };
-type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null };
+type Expense = { id: string; code: string; order_code: string | null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
+type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
+type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;margin_percent:number|null};
+type CashTx = {id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"orders"|"custody">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
   const [expenses,setExpenses]=useState<Expense[]>([]);
   const [revenues,setRevenues]=useState<Revenue[]>([]);
+  const [orderFinance,setOrderFinance]=useState<OrderFinanceRow[]>([]);
+  const [cashTransactions,setCashTransactions]=useState<CashTx[]>([]);
   const [eForm,setEForm]=useState({category:"تشغيل",description:"",amount:"",orderId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
   const [collectionForm,setCollectionForm]=useState({orderId:"",employeeId:"",amount:"",description:"تحصيل من العميل",notes:""});
@@ -50,6 +54,8 @@ export default function AccountingPage() {
         api<{data:Revenue[]}>("/api/accounting/revenues")
       ]);
       setOrders(o.data);setExpenses(e.data);setRevenues(r.data);
+      if(has("finance.profitability.view"))api<{data:OrderFinanceRow[]}>("/api/accounting/orders-dashboard").then(x=>setOrderFinance(x.data)).catch(()=>{});
+      if(has("cash_custody.view")||has("cash_custody.view_own"))api<{data:CashTx[]}>("/api/cash-custody").then(x=>setCashTransactions(x.data)).catch(()=>{});
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
@@ -152,6 +158,8 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
       <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
+      {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>setTab("orders")}>كل الطلبيات والتحليل</button>}
+      {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
       {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
      </div>
 
@@ -244,6 +252,32 @@ export default function AccountingPage() {
         </div>}
        </>}
       </div>
+     </section>}
+     {tab==="orders"&&has("finance.profitability.view")&&<section className="card">
+      <div className="card-header"><div><h2 className="card-title">لوحة كل الطلبيات</h2><div className="form-hint">الإيرادات والتكاليف المباشرة والإدارية وتكلفة المخزون وأجور الإنتاج وصافي الربح لكل طلبية. التحصيل النقدي لا يُضاف مرة ثانية للإيرادات.</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث البيانات</button></div>
+      <div className="stats finance-stats">
+       <article className="card stat"><div className="stat-label">عدد الطلبيات</div><div className="stat-value">{orderFinance.length}</div></article>
+       <article className="card stat accent"><div className="stat-label">إجمالي الإيرادات</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.revenue||0),0))}</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي التكلفة</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.total_cost||0),0))}</div></article>
+       <article className="card stat"><div className="stat-label">صافي الربح</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.profit||0),0))}</div></article>
+      </div>
+      <div className="table-wrap"><table><thead><tr><th>كود الطلبية</th><th>اسم الطلبية</th><th>العميل</th><th>الحالة</th><th>الإيراد</th><th>مصروف مباشر</th><th>توزيع إداري مُقفل</th><th>تكلفة مخزون</th><th>أجور إنتاج</th><th>إجمالي التكلفة</th><th>صافي الربح</th><th>الهامش</th></tr></thead><tbody>
+       {orderFinance.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_name}</td><td>{x.customer_name||"—"}</td><td>{x.status}</td><td className="money">{n(x.revenue)}</td><td className="money">{n(x.direct_expenses)}</td><td className="money">{n(x.administrative_allocation)}</td><td className="money">{n(x.material_cost)}</td><td className="money">{n(x.labor_cost)}</td><td className="money">{n(x.total_cost)}</td><td className="money">{n(x.profit)}</td><td>{x.margin_percent==null?"—":n(x.margin_percent)+"%"}</td></tr>)}
+       {!orderFinance.length&&<tr><td colSpan={12}>لا توجد بيانات طلبيات متاحة أو لا توجد صلاحية التحليل المالي.</td></tr>}
+      </tbody></table></div>
+     </section>}
+     {tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own"))&&<section className="card">
+      <div className="card-header"><div><h2 className="card-title">سجل حركة العهدة النقدية</h2><div className="form-hint">كل وارد وصادر وتحويل، مع الموظف والبيان والطلبية إن وجدت واسم الحساب الذي سجّل الحركة. العهدة لا تُجمع مرة أخرى ضمن إيرادات الشركة.</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث</button></div>
+      <div className="stats finance-stats">
+       <article className="card stat accent"><div className="stat-label">إجمالي الوارد المعروض</div><div className="stat-value">{n(cashTransactions.filter(x=>x.direction==="IN").reduce((sum,x)=>sum+Number(x.amount||0),0))}</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي الصادر المعروض</div><div className="stat-value">{n(cashTransactions.filter(x=>x.direction==="OUT").reduce((sum,x)=>sum+Number(x.amount||0),0))}</div></article>
+       <article className="card stat"><div className="stat-label">صافي الحركة المعروضة</div><div className="stat-value">{n(cashTransactions.reduce((sum,x)=>sum+(x.direction==="IN"?1:-1)*Number(x.amount||0),0))}</div></article>
+       <article className="card stat neutral"><div className="stat-label">عدد الحركات</div><div className="stat-value">{cashTransactions.length}</div></article>
+      </div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الاتجاه</th><th>الموظف</th><th>الطلبية / التحويل</th><th>بيان الحركة</th><th>ملاحظات</th><th>المسجل بواسطة</th><th>الرصيد التراكمي</th><th>المبلغ</th></tr></thead><tbody>
+       {cashTransactions.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.transaction_date}</td><td>{x.direction==="IN"?"وارد للعهدة":"صادر من العهدة"}</td><td>{x.employee_name}</td><td>{x.order_code?x.order_code+" — "+(x.order_name||""):x.transfer_code||"—"}</td><td>{x.description}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td><td className="money">{n(x.balance)}</td><td className="money">{n(x.amount)}</td></tr>)}
+       {!cashTransactions.length&&<tr><td colSpan={10}>لا توجد حركات عهدة ظاهرة حسب صلاحيات الحساب.</td></tr>}
+      </tbody></table></div>
      </section>}
      {tab==="profitability"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">ربحية الطلبية</h2><div className="form-hint">الإيراد − تكلفة المخزون − أجور الإنتاج − المصروفات المباشرة.</div></div></div>
