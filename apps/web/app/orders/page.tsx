@@ -10,6 +10,7 @@ type ProductionType={id:string;code:string;name:string;calculation_method:string
 type StageRow={stageName:string;outputProductName:string;plannedQuantity:string;notes:string;stageRate:string;stageRateMethod:string;productionTypeId:string;isFinalProduct:boolean};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={DRAFT:"مسودة",PLANNED:"مخططة",IN_PROGRESS:"قيد التنفيذ",COMPLETED:"مكتملة",CANCELLED:"ملغاة"};
+const statusOptions=[{value:"DRAFT",label:"مسودة"},{value:"PLANNED",label:"مخططة"},{value:"IN_PROGRESS",label:"قيد التنفيذ"},{value:"COMPLETED",label:"مكتملة"},{value:"CANCELLED",label:"ملغاة"}];
 
 export default function OrdersPage(){
  const {has}=usePermissions();
@@ -26,6 +27,13 @@ export default function OrdersPage(){
  function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:"",notes:"",stageRate:"",stageRateMethod:"PER_1000",productionTypeId:"",isFinalProduct:false}])}
  function updateStage(i:number,key:keyof StageRow,value:string|boolean){setStageRows(v=>v.map((r,n)=>n===i?({...r,[key]:value} as StageRow):r))}
  function removeStage(i:number){setStageRows(v=>v.filter((_,n)=>n!==i))}
+
+ async function changeOrderStatus(order:Order,status:string){
+  if(status===order.status)return;
+  setError("");
+  try{await api("/api/orders/"+order.id,{method:"PATCH",body:JSON.stringify({status})});await load()}
+  catch(e){setError(e instanceof Error?e.message:"تعذر تغيير حالة الطلبية");await load()}
+ }
 
  async function confirmDeleteOrder(){
   if(!deleteTarget||!deletePassword)return;
@@ -80,7 +88,7 @@ export default function OrdersPage(){
 
    <section className="card"><div className="card-header"><div><h2 className="card-title">لوحة الطلبات</h2><div className="form-hint">كل طلبية لها ملف مستقل للتشغيل والتكلفة والمسحوبات والتسليم.</div></div><span className="count-badge">{orders.length}</span></div>
     <div className="table-wrap"><table><thead><tr><th>اسم الطلبية</th><th>رقم الطلب</th><th>تاريخ الطلب</th><th>بداية التسليم</th><th>آخر دفعة</th><th>الكمية</th><th>المنجز</th><th>الحالة</th><th>إجراءات</th></tr></thead>
-    <tbody>{orders.map(x=><tr key={x.id} onClick={()=>window.location.href="/orders/"+x.id} style={{cursor:"pointer"}}><td className="strong">{x.order_name}</td><td className="mono">{x.code}</td><td>{x.order_date}</td><td>{x.delivery_start_date??"—"}</td><td>{x.last_delivery_date??x.due_date??"—"}</td><td>{formatQuantity(x.ordered_quantity,0)}</td><td>{formatQuantity(x.completed_quantity,0)}</td><td><span className="status">{labels[x.status]??x.status}</span></td><td>{has("orders.delete")&&x.status!=="COMPLETED"&&x.status!=="CANCELLED"&&<button type="button" className="danger-button" onClick={e=>{e.stopPropagation();setDeleteTarget(x);setDeletePassword("")}}>حذف</button>}</td></tr>)}{!orders.length&&<tr><td colSpan={9}>لا توجد طلبات حتى الآن.</td></tr>}</tbody></table></div>
+    <tbody>{orders.map(x=><tr key={x.id} onClick={()=>window.location.href="/orders/"+x.id} style={{cursor:"pointer"}}><td className="strong">{x.order_name}</td><td className="mono">{x.code}</td><td>{x.order_date}</td><td>{x.delivery_start_date??"—"}</td><td>{x.last_delivery_date??x.due_date??"—"}</td><td>{formatQuantity(x.ordered_quantity,0)}</td><td>{formatQuantity(x.completed_quantity,0)}</td><td>{has("orders.edit")&&x.status!=="CANCELLED"?<select aria-label={"حالة "+x.order_name} value={x.status} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();void changeOrderStatus(x,e.target.value)}}>{statusOptions.filter(option=>option.value!=="CANCELLED").map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select>:<span className="status">{labels[x.status]??x.status}</span>}</td><td>{has("orders.delete")&&x.status!=="COMPLETED"&&x.status!=="CANCELLED"&&<button type="button" className="danger-button" onClick={e=>{e.stopPropagation();setDeleteTarget(x);setDeletePassword("")}}>حذف</button>}</td></tr>)}{!orders.length&&<tr><td colSpan={9}>لا توجد طلبات حتى الآن.</td></tr>}</tbody></table></div>
    </section>
   </section>
   {deleteTarget&&<div className="modal-backdrop" onClick={()=>{if(!deleting)setDeleteTarget(null)}}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="delete-order-title" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 id="delete-order-title" className="card-title">تأكيد حذف الطلبية</h2><div className="form-hint">سيتم إلغاء الطلبية وإخفاؤها من التشغيل، مع الاحتفاظ بسجل المراجعة. أدخل كلمة مرور حسابك للتأكيد.</div></div><button type="button" className="secondary-btn" onClick={()=>setDeleteTarget(null)} disabled={deleting}>إغلاق</button></div><p className="strong">{deleteTarget.order_name} · {deleteTarget.code}</p><label>كلمة المرور<input type="password" autoComplete="current-password" value={deletePassword} onChange={e=>setDeletePassword(e.target.value)} required/></label><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>setDeleteTarget(null)} disabled={deleting}>إلغاء</button><button type="button" className="danger-button" disabled={deleting||!deletePassword} onClick={()=>void confirmDeleteOrder()}>{deleting?"جارٍ الحذف...":"تأكيد الحذف"}</button></div></section></div>}
