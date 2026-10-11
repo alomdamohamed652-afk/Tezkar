@@ -279,7 +279,7 @@ export async function custodyRoutes(app:FastifyInstance){
   // received into the collecting employee's custody. Internal custody transfers
   // never pass through this endpoint and therefore never create new revenue.
   app.post("/api/cash-custody/order-collections",{
-    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]
+    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"]),requirePermission("orders.view")]
   },async(request,reply)=>{
     const p=orderCollectionSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحصيل الطلبية غير صحيحة",422);
@@ -421,4 +421,79 @@ export async function custodyRoutes(app:FastifyInstance){
     });
     return reply.code(201).send({data:row});
   });
+
+  const orderExpenseSchema=z.object({
+    employeeId:z.string().uuid().optional(),
+    orderId:z.string().uuid(),
+    orderStageId:z.string().uuid().nullable().optional(),
+    category:z.string().trim().min(2).max(100),
+    description:z.string().trim().min(2).max(300),
+    amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
+    transactionDate:z.string().date().optional(),
+    notes:z.string().trim().max(1000).nullable().optional(),
+    idempotencyKey:z.string().uuid()
+  });
+
+  // One atomic event: charge a direct order expense and deduct the same amount
+  // from the paying employee's cash custody. No second expense or cash movement.
+  app.post("/api/cash-custody/order-expenses",{
+    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"]),requirePermission("orders.view")]
+  },async(request,reply)=>{
+    const p=orderExpenseSchema.safeParse(request.body);
+    if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مصروف الطلبية غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
+      const employeeId=access.employeeId!;
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const order=await client.query("SELECT id,code,order_name FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+      if(p.data.orderStageId){
+        const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);
+        if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);
+        if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
+        if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
+      }
+      const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({
+        orderId:p.data.orderId,orderStageId:p.data.orderStageId??null,employeeId,
+        category:p.data.category,description:p.data.description,amountMinor:Math.round(p.data.amount*100),
+        transactionDate:date,notes:p.data.notes??null
+      })).digest("hex");
+      const prior=await client.query(
+        "SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",
+        [p.data.idempotencyKey]
+      );
+      if(prior.rowCount){
+        const existing=prior.rows[0];
+        if(existing.idempotency_payload_hash!==idempotencyPayloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
+        return {expense:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes},order:order.rows[0]};
+      }
+      const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[employeeId,date]);
+      if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المبلغ المطلوب أكبر من رصيد العهدة النقدية المتاح في هذا التاريخ",409);
+      const expense=await client.query(
+        "INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,'DIRECT',$8,$9,$10) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
+        [p.data.orderId,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId,p.data.idempotencyKey,idempotencyPayloadHash]
+      );
+      if(!expense.rowCount){
+        const duplicate=await client.query(
+          "SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",
+          [p.data.idempotencyKey]
+        );
+        if(!duplicate.rowCount)throw new AppError("EXPENSE_RETRY_CONFLICT","تعذر استرجاع المصروف السابق؛ أعد المحاولة بنفس المفتاح.",409);
+        const existing=duplicate.rows[0];
+        if(existing.idempotency_payload_hash!==idempotencyPayloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
+        return {expense:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes},order:order.rows[0]};
+      }
+      const cash=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3,$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING *",
+        [employeeId,p.data.amount,date,p.data.description,[`مصروف على الطلبية ${order.rows[0].code}`,p.data.notes].filter(Boolean).join(" — "),expense.rows[0].id,request.user!.userId]
+      );
+      const linked=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,expense.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"order_custody_expense",entityId:linked.rows[0].id,afterData:{expense:linked.rows[0],cashCustody:cash.rows[0]},metadata:{orderId:p.data.orderId,employeeId,orderStageId:p.data.orderStageId??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {expense:linked.rows[0],cashCustody:cash.rows[0],order:order.rows[0]};
+    });
+    return reply.code(201).send({data:result});
+  });
+
 }

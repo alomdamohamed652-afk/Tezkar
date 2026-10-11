@@ -7,6 +7,8 @@ import {SearchableSelect} from "../../components/searchable-select";
 
 type Custody={id:string;code:string;employee_id:string;employee_name:string;custody_type:string;description:string;quantity:number;unit_value:number;total_value:number;status:string;issued_at:string;due_date:string|null;returned_quantity:number;lost_quantity:number;remaining_quantity:number;transfer_count?:number};
 type Employee={id:string;full_name:string;code:string};
+type Order={id:string;code:string;order_name:string};
+type OrderStage={id:string;stage_name:string;sequence_no:number;status:string};
 type CustodyTransfer={id:string;code:string;from_employee_name:string;to_employee_name:string;remaining_quantity:number;notes:string|null;created_at:string;created_by_username:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتجع جزئي",RETURNED:"مُسواة",DAMAGED:"تالف",LOST:"مفقودة",CANCELLED:"ملغاة"};
@@ -15,10 +17,12 @@ export default function CustodyPage(){
  const {has,permissions}=usePermissions();
  type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;transfer_code?:string|null};
  const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[cashEmployeeId,setCashEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
- const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
+ const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[message,setMessage]=useState(""),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
  const [transferCustodyId,setTransferCustodyId]=useState(""),[transferToEmployeeId,setTransferToEmployeeId]=useState(""),[transferNotes,setTransferNotes]=useState(""),[transferSaving,setTransferSaving]=useState(false);
  const [transferHistory,setTransferHistory]=useState<CustodyTransfer[]>([]),[historyCustodyCode,setHistoryCustodyCode]=useState("");
- const [cashTransferFromEmployeeId,setCashTransferFromEmployeeId]=useState(""),[cashTransferToEmployeeId,setCashTransferToEmployeeId]=useState(""),[cashTransferAmount,setCashTransferAmount]=useState(""),[cashTransferDescription,setCashTransferDescription]=useState("تحويل عهدة نقدية"),[cashTransferNotes,setCashTransferNotes]=useState(""),[cashTransferSaving,setCashTransferSaving]=useState(false);
+ const [orders,setOrders]=useState<Order[]>([]),[expenseOrderId,setExpenseOrderId]=useState(""),[expenseStageId,setExpenseStageId]=useState(""),[expenseStages,setExpenseStages]=useState<OrderStage[]>([]),[expenseEmployeeId,setExpenseEmployeeId]=useState(""),[expenseCategory,setExpenseCategory]=useState("خامات"),[expenseDescription,setExpenseDescription]=useState(""),[expenseAmount,setExpenseAmount]=useState(""),[expenseNotes,setExpenseNotes]=useState(""),[expenseSaving,setExpenseSaving]=useState(false),[expenseIdempotencyKey,setExpenseIdempotencyKey]=useState(""),[expenseIdempotencySignature,setExpenseIdempotencySignature]=useState("");
+  const [collectionOrderId,setCollectionOrderId]=useState(""),[collectionEmployeeId,setCollectionEmployeeId]=useState(""),[collectionAmount,setCollectionAmount]=useState(""),[collectionDescription,setCollectionDescription]=useState("تحصيل من العميل"),[collectionNotes,setCollectionNotes]=useState(""),[collectionSaving,setCollectionSaving]=useState(false),[collectionIdempotencyKey,setCollectionIdempotencyKey]=useState(""),[collectionIdempotencySignature,setCollectionIdempotencySignature]=useState("");
+  const [cashTransferFromEmployeeId,setCashTransferFromEmployeeId]=useState(""),[cashTransferToEmployeeId,setCashTransferToEmployeeId]=useState(""),[cashTransferAmount,setCashTransferAmount]=useState(""),[cashTransferDescription,setCashTransferDescription]=useState("تحويل عهدة نقدية"),[cashTransferNotes,setCashTransferNotes]=useState(""),[cashTransferSaving,setCashTransferSaving]=useState(false);
  async function load(){try{
   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
 
@@ -27,6 +31,8 @@ export default function CustodyPage(){
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
  useEffect(()=>{void load()},[employeeId]);
+  useEffect(()=>{let active=true;api<{data:Order[]}>("/api/orders").then(r=>{if(active)setOrders(r.data)}).catch(()=>{});return()=>{active=false}},[]);
+  useEffect(()=>{let active=true;if(!expenseOrderId){setExpenseStages([]);setExpenseStageId("");return}api<{data:{stages:OrderStage[]}}>(`/api/orders/${expenseOrderId}`).then(r=>{if(active)setExpenseStages(r.data.stages||[])}).catch(()=>{if(active)setExpenseStages([])});return()=>{active=false}},[expenseOrderId]);
  // Load employee options independently from the custody ledger so a ledger-view error
  // cannot block the picker. Support both all-scope and own-scope permissions.
  useEffect(()=>{
@@ -51,7 +57,31 @@ export default function CustodyPage(){
   if(has("cash_custody.view")||has("cash_custody.view_own"))setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل حركة العهدة النقدية")}finally{setCashSaving(false)}
 }
- async function openTransferHistory(x:Custody){try{setError("");setHistoryCustodyCode(x.code);setTransferHistory((await api<{data:CustodyTransfer[]}>("/api/custodies/"+x.id+"/transfers")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل التحويلات")}}
+ async function submitOrderExpense(e:FormEvent){
+  e.preventDefault();if(has("cash_custody.create")&&!expenseEmployeeId){setError("اختر الموظف الدافع قبل تسجيل المصروف");return}setExpenseSaving(true);setError("");
+  const payload={employeeId:expenseEmployeeId||undefined,orderId:expenseOrderId,orderStageId:expenseStageId||null,category:expenseCategory,description:expenseDescription.trim(),amount:Number(normalizeNumber(expenseAmount)),transactionDate:cashDate,notes:expenseNotes.trim()||null};
+  const signature=JSON.stringify(payload);
+  const idempotencyKey=expenseIdempotencySignature===signature&&expenseIdempotencyKey?expenseIdempotencyKey:crypto.randomUUID();
+  setExpenseIdempotencyKey(idempotencyKey);setExpenseIdempotencySignature(signature);
+  try{
+   await api("/api/cash-custody/order-expenses",{method:"POST",body:JSON.stringify({...payload,idempotencyKey})});
+   setExpenseAmount("");setExpenseDescription("");setExpenseNotes("");setExpenseIdempotencyKey("");setExpenseIdempotencySignature("");
+   setMessage("تم تحميل المصروف على الطلبية وخصمه من العهدة بنجاح");await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المصروف على الطلبية")}finally{setExpenseSaving(false)}
+ }
+ async function submitOrderCollection(e:FormEvent){
+  e.preventDefault();if(has("cash_custody.create")&&!collectionEmployeeId){setError("اختر الموظف المستلم قبل تسجيل التحصيل");return}setCollectionSaving(true);setError("");
+  const payload={employeeId:collectionEmployeeId||undefined,orderId:collectionOrderId,amount:Number(normalizeNumber(collectionAmount)),transactionDate:cashDate,description:collectionDescription.trim(),notes:collectionNotes.trim()||null};
+  const signature=JSON.stringify(payload);
+  const idempotencyKey=collectionIdempotencySignature===signature&&collectionIdempotencyKey?collectionIdempotencyKey:crypto.randomUUID();
+  setCollectionIdempotencyKey(idempotencyKey);setCollectionIdempotencySignature(signature);
+  try{
+   await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({...payload,idempotencyKey})});
+   setCollectionAmount("");setCollectionNotes("");setCollectionIdempotencyKey("");setCollectionIdempotencySignature("");
+   setMessage("تم تسجيل إيراد الطلبية وإضافته للعهدة في حركة واحدة");await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل وارد الطلبية")}finally{setCollectionSaving(false)}
+ }
+  async function openTransferHistory(x:Custody){try{setError("");setHistoryCustodyCode(x.code);setTransferHistory((await api<{data:CustodyTransfer[]}>("/api/custodies/"+x.id+"/transfers")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل التحويلات")}}
  async function submitCustodyTransfer(e:FormEvent){e.preventDefault();if(!transferCustodyId||!transferToEmployeeId){setError("اختر العهدة والموظف المستلم");return}setTransferSaving(true);setError("");try{await api("/api/custodies/"+transferCustodyId+"/transfer",{method:"POST",body:JSON.stringify({toEmployeeId:transferToEmployeeId,notes:transferNotes.trim()||null})});setTransferCustodyId("");setTransferToEmployeeId("");setTransferNotes("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تحويل العهدة")}finally{setTransferSaving(false)}}
  async function submitCashTransfer(e:FormEvent){e.preventDefault();setCashTransferSaving(true);setError("");try{await api("/api/cash-custody/transfers",{method:"POST",body:JSON.stringify({fromEmployeeId:cashTransferFromEmployeeId,toEmployeeId:cashTransferToEmployeeId,amount:Number(normalizeNumber(cashTransferAmount)),transactionDate:cashDate,description:cashTransferDescription.trim(),notes:cashTransferNotes.trim()||null})});setCashTransferAmount("");setCashTransferNotes("");setCashTransferDescription("تحويل عهدة نقدية");setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحويل العهدة النقدية")}finally{setCashTransferSaving(false)}}
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
@@ -71,7 +101,7 @@ export default function CustodyPage(){
   try{await api("/api/custodies/"+x.id+"/settlements",{method:"POST",body:JSON.stringify({returnedQuantity:q,lostQuantity:lost,damageValue:damage,shortageValue:shortage})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسوية العهدة")}
  }
  return <div className="app-shell"><Sidebar active="/custody"/><main className="main"><header className="topbar"><div><h1 className="page-title">عهد الموظفين</h1><p className="page-subtitle">تسجيل العهدة على الموظف، متابعة المتبقي، ثم تسويتها بسجل مستقل.</p></div></header><section className="content">
- {error&&<div className="alert error">{error}</div>}
+ {error&&<div className="alert error">{error}</div>}{message&&<div className="alert success">{message}</div>}
  {has("custody.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل عهدة</h2><div className="form-hint">كل عهدة تحصل على رقم CUS مستقل ولا تتغير قيمتها القديمة بعد التسوية.</div></div></div>
   <div className="form-grid">
    <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
@@ -93,6 +123,34 @@ export default function CustodyPage(){
 
  <section className="card" style={{marginTop:16}}>
   <div className="card-header"><div><h2 className="card-title">العهدة النقدية</h2><div className="form-hint">الداخل والخارج يسجلان كحركات مستقلة، والرصيد يحسب تلقائيًا. المحاسب/الأدمن يستطيعان إدارة عهد الجميع، وصاحب العهدة يدير عهدته فقط.</div></div><span className="count-badge">{cash.length}</span></div>
+  {(has("cash_custody.create")||has("cash_custody.create_own"))&&!has("orders.view")&&<div className="alert">تحتاج صلاحية عرض الطلبيات لاستخدام تسجيل مصروف أو تحصيل مرتبط بطلبية. اطلب من المسؤول ضبط الصلاحيات المناسبة.</div>}{(has("cash_custody.create")||has("cash_custody.create_own"))&&has("orders.view")&&<div className="form-grid" style={{padding:"16px 0",borderBottom:"1px solid var(--border)"}}>
+   <form className="form-card" onSubmit={submitOrderExpense} style={{gridColumn:"1/-1",padding:16}}>
+    <div className="card-header"><div><h3 className="card-title">صرف من العهدة على طلبية</h3><div className="form-hint">يسجل مصروفًا مباشرًا على الطلبية ويخصم نفس المبلغ من العهدة في عملية واحدة.</div></div></div>
+    <div className="form-grid">
+     <label>الطلبية<select value={expenseOrderId} onChange={e=>setExpenseOrderId(e.target.value)} required><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{o.code} — {o.order_name}</option>)}</select></label>
+     <label>مرحلة الإنتاج (اختياري)<select value={expenseStageId} onChange={e=>setExpenseStageId(e.target.value)} disabled={!expenseOrderId}><option value="">بدون مرحلة محددة</option>{expenseStages.map(st=><option key={st.id} value={st.id}>{st.sequence_no}. {st.stage_name}</option>)}</select></label>
+     {has("cash_custody.create")&&<label>الموظف الدافع<SearchableSelect value={expenseEmployeeId} onChange={setExpenseEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>}
+     <label>بند المصروف<select value={expenseCategory} onChange={e=>setExpenseCategory(e.target.value)}><option value="خامات">خامات</option><option value="مستلزمات">مستلزمات</option><option value="نقل">نقل</option><option value="تشغيل">تشغيل</option><option value="أخرى">أخرى</option></select></label>
+     <label>المبلغ<input inputMode="decimal" value={expenseAmount} onChange={e=>setExpenseAmount(e.target.value)} required/></label>
+     <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
+     <label style={{gridColumn:"1/-1"}}>البيان<input value={expenseDescription} onChange={e=>setExpenseDescription(e.target.value)} placeholder="مثال: شراء خامات أكريليك للطلبية" required minLength={2}/></label>
+     <label style={{gridColumn:"1/-1"}}>ملاحظات<input value={expenseNotes} onChange={e=>setExpenseNotes(e.target.value)}/></label>
+     <div className="form-actions"><button className="primary-button" disabled={expenseSaving||!expenseOrderId||!expenseAmount||Number(normalizeNumber(expenseAmount))<=0||!expenseDescription.trim()}>{expenseSaving?"جارٍ تسجيل المصروف...":"تسجيل المصروف وخصمه من العهدة"}</button></div>
+    </div>
+   </form>
+   <form className="form-card" onSubmit={submitOrderCollection} style={{gridColumn:"1/-1",padding:16}}>
+    <div className="card-header"><div><h3 className="card-title">وارد طلبية على عهدة موظف</h3><div className="form-hint">يسجل تحصيل العميل كإيراد للطلبية ويضيف المبلغ لعهدة الموظف مرة واحدة.</div></div></div>
+    <div className="form-grid">
+     <label>الطلبية<select value={collectionOrderId} onChange={e=>setCollectionOrderId(e.target.value)} required><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{o.code} — {o.order_name}</option>)}</select></label>
+     {has("cash_custody.create")&&<label>الموظف المستلم<SearchableSelect value={collectionEmployeeId} onChange={setCollectionEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>}
+     <label>المبلغ المستلم<input inputMode="decimal" value={collectionAmount} onChange={e=>setCollectionAmount(e.target.value)} required/></label>
+     <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
+     <label style={{gridColumn:"1/-1"}}>البيان<input value={collectionDescription} onChange={e=>setCollectionDescription(e.target.value)} required minLength={2}/></label>
+     <label style={{gridColumn:"1/-1"}}>ملاحظات<input value={collectionNotes} onChange={e=>setCollectionNotes(e.target.value)}/></label>
+     <div className="form-actions"><button className="primary-button" disabled={collectionSaving||!collectionOrderId||!collectionAmount||Number(normalizeNumber(collectionAmount))<=0||!collectionDescription.trim()}>{collectionSaving?"جارٍ تسجيل التحصيل...":"تسجيل الوارد والإضافة للعهدة"}</button></div>
+    </div>
+   </form>
+  </div>}
   {(has("cash_custody.create")||has("cash_custody.create_own"))&&<form className="form-grid" onSubmit={submitCash}>
    <label>اتجاه الحركة<select value={cashDirection} onChange={e=>setCashDirection(e.target.value as "IN"|"OUT")}><option value="IN">داخل إلى العهدة</option><option value="OUT">صرف من العهدة</option></select></label>
    {(has("cash_custody.create")||has("cash_custody.view")||has("custody.create")||has("custody.view"))?<label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>:<div className="form-hint">الحركة هتتسجل على عهدتك الشخصية حسب صلاحيات حسابك.</div>}
