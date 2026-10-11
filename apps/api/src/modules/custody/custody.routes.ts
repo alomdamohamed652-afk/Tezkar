@@ -455,8 +455,6 @@ export async function custodyRoutes(app:FastifyInstance){
         if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
       }
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
-      const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[employeeId,date]);
-      if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المبلغ المطلوب أكبر من رصيد العهدة النقدية المتاح في هذا التاريخ",409);
       const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({
         orderId:p.data.orderId,orderStageId:p.data.orderStageId??null,employeeId,
         category:p.data.category,description:p.data.description,amountMinor:Math.round(p.data.amount*100),
@@ -471,6 +469,8 @@ export async function custodyRoutes(app:FastifyInstance){
         if(existing.idempotency_payload_hash!==idempotencyPayloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
         return {expense:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes},order:order.rows[0]};
       }
+      const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[employeeId,date]);
+      if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المبلغ المطلوب أكبر من رصيد العهدة النقدية المتاح في هذا التاريخ",409);
       const expense=await client.query(
         "INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,'DIRECT',$8,$9,$10) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
         [p.data.orderId,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId,p.data.idempotencyKey,idempotencyPayloadHash]
