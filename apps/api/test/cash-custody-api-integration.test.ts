@@ -414,12 +414,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       )).rows[0];
       const invalidPrecisionCollection=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
-        payload:{orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.501,transactionDate:"2099-02-10",description:"Invalid precision collection",idempotencyKey:randomUUID()}
+        payload:{orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.501,transactionDate:"2099-03-10",description:"Invalid precision collection",idempotencyKey:randomUUID()}
       });
       assert.equal(invalidPrecisionCollection.statusCode,422,invalidPrecisionCollection.body);
       const collectionPayload={
         orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.50,
-        transactionDate:"2099-02-10",description:"Customer collection idempotency test",
+        transactionDate:"2099-03-10",description:"Customer collection idempotency test",
         notes:"Same request retry",idempotencyKey:randomUUID()
       };
       const collectionFirst=await app.inject({
