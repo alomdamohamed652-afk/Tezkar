@@ -183,7 +183,7 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
-      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>
+      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>}
       <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
       {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>setTab("orders")}>كل الطلبيات والتحليل</button>}
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
