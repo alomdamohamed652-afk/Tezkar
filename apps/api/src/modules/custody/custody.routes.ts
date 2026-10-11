@@ -437,7 +437,7 @@ export async function custodyRoutes(app:FastifyInstance){
   // One atomic event: charge a direct order expense and deduct the same amount
   // from the paying employee's cash custody. No second expense or cash movement.
   app.post("/api/cash-custody/order-expenses",{
-    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]
+    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"]),requirePermission("orders.view")]
   },async(request,reply)=>{
     const p=orderExpenseSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مصروف الطلبية غير صحيحة",422);
