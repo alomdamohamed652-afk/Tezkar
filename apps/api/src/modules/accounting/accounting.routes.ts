@@ -34,7 +34,7 @@ const revenueSchema=z.object({
 const idSchema=z.object({orderId:z.string().uuid()});
 
 async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined){
- const result=await client.query("SELECT id,name FROM accounting_periods WHERE status='CLOSED' AND $1::date BETWEEN period_start AND period_end LIMIT 1",[date??new Date().toISOString().slice(0,10)]);
+ const result=await client.query("SELECT id,name FROM accounting_periods WHERE status='CLOSED' AND COALESCE($1::date,current_date) BETWEEN period_start AND period_end LIMIT 1",[date??null]);
  if(result.rowCount)throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
 }
 
@@ -265,7 +265,8 @@ export async function accountingRoutes(app:FastifyInstance){
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر حالة الطلبيات غير صحيح",422);
   const params:unknown[]=[];const where:string[]=[];
   if(q.data.status){params.push(q.data.status);where.push("o.status=$1");}
-  const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,
+  const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,o.contract_value,
+    COALESCE(o.contract_value,0) AS accrued_revenue,
     COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS revenue,
     COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0) AS direct_expenses,
     COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED'),0) AS administrative_allocation,
@@ -275,14 +276,15 @@ export async function accountingRoutes(app:FastifyInstance){
   const data=result.rows.map(row=>{
    const revenue=Number(row.revenue||0),direct=Number(row.direct_expenses||0),admin=Number(row.administrative_allocation||0),material=Number(row.material_cost||0),labor=Number(row.labor_cost||0);
    const totalCost=direct+admin+material+labor;
-   return {...row,revenue,direct_expenses:direct,administrative_allocation:admin,material_cost:material,labor_cost:labor,total_cost:totalCost,profit:revenue-totalCost,margin_percent:revenue>0?((revenue-totalCost)/revenue)*100:null};
+   const accruedRevenue=Number(row.accrued_revenue??row.contract_value??0);
+   return {...row,revenue,accrued_revenue:accruedRevenue,direct_expenses:direct,administrative_allocation:admin,material_cost:material,labor_cost:labor,total_cost:totalCost,profit:revenue-totalCost,accrued_profit:accruedRevenue-totalCost,margin_percent:revenue>0?((revenue-totalCost)/revenue)*100:null,accrued_margin_percent:accruedRevenue>0?((accruedRevenue-totalCost)/accruedRevenue)*100:null};
   });
   return {data,summary:{orders:data.length,revenue:data.reduce((s,r)=>s+r.revenue,0),cost:data.reduce((s,r)=>s+r.total_cost,0),profit:data.reduce((s,r)=>s+r.profit,0)}};
  });
 
  app.get("/api/accounting/orders/:orderId/profitability",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
   const p=idSchema.safeParse(request.params);if(!p.success)throw new AppError("VALIDATION_ERROR","الطلبية غير صحيحة",422);
-  const order=await pool.query("SELECT id,code,order_name,status,customer_name FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+  const order=await pool.query("SELECT id,code,order_name,status,customer_name,COALESCE(contract_value,0) AS accrued_revenue FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
    pool.query(`SELECT
@@ -297,6 +299,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const materialValue=Number(stockOut.rows[0].value||0);
   const laborValue=Number(labor.rows[0].value||0);
   const totalCost=explicitExpenses+administrativeAllocation+materialValue+laborValue;
-  return {data:{order:order.rows[0],revenue:revenueValue,expenses:explicitExpenses,administrativeAllocation,materialCost:materialValue,laborCost:laborValue,totalCost,profit:revenueValue-totalCost,marginPercent:revenueValue>0?((revenueValue-totalCost)/revenueValue)*100:null}};
+  const accruedRevenue=Number(order.rows[0].accrued_revenue||0);
+  return {data:{order:order.rows[0],accruedRevenue,revenue:revenueValue,expenses:explicitExpenses,administrativeAllocation,materialCost:materialValue,laborCost:laborValue,totalCost,profit:revenueValue-totalCost,marginPercent:revenueValue>0?((revenueValue-totalCost)/revenueValue)*100:null}};
  });
 }
