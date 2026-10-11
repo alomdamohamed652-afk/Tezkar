@@ -70,35 +70,21 @@ try {
     beforeCounts[table] = Number(result.rows[0]?.count ?? 0);
   }
 
-  // Keep the bootstrap manager (and a conventional admin account if present),
-  // but remove trial accounts and revoke all of their sessions.
+  // Revoke old sessions and detach the retained bootstrap/admin user from
+  // employee records before clearing business tables. Other trial users are
+  // removed only after their dependent audit/task/etc. rows have been cleared.
   if (present.has("user_sessions")) {
     await client.query("DELETE FROM public.user_sessions");
-  }
-  if (present.has("user_roles")) {
-    await client.query(`
-      DELETE FROM public.user_roles ur
-      WHERE NOT EXISTS (
-        SELECT 1 FROM public.users u
-        WHERE u.id = ur.user_id
-          AND (COALESCE(u.is_bootstrap, FALSE) = TRUE OR u.username = 'admin')
-      )`);
   }
   await client.query(`
     UPDATE public.users
     SET employee_id = NULL
     WHERE COALESCE(is_bootstrap, FALSE) = TRUE OR username = 'admin'
   `);
-  await client.query(`
-    DELETE FROM public.users
-    WHERE COALESCE(is_bootstrap, FALSE) = FALSE
-      AND username <> 'admin'
-  `);
 
-  // Delete all ordinary business/master-data tables child-first. This is
-  // discovered from the live database's FK graph instead of assuming a fixed
-  // migration/schema version.
-  const targets = allTables.filter((table) => !keep.has(table));
+  // Delete all ordinary business/master-data tables child-first. Employees
+  // are handled after dependent tables and non-admin users are removed.
+  const targets = allTables.filter((table) => !keep.has(table) && table !== "employees");
   const targetSet = new Set(targets);
   const dependencies = await client.query<{ child: string; parent: string }>(
     `SELECT child.relname AS child, parent.relname AS parent
@@ -146,6 +132,24 @@ try {
     const result = await client.query(`DELETE FROM ${qualified(table)}`);
     deleted[table] = result.rowCount ?? 0;
   }
+
+  // Now all rows referencing trial users/employees have been cleared.
+  if (present.has("user_roles")) {
+    await client.query(`
+      DELETE FROM public.user_roles ur
+      WHERE NOT EXISTS (
+        SELECT 1 FROM public.users u
+        WHERE u.id = ur.user_id
+          AND (COALESCE(u.is_bootstrap, FALSE) = TRUE OR u.username = 'admin')
+      )`);
+  }
+  await client.query(`
+    DELETE FROM public.users
+    WHERE COALESCE(is_bootstrap, FALSE) = FALSE
+      AND username <> 'admin'
+  `);
+  const employeeDelete = await client.query("DELETE FROM public.employees");
+  deleted.employees = employeeDelete.rowCount ?? 0;
 
   // Preserve one base warehouse and, if available, one of its locations.
   // All inventory and movements have already been removed above.
