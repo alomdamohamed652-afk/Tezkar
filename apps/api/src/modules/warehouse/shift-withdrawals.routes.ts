@@ -96,17 +96,20 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
 export async function shiftWithdrawalRoutes(app:FastifyInstance){
  app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
   const r=await pool.query(`
-    SELECT sw.id,sw.code,sw.withdrawal_date,sw.notes,
+    SELECT sw.id,sw.code,sw.withdrawal_date,sw.created_at,sw.notes,
            s.code AS shift_code,s.name AS shift_name,
            e.code AS employee_code,e.full_name AS employee_name,
            o.code AS order_code,o.order_name,
            COUNT(l.id)::int AS line_count,
-           COALESCE(SUM(l.quantity),0) AS total_quantity
+           COALESCE(SUM(l.quantity),0) AS total_quantity,
+           COALESCE(string_agg(DISTINCT p.name,' '),'') AS product_names,
+           COALESCE(string_agg(DISTINCT NULLIF(l.notes,''),' '),'') AS line_descriptions
       FROM shift_withdrawals sw
       JOIN shifts s ON s.id=sw.shift_id
       LEFT JOIN employees e ON e.id=sw.employee_id
       LEFT JOIN production_orders o ON o.id=sw.order_id
       LEFT JOIN shift_withdrawal_lines l ON l.withdrawal_id=sw.id
+      LEFT JOIN products p ON p.id=l.product_id
      GROUP BY sw.id,s.code,s.name,e.code,e.full_name,o.code,o.order_name
      ORDER BY sw.withdrawal_date DESC,sw.created_at DESC
      LIMIT 300`);
