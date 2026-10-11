@@ -126,8 +126,8 @@ export default function ShiftWithdrawalsPage(){
      </div>
      <div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>{setFilterFrom("");setFilterTo("");setFilterTimeFrom("");setFilterTimeTo("");setFilterShift("ALL");setFilterEmployee("ALL");setFilterOrder("ALL");setFilterProduct("");setFilterDescription("")}}>مسح الفلاتر</button></div>
     </div>
-    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead>
-     <tbody>{filteredRows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!filteredRows.length&&<tr><td colSpan={8}>لا توجد مسحوبات مطابقة للفلاتر.</td></tr>}</tbody>
+    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوقت</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead>
+     <tbody>{filteredRows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.created_at?new Date(r.created_at).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):"—"}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!filteredRows.length&&<tr><td colSpan={9}>لا توجد مسحوبات مطابقة للفلاتر.</td></tr>}</tbody>
     </table></div>
    </section>
   </section></main></div>;
