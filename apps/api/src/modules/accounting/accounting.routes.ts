@@ -261,18 +261,24 @@ export async function accountingRoutes(app:FastifyInstance){
 
 
  app.get("/api/accounting/orders-dashboard",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
-  const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional()}).safeParse(request.query);
-  if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر حالة الطلبيات غير صحيح",422);
-  const params:unknown[]=[];const where:string[]=[];
-  if(q.data.status){params.push(q.data.status);where.push("o.status=$1");}
+  const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),periodId:z.string().uuid().optional()}).safeParse(request.query);
+  if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الحالة أو الفترة المالية غير صحيح",422);
+  let periodStart:string|null=null;let periodEnd:string|null=null;
+  if(q.data.periodId){
+    const period=await pool.query("SELECT id,period_start,period_end,status FROM accounting_periods WHERE id=$1",[q.data.periodId]);
+    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+    if(period.rows[0].status!=="CLOSED")throw new AppError("ACCOUNTING_PERIOD_NOT_CLOSED","اختَر فترة مالية مقفولة لعرض تقريرها المعتمد",409);
+    periodStart=period.rows[0].period_start;periodEnd=period.rows[0].period_end;
+  }
+  const params=[periodStart,periodEnd,q.data.status??null,q.data.periodId??null];
   const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,o.contract_value,
     COALESCE(o.contract_value,0) AS accrued_revenue,
-    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS revenue,
-    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0) AS direct_expenses,
-    COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED'),0) AS administrative_allocation,
-    COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0) AS material_cost,
-    COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS labor_cost
-    FROM production_orders o ${where.length?"WHERE "+where.join(" AND "):""} ORDER BY o.created_at DESC`,params);
+    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id AND ($1::date IS NULL OR r.revenue_date BETWEEN $1::date AND $2::date)),0) AS revenue,
+    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
+    COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED' AND ($4::uuid IS NULL OR a.period_id=$4::uuid)),0) AS administrative_allocation,
+    COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY' AND ($1::date IS NULL OR sm.created_at::date BETWEEN $1::date AND $2::date)),0) AS material_cost,
+    COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND ($1::date IS NULL OR pe.work_date BETWEEN $1::date AND $2::date)),0) AS labor_cost
+    FROM production_orders o WHERE ($3::text IS NULL OR o.status=$3::text) ORDER BY o.created_at DESC`,params);
   const data=result.rows.map(row=>{
    const revenue=Number(row.revenue||0),direct=Number(row.direct_expenses||0),admin=Number(row.administrative_allocation||0),material=Number(row.material_cost||0),labor=Number(row.labor_cost||0);
    const totalCost=direct+admin+material+labor;
