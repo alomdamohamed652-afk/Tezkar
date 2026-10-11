@@ -58,7 +58,7 @@ export default function CustodyPage(){
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل حركة العهدة النقدية")}finally{setCashSaving(false)}
 }
  async function submitOrderExpense(e:FormEvent){
-  e.preventDefault();setExpenseSaving(true);setError("");
+  e.preventDefault();if(has("cash_custody.create")&&!expenseEmployeeId){setError("اختر الموظف الدافع قبل تسجيل المصروف");return}setExpenseSaving(true);setError("");
   const payload={employeeId:expenseEmployeeId||undefined,orderId:expenseOrderId,orderStageId:expenseStageId||null,category:expenseCategory,description:expenseDescription.trim(),amount:Number(normalizeNumber(expenseAmount)),transactionDate:cashDate,notes:expenseNotes.trim()||null};
   const signature=JSON.stringify(payload);
   const idempotencyKey=expenseIdempotencySignature===signature&&expenseIdempotencyKey?expenseIdempotencyKey:crypto.randomUUID();
@@ -70,7 +70,7 @@ export default function CustodyPage(){
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المصروف على الطلبية")}finally{setExpenseSaving(false)}
  }
  async function submitOrderCollection(e:FormEvent){
-  e.preventDefault();setCollectionSaving(true);setError("");
+  e.preventDefault();if(has("cash_custody.create")&&!collectionEmployeeId){setError("اختر الموظف المستلم قبل تسجيل التحصيل");return}setCollectionSaving(true);setError("");
   const payload={employeeId:collectionEmployeeId||undefined,orderId:collectionOrderId,amount:Number(normalizeNumber(collectionAmount)),transactionDate:cashDate,description:collectionDescription.trim(),notes:collectionNotes.trim()||null};
   const signature=JSON.stringify(payload);
   const idempotencyKey=collectionIdempotencySignature===signature&&collectionIdempotencyKey?collectionIdempotencyKey:crypto.randomUUID();
