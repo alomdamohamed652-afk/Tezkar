@@ -7,8 +7,8 @@ import {formatMoney} from "../../lib/format";
 
 type Order = { id: string; code: string; order_name: string; status?: string };
 type Profit = {
-  order: { id: string; code: string; order_name: string; customer_name: string | null; status: string };
-  revenue: number; expenses: number; administrativeAllocation?: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
+  order: { id: string; code: string; order_name: string; customer_name: string | null; status: string; accrued_revenue?: number };
+  accruedRevenue?: number; revenue: number; expenses: number; administrativeAllocation?: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
 };
 type Employee = {id:string;full_name:string;code:string};
 type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"CLOSED";allocation_count:number;allocated_amount:number};
