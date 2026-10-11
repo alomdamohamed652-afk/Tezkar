@@ -325,14 +325,22 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
     const p=parsed.data;
-    if(p.status!==undefined) throw new AppError("ORDER_STATUS_TRANSITION_REQUIRED","تغيير حالة الطلب يجب أن يتم من خلال إجراء انتقال الحالة المخصص",409);
     const result=await withTransaction(async client=>{
       const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
-      if(current.rows[0].status==="COMPLETED" && Object.keys(p).length>0){
-        throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن تعديل طلب مكتمل",409);
+      const before=current.rows[0];
+      if(before.status==="CANCELLED") throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل طلبية ملغاة",409);
+      if(before.status==="COMPLETED" && (p.status===undefined || p.status==="COMPLETED") && Object.keys(p).some(k=>k!=="status")){
+        throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل بياناتها",409);
       }
-
+      if(p.status!==undefined && p.status!==before.status){
+        const allowed:Record<string,string[]>={DRAFT:["PLANNED","CANCELLED"],PLANNED:["DRAFT","IN_PROGRESS","CANCELLED"],IN_PROGRESS:["COMPLETED","PLANNED","CANCELLED"],COMPLETED:["IN_PROGRESS"],CANCELLED:[]};
+        if(!(allowed[before.status]??[]).includes(p.status)) throw new AppError("ORDER_STATUS_TRANSITION_INVALID","انتقال حالة الطلبية غير مسموح",409);
+        if(p.status==="COMPLETED"){
+          const pending=await client.query("SELECT COUNT(*)::int AS count FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='PENDING'",[id]);
+          if(Number(pending.rows[0]?.count||0)>0) throw new AppError("ORDER_HAS_PENDING_PRODUCTION","لا يمكن إكمال الطلبية قبل مراجعة كل تسجيلات الإنتاج المعلقة",409);
+        }
+      }
       const fields:string[]=[];
       const values:unknown[]=[];
       const add=(field:string,value:unknown)=>{values.push(value);fields.push(field+"=$"+values.length);};
@@ -342,11 +350,11 @@ export async function orderRoutes(app: FastifyInstance) {
       if(p.dueDate!==undefined)add("due_date",p.dueDate);
       if(p.lastDeliveryDate!==undefined)add("last_delivery_date",p.lastDeliveryDate);
       if(p.notes!==undefined)add("notes",p.notes);
-      if(!fields.length)return current.rows[0];
-
+      if(p.status!==undefined)add("status",p.status);
+      if(!fields.length)return before;
       values.push(id);
       const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=${values.length} RETURNING *`,values);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return { data:result };
