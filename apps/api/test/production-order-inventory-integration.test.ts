@@ -625,6 +625,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(concurrentOrder.statusCode, 201, concurrentOrder.body);
     const concurrentOrderId = concurrentOrder.json().data.id as string;
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [concurrentOrderId]);
     const concurrentStage = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",
       [concurrentOrderId]
