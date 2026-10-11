@@ -45,6 +45,7 @@ export default function AccountingPage() {
   const collectionIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
+  const [dashboardPeriodId,setDashboardPeriodId]=useState("");
   const [selectedPeriodId,setSelectedPeriodId]=useState("");
   const [periodDetail,setPeriodDetail]=useState<PeriodDetail|null>(null);
   const [periodForm,setPeriodForm]=useState({name:"",periodStart:new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10),periodEnd:new Date().toISOString().slice(0,10),notes:""});
@@ -61,7 +62,7 @@ export default function AccountingPage() {
         api<{data:Revenue[]}>("/api/accounting/revenues")
       ]);
       setOrders(o.data);setExpenses(e.data);setRevenues(r.data);
-      if(has("finance.profitability.view"))api<{data:OrderFinanceRow[]}>("/api/accounting/orders-dashboard").then(x=>setOrderFinance(x.data)).catch(()=>{});
+      if(has("finance.profitability.view"))void loadOrderFinance("");
       if(has("cash_custody.view")||has("cash_custody.view_own"))api<{data:CashTx[]}>("/api/cash-custody").then(x=>setCashTransactions(x.data)).catch(()=>{});
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
@@ -80,6 +81,14 @@ export default function AccountingPage() {
     if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
     return()=>{active=false};
   },[has]);
+  async function loadOrderFinance(periodId=dashboardPeriodId) {
+    try {
+      const suffix=periodId?"?periodId="+encodeURIComponent(periodId):"";
+      const result=await api<{data:OrderFinanceRow[]}>("/api/accounting/orders-dashboard"+suffix);
+      setOrderFinance(result.data);
+    } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل تحليل الطلبيات"); }
+  }
+
   async function loadPeriods(){
     if(!has("finance.period_close.view"))return;
     try{setPeriods((await api<{data:AccountingPeriod[]}>("/api/accounting/periods")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل فترات التصفية")}
@@ -185,7 +194,7 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
       {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>}
       <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
-      {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>setTab("orders")}>كل الطلبيات والتحليل</button>}
+      {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>{setTab("orders");void loadPeriods()}}>كل الطلبيات والتحليل</button>}
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
       {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
      </div>
