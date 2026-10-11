@@ -33,7 +33,11 @@ export default function AccountingPage() {
   const [revenues,setRevenues]=useState<Revenue[]>([]);
   const [orderFinance,setOrderFinance]=useState<OrderFinanceRow[]>([]);
   const [cashTransactions,setCashTransactions]=useState<CashTx[]>([]);
-  const [eForm,setEForm]=useState({category:"مصاريف لخدمة المصنع",description:"",amount:"",expenseDate:new Date().toISOString().slice(0,10),orderId:"",orderStageId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});\n  const [adminExpenseFrom,setAdminExpenseFrom]=useState("");\n  const [adminExpenseTo,setAdminExpenseTo]=useState("");\n  const [adminExpenseCategory,setAdminExpenseCategory]=useState("ALL");\n  const [adminExpenseSearch,setAdminExpenseSearch]=useState("");
+  const [eForm,setEForm]=useState({category:"مصاريف لخدمة المصنع",description:"",amount:"",expenseDate:new Date().toISOString().slice(0,10),orderId:"",orderStageId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
+  const [adminExpenseFrom,setAdminExpenseFrom]=useState("");
+  const [adminExpenseTo,setAdminExpenseTo]=useState("");
+  const [adminExpenseCategory,setAdminExpenseCategory]=useState("ALL");
+  const [adminExpenseSearch,setAdminExpenseSearch]=useState("");
   const [expenseStages,setExpenseStages]=useState<Array<{id:string;stage_name:string;sequence_no:number;status:string}>>([]);
   const [topUpForm,setTopUpForm]=useState({employeeId:"",amount:"",transactionDate:new Date().toISOString().slice(0,10),description:"إضافة رصيد عهدة من خارج حسابات الشركة",notes:""});
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
@@ -178,7 +182,8 @@ export default function AccountingPage() {
      <div className="tabs finance-tabs">
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
-      <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>\n      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>
+      <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
+      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>
       <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
       {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>setTab("orders")}>كل الطلبيات والتحليل</button>}
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
@@ -240,7 +245,8 @@ export default function AccountingPage() {
        <label>الدفع من عهدة موظف <span className="optional">اختياري</span><select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value})}><option value="">ليس من عهدة موظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
        <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
        <label>الوصف<input value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value})}/></label>
-       <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value})}/></label>\n       <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
+       <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value})}/></label>
+       <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
       </div>}
       {has("finance.expenses.create")&&<div className="form-actions"><button className="primary-button" onClick={addExpense}>تسجيل المصروف</button></div>}
       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={7}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
