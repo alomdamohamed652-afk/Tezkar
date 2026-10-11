@@ -176,7 +176,7 @@ export async function orderRoutes(app: FastifyInstance) {
     let where = "WHERE o.status <> 'CANCELLED'";
     if (q.status) { params.push(q.status); where = "WHERE o.status=$1"; }
     const r = await pool.query(
-      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,
+      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,o.contract_value,
               COALESCE((SELECT COUNT(*)::int FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS line_count,
               COALESCE((SELECT SUM(ol.quantity) FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS ordered_quantity,
               COALESCE((SELECT SUM(os.completed_quantity) FROM order_stages os WHERE os.order_id=o.id AND os.status <> 'CANCELLED' AND (os.is_final_product=TRUE OR (NOT EXISTS(SELECT 1 FROM order_stages f WHERE f.order_id=o.id AND f.is_final_product=TRUE AND f.status <> 'CANCELLED') AND os.sequence_no=(SELECT MAX(os2.sequence_no) FROM order_stages os2 WHERE os2.order_id=o.id AND os2.status <> 'CANCELLED')))),0) AS completed_quantity
