@@ -123,6 +123,34 @@ export default function CustodyPage(){
 
  <section className="card" style={{marginTop:16}}>
   <div className="card-header"><div><h2 className="card-title">العهدة النقدية</h2><div className="form-hint">الداخل والخارج يسجلان كحركات مستقلة، والرصيد يحسب تلقائيًا. المحاسب/الأدمن يستطيعان إدارة عهد الجميع، وصاحب العهدة يدير عهدته فقط.</div></div><span className="count-badge">{cash.length}</span></div>
+  {(has("cash_custody.create")||has("cash_custody.create_own"))&&<div className="form-grid" style={{padding:"16px 0",borderBottom:"1px solid var(--border)"}}>
+   <form className="form-card" onSubmit={submitOrderExpense} style={{gridColumn:"1/-1",padding:16}}>
+    <div className="card-header"><div><h3 className="card-title">صرف من العهدة على طلبية</h3><div className="form-hint">يسجل مصروفًا مباشرًا على الطلبية ويخصم نفس المبلغ من العهدة في عملية واحدة.</div></div></div>
+    <div className="form-grid">
+     <label>الطلبية<select value={expenseOrderId} onChange={e=>setExpenseOrderId(e.target.value)} required><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{o.code} — {o.order_name}</option>)}</select></label>
+     <label>مرحلة الإنتاج (اختياري)<select value={expenseStageId} onChange={e=>setExpenseStageId(e.target.value)} disabled={!expenseOrderId}><option value="">بدون مرحلة محددة</option>{expenseStages.map(st=><option key={st.id} value={st.id}>{st.sequence_no}. {st.stage_name}</option>)}</select></label>
+     {(has("cash_custody.create")||has("cash_custody.view"))&&<label>الموظف الدافع<SearchableSelect value={expenseEmployeeId} onChange={setExpenseEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>}
+     <label>بند المصروف<select value={expenseCategory} onChange={e=>setExpenseCategory(e.target.value)}><option value="خامات">خامات</option><option value="مستلزمات">مستلزمات</option><option value="نقل">نقل</option><option value="تشغيل">تشغيل</option><option value="أخرى">أخرى</option></select></label>
+     <label>المبلغ<input inputMode="decimal" value={expenseAmount} onChange={e=>setExpenseAmount(e.target.value)} required/></label>
+     <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
+     <label style={{gridColumn:"1/-1"}}>البيان<input value={expenseDescription} onChange={e=>setExpenseDescription(e.target.value)} placeholder="مثال: شراء خامات أكريليك للطلبية" required minLength={2}/></label>
+     <label style={{gridColumn:"1/-1"}}>ملاحظات<input value={expenseNotes} onChange={e=>setExpenseNotes(e.target.value)}/></label>
+     <div className="form-actions"><button className="primary-button" disabled={expenseSaving||!expenseOrderId||!expenseAmount||Number(normalizeNumber(expenseAmount))<=0||!expenseDescription.trim()}>{expenseSaving?"جارٍ تسجيل المصروف...":"تسجيل المصروف وخصمه من العهدة"}</button></div>
+    </div>
+   </form>
+   <form className="form-card" onSubmit={submitOrderCollection} style={{gridColumn:"1/-1",padding:16}}>
+    <div className="card-header"><div><h3 className="card-title">وارد طلبية على عهدة موظف</h3><div className="form-hint">يسجل تحصيل العميل كإيراد للطلبية ويضيف المبلغ لعهدة الموظف مرة واحدة.</div></div></div>
+    <div className="form-grid">
+     <label>الطلبية<select value={collectionOrderId} onChange={e=>setCollectionOrderId(e.target.value)} required><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{o.code} — {o.order_name}</option>)}</select></label>
+     {(has("cash_custody.create")||has("cash_custody.view"))&&<label>الموظف المستلم<SearchableSelect value={collectionEmployeeId} onChange={setCollectionEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>}
+     <label>المبلغ المستلم<input inputMode="decimal" value={collectionAmount} onChange={e=>setCollectionAmount(e.target.value)} required/></label>
+     <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
+     <label style={{gridColumn:"1/-1"}}>البيان<input value={collectionDescription} onChange={e=>setCollectionDescription(e.target.value)} required minLength={2}/></label>
+     <label style={{gridColumn:"1/-1"}}>ملاحظات<input value={collectionNotes} onChange={e=>setCollectionNotes(e.target.value)}/></label>
+     <div className="form-actions"><button className="primary-button" disabled={collectionSaving||!collectionOrderId||!collectionAmount||Number(normalizeNumber(collectionAmount))<=0||!collectionDescription.trim()}>{collectionSaving?"جارٍ تسجيل التحصيل...":"تسجيل الوارد والإضافة للعهدة"}</button></div>
+    </div>
+   </form>
+  </div>}
   {(has("cash_custody.create")||has("cash_custody.create_own"))&&<form className="form-grid" onSubmit={submitCash}>
    <label>اتجاه الحركة<select value={cashDirection} onChange={e=>setCashDirection(e.target.value as "IN"|"OUT")}><option value="IN">داخل إلى العهدة</option><option value="OUT">صرف من العهدة</option></select></label>
    {(has("cash_custody.create")||has("cash_custody.view")||has("custody.create")||has("custody.view"))?<label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>:<div className="form-hint">الحركة هتتسجل على عهدتك الشخصية حسب صلاحيات حسابك.</div>}
