@@ -65,6 +65,11 @@ const cashSchema=z.object({
   confirmDuplicate:z.boolean().optional().default(false)
 });
 
+async function assertPostingDateOpen(client:import("pg").PoolClient,date:string){
+  const closed=await client.query("SELECT id,name FROM accounting_periods WHERE status='CLOSED' AND $1::date BETWEEN period_start AND period_end LIMIT 1",[date]);
+  if(closed.rowCount)throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عهدة أو تحصيل عادي عليها. استخدم إجراء التصحيح المعتمد.",409);
+}
+
 async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,permissionCode:"cash_custody.view"|"cash_custody.create"){
   const user=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
   const row=user.rows[0];
@@ -254,6 +259,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const ids=[p.data.fromEmployeeId,p.data.toEmployeeId].sort();const locked=await client.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE ORDER BY id FOR UPDATE",[ids]);
       if(locked.rowCount!==2)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف المحول أو المستلم غير موجود أو غير نشط",422);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[p.data.fromEmployeeId,date]);
       if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","مبلغ التحويل أكبر من رصيد العهدة النقدية المتاح",409);
       const transfer=await client.query("INSERT INTO cash_custody_transfers(from_employee_id,to_employee_id,amount,transaction_date,description,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",[p.data.fromEmployeeId,p.data.toEmployeeId,p.data.amount,date,p.data.description,p.data.notes??null,request.user!.userId]);
@@ -287,6 +293,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
       const order=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -352,6 +359,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       const duplicate=await client.query("SELECT id FROM cash_custody_transactions WHERE employee_id=$1 AND direction='IN' AND amount=$2 AND transaction_date=$3 AND source_type='EXTERNAL_TOP_UP' LIMIT 1 FOR SHARE",[p.data.employeeId,p.data.amount,date]);
       if(duplicate.rowCount)throw new AppError("DUPLICATE_CUSTODY_TOP_UP","توجد إضافة رصيد بنفس الموظف والمبلغ والتاريخ؛ راجع الحركة السابقة قبل التسجيل",409);
       const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
@@ -395,6 +403,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const employeeId=access.employeeId!;
       if(p.data.direction==="IN"&&!access.isFinance)throw new AppError("FINANCE_SCOPE_REQUIRED","إضافة رصيد للعهدة متاحة للمدير المالي فقط؛ التحصيل من العميل له إجراء مستقل",403);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       // Serialize balance and duplicate checks per employee to prevent concurrent overspending.
       const employeeLock=await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
       if(!employeeLock.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",422);
