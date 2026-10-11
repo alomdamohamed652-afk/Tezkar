@@ -7,6 +7,8 @@ import {SearchableSelect} from "../../components/searchable-select";
 
 type Custody={id:string;code:string;employee_id:string;employee_name:string;custody_type:string;description:string;quantity:number;unit_value:number;total_value:number;status:string;issued_at:string;due_date:string|null;returned_quantity:number;lost_quantity:number;remaining_quantity:number;transfer_count?:number};
 type Employee={id:string;full_name:string;code:string};
+type Order={id:string;code:string;order_name:string};
+type OrderStage={id:string;stage_name:string;sequence_no:number;status:string};
 type CustodyTransfer={id:string;code:string;from_employee_name:string;to_employee_name:string;remaining_quantity:number;notes:string|null;created_at:string;created_by_username:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتجع جزئي",RETURNED:"مُسواة",DAMAGED:"تالف",LOST:"مفقودة",CANCELLED:"ملغاة"};
@@ -18,7 +20,9 @@ export default function CustodyPage(){
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
  const [transferCustodyId,setTransferCustodyId]=useState(""),[transferToEmployeeId,setTransferToEmployeeId]=useState(""),[transferNotes,setTransferNotes]=useState(""),[transferSaving,setTransferSaving]=useState(false);
  const [transferHistory,setTransferHistory]=useState<CustodyTransfer[]>([]),[historyCustodyCode,setHistoryCustodyCode]=useState("");
- const [cashTransferFromEmployeeId,setCashTransferFromEmployeeId]=useState(""),[cashTransferToEmployeeId,setCashTransferToEmployeeId]=useState(""),[cashTransferAmount,setCashTransferAmount]=useState(""),[cashTransferDescription,setCashTransferDescription]=useState("تحويل عهدة نقدية"),[cashTransferNotes,setCashTransferNotes]=useState(""),[cashTransferSaving,setCashTransferSaving]=useState(false);
+ const [orders,setOrders]=useState<Order[]>([]),[expenseOrderId,setExpenseOrderId]=useState(""),[expenseStageId,setExpenseStageId]=useState(""),[expenseStages,setExpenseStages]=useState<OrderStage[]>([]),[expenseEmployeeId,setExpenseEmployeeId]=useState(""),[expenseCategory,setExpenseCategory]=useState("خامات"),[expenseDescription,setExpenseDescription]=useState(""),[expenseAmount,setExpenseAmount]=useState(""),[expenseNotes,setExpenseNotes]=useState(""),[expenseSaving,setExpenseSaving]=useState(false);
+  const [collectionOrderId,setCollectionOrderId]=useState(""),[collectionEmployeeId,setCollectionEmployeeId]=useState(""),[collectionAmount,setCollectionAmount]=useState(""),[collectionDescription,setCollectionDescription]=useState("تحصيل من العميل"),[collectionNotes,setCollectionNotes]=useState(""),[collectionSaving,setCollectionSaving]=useState(false);
+  const [cashTransferFromEmployeeId,setCashTransferFromEmployeeId]=useState(""),[cashTransferToEmployeeId,setCashTransferToEmployeeId]=useState(""),[cashTransferAmount,setCashTransferAmount]=useState(""),[cashTransferDescription,setCashTransferDescription]=useState("تحويل عهدة نقدية"),[cashTransferNotes,setCashTransferNotes]=useState(""),[cashTransferSaving,setCashTransferSaving]=useState(false);
  async function load(){try{
   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
 
@@ -27,6 +31,8 @@ export default function CustodyPage(){
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
  useEffect(()=>{void load()},[employeeId]);
+  useEffect(()=>{let active=true;api<{data:Order[]}>("/api/orders").then(r=>{if(active)setOrders(r.data)}).catch(()=>{});return()=>{active=false}},[]);
+  useEffect(()=>{let active=true;if(!expenseOrderId){setExpenseStages([]);setExpenseStageId("");return}api<{data:{stages:OrderStage[]}}>(`/api/orders/${expenseOrderId}`).then(r=>{if(active)setExpenseStages(r.data.stages||[])}).catch(()=>{if(active)setExpenseStages([])});return()=>{active=false}},[expenseOrderId]);
  // Load employee options independently from the custody ledger so a ledger-view error
  // cannot block the picker. Support both all-scope and own-scope permissions.
  useEffect(()=>{
@@ -51,7 +57,9 @@ export default function CustodyPage(){
   if(has("cash_custody.view")||has("cash_custody.view_own"))setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data);
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل حركة العهدة النقدية")}finally{setCashSaving(false)}
 }
- async function openTransferHistory(x:Custody){try{setError("");setHistoryCustodyCode(x.code);setTransferHistory((await api<{data:CustodyTransfer[]}>("/api/custodies/"+x.id+"/transfers")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل التحويلات")}}
+ async function submitOrderExpense(e:FormEvent){e.preventDefault();setExpenseSaving(true);setError("");try{await api("/api/cash-custody/order-expenses",{method:"POST",body:JSON.stringify({employeeId:expenseEmployeeId||undefined,orderId:expenseOrderId,orderStageId:expenseStageId||null,category:expenseCategory,description:expenseDescription,amount:Number(normalizeNumber(expenseAmount)),transactionDate:cashDate,notes:expenseNotes||null})});setExpenseAmount("");setExpenseDescription("");setExpenseNotes("");setMessage("تم تحميل المصروف على الطلبية وخصمه من العهدة بنجاح");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المصروف على الطلبية")}finally{setExpenseSaving(false)}}
+  async function submitOrderCollection(e:FormEvent){e.preventDefault();setCollectionSaving(true);setError("");try{await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({employeeId:collectionEmployeeId||undefined,orderId:collectionOrderId,amount:Number(normalizeNumber(collectionAmount)),transactionDate:cashDate,description:collectionDescription,notes:collectionNotes||null,idempotencyKey:crypto.randomUUID()})});setCollectionAmount("");setCollectionNotes("");setMessage("تم تسجيل إيراد الطلبية وإضافته للعهدة في حركة واحدة");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل وارد الطلبية")}finally{setCollectionSaving(false)}}
+  async function openTransferHistory(x:Custody){try{setError("");setHistoryCustodyCode(x.code);setTransferHistory((await api<{data:CustodyTransfer[]}>("/api/custodies/"+x.id+"/transfers")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل التحويلات")}}
  async function submitCustodyTransfer(e:FormEvent){e.preventDefault();if(!transferCustodyId||!transferToEmployeeId){setError("اختر العهدة والموظف المستلم");return}setTransferSaving(true);setError("");try{await api("/api/custodies/"+transferCustodyId+"/transfer",{method:"POST",body:JSON.stringify({toEmployeeId:transferToEmployeeId,notes:transferNotes.trim()||null})});setTransferCustodyId("");setTransferToEmployeeId("");setTransferNotes("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تحويل العهدة")}finally{setTransferSaving(false)}}
  async function submitCashTransfer(e:FormEvent){e.preventDefault();setCashTransferSaving(true);setError("");try{await api("/api/cash-custody/transfers",{method:"POST",body:JSON.stringify({fromEmployeeId:cashTransferFromEmployeeId,toEmployeeId:cashTransferToEmployeeId,amount:Number(normalizeNumber(cashTransferAmount)),transactionDate:cashDate,description:cashTransferDescription.trim(),notes:cashTransferNotes.trim()||null})});setCashTransferAmount("");setCashTransferNotes("");setCashTransferDescription("تحويل عهدة نقدية");setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحويل العهدة النقدية")}finally{setCashTransferSaving(false)}}
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
@@ -71,7 +79,7 @@ export default function CustodyPage(){
   try{await api("/api/custodies/"+x.id+"/settlements",{method:"POST",body:JSON.stringify({returnedQuantity:q,lostQuantity:lost,damageValue:damage,shortageValue:shortage})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسوية العهدة")}
  }
  return <div className="app-shell"><Sidebar active="/custody"/><main className="main"><header className="topbar"><div><h1 className="page-title">عهد الموظفين</h1><p className="page-subtitle">تسجيل العهدة على الموظف، متابعة المتبقي، ثم تسويتها بسجل مستقل.</p></div></header><section className="content">
- {error&&<div className="alert error">{error}</div>}
+ {error&&<div className="alert error">{error}</div>}{/* status feedback */}
  {has("custody.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل عهدة</h2><div className="form-hint">كل عهدة تحصل على رقم CUS مستقل ولا تتغير قيمتها القديمة بعد التسوية.</div></div></div>
   <div className="form-grid">
    <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
