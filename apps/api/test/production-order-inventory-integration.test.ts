@@ -172,6 +172,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(markedFinalStages.rows[0].count, 2);
 
     const orderId = orderResponse.json().data.id as string;
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
     const stagesResult = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id,os.sequence_no,os.stage_rate,os.stage_rate_method,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",
       [orderId]
