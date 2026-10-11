@@ -13,12 +13,12 @@ type Employee=Item&{full_name?:string};
 type Order=Item&{order_name:string;status:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;status:string};
 type Line={productId:string;warehouseId:string;quantity:string;notes:string};
-type Row={id:string;code:string;withdrawal_date:string;shift_code:string;shift_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;line_count:number;total_quantity:number};
+type Row={id:string;code:string;withdrawal_date:string;created_at?:string;shift_code:string;shift_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;line_count:number;total_quantity:number;product_names?:string;line_descriptions?:string;notes?:string|null};
 
 export default function ShiftWithdrawalsPage(){
  const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]);
  const [shiftId,setShiftId]=useState(""),[employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[notes,setNotes]=useState("");
- const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);
+ const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);\n const [filterFrom,setFilterFrom]=useState(""),[filterTo,setFilterTo]=useState(""),[filterTimeFrom,setFilterTimeFrom]=useState(""),[filterTimeTo,setFilterTimeTo]=useState(""),[filterShift,setFilterShift]=useState("ALL"),[filterEmployee,setFilterEmployee]=useState("ALL"),[filterOrder,setFilterOrder]=useState("ALL"),[filterProduct,setFilterProduct]=useState(""),[filterDescription,setFilterDescription]=useState("");
 
  async function load(){
   try{
@@ -49,6 +49,17 @@ export default function ShiftWithdrawalsPage(){
  const stockQuantity=(line:Line)=>stock.filter(s=>s.product_id===line.productId&&s.warehouse_id===line.warehouseId).reduce((sum,s)=>sum+Number(s.quantity||0),0);
  const employeeOptions=useMemo(()=>assignedEmployees.map(x=>({value:x.id,label:x.full_name||x.name,meta:x.code})),[assignedEmployees]);
  const activeStageOptions=useMemo(()=>orderStages.filter(x=>x.order_id===orderId&&x.status!=="COMPLETED"&&x.status!=="CANCELLED").map(x=>({value:x.id,label:x.stage_name,meta:x.output_product_name||""})),[orderStages,orderId]);
+ const filteredRows=useMemo(()=>rows.filter(r=>{
+  const time=r.created_at?new Date(r.created_at).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",hour12:false}):"";
+  const productMatch=!filterProduct||String(r.product_names||"").toLocaleLowerCase().includes(filterProduct.toLocaleLowerCase());
+  const descText=[r.notes||"",r.line_descriptions||"",r.code].join(" ").toLocaleLowerCase();
+  return (!filterFrom||r.withdrawal_date>=filterFrom)&&(!filterTo||r.withdrawal_date<=filterTo)&&
+   (!filterTimeFrom||time>=filterTimeFrom)&&(!filterTimeTo||time<=filterTimeTo)&&
+   (filterShift==="ALL"||r.shift_code===filterShift)&&
+   (filterEmployee==="ALL"||(r.employee_name||"")===filterEmployee)&&
+   (filterOrder==="ALL"||(r.order_code||"")===filterOrder)&&productMatch&&
+   (!filterDescription||descText.includes(filterDescription.toLocaleLowerCase()));
+ }),[rows,filterFrom,filterTo,filterTimeFrom,filterTimeTo,filterShift,filterEmployee,filterOrder,filterProduct,filterDescription]);
 
  async function printWithdrawal(row:Row){
   try{
@@ -99,9 +110,24 @@ export default function ShiftWithdrawalsPage(){
     <div className="form-actions"><button type="button" className="secondary-btn" onClick={add}>إضافة صنف</button><button className="primary-button" disabled={saving||!shiftId||!employeeId||!orderId||lines.some(x=>!x.productId||!x.warehouseId||!x.quantity||Number(x.quantity)>stockQuantity(x))}>{saving?"جارٍ الحفظ...":"تسجيل المسحوبات"}</button></div>
    </form>
 
-   <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{rows.length}</span></div>
+   <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{filteredRows.length} / {rows.length}</span></div>
+    <div className="card-body">
+     <h3 className="card-title">فلاتر البحث</h3>
+     <div className="form-grid">
+      <label>من تاريخ<input type="date" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)}/></label>
+      <label>إلى تاريخ<input type="date" value={filterTo} onChange={e=>setFilterTo(e.target.value)}/></label>
+      <label>من وقت<input type="time" value={filterTimeFrom} onChange={e=>setFilterTimeFrom(e.target.value)}/></label>
+      <label>إلى وقت<input type="time" value={filterTimeTo} onChange={e=>setFilterTimeTo(e.target.value)}/></label>
+      <label>الوردية<select value={filterShift} onChange={e=>setFilterShift(e.target.value)}><option value="ALL">كل الورديات</option>{shifts.map(x=><option key={x.id} value={x.code}>{x.name}</option>)}</select></label>
+      <label>الموظف المسؤول<select value={filterEmployee} onChange={e=>setFilterEmployee(e.target.value)}><option value="ALL">كل الموظفين</option>{Array.from(new Set(rows.map(x=>x.employee_name).filter((x):x is string=>Boolean(x)))).sort().map(x=><option key={x} value={x}>{x}</option>)}</select></label>
+      <label>الطلبية<select value={filterOrder} onChange={e=>setFilterOrder(e.target.value)}><option value="ALL">كل الطلبيات</option>{Array.from(new Map(rows.filter(x=>x.order_code).map(x=>[x.order_code!,x.order_name||x.order_code!])).entries()).map(([code,name])=><option key={code} value={code}>{code} — {name}</option>)}</select></label>
+      <label>الصنف<input value={filterProduct} onChange={e=>setFilterProduct(e.target.value)} placeholder="ابحث باسم الصنف"/></label>
+      <label>البيان أو الكود<input value={filterDescription} onChange={e=>setFilterDescription(e.target.value)} placeholder="ابحث في الملاحظات والبيان"/></label>
+     </div>
+     <div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>{setFilterFrom("");setFilterTo("");setFilterTimeFrom("");setFilterTimeTo("");setFilterShift("ALL");setFilterEmployee("ALL");setFilterOrder("ALL");setFilterProduct("");setFilterDescription("")}}>مسح الفلاتر</button></div>
+    </div>
     <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead>
-     <tbody>{rows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!rows.length&&<tr><td colSpan={7}>لا توجد مسحوبات.</td></tr>}</tbody>
+     <tbody>{filteredRows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!filteredRows.length&&<tr><td colSpan={8}>لا توجد مسحوبات مطابقة للفلاتر.</td></tr>}</tbody>
     </table></div>
    </section>
   </section></main></div>;
