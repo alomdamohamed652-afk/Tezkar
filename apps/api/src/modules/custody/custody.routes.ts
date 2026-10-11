@@ -279,7 +279,7 @@ export async function custodyRoutes(app:FastifyInstance){
   // received into the collecting employee's custody. Internal custody transfers
   // never pass through this endpoint and therefore never create new revenue.
   app.post("/api/cash-custody/order-collections",{
-    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]
+    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"]),requirePermission("orders.view")]
   },async(request,reply)=>{
     const p=orderCollectionSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحصيل الطلبية غير صحيحة",422);
