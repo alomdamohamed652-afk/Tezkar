@@ -33,6 +33,11 @@ const revenueSchema=z.object({
 });
 const idSchema=z.object({orderId:z.string().uuid()});
 
+async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined){
+ const result=await client.query("SELECT id,name FROM accounting_periods WHERE status='CLOSED' AND $1::date BETWEEN period_start AND period_end LIMIT 1",[date??new Date().toISOString().slice(0,10)]);
+ if(result.rowCount)throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
+}
+
 export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
@@ -52,6 +57,7 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async(request,reply)=>{
   const p=expenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المصروف غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
+   await assertAccountingDateOpen(client,p.data.expenseDate);
    if(p.data.orderId){
     const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -89,6 +95,7 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.create")]},async(request,reply)=>{
   const p=revenueSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الإيراد غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
+   await assertAccountingDateOpen(client,p.data.revenueDate);
    if(p.data.orderId){
      const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
