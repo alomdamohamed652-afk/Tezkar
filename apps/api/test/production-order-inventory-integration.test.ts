@@ -701,6 +701,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(pendingOrder.statusCode, 201, pendingOrder.body);
     const pendingOrderId = pendingOrder.json().data.id as string;
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [pendingOrderId]);
     const pendingStage = await apiPool.query("SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",[pendingOrderId]);
     const pendingProduction = await app.inject({
       method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
