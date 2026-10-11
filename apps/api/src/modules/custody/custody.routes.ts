@@ -238,7 +238,7 @@ export async function custodyRoutes(app:FastifyInstance){
         FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
         LEFT JOIN users creator ON creator.id=c.created_by
         LEFT JOIN cash_custody_transfers ct ON ct.id=c.transfer_id
-        LEFT JOIN order_revenues rev ON c.source_type='ORDER_REVENUE' AND rev.id=c.source_id
+        LEFT JOIN order_revenues rev ON c.source_type IN ('ORDER_REVENUE','EXTERNAL_TOP_UP') AND rev.id=c.source_id
         LEFT JOIN production_orders ord ON ord.id=rev.order_id
         LEFT JOIN worker_payments wp ON c.source_type='WORKER_PAYMENT' AND wp.id=c.source_id
         LEFT JOIN payment_requests preq ON preq.id=wp.payment_request_id
@@ -341,8 +341,8 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:row});
   });
 
-  // External funding is a custody balance increase, not company revenue.
-  // Only users with all-scope financial custody access may record it.
+  // External funding is ordinary company revenue and a matching employee-custody inflow.
+  // Both ledger entries are committed atomically; only all-scope finance users may record it.
   app.post("/api/cash-custody/top-ups",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
     const p=topUpSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات إضافة رصيد العهدة غير صحيحة",422);
@@ -354,9 +354,18 @@ export async function custodyRoutes(app:FastifyInstance){
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
       const duplicate=await client.query("SELECT id FROM cash_custody_transactions WHERE employee_id=$1 AND direction='IN' AND amount=$2 AND transaction_date=$3 AND source_type='EXTERNAL_TOP_UP' LIMIT 1 FOR SHARE",[p.data.employeeId,p.data.amount,date]);
       if(duplicate.rowCount)throw new AppError("DUPLICATE_CUSTODY_TOP_UP","توجد إضافة رصيد بنفس الموظف والمبلغ والتاريخ؛ راجع الحركة السابقة قبل التسجيل",409);
-      const tx=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6) RETURNING *",[p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,request.user!.userId]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"external_top_up",module:"cash_custody",entityType:"cash_custody_transaction",entityId:tx.rows[0].id,afterData:tx.rows[0],metadata:{companyRevenue:false},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return tx.rows[0];
+      const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
+      const revenue=await client.query(
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,$1,$2,$3,'EXTERNAL_CUSTODY_TOP_UP',$4,$5) RETURNING *",
+        [codeResult.rows[0].code,p.data.amount,date,[p.data.description,p.data.notes].filter(Boolean).join(" — ")||null,request.user!.userId]
+      );
+      const tx=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6,$7) RETURNING *",
+        [p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,revenue.rows[0].id,request.user!.userId]
+      );
+      const linkedRevenue=await client.query("UPDATE order_revenues SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[tx.rows[0].id,revenue.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"external_top_up",module:"cash_custody",entityType:"cash_custody_transaction",entityId:tx.rows[0].id,afterData:{revenue:linkedRevenue.rows[0],cashCustody:tx.rows[0]},metadata:{companyRevenue:true,revenueCode:revenue.rows[0].code},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {...tx.rows[0],revenue_id:revenue.rows[0].id,revenue_code:revenue.rows[0].code};
     });
     return reply.code(201).send({data:row});
   });

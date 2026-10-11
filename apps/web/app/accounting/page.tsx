@@ -21,7 +21,7 @@ type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:st
 type CashTx = {id:string;code:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
-const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر" } as Record<string,string>)[source]||source);
+const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل خارجي لعهدة موظف" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
   const { has } = usePermissions();
@@ -131,7 +131,7 @@ export default function AccountingPage() {
     try{
       await api("/api/cash-custody/top-ups",{method:"POST",body:JSON.stringify({employeeId:topUpForm.employeeId,amount:Number(topUpForm.amount),transactionDate:topUpForm.transactionDate,description:topUpForm.description.trim(),notes:topUpForm.notes.trim()||null})});
       setTopUpForm(v=>({...v,amount:"",notes:""}));
-      setMessage("تمت إضافة رصيد العهدة. لم يُسجل المبلغ كإيراد للشركة.");
+      setMessage("تمت إضافة رصيد العهدة وتسجيل المبلغ كإيراد للشركة.");
       await load();
     }catch(e){setError(e instanceof Error?e.message:"تعذر إضافة رصيد العهدة")}
   }
