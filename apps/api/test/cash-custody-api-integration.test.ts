@@ -449,6 +449,44 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [collectionOrder.id]
       );
       assert.equal(collectionCounts.rows[0].revenue_count,2);
+
+      // Order expense + cash-custody OUT must be one idempotent transaction.
+      const expensePayload={
+        orderId:collectionOrder.id,employeeId:employeeA.id,category:"خامات",
+        description:"Order expense idempotency test",amount:12.50,
+        transactionDate:"2099-03-10",notes:"Retry should not duplicate",
+        idempotencyKey:randomUUID()
+      };
+      const expenseFirst=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:expensePayload
+      });
+      assert.equal(expenseFirst.statusCode,201,expenseFirst.body);
+      assert.equal(Number(expenseFirst.json().data.expense.amount),12.50);
+      assert.equal(expenseFirst.json().data.cashCustody.direction,"OUT");
+      assert.equal(expenseFirst.json().data.cashCustody.source_type,"ACCOUNTING_EXPENSE");
+      assert.equal(expenseFirst.json().data.expense.cash_custody_transaction_id,expenseFirst.json().data.cashCustody.id);
+      const expenseRetry=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:expensePayload
+      });
+      assert.equal(expenseRetry.statusCode,201,expenseRetry.body);
+      assert.equal(expenseRetry.json().data.expense.id,expenseFirst.json().data.expense.id);
+      assert.equal(expenseRetry.json().data.cashCustody.id,expenseFirst.json().data.cashCustody.id);
+      const changedExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+        payload:{...expensePayload,amount:13.50}
+      });
+      assert.equal(changedExpense.statusCode,409,changedExpense.body);
+      assert.equal(changedExpense.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const expenseCounts=await apiPool.query(
+        "SELECT COUNT(*)::int AS expense_count FROM accounting_expenses WHERE order_id=$1 AND idempotency_key=$2",
+        [collectionOrder.id,expensePayload.idempotencyKey]
+      );
+      assert.equal(expenseCounts.rows[0].expense_count,1,"retry must not duplicate order expense");
+      const cashCounts=await apiPool.query(
+        "SELECT COUNT(*)::int AS cash_count FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [expenseFirst.json().data.expense.id]
+      );
+      assert.equal(cashCounts.rows[0].cash_count,1,"retry must not duplicate custody OUT movement");
     } finally {
       await app.close();
     }
