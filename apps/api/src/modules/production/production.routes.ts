@@ -121,10 +121,10 @@ export async function productionRoutes(app: FastifyInstance) {
     if (workerOnly) {
       if (!request.user!.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED", "حساب العامل غير مرتبط بملف موظف", 403);
       params.push(request.user!.employeeId);
-      where.push(`p.employee_id=${params.length}`);
+      where.push(`p.employee_id=$${params.length}`);
     }
 
-    if (query.data.status) { params.push(query.data.status); where.push(`p.status=${params.length}`); }
+    if (query.data.status) { params.push(query.data.status); where.push(`p.status=$${params.length}`); }
     else where.push("p.status <> 'CANCELLED'");
     if (query.data.employeeId) { params.push(query.data.employeeId); where.push(`p.employee_id=$${params.length}`); }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
