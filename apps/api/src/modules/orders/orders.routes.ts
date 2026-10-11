@@ -32,6 +32,7 @@ const orderStageSchema = z.object({
 
 const orderSchema = z.object({
   orderName: z.string().trim().min(2).max(200),
+  contractValue: z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"قيمة الطلبية بحد أقصى منزلتين عشريتين"}).optional().default(0),
   customerName: z.string().trim().max(200).optional(),
   orderDate: z.string().date().optional(),
   deliveryStartDate: z.string().date().optional(),
@@ -216,9 +217,9 @@ export async function orderRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات الطلب غير صحيحة",422);
     const row = await withTransaction(async (client) => {
       const created = await client.query(
-        `INSERT INTO production_orders(order_name,customer_name,order_date,delivery_start_date,due_date,last_delivery_date,notes,created_by,status)
-         VALUES($1,$2,COALESCE($3,CURRENT_DATE),$4,$5,$6,$7,$8,'DRAFT') RETURNING *`,
-        [parsed.data.orderName, parsed.data.customerName ?? null, parsed.data.orderDate ?? null, parsed.data.deliveryStartDate ?? null, parsed.data.dueDate ?? null, parsed.data.lastDeliveryDate ?? null, parsed.data.notes ?? null, request.user!.userId]
+        `INSERT INTO production_orders(order_name,customer_name,order_date,delivery_start_date,due_date,last_delivery_date,notes,created_by,status,contract_value)
+         VALUES($1,$2,COALESCE($3,CURRENT_DATE),$4,$5,$6,$7,$8,'DRAFT',$9) RETURNING *`,
+        [parsed.data.orderName, parsed.data.customerName ?? null, parsed.data.orderDate ?? null, parsed.data.deliveryStartDate ?? null, parsed.data.dueDate ?? null, parsed.data.lastDeliveryDate ?? null, parsed.data.notes ?? null, request.user!.userId, parsed.data.contractValue]
       );
       const order = created.rows[0];
       const stages = parsed.data.stages ?? [];
@@ -322,7 +323,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.patch("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.edit")] }, async (request) => {
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
+    const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),contractValue:z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"قيمة الطلبية بحد أقصى منزلتين عشريتين"}).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
     const p=parsed.data;
     const result=await withTransaction(async client=>{
@@ -345,6 +346,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const values:unknown[]=[];
       const add=(field:string,value:unknown)=>{values.push(value);fields.push(field+"=$"+values.length);};
       if(p.orderName!==undefined)add("order_name",p.orderName);
+      if(p.contractValue!==undefined)add("contract_value",p.contractValue);
       if(p.customerName!==undefined)add("customer_name",p.customerName);
       if(p.deliveryStartDate!==undefined)add("delivery_start_date",p.deliveryStartDate);
       if(p.dueDate!==undefined)add("due_date",p.dueDate);
