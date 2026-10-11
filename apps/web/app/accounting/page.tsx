@@ -15,7 +15,7 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[]};
-type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
+type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;margin_percent:number|null};
 type CashTx = {id:string;code:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
@@ -25,7 +25,7 @@ const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل 
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"orders"|"custody">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"admin-expenses"|"profitability"|"periods"|"orders"|"custody">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
@@ -33,7 +33,7 @@ export default function AccountingPage() {
   const [revenues,setRevenues]=useState<Revenue[]>([]);
   const [orderFinance,setOrderFinance]=useState<OrderFinanceRow[]>([]);
   const [cashTransactions,setCashTransactions]=useState<CashTx[]>([]);
-  const [eForm,setEForm]=useState({category:"تشغيل",description:"",amount:"",orderId:"",orderStageId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
+  const [eForm,setEForm]=useState({category:"مصاريف لخدمة المصنع",description:"",amount:"",expenseDate:new Date().toISOString().slice(0,10),orderId:"",orderStageId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});\n  const [adminExpenseFrom,setAdminExpenseFrom]=useState("");\n  const [adminExpenseTo,setAdminExpenseTo]=useState("");\n  const [adminExpenseCategory,setAdminExpenseCategory]=useState("ALL");\n  const [adminExpenseSearch,setAdminExpenseSearch]=useState("");
   const [expenseStages,setExpenseStages]=useState<Array<{id:string;stage_name:string;sequence_no:number;status:string}>>([]);
   const [topUpForm,setTopUpForm]=useState({employeeId:"",amount:"",transactionDate:new Date().toISOString().slice(0,10),description:"إضافة رصيد عهدة من خارج حسابات الشركة",notes:""});
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
@@ -120,7 +120,7 @@ export default function AccountingPage() {
   async function addExpense() {
     setError("");setMessage("");
     try {
-      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null})});
+      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseDate:eForm.expenseDate,expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null})});
       setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId?" وتم خصمه من عهدة الموظف":""));await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
   }
@@ -178,7 +178,7 @@ export default function AccountingPage() {
      <div className="tabs finance-tabs">
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
-      <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
+      <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>\n      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>
       <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
       {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>setTab("orders")}>كل الطلبيات والتحليل</button>}
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
@@ -238,12 +238,37 @@ export default function AccountingPage() {
        {eForm.expenseType==="DIRECT"&&<label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value,orderStageId:""})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>}
         {eForm.expenseType==="DIRECT"&&eForm.orderId&&<label>مرحلة الإنتاج <span className="optional">اختياري</span><select value={eForm.orderStageId} onChange={e=>setEForm({...eForm,orderStageId:e.target.value})}><option value="">تكلفة على الطلبية بالكامل</option>{expenseStages.filter(s=>s.status!=="CANCELLED").map(s=><option key={s.id} value={s.id}>{s.sequence_no}. {s.stage_name}</option>)}</select></label>}
        <label>الدفع من عهدة موظف <span className="optional">اختياري</span><select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value})}><option value="">ليس من عهدة موظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
-       <label>التصنيف<input value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}/></label>
+       <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
        <label>الوصف<input value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value})}/></label>
-       <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
+       <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value})}/></label>\n       <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
       </div>}
       {has("finance.expenses.create")&&<div className="form-actions"><button className="primary-button" onClick={addExpense}>تسجيل المصروف</button></div>}
       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={7}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
+     </section>}
+
+     {tab==="admin-expenses"&&has("finance.expenses.view")&&<section className="card">
+      <div className="card-header"><div><h2 className="card-title">المصروفات الإدارية</h2><div className="form-hint">سجل كل مصروف ببيان مستقل. عند تصفية الفترة يوزع النظام الإجمالي افتراضيًا على الطلبيات حسب تكلفة كل طلبية، ويمكن تعديل الأنصبة قبل الإقفال.</div></div><span className="count-badge">{expenses.filter(x=>x.expense_type==="ADMINISTRATIVE").length}</span></div>
+      {has("finance.expenses.create")&&<div className="card-body">
+       <div className="form-grid finance-four-grid">
+        <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
+        <label>البيان التفصيلي<input required value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})} placeholder="مثال: فاتورة كهرباء شهر أكتوبر"/></label>
+        <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
+        <label>المبلغ<input required type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
+        <label>الدفع من عهدة موظف <span className="optional">اختياري</span><select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value,expenseType:"ADMINISTRATIVE"})}><option value="">ليس من عهدة موظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+       </div>
+       <div className="form-actions"><button className="primary-button" onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""}));void addExpense()}} disabled={!eForm.description.trim()||!eForm.amount||Number(eForm.amount)<=0}>تسجيل المصروف الإداري</button></div>
+      </div>}
+      <div className="card-body">
+       <h3 className="card-title">فلاتر المصروفات</h3>
+       <div className="form-grid finance-four-grid">
+        <label>من تاريخ<input type="date" value={adminExpenseFrom} onChange={e=>setAdminExpenseFrom(e.target.value)}/></label>
+        <label>إلى تاريخ<input type="date" value={adminExpenseTo} onChange={e=>setAdminExpenseTo(e.target.value)}/></label>
+        <label>التصنيف<select value={adminExpenseCategory} onChange={e=>setAdminExpenseCategory(e.target.value)}><option value="ALL">كل التصنيفات</option>{Array.from(new Set(expenses.filter(x=>x.expense_type==="ADMINISTRATIVE").map(x=>x.category))).sort().map(c=><option key={c} value={c}>{c}</option>)}</select></label>
+        <label>بحث في البيان أو الكود<input value={adminExpenseSearch} onChange={e=>setAdminExpenseSearch(e.target.value)} placeholder="اكتب جزءًا من البيان أو الكود"/></label>
+       </div>
+       <div className="form-actions"><button className="secondary-btn" onClick={()=>{setAdminExpenseFrom("");setAdminExpenseTo("");setAdminExpenseCategory("ALL");setAdminExpenseSearch("")}}>مسح الفلاتر</button><strong>عدد النتائج: {expenses.filter(x=>x.expense_type==="ADMINISTRATIVE"&&(!adminExpenseFrom||x.expense_date>=adminExpenseFrom)&&(!adminExpenseTo||x.expense_date<=adminExpenseTo)&&(adminExpenseCategory==="ALL"||x.category===adminExpenseCategory)&&(!adminExpenseSearch||(x.description+" "+x.code+" "+x.category).toLowerCase().includes(adminExpenseSearch.toLowerCase()))).length}</strong></div>
+       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التصنيف</th><th>البيان التفصيلي</th><th>المبلغ</th><th>التاريخ</th><th>دفع من عهدة</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.filter(x=>x.expense_type==="ADMINISTRATIVE"&&(!adminExpenseFrom||x.expense_date>=adminExpenseFrom)&&(!adminExpenseTo||x.expense_date<=adminExpenseTo)&&(adminExpenseCategory==="ALL"||x.category===adminExpenseCategory)&&(!adminExpenseSearch||(x.description+" "+x.code+" "+x.category).toLowerCase().includes(adminExpenseSearch.toLowerCase()))).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.paid_from_employee_id?employees.find(e=>e.id===x.paid_from_employee_id)?.full_name||"موظف":"—"}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.some(x=>x.expense_type==="ADMINISTRATIVE")&&<tr><td colSpan={7}>لا توجد مصروفات إدارية مسجلة.</td></tr>}</tbody></table></div>
+      </div>
      </section>}
 
      {tab==="periods"&&has("finance.period_close.view")&&<section className="card">
