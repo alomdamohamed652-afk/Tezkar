@@ -442,6 +442,25 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(draftExpense.statusCode,409,draftExpense.body);
       assert.equal(draftExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
 
+      for (const blockedStatus of ["COMPLETED","CANCELLED"]) {
+        const blockedOrder=(await apiPool.query(
+          "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,$3) RETURNING id",
+          [`Order ${blockedStatus} must reject custody posting`,manager.id,blockedStatus]
+        )).rows[0];
+        const blockedCollection=await app.inject({
+          method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
+          payload:{orderId:blockedOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",description:`Collection on ${blockedStatus}`,idempotencyKey:randomUUID()}
+        });
+        assert.equal(blockedCollection.statusCode,409,blockedCollection.body);
+        assert.equal(blockedCollection.json().error.code,"ORDER_NOT_COLLECTIBLE");
+        const blockedExpense=await app.inject({
+          method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+          payload:{orderId:blockedOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",category:"Test",description:`Expense on ${blockedStatus}`,idempotencyKey:randomUUID()}
+        });
+        assert.equal(blockedExpense.statusCode,409,blockedExpense.body);
+        assert.equal(blockedExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+      }
+
       const expenseOrder=(await apiPool.query(
         "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
         ["Negative custody balance order",manager.id]
