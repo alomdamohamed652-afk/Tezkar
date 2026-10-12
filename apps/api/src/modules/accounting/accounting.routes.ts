@@ -183,7 +183,8 @@ export async function accountingRoutes(app:FastifyInstance){
    const orders=await client.query(`SELECT o.id,
     COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0)
     +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
-    +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS cost
+    +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0)
+    +COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS cost
     FROM production_orders o WHERE o.status<>'CANCELLED' ORDER BY o.code`);
    const eligibleOrders=orders.rows.filter(row=>Number(row.cost||0)>0);
    const totalCost=eligibleOrders.reduce((sum,row)=>sum+Number(row.cost||0),0);
