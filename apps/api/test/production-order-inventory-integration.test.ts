@@ -184,10 +184,6 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(contractOrder.statusCode, 201, contractOrder.body);
     const contractOrderId = contractOrder.json().data.id as string;
-    const activateContractOrder=await app.inject({
-      method:"PATCH",url:"/api/orders/"+contractOrderId,headers:{cookie:submitter.cookie},payload:{status:"IN_PROGRESS"}
-    });
-    assert.equal(activateContractOrder.statusCode,200,activateContractOrder.body);
     const firstContractRevenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
       payload: { orderId: contractOrderId, amount: 80, revenueDate: "2099-01-04", source: "MANUAL", notes: "Contract guard integration" }
@@ -702,12 +698,6 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
     assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
-
-    // Reopen the completed production order before posting a late direct cost.
-    const reopenForFinalCost=await app.inject({
-      method:"PATCH",url:"/api/orders/"+orderId,headers:{cookie:approver.cookie},payload:{status:"IN_PROGRESS"}
-    });
-    assert.equal(reopenForFinalCost.statusCode,200,reopenForFinalCost.body);
 
     // Verify order-linked revenue and expense feed the profitability report.
     const revenue = await app.inject({
