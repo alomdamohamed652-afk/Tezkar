@@ -642,9 +642,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
     });
     assert.equal(accountingSummary.statusCode, 200, accountingSummary.body);
-    assert.equal(Number(accountingSummary.json().data.total_in), 1000);
+    // The contract-guard regression above adds one valid $80 revenue entry to this
+    // disposable database; the over-contract attempt must not add anything else.
+    assert.equal(Number(accountingSummary.json().data.total_in), 1080);
     assert.equal(Number(accountingSummary.json().data.total_out), 50);
-    assert.equal(Number(accountingSummary.json().data.net), 950);
+    assert.equal(Number(accountingSummary.json().data.net), 1030);
 
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
