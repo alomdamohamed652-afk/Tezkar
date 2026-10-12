@@ -45,6 +45,7 @@ export default function AccountingPage() {
   const [collectionForm,setCollectionForm]=useState({orderId:"",employeeId:"",amount:"",description:"تحصيل من العميل",notes:""});
   const collectionIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
   const expenseIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
+  const revenueIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
   const [dashboardPeriodId,setDashboardPeriodId]=useState("");
@@ -178,8 +179,14 @@ export default function AccountingPage() {
 
   async function addRevenue() {
     setError("");setMessage("");
+    const payload={orderId:rForm.orderId||null,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null};
+    const fingerprint=JSON.stringify(payload);
+    const previous=revenueIdempotency.current;
+    const operationKey=previous?.fingerprint===fingerprint?previous.key:crypto.randomUUID();
+    revenueIdempotency.current={fingerprint,key:operationKey};
     try {
-      await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({orderId:rForm.orderId||null,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null})});
+      await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:operationKey})});
+      revenueIdempotency.current=null;
       setRForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل الإيراد");await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإيراد")}
   }
