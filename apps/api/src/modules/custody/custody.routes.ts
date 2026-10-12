@@ -387,7 +387,6 @@ export async function custodyRoutes(app:FastifyInstance){
       if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
       if(p.data.orderStageId){const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);}
       const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[employeeId,date]);
-      if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المصروف أكبر من رصيد العهدة النقدية المتاح",409);
       const expense=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,$6,$7,'DIRECT',$8) RETURNING *",[p.data.orderId,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId]);
       const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3,$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING *",[employeeId,p.data.amount,date,p.data.description,p.data.notes??null,expense.rows[0].id,request.user!.userId]);
       const linked=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,expense.rows[0].id]);
@@ -455,13 +454,8 @@ export async function custodyRoutes(app:FastifyInstance){
       // Serialize balance and duplicate checks per employee to prevent concurrent overspending.
       const employeeLock=await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
       if(!employeeLock.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",422);
-      if(p.data.direction==="OUT"){
-        const balance=await client.query(
-          "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",
-          [employeeId,date]
-        );
-        if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المبلغ المطلوب صرفه أكبر من رصيد العهدة المتاح في هذا التاريخ",409);
-      }
+      // OUT movements may create a negative balance when an employee pays a
+      // factory expense personally; future IN movements reconcile the balance.
       const dup=await client.query(`SELECT id,code,description FROM cash_custody_transactions
         WHERE employee_id=$1 AND direction=$2 AND amount=$3 AND transaction_date=$4
         ORDER BY created_at DESC LIMIT 10 FOR SHARE`,
