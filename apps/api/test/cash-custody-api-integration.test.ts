@@ -596,6 +596,15 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const linkedCashCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",[expenseFirst.json().data.expense.id]);
       assert.equal(linkedCashCount.rows[0].count,1);
 
+      const concurrentOrderExpensePayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:1,transactionDate:"2099-03-12",category:"Test",description:"Concurrent order expense retry",idempotencyKey:randomUUID()};
+      const concurrentOrderExpenses=await Promise.all([1,2].map(()=>app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:concurrentOrderExpensePayload
+      })));
+      assert.ok(concurrentOrderExpenses.every(x=>x.statusCode===201),concurrentOrderExpenses.map(x=>x.body).join("\\n"));
+      assert.equal(concurrentOrderExpenses[0].json().data.expense.id,concurrentOrderExpenses[1].json().data.expense.id);
+      const concurrentOrderExpenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[concurrentOrderExpensePayload.idempotencyKey]);
+      assert.equal(concurrentOrderExpenseCount.rows[0].count,1,"concurrent custody expense retries must create exactly one expense");
+
       const genericExpensePayload={orderId:expenseOrder.id,amount:22.50,expenseDate:"2099-03-11",category:"نقل",description:"Accounting expense idempotency integration",expenseType:"DIRECT",paidFromEmployeeId:employeeB.id,idempotencyKey:randomUUID()};
       const genericExpenseFirst=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:genericExpensePayload});
       assert.equal(genericExpenseFirst.statusCode,201,genericExpenseFirst.body);
