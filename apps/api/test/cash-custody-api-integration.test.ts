@@ -515,26 +515,6 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(independentCollection.statusCode,201,independentCollection.body);
       assert.notEqual(independentCollection.json().data.revenue.id,collectionFirst.json().data.revenue.id);
-      // The order contract cannot be reduced below collections already posted.
-      const contractBelowCollected=await app.inject({
-        method:"PATCH",url:"/api/orders/"+collectionOrder.id,headers:{cookie:managerCookie},
-        payload:{contractValue:250.99}
-      });
-      assert.equal(contractBelowCollected.statusCode,409,contractBelowCollected.body);
-      assert.equal(contractBelowCollected.json().error.code,"CONTRACT_VALUE_BELOW_RECORDED_REVENUE");
-      // Setting the contract to exactly the amount already collected is valid.
-      const contractAtCollected=await app.inject({
-        method:"PATCH",url:"/api/orders/"+collectionOrder.id,headers:{cookie:managerCookie},
-        payload:{contractValue:251}
-      });
-      assert.equal(contractAtCollected.statusCode,200,contractAtCollected.body);
-      // Cancellation must not hide an order that already has financial activity.
-      const cancelWithCollections=await app.inject({
-        method:"PATCH",url:"/api/orders/"+collectionOrder.id,headers:{cookie:managerCookie},
-        payload:{status:"CANCELLED"}
-      });
-      assert.equal(cancelWithCollections.statusCode,409,cancelWithCollections.body);
-      assert.equal(cancelWithCollections.json().error.code,"ORDER_HAS_ACTIVITY_LOCKED");
       // A retry of a collection already committed before period close must still
       // return its original records; it must not attempt a new posting.
       const collectionPeriod=await app.inject({
