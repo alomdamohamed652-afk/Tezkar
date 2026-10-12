@@ -309,7 +309,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
        await assertPostingDateOpen(client,date);
       const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
-      const order=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+      const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
@@ -326,6 +326,12 @@ export async function custodyRoutes(app:FastifyInstance){
           if(!matches)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لتحصيل ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
           return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
         }
+      }
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل تحصيل لطلبية ملغاة",409);
+      const contractValue=Number(order.rows[0].contract_value||0);
+      if(contractValue>0){
+        const collected=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
+        if(Number(collected.rows[0]?.total||0)+p.data.amount>contractValue+1e-9)throw new AppError("COLLECTION_EXCEEDS_CONTRACT_VALUE","مبلغ التحصيل يتجاوز المتبقي من قيمة الطلبية المتفق عليها",409);
       }
       const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
       let revenue;
