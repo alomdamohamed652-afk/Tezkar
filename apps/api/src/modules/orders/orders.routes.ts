@@ -396,7 +396,10 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional().default(false)}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).refine(x=>!x.isFinalProduct||Boolean((x.outputProductId||x.outputProductName)&&x.plannedQuantity!=null&&x.plannedQuantity>0),{message:"المنتج النهائي وكمية المرحلة مطلوبان"}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);
     const r=await withTransaction(async client=>{
-      const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن إضافة مرحلة لطلبية ملغاة",409);
+      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل إضافة مرحلة",409);
       const stage=await ensureStage(client,{stageId:parsed.data.stageId,stageName:parsed.data.stageName});
       let outputProductId=parsed.data.outputProductId??null;
       if(!outputProductId&&parsed.data.outputProductName)outputProductId=(await ensureProduct(client,{productName:parsed.data.outputProductName})).id;
@@ -431,6 +434,10 @@ export async function orderRoutes(app: FastifyInstance) {
     const r=await withTransaction(async client=>{
       const current=await client.query("SELECT * FROM order_stages WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      const parentOrder=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR SHARE",[current.rows[0].order_id]);
+      if(!parentOrder.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(parentOrder.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل مرحلة في طلبية ملغاة",409);
+      if(parentOrder.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مراحلها",409);
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
