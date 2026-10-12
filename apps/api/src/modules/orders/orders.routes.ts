@@ -347,7 +347,7 @@ export async function orderRoutes(app: FastifyInstance) {
                EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status<>'CANCELLED') AS has_production,
                EXISTS(SELECT 1 FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id WHERE os.order_id=$1) AS has_machine_production,
                EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
-               EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1 AND status<>'CANCELLED') AS has_deliveries,
+               EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1) AS has_deliveries,
                EXISTS(SELECT 1 FROM accounting_expenses WHERE order_id=$1) AS has_expenses,
                EXISTS(SELECT 1 FROM order_revenues WHERE order_id=$1) AS has_revenues`,
             [id]
