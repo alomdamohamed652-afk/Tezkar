@@ -46,8 +46,8 @@ export async function taskRoutes(app: FastifyInstance) {
       }
       const result = await client.query(
         `SELECT t.*, creator.username AS creator_username,
-          COALESCE((SELECT jsonb_agg(jsonb_build_object('employee_id',e.id,'employee_code',e.code,'employee_name',e.full_name) ORDER BY e.full_name)
-            FROM task_assignees ta JOIN employees e ON e.id=ta.employee_id WHERE ta.task_id=t.id),'[]'::jsonb) AS assignees,
+          COALESCE((SELECT jsonb_agg(jsonb_build_object('employee_id',e.id,'employee_code',e.code,'employee_name',e.full_name,'assigned_by_username',u_assign.username,'is_delegated',ta.assigned_by<>t.created_by) ORDER BY e.full_name)
+            FROM task_assignees ta JOIN employees e ON e.id=ta.employee_id LEFT JOIN users u_assign ON u_assign.id=ta.assigned_by WHERE ta.task_id=t.id),'[]'::jsonb) AS assignees,
           (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id=t.id)::int AS comment_count
          FROM tasks t JOIN users creator ON creator.id=t.created_by
          ${where.length ? "WHERE " + where.join(" AND ") : ""}
@@ -77,6 +77,26 @@ export async function taskRoutes(app: FastifyInstance) {
       return task;
     });
     return reply.code(201).send({ data: result });
+  });
+
+  app.post("/api/tasks/:id/delegate", { preHandler: [authenticateRequest, requirePermission("tasks.update_own")] }, async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const parsed = z.object({ employeeId: z.string().uuid() }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اختر الموظف الذي ستوكل إليه المهمة", 422);
+    const result = await withTransaction(async client => {
+      if (!request.user!.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED", "الحساب غير مرتبط بموظف", 403);
+      const task = await client.query("SELECT id,status,title FROM tasks WHERE id=$1 FOR UPDATE", [id]);
+      if (!task.rowCount) throw new AppError("TASK_NOT_FOUND", "المهمة غير موجودة", 404);
+      if (["COMPLETED","CANCELLED"].includes(task.rows[0].status)) throw new AppError("TASK_CLOSED", "لا يمكن توكيل مهمة مكتملة أو ملغاة", 409);
+      const assigned = await client.query("SELECT 1 FROM task_assignees WHERE task_id=$1 AND employee_id=$2 FOR SHARE", [id, request.user!.employeeId]);
+      if (!assigned.rowCount) throw new AppError("TASK_FORBIDDEN", "يمكنك توكيل مهمة مسندة إليك فقط", 403);
+      const target = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE", [parsed.data.employeeId]);
+      if (!target.rowCount) throw new AppError("ASSIGNEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
+      await client.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3) ON CONFLICT(task_id,employee_id) DO NOTHING", [id, parsed.data.employeeId, request.user!.userId]);
+      await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "delegate", module: "tasks", entityType: "task", entityId: id, metadata: { delegatedToEmployeeId: parsed.data.employeeId }, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
+      return { taskId: id, delegatedToEmployeeId: parsed.data.employeeId };
+    });
+    return reply.code(200).send({ data: result });
   });
 
   app.patch("/api/tasks/:id", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.edit","all"],["tasks.update_own","own"])] }, async (request) => {
