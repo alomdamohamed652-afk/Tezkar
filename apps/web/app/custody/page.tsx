@@ -22,14 +22,22 @@ export default function CustodyPage(){
  const [transferCustodyId,setTransferCustodyId]=useState(""),[transferToEmployeeId,setTransferToEmployeeId]=useState(""),[transferNotes,setTransferNotes]=useState(""),[transferSaving,setTransferSaving]=useState(false);
  const [transferHistory,setTransferHistory]=useState<CustodyTransfer[]>([]),[historyCustodyCode,setHistoryCustodyCode]=useState("");
  const [cashTransferFromEmployeeId,setCashTransferFromEmployeeId]=useState(""),[cashTransferToEmployeeId,setCashTransferToEmployeeId]=useState(""),[cashTransferAmount,setCashTransferAmount]=useState(""),[cashTransferDescription,setCashTransferDescription]=useState("تحويل عهدة نقدية"),[cashTransferNotes,setCashTransferNotes]=useState(""),[cashTransferSaving,setCashTransferSaving]=useState(false);
- async function load(){try{
-  try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
-
-  const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
-  setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
- }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
+ async function load(){
+  setError("");
+  const canReadCash=Boolean(permissions?.some(code=>["cash_custody.view","cash_custody.view_own"].includes(code)));
+  const canReadPhysical=Boolean(permissions?.some(code=>["custody.view","custody.view_own"].includes(code)));
+  if(canReadCash){
+   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}
+   catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الحركات النقدية")}
+  }else setCash([]);
+  if(canReadPhysical){
+   try{
+    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
+    setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
+   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
+  }else setItems([]);
  }
- useEffect(()=>{void load()},[employeeId]);
+ useEffect(()=>{if(permissions!==null)void load()},[employeeId,permissions]);
  // Load order options only for users allowed to create cash-custody postings.
  useEffect(()=>{
   if(!permissions?.some(code=>["cash_custody.create","cash_custody.create_own"].includes(code)))return;
