@@ -78,6 +78,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
+    if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
    }
    if(p.data.paidFromEmployeeId){
     const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);
@@ -140,6 +141,7 @@ export async function accountingRoutes(app:FastifyInstance){
      const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
+     if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_COLLECTIBLE","لا يمكن تسجيل إيراد جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
      await assertAccountingDateOpen(client,p.data.revenueDate);
      const contractValue=Number(order.rows[0].contract_value||0);
      if(contractValue>0){
