@@ -416,6 +416,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.ok(Math.abs(Number(recoveredCustody.rows[0].balance))<1e-7,"later custody inflow must settle the negative balance");
 
+      const overdrawnTransfer=await app.inject({
+        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
+        payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:1,transactionDate:"2099-01-12",description:"Must not transfer without available balance"}
+      });
+      assert.equal(overdrawnTransfer.statusCode,409,overdrawnTransfer.body);
+      assert.equal(overdrawnTransfer.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
