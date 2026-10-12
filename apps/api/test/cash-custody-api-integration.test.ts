@@ -421,9 +421,43 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       // A collection retry with the same idempotency key must return the original pair,
       // while a separate operation with identical amount/date/business fields is valid.
       const collectionOrder=(await apiPool.query(
-        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
         ["Idempotency integration order",manager.id]
       )).rows[0];
+      const draftOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Draft order must reject collection",manager.id]
+      )).rows[0];
+      const draftCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
+        payload:{orderId:draftOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",description:"Draft collection must fail",idempotencyKey:randomUUID()}
+      });
+      assert.equal(draftCollection.statusCode,409,draftCollection.body);
+      assert.equal(draftCollection.json().error.code,"ORDER_NOT_COLLECTIBLE");
+
+      const draftExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+        payload:{orderId:draftOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",category:"Test",description:"Draft expense must fail",idempotencyKey:randomUUID()}
+      });
+      assert.equal(draftExpense.statusCode,409,draftExpense.body);
+      assert.equal(draftExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+
+      const expenseOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Negative custody balance order",manager.id]
+      )).rows[0];
+      const expenseBeyondBalance=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+        payload:{orderId:expenseOrder.id,employeeId:ownScopeEmployee.id,amount:500,transactionDate:"2099-03-10",category:"مصروفات تشغيل",description:"Factory expense paid personally",idempotencyKey:randomUUID()}
+      });
+      assert.equal(expenseBeyondBalance.statusCode,201,expenseBeyondBalance.body);
+      assert.equal(Number(expenseBeyondBalance.json().data.cashCustody.amount),500);
+      const negativeBalance=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<='2099-03-10'",
+        [ownScopeEmployee.id]
+      );
+      assert.equal(Number(negativeBalance.rows[0].balance),-500);
+
       const invalidPrecisionCollection=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
         payload:{orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.501,transactionDate:"2099-03-10",description:"Invalid precision collection",idempotencyKey:randomUUID()}
