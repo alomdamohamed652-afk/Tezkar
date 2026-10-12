@@ -474,6 +474,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(machineProductionOnCompletedStage.statusCode, 409, machineProductionOnCompletedStage.body);
     assert.equal(machineProductionOnCompletedStage.json().error.code, "ORDER_STAGE_COMPLETED");
+    await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1", [orderId]);
     const reopenCompletedOrder = await app.inject({
       method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
       payload: { status: "IN_PROGRESS" }
