@@ -176,7 +176,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     // Contractual value, recognized revenue, and cancellation guards must agree.
     const contractOrder = await app.inject({
       method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
-      payload: { orderName: "Contract guard integration " + randomBytes(4).toString("hex"), customerName: "Contract guard customer", orderDate: "2099-01-04", contractValue: 100 }
+      payload: {
+        orderName: "Contract guard integration " + randomBytes(4).toString("hex"),
+        customerName: "Contract guard customer", orderDate: "2099-01-04", contractValue: 100,
+        stages: [{ stageName: "Contract guard stage", sequenceNo: 1, outputProductName: "Contract guard final product", plannedQuantity: 1, stageRate: 1, stageRateMethod: "PER_PIECE", isFinalProduct: true }]
+      }
     });
     assert.equal(contractOrder.statusCode, 201, contractOrder.body);
     const contractOrderId = contractOrder.json().data.id as string;
