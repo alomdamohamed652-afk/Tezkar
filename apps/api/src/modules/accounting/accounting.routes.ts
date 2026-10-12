@@ -60,8 +60,9 @@ export async function accountingRoutes(app:FastifyInstance){
   const row=await withTransaction(async(client)=>{
    await assertAccountingDateOpen(client,p.data.expenseDate);
    if(p.data.orderId){
-    const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[p.data.orderId]);
+    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
    }
    if(p.data.paidFromEmployeeId){
     const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);
@@ -98,8 +99,9 @@ export async function accountingRoutes(app:FastifyInstance){
   const row=await withTransaction(async(client)=>{
    await assertAccountingDateOpen(client,p.data.revenueDate);
    if(p.data.orderId){
-     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1",[p.data.orderId]);
+     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
    }
    const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
    const code=codeResult.rows[0].code;
