@@ -280,7 +280,9 @@ export async function custodyRoutes(app:FastifyInstance){
       if(!canCreateAll && !await hasPermission(client,request.user!.userId,"cash_custody.create_own","own"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تحصيل طلبية",403);
       const r=await client.query(`SELECT o.id,o.code,o.order_name,COALESCE(o.contract_value,0) AS contract_value,
         COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS collected_amount,
-        GREATEST(COALESCE(o.contract_value,0)-COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0),0) AS remaining_collectible
+        CASE WHEN COALESCE(o.contract_value,0)>0
+          THEN GREATEST(COALESCE(o.contract_value,0)-COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0),0)
+          ELSE NULL END AS remaining_collectible
         FROM production_orders o WHERE o.status <> 'CANCELLED' ORDER BY o.created_at DESC LIMIT 500`);
       return {data:r.rows};
     }finally{client.release();}
