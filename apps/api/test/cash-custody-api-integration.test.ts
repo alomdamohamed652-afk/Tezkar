@@ -448,6 +448,23 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(closedPeriodTopUp.statusCode,409,closedPeriodTopUp.body);
       assert.equal(closedPeriodTopUp.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
 
+      const cancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'CANCELLED') RETURNING id",
+        ["Cancelled order finance guard",manager.id]
+      )).rows[0];
+      const cancelledOrderExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:cancelledOrder.id,category:"مصروف مباشر",description:"Must not post to cancelled order",amount:5,expenseType:"DIRECT",expenseDate:"2099-03-01"}
+      });
+      assert.equal(cancelledOrderExpense.statusCode,409,cancelledOrderExpense.body);
+      assert.equal(cancelledOrderExpense.json().error.code,"ORDER_CANCELLED");
+      const cancelledOrderRevenue=await app.inject({
+        method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+        payload:{orderId:cancelledOrder.id,amount:5,revenueDate:"2099-03-01",source:"MANUAL"}
+      });
+      assert.equal(cancelledOrderRevenue.statusCode,409,cancelledOrderRevenue.body);
+      assert.equal(cancelledOrderRevenue.json().error.code,"ORDER_CANCELLED");
+
       // A collection retry with the same idempotency key must return the original pair,
       // while a separate operation with identical amount/date/business fields is valid.
       const collectionOrder=(await apiPool.query(
