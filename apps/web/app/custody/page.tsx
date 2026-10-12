@@ -7,7 +7,7 @@ import {SearchableSelect} from "../../components/searchable-select";
 
 type Custody={id:string;code:string;employee_id:string;employee_name:string;custody_type:string;description:string;quantity:number;unit_value:number;total_value:number;status:string;issued_at:string;due_date:string|null;returned_quantity:number;lost_quantity:number;remaining_quantity:number;transfer_count?:number};
 type Employee={id:string;full_name:string;code:string};
-type CustodyOrder={id:string;code:string;order_name:string;contract_value:number;collected_amount:number;remaining_collectible:number};
+type CustodyOrder={id:string;code:string;order_name:string;contract_value:number;collected_amount:number;remaining_collectible:number|null};
 type CustodyTransfer={id:string;code:string;from_employee_name:string;to_employee_name:string;remaining_quantity:number;notes:string|null;created_at:string;created_by_username:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتجع جزئي",RETURNED:"مُسواة",DAMAGED:"تالف",LOST:"مفقودة",CANCELLED:"ملغاة"};
@@ -150,7 +150,7 @@ export default function CustodyPage(){
   {(has("cash_custody.create")||has("cash_custody.create_own"))&&<>
     <form className="form-grid" onSubmit={submitOrderCollection} style={{padding:16,borderTop:"1px solid var(--border)"}}><h3 className="card-title" style={{gridColumn:"1/-1"}}>تحصيل للطلبية وإضافة المبلغ لعهدتك</h3>
      {has("cash_custody.create")&&<label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>}
-     <label>الطلبية<select value={collectionOrderId} onChange={e=>setCollectionOrderId(e.target.value)} required>{orders.map(o=><option key={o.id} value={o.id}>{o.code} — {o.order_name} (متبقي تحصيل {formatMoney(o.remaining_collectible)})</option>)}</select></label>
+     <label>الطلبية<select value={collectionOrderId} onChange={e=>setCollectionOrderId(e.target.value)} required>{orders.map(o=><option key={o.id} value={o.id}>{o.code} — {o.order_name} ({Number(o.contract_value||0)>0?"متبقي تحصيل "+formatMoney(o.remaining_collectible??0):"بدون حد تعاقد مسجل"})</option>)}</select></label>
      <label>المبلغ المحصل<input inputMode="decimal" value={collectionAmount} onChange={e=>setCollectionAmount(e.target.value)} required/></label><label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label><label>البيان<input value={collectionDescription} onChange={e=>setCollectionDescription(e.target.value)} required/></label><label>ملاحظات<input value={collectionNotes} onChange={e=>setCollectionNotes(e.target.value)}/></label>
      <div className="form-actions"><button className="primary-button" disabled={collectionSaving||!collectionOrderId||!collectionAmount||Number(normalizeNumber(collectionAmount))<=0||(Number(orders.find(o=>o.id===collectionOrderId)?.contract_value||0)>0&&Number(normalizeNumber(collectionAmount))>Number(orders.find(o=>o.id===collectionOrderId)?.remaining_collectible||0))}>{collectionSaving?"جارٍ تسجيل التحصيل...":"تسجيل التحصيل وإضافته للعهدة"}</button></div><p className="form-hint" style={{gridColumn:"1/-1"}}>التحصيل يزيد إيراد الطلبية ورصيد العهدة معًا في معاملة واحدة، ويُمنع تجاوز قيمة العقد المتبقية.</p>
     </form>
