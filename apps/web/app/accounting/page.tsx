@@ -21,6 +21,7 @@ type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:st
 type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
+const localDateInput=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل خارجي لعهدة موظف" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
@@ -46,8 +47,8 @@ export default function AccountingPage() {
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
   const [dashboardPeriodId,setDashboardPeriodId]=useState("");
-  const [dashboardFrom,setDashboardFrom]=useState(new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10));
-  const [dashboardTo,setDashboardTo]=useState(new Date().toISOString().slice(0,10));
+  const [dashboardFrom,setDashboardFrom]=useState(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));
+  const [dashboardTo,setDashboardTo]=useState(localDateInput(new Date()));
   const [selectedPeriodId,setSelectedPeriodId]=useState("");
   const [periodDetail,setPeriodDetail]=useState<PeriodDetail|null>(null);
   const [periodForm,setPeriodForm]=useState({name:"",periodStart:new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10),periodEnd:new Date().toISOString().slice(0,10),notes:""});
@@ -215,7 +216,7 @@ export default function AccountingPage() {
 
      {tab==="dashboard"&&<>
       <section className="card" style={{marginBottom:16}}>
-       <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10));setDashboardTo(new Date().toISOString().slice(0,10));}}>هذا الشهر</button></div>
+       <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));setDashboardTo(localDateInput(new Date()));}}>هذا الشهر</button></div>
        <div className="form-grid finance-four-grid" style={{padding:"0 16px 16px"}}>
         <label>من تاريخ<input type="date" value={dashboardFrom} max={dashboardTo||undefined} onChange={e=>setDashboardFrom(e.target.value)}/></label>
         <label>إلى تاريخ<input type="date" value={dashboardTo} min={dashboardFrom||undefined} onChange={e=>setDashboardTo(e.target.value)}/></label>
