@@ -14,7 +14,7 @@ const labels:Record<string,string>={ACTIVE:"نشطة",PARTIAL_RETURNED:"مرتج
 
 export default function CustodyPage(){
  const {has,permissions}=usePermissions();
- type CashTx={id:string;code:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;transfer_code?:string|null};
+ type CashTx={id:string;code:string;employee_id?:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;transfer_code?:string|null};
  const [items,setItems]=useState<Custody[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[cashEmployeeId,setCashEmployeeId]=useState(""),[type,setType]=useState(""),[description,setDescription]=useState(""),[quantity,setQuantity]=useState(""),[unitValue,setUnitValue]=useState(""),[dueDate,setDueDate]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
  const [orders,setOrders]=useState<CustodyOrder[]>([]),[collectionOrderId,setCollectionOrderId]=useState(""),[collectionAmount,setCollectionAmount]=useState(""),[collectionDescription,setCollectionDescription]=useState("تحصيل من العميل"),[collectionNotes,setCollectionNotes]=useState(""),[collectionSaving,setCollectionSaving]=useState(false);
@@ -92,7 +92,7 @@ export default function CustodyPage(){
   const outflow=cash.filter(x=>x.direction==="OUT").reduce((sum,x)=>sum+Number(x.amount||0),0);
   // The API returns newest transactions first; take the latest balance once per employee.
   const latestBalanceByEmployee=new Map<string,number>();
-  for(const tx of cash){if(!latestBalanceByEmployee.has(tx.employee_name))latestBalanceByEmployee.set(tx.employee_name,Number(tx.balance||0));}
+  for(const tx of cash){const employeeKey=tx.employee_id||tx.employee_name;if(!latestBalanceByEmployee.has(employeeKey))latestBalanceByEmployee.set(employeeKey,Number(tx.balance||0));}
   const balance=[...latestBalanceByEmployee.values()].reduce((sum,value)=>sum+value,0);
   return {inflow,outflow,balance,transactions:cash.length};
  })();
