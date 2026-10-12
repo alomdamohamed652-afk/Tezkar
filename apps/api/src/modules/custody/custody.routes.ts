@@ -322,7 +322,6 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await actionCashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.order_collection","cash_custody.order_collection_own");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
-      await assertPostingDateOpen(client,date);
       const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
       const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -342,6 +341,8 @@ export async function custodyRoutes(app:FastifyInstance){
           return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
         }
       }
+      // A matching retry returns the committed pair even if its posting period was closed later.
+      await assertPostingDateOpen(client,date);
       if(["DRAFT","COMPLETED","CANCELLED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_COLLECTIBLE","لا يمكن تسجيل تحصيل لطلبية مسودة أو مكتملة أو ملغاة",409);
       const contractValue=Number(order.rows[0].contract_value||0);
       if(contractValue>0){
