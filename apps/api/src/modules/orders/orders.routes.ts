@@ -341,6 +341,22 @@ export async function orderRoutes(app: FastifyInstance) {
           const pending=await client.query("SELECT COUNT(*)::int AS count FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='PENDING'",[id]);
           if(Number(pending.rows[0]?.count||0)>0) throw new AppError("ORDER_HAS_PENDING_PRODUCTION","لا يمكن إكمال الطلبية قبل مراجعة كل تسجيلات الإنتاج المعلقة",409);
         }
+        if(p.status==="CANCELLED"){
+          const activity=await client.query(
+            `SELECT
+               EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status<>'CANCELLED') AS has_production,
+               EXISTS(SELECT 1 FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id WHERE os.order_id=$1) AS has_machine_production,
+               EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
+               EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1 AND status<>'CANCELLED') AS has_deliveries,
+               EXISTS(SELECT 1 FROM accounting_expenses WHERE order_id=$1) AS has_expenses,
+               EXISTS(SELECT 1 FROM order_revenues WHERE order_id=$1) AS has_revenues`,
+            [id]
+          );
+          const a=activity.rows[0];
+          if(a.has_production||a.has_machine_production||a.has_stock_movements||a.has_deliveries||a.has_expenses||a.has_revenues){
+            throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن إلغاء طلبية عليها إنتاج أو حركة مخزنية أو تسليم أو حركة مالية؛ عالج السجلات التابعة بإجراء تصحيح معتمد أولًا.",409);
+          }
+        }
       }
       const fields:string[]=[];
       const values:unknown[]=[];
