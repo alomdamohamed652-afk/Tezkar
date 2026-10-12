@@ -515,6 +515,19 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(independentCollection.statusCode,201,independentCollection.body);
       assert.notEqual(independentCollection.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      // The order contract cannot be reduced below collections already posted.
+      const contractBelowCollected=await app.inject({
+        method:"PATCH",url:"/api/orders/"+collectionOrder.id,headers:{cookie:managerCookie},
+        payload:{contractValue:250.99}
+      });
+      assert.equal(contractBelowCollected.statusCode,409,contractBelowCollected.body);
+      assert.equal(contractBelowCollected.json().error.code,"CONTRACT_VALUE_BELOW_RECORDED_REVENUE");
+      // Setting the contract to exactly the amount already collected is valid.
+      const contractAtCollected=await app.inject({
+        method:"PATCH",url:"/api/orders/"+collectionOrder.id,headers:{cookie:managerCookie},
+        payload:{contractValue:251}
+      });
+      assert.equal(contractAtCollected.statusCode,200,contractAtCollected.body);
       // A retry of a collection already committed before period close must still
       // return its original records; it must not attempt a new posting.
       const collectionPeriod=await app.inject({
