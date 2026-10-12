@@ -560,6 +560,20 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         });
         assert.equal(blockedExpense.statusCode,409,blockedExpense.body);
         assert.equal(blockedExpense.json().error.code,blockedStatus==="CANCELLED"?"ORDER_CANCELLED":"ORDER_NOT_EXPENSABLE");
+        if(blockedStatus==="COMPLETED"){
+          const completedAccountingExpense=await app.inject({
+            method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+            payload:{orderId:blockedOrder.id,amount:10,expenseDate:"2099-03-10",category:"Test",description:"Completed order expense must be rejected",expenseType:"DIRECT",idempotencyKey:randomUUID()}
+          });
+          assert.equal(completedAccountingExpense.statusCode,409,completedAccountingExpense.body);
+          assert.equal(completedAccountingExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+          const completedAccountingRevenue=await app.inject({
+            method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+            payload:{orderId:blockedOrder.id,amount:10,revenueDate:"2099-03-10",source:"MANUAL",notes:"Completed order revenue must be rejected",idempotencyKey:randomUUID()}
+          });
+          assert.equal(completedAccountingRevenue.statusCode,409,completedAccountingRevenue.body);
+          assert.equal(completedAccountingRevenue.json().error.code,"ORDER_NOT_COLLECTIBLE");
+        }
       }
 
       const expenseOrder=(await apiPool.query(
