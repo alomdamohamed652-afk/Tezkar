@@ -58,9 +58,8 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async(request,reply)=>{
   const p=expenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المصروف غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
-   await assertAccountingDateOpen(client,p.data.expenseDate);
    if(p.data.orderId){
-    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
    }
@@ -74,6 +73,8 @@ export async function accountingRoutes(app:FastifyInstance){
      if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
      if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
     }
+    // Order and employee locks are acquired before the period lock to match collection posting.
+    await assertAccountingDateOpen(client,p.data.expenseDate);
     let r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10) RETURNING *",[p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
    if(p.data.paidFromEmployeeId){
     // A custody-funded expense may temporarily make the employee's balance
