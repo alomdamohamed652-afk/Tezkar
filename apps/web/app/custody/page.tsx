@@ -35,7 +35,6 @@ export default function CustodyPage(){
  // Load employee options independently from the custody ledger so a ledger-view error
  // cannot block the picker. Support both all-scope and own-scope permissions.
  useEffect(()=>{
- useEffect(()=>{
   if(!permissions?.some(code=>["cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"].includes(code)))return;
   let active=true;
   api<{data:CustodyOrder[]}>("/api/cash-custody/eligible-orders").then(r=>{if(!active)return;setOrders(r.data);setCollectionOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));setExpenseOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));}).catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل الطلبيات");});
