@@ -172,6 +172,43 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(markedFinalStages.rows[0].count, 2);
 
     const orderId = orderResponse.json().data.id as string;
+
+    // Contractual value, recognized revenue, and cancellation guards must agree.
+    const contractOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: {
+        orderName: "Contract guard integration " + randomBytes(4).toString("hex"),
+        customerName: "Contract guard customer", orderDate: "2099-01-04", contractValue: 100,
+        stages: [{ stageName: "Contract guard stage", sequenceNo: 1, outputProductName: "Contract guard final product", plannedQuantity: 1, stageRate: 1, stageRateMethod: "PER_PIECE", isFinalProduct: true }]
+      }
+    });
+    assert.equal(contractOrder.statusCode, 201, contractOrder.body);
+    const contractOrderId = contractOrder.json().data.id as string;
+    const firstContractRevenue = await app.inject({
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
+      payload: { orderId: contractOrderId, amount: 80, revenueDate: "2099-01-04", source: "MANUAL", notes: "Contract guard integration" }
+    });
+    assert.equal(firstContractRevenue.statusCode, 201, firstContractRevenue.body);
+    const overContractRevenue = await app.inject({
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
+      payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract" }
+    });
+    assert.equal(overContractRevenue.statusCode, 409, overContractRevenue.body);
+    assert.equal(overContractRevenue.json().error.code, "CONTRACT_VALUE_EXCEEDED");
+    const belowRecordedContract = await app.inject({
+      method: "PATCH", url: "/api/orders/" + contractOrderId, headers: { cookie: submitter.cookie },
+      payload: { contractValue: 79.99 }
+    });
+    assert.equal(belowRecordedContract.statusCode, 409, belowRecordedContract.body);
+    assert.equal(belowRecordedContract.json().error.code, "CONTRACT_VALUE_BELOW_RECORDED_REVENUE");
+    const cancelWithRevenue = await app.inject({
+      method: "PATCH", url: "/api/orders/" + contractOrderId, headers: { cookie: submitter.cookie },
+      payload: { status: "CANCELLED" }
+    });
+    assert.equal(cancelWithRevenue.statusCode, 409, cancelWithRevenue.body);
+    assert.equal(cancelWithRevenue.json().error.code, "ORDER_HAS_ACTIVITY_LOCKED");
+
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
     const stagesResult = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id,os.sequence_no,os.stage_rate,os.stage_rate_method,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",
       [orderId]
@@ -269,6 +306,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
+    const withdrawalListPage = await app.inject({
+      method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(withdrawalListPage.statusCode, 200, withdrawalListPage.body);
+    assert.ok(withdrawalListPage.json().data.length <= 1);
+    assert.ok(Number(withdrawalListPage.json().pagination.total) >= 1);
+    assert.equal(withdrawalListPage.json().pagination.hasMore, Number(withdrawalListPage.json().pagination.total) > withdrawalListPage.json().data.length);
+    const invalidWithdrawalPage = await app.inject({
+      method: "GET", url: "/api/shift-withdrawals?limit=301&offset=0", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(invalidWithdrawalPage.statusCode, 422, invalidWithdrawalPage.body);
     const consumedWip = await apiPool.query(
       "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [wipStage.output_product_id, expectedWip.id, firstDestination.rows[0].location_id]
@@ -397,6 +445,95 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stageState.rows[0].completed_quantity), 10);
     assert.equal(stageState.rows[0].status, "COMPLETED");
     assert.equal(stageState.rows[0].order_status, "COMPLETED");
+
+    const addOutputToCompletedOrder = await app.inject({
+      method: "POST", url: "/api/stages/" + finalStage.id + "/outputs", headers: { cookie: submitter.cookie },
+      payload: { productId: finalStage.output_product_id, isDefault: true }
+    });
+    assert.equal(addOutputToCompletedOrder.statusCode, 409, addOutputToCompletedOrder.body);
+    assert.equal(addOutputToCompletedOrder.json().error.code, "ORDER_COMPLETED_LOCKED");
+    // A completed stage cannot receive machine production even if the parent order is reopened.
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
+    const testMachine = (await apiPool.query(
+      "INSERT INTO machines(name,machine_type) VALUES($1,$2) RETURNING id",
+      ["Completed stage guard " + randomBytes(4).toString("hex"), "TEST"]
+    )).rows[0];
+    const machineProductionOnCompletedStage = await app.inject({
+      method: "POST", url: "/api/machine-production", headers: { cookie: submitter.cookie },
+      payload: {
+        orderStageId: finalStage.id, machineId: testMachine.id, productId: finalStage.output_product_id,
+        workDate: "2099-01-05", quantity: 1
+      }
+    });
+    assert.equal(machineProductionOnCompletedStage.statusCode, 409, machineProductionOnCompletedStage.body);
+    assert.equal(machineProductionOnCompletedStage.json().error.code, "ORDER_STAGE_COMPLETED");
+    await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1", [orderId]);
+    const reopenCompletedOrder = await app.inject({
+      method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
+      payload: { status: "IN_PROGRESS" }
+    });
+    assert.equal(reopenCompletedOrder.statusCode, 200, reopenCompletedOrder.body);
+    const reopenedStage = await apiPool.query("SELECT status FROM order_stages WHERE id=$1", [finalStage.id]);
+    assert.equal(reopenedStage.rows[0].status, "IN_PROGRESS", "reopening an order must reactivate its completed stages");
+
+    const incompleteStageResponse = await app.inject({
+      method: "POST", url: "/api/orders/" + orderId + "/stages", headers: { cookie: submitter.cookie },
+      payload: { stageName: "Incomplete stage guard", sequenceNo: 3, outputProductId: finalStage.output_product_id, plannedQuantity: 999 }
+    });
+    assert.equal(incompleteStageResponse.statusCode, 201, incompleteStageResponse.body);
+    const incompleteStageId = incompleteStageResponse.json().data.id as string;
+    const forceCompleteIncompleteStage = await app.inject({
+      method: "PATCH", url: "/api/order-stages/" + incompleteStageId, headers: { cookie: submitter.cookie },
+      payload: { status: "COMPLETED" }
+    });
+    assert.equal(forceCompleteIncompleteStage.statusCode, 409, forceCompleteIncompleteStage.body);
+    assert.equal(forceCompleteIncompleteStage.json().error.code, "ORDER_STAGE_QUANTITY_INCOMPLETE");
+    const cancelIncompleteStage = await app.inject({
+      method: "PATCH", url: "/api/order-stages/" + incompleteStageId, headers: { cookie: submitter.cookie },
+      payload: { status: "CANCELLED" }
+    });
+    assert.equal(cancelIncompleteStage.statusCode, 200, cancelIncompleteStage.body);
+    // Remove the isolated regression fixture so the existing dashboard assertions
+    // continue to describe the original two-stage order.
+    await apiPool.query("DELETE FROM order_stages WHERE id=$1", [incompleteStageId]);
+
+    const rejectIncompleteOrder = await app.inject({
+      method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
+      payload: { status: "COMPLETED" }
+    });
+    assert.equal(rejectIncompleteOrder.statusCode, 409, rejectIncompleteOrder.body);
+    assert.equal(rejectIncompleteOrder.json().error.code, "ORDER_STAGES_INCOMPLETE");
+    const reopenedStages = await apiPool.query(
+      "SELECT id FROM order_stages WHERE order_id=$1 AND status='IN_PROGRESS'",
+      [orderId]
+    );
+    for (const reopened of reopenedStages.rows) {
+      const completeReopenedStage = await app.inject({
+        method: "PATCH", url: "/api/order-stages/" + reopened.id, headers: { cookie: submitter.cookie },
+        payload: { status: "COMPLETED" }
+      });
+      assert.equal(completeReopenedStage.statusCode, 200, completeReopenedStage.body);
+    }
+    const completeOrderAgain = await app.inject({
+      method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
+      payload: { status: "COMPLETED" }
+    });
+    assert.equal(completeOrderAgain.statusCode, 200, completeOrderAgain.body);
+    const completedStageAgain = await apiPool.query("SELECT status FROM order_stages WHERE id=$1", [finalStage.id]);
+    assert.equal(completedStageAgain.rows[0].status, "COMPLETED");
+
+    const addStageToCompletedOrder = await app.inject({
+      method: "POST", url: "/api/orders/" + orderId + "/stages", headers: { cookie: submitter.cookie },
+      payload: { stageName: "Must not add to completed order", sequenceNo: 3 }
+    });
+    assert.equal(addStageToCompletedOrder.statusCode, 409, addStageToCompletedOrder.body);
+    assert.equal(addStageToCompletedOrder.json().error.code, "ORDER_COMPLETED_LOCKED");
+    const editCompletedStage = await app.inject({
+      method: "PATCH", url: "/api/order-stages/" + finalStage.id, headers: { cookie: submitter.cookie },
+      payload: { notes: "Must not edit completed order stage" }
+    });
+    assert.equal(editCompletedStage.statusCode, 409, editCompletedStage.body);
+    assert.equal(editCompletedStage.json().error.code, "ORDER_COMPLETED_LOCKED");
 
     const dashboard = await app.inject({
       method: "GET", url: "/api/orders/" + orderId + "/dashboard", headers: { cookie: submitter.cookie }
@@ -592,9 +729,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
     });
     assert.equal(accountingSummary.statusCode, 200, accountingSummary.body);
-    assert.equal(Number(accountingSummary.json().data.total_in), 1000);
+    // The contract-guard regression above adds one valid $80 revenue entry to this
+    // disposable database; the over-contract attempt must not add anything else.
+    assert.equal(Number(accountingSummary.json().data.total_in), 1080);
     assert.equal(Number(accountingSummary.json().data.total_out), 50);
-    assert.equal(Number(accountingSummary.json().data.net), 950);
+    assert.equal(Number(accountingSummary.json().data.net), 1030);
 
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
@@ -624,6 +763,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(concurrentOrder.statusCode, 201, concurrentOrder.body);
     const concurrentOrderId = concurrentOrder.json().data.id as string;
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [concurrentOrderId]);
     const concurrentStage = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",
       [concurrentOrderId]
@@ -699,6 +839,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(pendingOrder.statusCode, 201, pendingOrder.body);
     const pendingOrderId = pendingOrder.json().data.id as string;
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [pendingOrderId]);
     const pendingStage = await apiPool.query("SELECT os.id,os.stage_id,os.output_product_id FROM order_stages os WHERE os.order_id=$1",[pendingOrderId]);
     const pendingProduction = await app.inject({
       method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
@@ -732,6 +873,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(priceOrder.statusCode, 201, priceOrder.body);
     const priceOrderId = priceOrder.json().data.id as string;
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [priceOrderId]);
     const priceStage = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id,os.stage_rate FROM order_stages os WHERE os.order_id=$1",
       [priceOrderId]

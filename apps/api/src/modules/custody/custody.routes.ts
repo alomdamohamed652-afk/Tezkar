@@ -52,7 +52,8 @@ const topUpSchema=z.object({
   amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   transactionDate:z.string().date().optional(),
   description:z.string().trim().min(2).max(500),
-  notes:z.string().trim().max(1000).nullable().optional()
+  notes:z.string().trim().max(1000).nullable().optional(),
+  confirmDuplicate:z.boolean().optional().default(false)
 });
 
 const cashSchema=z.object({
@@ -64,6 +65,12 @@ const cashSchema=z.object({
   notes:z.string().trim().max(1000).nullable().optional(),
   confirmDuplicate:z.boolean().optional().default(false)
 });
+
+async function assertPostingDateOpen(client:import("pg").PoolClient,date:string){
+  // Share-lock the period row so period close waits for an in-flight posting.
+  const period=await client.query("SELECT id,name,status FROM accounting_periods WHERE $1::date BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date]);
+  if(period.rows[0]?.status==="CLOSED")throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عهدة أو تحصيل عادي عليها. استخدم إجراء التصحيح المعتمد.",409);
+}
 
 async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,permissionCode:"cash_custody.view"|"cash_custody.create"){
   const user=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
@@ -106,7 +113,7 @@ export async function custodyRoutes(app:FastifyInstance){
       return {data:own.rows};
     }finally{client.release();}
   });
-  app.get("/api/custodies",{preHandler:[authenticateRequest]},async(request)=>{
+  app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const scopeClient=await pool.connect();
     let canViewAll=false;let canViewOwn=false;
@@ -150,7 +157,7 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:r});
   });
 
-  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest]},async(request)=>{
+  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const user=await workerInfo(request.user!.userId);
     const scopeClient=await pool.connect();
@@ -169,7 +176,7 @@ export async function custodyRoutes(app:FastifyInstance){
     return {data:r.rows};
   });
 
-  app.get("/api/custodies/:id/transfers",{preHandler:[authenticateRequest]},async(request)=>{
+  app.get("/api/custodies/:id/transfers",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;const user=await workerInfo(request.user!.userId);const client=await pool.connect();
     try{
       const all=await hasPermission(client,request.user!.userId,"custody.view","all");const own=await hasPermission(client,request.user!.userId,"custody.view_own","own");
@@ -254,6 +261,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const ids=[p.data.fromEmployeeId,p.data.toEmployeeId].sort();const locked=await client.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE ORDER BY id FOR UPDATE",[ids]);
       if(locked.rowCount!==2)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف المحول أو المستلم غير موجود أو غير نشط",422);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[p.data.fromEmployeeId,date]);
       if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","مبلغ التحويل أكبر من رصيد العهدة النقدية المتاح",409);
       const transfer=await client.query("INSERT INTO cash_custody_transfers(from_employee_id,to_employee_id,amount,transaction_date,description,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",[p.data.fromEmployeeId,p.data.toEmployeeId,p.data.amount,date,p.data.description,p.data.notes??null,request.user!.userId]);
@@ -264,6 +272,21 @@ export async function custodyRoutes(app:FastifyInstance){
     });return reply.code(201).send({data:result});
   });
 
+
+  app.get("/api/cash-custody/eligible-orders",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request)=>{
+    const client=await pool.connect();
+    try{
+      const canCreateAll=await hasPermission(client,request.user!.userId,"cash_custody.create","all");
+      if(!canCreateAll && !await hasPermission(client,request.user!.userId,"cash_custody.create_own","own"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تحصيل طلبية",403);
+      const r=await client.query(`SELECT o.id,o.code,o.order_name,COALESCE(o.contract_value,0) AS contract_value,
+        COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS collected_amount,
+        CASE WHEN COALESCE(o.contract_value,0)>0
+          THEN GREATEST(COALESCE(o.contract_value,0)-COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0),0)
+          ELSE NULL END AS remaining_collectible
+        FROM production_orders o WHERE o.status <> 'CANCELLED' ORDER BY o.created_at DESC LIMIT 500`);
+      return {data:r.rows};
+    }finally{client.release();}
+  });
 
   const orderCollectionSchema=z.object({
     employeeId:z.string().uuid().optional(),
@@ -288,7 +311,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
       const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
-      const order=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+      const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
@@ -305,6 +328,15 @@ export async function custodyRoutes(app:FastifyInstance){
           if(!matches)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لتحصيل ببيانات مختلفة. ابدأ عملية جديدة بمفتاح جديد.",409);
           return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
         }
+      }
+      // Return a matching successful retry before enforcing the current period state:
+      // no new posting occurs, so closing the original date must not break idempotency.
+      await assertPostingDateOpen(client,date);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل تحصيل لطلبية ملغاة",409);
+      const contractValue=Number(order.rows[0].contract_value||0);
+      if(contractValue>0){
+        const collected=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
+        if(Number(collected.rows[0]?.total||0)+p.data.amount>contractValue+1e-9)throw new AppError("COLLECTION_EXCEEDS_CONTRACT_VALUE","مبلغ التحصيل يتجاوز المتبقي من قيمة الطلبية المتفق عليها",409);
       }
       const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
       let revenue;
@@ -341,6 +373,34 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:row});
   });
 
+  const orderExpenseSchema=z.object({
+    employeeId:z.string().uuid().optional(),orderId:z.string().uuid(),orderStageId:z.string().uuid().nullable().optional(),
+    amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
+    transactionDate:z.string().date().optional(),category:z.string().trim().min(2).max(100),description:z.string().trim().min(2).max(300),notes:z.string().trim().max(500).nullable().optional()
+  });
+  // A custody-funded order expense is one atomic event: direct order expense + custody OUT.
+  app.post("/api/cash-custody/order-expenses",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
+    const p=orderExpenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مصروف الطلبية غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
+      const employeeId=access.employeeId!;const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      // Match accounting expense/revenue lock order: parent order first, then
+      // employee, then stage and period. This avoids order↔employee deadlocks.
+      const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      if(p.data.orderStageId){const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);}
+      await assertPostingDateOpen(client,date);
+      const expense=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,$6,$7,'DIRECT',$8) RETURNING *",[p.data.orderId,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId]);
+      const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3,$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING *",[employeeId,p.data.amount,date,p.data.description,p.data.notes??null,expense.rows[0].id,request.user!.userId]);
+      const linked=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,expense.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"order_expense_from_custody",module:"cash_custody",entityType:"expense",entityId:linked.rows[0].id,afterData:{expense:linked.rows[0],cashCustody:cash.rows[0]},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {expense:linked.rows[0],cashCustody:cash.rows[0]};
+    });return reply.code(201).send({data:result});
+  });
+
   // External funding is ordinary company revenue and a matching employee-custody inflow.
   // Both ledger entries are committed atomically; only all-scope finance users may record it.
   app.post("/api/cash-custody/top-ups",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
@@ -352,16 +412,17 @@ export async function custodyRoutes(app:FastifyInstance){
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       const duplicate=await client.query("SELECT id FROM cash_custody_transactions WHERE employee_id=$1 AND direction='IN' AND amount=$2 AND transaction_date=$3 AND source_type='EXTERNAL_TOP_UP' LIMIT 1 FOR SHARE",[p.data.employeeId,p.data.amount,date]);
-      if(duplicate.rowCount)throw new AppError("DUPLICATE_CUSTODY_TOP_UP","توجد إضافة رصيد بنفس الموظف والمبلغ والتاريخ؛ راجع الحركة السابقة قبل التسجيل",409);
+      if(duplicate.rowCount&&!p.data.confirmDuplicate)throw new AppError("DUPLICATE_CUSTODY_TOP_UP","توجد إضافة رصيد بنفس الموظف والمبلغ والتاريخ؛ راجع الحركة السابقة وأكد تسجيل حركة جديدة إذا كانت مستقلة",409);
       const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
       const revenue=await client.query(
         "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,$1,$2,$3,'EXTERNAL_CUSTODY_TOP_UP',$4,$5) RETURNING *",
         [codeResult.rows[0].code,p.data.amount,date,[p.data.description,p.data.notes].filter(Boolean).join(" — ")||null,request.user!.userId]
       );
       const tx=await client.query(
-        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6,$7) RETURNING *",
-        [p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,revenue.rows[0].id,request.user!.userId]
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,confirmed_duplicate,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6,$7,$8) RETURNING *",
+        [p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,revenue.rows[0].id,Boolean(duplicate.rowCount&&p.data.confirmDuplicate),request.user!.userId]
       );
       const linkedRevenue=await client.query("UPDATE order_revenues SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[tx.rows[0].id,revenue.rows[0].id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"external_top_up",module:"cash_custody",entityType:"cash_custody_transaction",entityId:tx.rows[0].id,afterData:{revenue:linkedRevenue.rows[0],cashCustody:tx.rows[0]},metadata:{companyRevenue:true,revenueCode:revenue.rows[0].code},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -394,17 +455,14 @@ export async function custodyRoutes(app:FastifyInstance){
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
       if(p.data.direction==="IN"&&!access.isFinance)throw new AppError("FINANCE_SCOPE_REQUIRED","إضافة رصيد للعهدة متاحة للمدير المالي فقط؛ التحصيل من العميل له إجراء مستقل",403);
+      if(p.data.direction==="IN")throw new AppError("USE_CUSTODY_TOP_UP_OR_COLLECTION","الوارد النقدي يجب تسجيله من إجراء تمويل العهدة أو تحصيل الطلبية حتى يظهر في الإيرادات المحاسبية",409);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+       await assertPostingDateOpen(client,date);
       // Serialize balance and duplicate checks per employee to prevent concurrent overspending.
       const employeeLock=await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[employeeId]);
       if(!employeeLock.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",422);
-      if(p.data.direction==="OUT"){
-        const balance=await client.query(
-          "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",
-          [employeeId,date]
-        );
-        if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المبلغ المطلوب صرفه أكبر من رصيد العهدة المتاح في هذا التاريخ",409);
-      }
+      // OUT movements may create a negative balance when an employee pays a
+      // factory expense personally; future IN movements reconcile the balance.
       const dup=await client.query(`SELECT id,code,description FROM cash_custody_transactions
         WHERE employee_id=$1 AND direction=$2 AND amount=$3 AND transaction_date=$4
         ORDER BY created_at DESC LIMIT 10 FOR SHARE`,

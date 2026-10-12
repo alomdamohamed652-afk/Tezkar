@@ -32,6 +32,7 @@ const orderStageSchema = z.object({
 
 const orderSchema = z.object({
   orderName: z.string().trim().min(2).max(200),
+  contractValue: z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"قيمة الطلبية بحد أقصى منزلتين عشريتين"}).optional().default(0),
   customerName: z.string().trim().max(200).optional(),
   orderDate: z.string().date().optional(),
   deliveryStartDate: z.string().date().optional(),
@@ -175,7 +176,7 @@ export async function orderRoutes(app: FastifyInstance) {
     let where = "WHERE o.status <> 'CANCELLED'";
     if (q.status) { params.push(q.status); where = "WHERE o.status=$1"; }
     const r = await pool.query(
-      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,
+      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,o.contract_value,
               COALESCE((SELECT COUNT(*)::int FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS line_count,
               COALESCE((SELECT SUM(ol.quantity) FROM production_order_lines ol WHERE ol.order_id=o.id),0) AS ordered_quantity,
               COALESCE((SELECT SUM(os.completed_quantity) FROM order_stages os WHERE os.order_id=o.id AND os.status <> 'CANCELLED' AND (os.is_final_product=TRUE OR (NOT EXISTS(SELECT 1 FROM order_stages f WHERE f.order_id=o.id AND f.is_final_product=TRUE AND f.status <> 'CANCELLED') AND os.sequence_no=(SELECT MAX(os2.sequence_no) FROM order_stages os2 WHERE os2.order_id=o.id AND os2.status <> 'CANCELLED')))),0) AS completed_quantity
@@ -216,9 +217,9 @@ export async function orderRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات الطلب غير صحيحة",422);
     const row = await withTransaction(async (client) => {
       const created = await client.query(
-        `INSERT INTO production_orders(order_name,customer_name,order_date,delivery_start_date,due_date,last_delivery_date,notes,created_by,status)
-         VALUES($1,$2,COALESCE($3,CURRENT_DATE),$4,$5,$6,$7,$8,'DRAFT') RETURNING *`,
-        [parsed.data.orderName, parsed.data.customerName ?? null, parsed.data.orderDate ?? null, parsed.data.deliveryStartDate ?? null, parsed.data.dueDate ?? null, parsed.data.lastDeliveryDate ?? null, parsed.data.notes ?? null, request.user!.userId]
+        `INSERT INTO production_orders(order_name,customer_name,order_date,delivery_start_date,due_date,last_delivery_date,notes,created_by,status,contract_value)
+         VALUES($1,$2,COALESCE($3,CURRENT_DATE),$4,$5,$6,$7,$8,'DRAFT',$9) RETURNING *`,
+        [parsed.data.orderName, parsed.data.customerName ?? null, parsed.data.orderDate ?? null, parsed.data.deliveryStartDate ?? null, parsed.data.dueDate ?? null, parsed.data.lastDeliveryDate ?? null, parsed.data.notes ?? null, request.user!.userId, parsed.data.contractValue]
       );
       const order = created.rows[0];
       const stages = parsed.data.stages ?? [];
@@ -322,31 +323,80 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.patch("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.edit")] }, async (request) => {
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
+    const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),contractValue:z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"قيمة الطلبية بحد أقصى منزلتين عشريتين"}).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
     const p=parsed.data;
-    if(p.status!==undefined) throw new AppError("ORDER_STATUS_TRANSITION_REQUIRED","تغيير حالة الطلب يجب أن يتم من خلال إجراء انتقال الحالة المخصص",409);
     const result=await withTransaction(async client=>{
       const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
-      if(current.rows[0].status==="COMPLETED" && Object.keys(p).length>0){
-        throw new AppError("ORDER_COMPLETED_LOCKED","لا يمكن تعديل طلب مكتمل",409);
+      const before=current.rows[0];
+      if(before.status==="CANCELLED") throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل طلبية ملغاة",409);
+      if(before.status==="COMPLETED" && (p.status===undefined || p.status==="COMPLETED") && Object.keys(p).some(k=>k!=="status")){
+        throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل بياناتها",409);
       }
-
+      if(p.status!==undefined && p.status!==before.status){
+        const allowed:Record<string,string[]>={DRAFT:["PLANNED","CANCELLED"],PLANNED:["DRAFT","IN_PROGRESS","CANCELLED"],IN_PROGRESS:["COMPLETED","PLANNED","CANCELLED"],COMPLETED:["IN_PROGRESS"],CANCELLED:[]};
+        if(!(allowed[before.status]??[]).includes(p.status)) throw new AppError("ORDER_STATUS_TRANSITION_INVALID","انتقال حالة الطلبية غير مسموح",409);
+        if(p.status==="COMPLETED"){
+          const pending=await client.query("SELECT COUNT(*)::int AS count FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='PENDING'",[id]);
+          if(Number(pending.rows[0]?.count||0)>0) throw new AppError("ORDER_HAS_PENDING_PRODUCTION","لا يمكن إكمال الطلبية قبل مراجعة كل تسجيلات الإنتاج المعلقة",409);
+          const incomplete=await client.query("SELECT COUNT(*)::int AS count FROM order_stages WHERE order_id=$1 AND status NOT IN ('COMPLETED','CANCELLED')",[id]);
+          if(Number(incomplete.rows[0]?.count||0)>0) throw new AppError("ORDER_STAGES_INCOMPLETE","لا يمكن إكمال الطلبية قبل إكمال مراحلها أو إلغائها بشكل منفصل",409);
+        }
+        if(p.status==="CANCELLED"){
+          const activity=await client.query(
+            `SELECT
+               EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status<>'CANCELLED') AS has_production,
+               EXISTS(SELECT 1 FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id WHERE os.order_id=$1) AS has_machine_production,
+               EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
+               EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1) AS has_deliveries,
+               EXISTS(SELECT 1 FROM accounting_expenses WHERE order_id=$1) AS has_expenses,
+               EXISTS(SELECT 1 FROM order_revenues WHERE order_id=$1) AS has_revenues`,
+            [id]
+          );
+          const a=activity.rows[0];
+          if(a.has_production||a.has_machine_production||a.has_stock_movements||a.has_deliveries||a.has_expenses||a.has_revenues){
+            throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن إلغاء طلبية عليها إنتاج أو حركة مخزنية أو تسليم أو حركة مالية؛ عالج السجلات التابعة بإجراء تصحيح معتمد أولًا.",409);
+          }
+        }
+      }
       const fields:string[]=[];
       const values:unknown[]=[];
       const add=(field:string,value:unknown)=>{values.push(value);fields.push(field+"=$"+values.length);};
       if(p.orderName!==undefined)add("order_name",p.orderName);
+      if(p.contractValue!==undefined){
+        // A contract cannot be reduced below revenue already recorded against the order.
+        // The order row is locked above, matching collection posting's lock to serialize
+        // a contract edit against an in-flight customer collection.
+        const collected=await client.query(
+          "SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",
+          [id]
+        );
+        const alreadyRecorded=Number(collected.rows[0]?.total||0);
+        if(p.contractValue+1e-7<alreadyRecorded){
+          throw new AppError("CONTRACT_VALUE_BELOW_RECORDED_REVENUE","لا يمكن تخفيض قيمة التعاقد إلى أقل من الإيرادات المسجلة بالفعل على الطلبية",409);
+        }
+        add("contract_value",p.contractValue);
+      }
       if(p.customerName!==undefined)add("customer_name",p.customerName);
       if(p.deliveryStartDate!==undefined)add("delivery_start_date",p.deliveryStartDate);
       if(p.dueDate!==undefined)add("due_date",p.dueDate);
       if(p.lastDeliveryDate!==undefined)add("last_delivery_date",p.lastDeliveryDate);
       if(p.notes!==undefined)add("notes",p.notes);
-      if(!fields.length)return current.rows[0];
-
+      if(p.status!==undefined)add("status",p.status);
+      if(!fields.length)return before;
       values.push(id);
-      const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=${values.length} RETURNING *`,values);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length} RETURNING *`,values);
+      let reopenedStageCount=0;
+      // Reopening a completed order must also return its completed stages to active
+      // worklists; otherwise the order looks reopened but no stage accepts new work.
+      if(before.status==="COMPLETED"&&p.status==="IN_PROGRESS"){
+        const reopened=await client.query("UPDATE order_stages SET status='IN_PROGRESS' WHERE order_id=$1 AND status='COMPLETED' RETURNING id",[id]);
+        reopenedStageCount=reopened.rowCount??0;
+      }
+
+      const lifecycleMetadata={...(reopenedStageCount?{reopenedStageCount}:{})};
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],...(Object.keys(lifecycleMetadata).length?{metadata:lifecycleMetadata}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return { data:result };
@@ -357,7 +407,10 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional().default(false)}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).refine(x=>!x.isFinalProduct||Boolean((x.outputProductId||x.outputProductName)&&x.plannedQuantity!=null&&x.plannedQuantity>0),{message:"المنتج النهائي وكمية المرحلة مطلوبان"}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);
     const r=await withTransaction(async client=>{
-      const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن إضافة مرحلة لطلبية ملغاة",409);
+      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل إضافة مرحلة",409);
       const stage=await ensureStage(client,{stageId:parsed.data.stageId,stageName:parsed.data.stageName});
       let outputProductId=parsed.data.outputProductId??null;
       if(!outputProductId&&parsed.data.outputProductName)outputProductId=(await ensureProduct(client,{productName:parsed.data.outputProductName})).id;
@@ -367,15 +420,27 @@ export async function orderRoutes(app: FastifyInstance) {
       const refreshed=await client.query("SELECT * FROM order_stages WHERE id=$1",[x.rows[0].id]);
       return refreshed.rows[0];
     });
-    return reply.code(201).send({data:r.rows[0]});
+    return reply.code(201).send({data:r});
   });
 
   app.post("/api/stages/:id/outputs", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request, reply) => {
     const stageId=(request.params as {id:string}).id;
     const parsed=z.object({productId:z.string().uuid(),isDefault:z.boolean().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات منتج المرحلة غير صحيحة",422);
-    const r=await pool.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,$3) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default RETURNING *",[stageId,parsed.data.productId,parsed.data.isDefault ?? false]);
-    return reply.code(201).send({data:r.rows[0]});
+    const result=await withTransaction(async client=>{
+      const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[stageId]);
+      if(!stageRef.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      const order=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل مخرجات مرحلة في طلبية ملغاة",409);
+      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مخرجات المرحلة",409);
+      const stage=await client.query("SELECT status FROM order_stages WHERE id=$1 AND order_id=$2 FOR UPDATE",[stageId,stageRef.rows[0].order_id]);
+      if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      if(stage.rows[0].status==="CANCELLED"||stage.rows[0].status==="COMPLETED")throw new AppError("ORDER_STAGE_LOCKED","لا يمكن تعديل مخرجات مرحلة مكتملة أو ملغاة",409);
+      const r=await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,$3) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default RETURNING *",[stageId,parsed.data.productId,parsed.data.isDefault ?? false]);
+      return r.rows[0];
+    });
+    return reply.code(201).send({data:result});
   });
 
   app.get("/api/stages/:id/outputs", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
@@ -390,8 +455,18 @@ export async function orderRoutes(app: FastifyInstance) {
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل المرحلة غير صحيحة",422);
     const p=parsed.data;
     const r=await withTransaction(async client=>{
+      const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[id]);
+      if(!stageRef.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      // Lock parent order before stage, matching expense and cancellation flows.
+      const parentOrder=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+      if(!parentOrder.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(parentOrder.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل مرحلة في طلبية ملغاة",409);
+      if(parentOrder.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مراحلها",409);
       const current=await client.query("SELECT * FROM order_stages WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      if(p.status==="COMPLETED"&&current.rows[0].planned_quantity!=null&&Number(current.rows[0].completed_quantity||0)+1e-9<Number(current.rows[0].planned_quantity)){
+        throw new AppError("ORDER_STAGE_QUANTITY_INCOMPLETE","لا يمكن إكمال المرحلة قبل تحقيق الكمية المخططة",409);
+      }
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
@@ -423,6 +498,8 @@ export async function orderRoutes(app: FastifyInstance) {
       const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تغيير سعر طلبية ملغاة",409);
+      // Price-change scopes are audited financial adjustments and may be needed
+      // after completion to reconcile approved production; cancellation remains blocked.
       const stage=await client.query("SELECT * FROM order_stages WHERE id=$1 AND order_id=$2 FOR UPDATE",[parsed.data.orderStageId,orderId]);
       if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","المرحلة لا تتبع هذه الطلبية",404);
       const oldRate=stage.rows[0].stage_rate==null?null:Number(stage.rows[0].stage_rate);
@@ -522,7 +599,7 @@ export async function orderRoutes(app: FastifyInstance) {
       pool.query("SELECT wpa.production_entry_id,COALESCE(SUM(wpa.amount),0) AS paid_amount FROM worker_payment_allocations wpa JOIN production_entries pe ON pe.id=wpa.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 GROUP BY wpa.production_entry_id",[id]),
       pool.query("SELECT p.id AS product_id,p.name AS product_name,pol.quantity,pol.unit_id,u.name AS unit_name FROM production_order_lines pol JOIN products p ON p.id=pol.product_id JOIN units u ON u.id=pol.unit_id WHERE pol.order_id=$1 ORDER BY pol.id",[id])
     ]);
-    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type='OUT'),0) AS stock_out_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
+    const totals=await pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS production_cost,COALESCE((SELECT SUM(total_cost) FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'),0) AS stock_out_cost,COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1),0) AS order_expenses",[id]);
     const paidMap=new Map<string,number>(payments.rows.map((x:{production_entry_id:string;paid_amount:string|number})=>[x.production_entry_id,Number(x.paid_amount)]));
     const productionWithPayments=production.rows.map((x:{id:string;total_earning_amount?:string|number;earning_amount:string|number;price_adjustment_amount?:string|number})=>({
       ...x,
@@ -571,12 +648,19 @@ export async function orderRoutes(app: FastifyInstance) {
         if(!type.rowCount) throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود أو غير نشط",422);
       }
       if(parsed.data.orderStageId){
-        const stage=await client.query(`SELECT os.id,os.order_id,os.stage_id,os.output_product_id,po.status
+        // Lock the parent order before the stage, matching order edits and worker production.
+        const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[parsed.data.orderStageId]);
+        if(!stageRef.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const order=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+        if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+        const stage=await client.query(`SELECT os.id,os.order_id,os.stage_id,os.output_product_id,os.status AS stage_status,po.status AS order_status
           FROM order_stages os JOIN production_orders po ON po.id=os.order_id
-          WHERE os.id=$1 FOR UPDATE`,[parsed.data.orderStageId]);
+          WHERE os.id=$1 AND os.order_id=$2 FOR UPDATE OF os`,[parsed.data.orderStageId,stageRef.rows[0].order_id]);
         if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const s=stage.rows[0];
-        if(s.status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية ملغاة",409);
+        if(s.order_status==="CANCELLED"||s.stage_status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية أو مرحلة ملغاة",409);
+        if(s.order_status==="DRAFT"||s.order_status==="COMPLETED") throw new AppError("ORDER_NOT_ACTIVE","لا يمكن تسجيل إنتاج ماكينة لطلبية مسودة أو مكتملة؛ فعّل الطلبية أو أعد فتحها أولًا",409);
+        if(s.stage_status==="COMPLETED") throw new AppError("ORDER_STAGE_COMPLETED","لا يمكن تسجيل إنتاج إضافي لمرحلة مكتملة؛ أعد فتح الطلبية أو المرحلة وفق الإجراء المعتمد",409);
         if(!s.output_product_id) throw new AppError("ORDER_STAGE_OUTPUT_REQUIRED","اربط منتجًا ناتجًا بمرحلة الطلبية قبل تسجيل إنتاج الماكينة",422);
         if(s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج المختار لا يطابق المنتج الناتج من المرحلة المحددة",409);
       }

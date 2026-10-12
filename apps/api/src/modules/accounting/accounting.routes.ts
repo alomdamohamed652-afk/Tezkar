@@ -33,6 +33,12 @@ const revenueSchema=z.object({
 });
 const idSchema=z.object({orderId:z.string().uuid()});
 
+async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined){
+ // Lock the matching period row so closing the period cannot race with a posting.
+ const result=await client.query("SELECT id,name,status FROM accounting_periods WHERE COALESCE($1::date,current_date) BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date??null]);
+ if(result.rows[0]?.status==="CLOSED")throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
+}
+
 export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
@@ -53,8 +59,9 @@ export async function accountingRoutes(app:FastifyInstance){
   const p=expenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المصروف غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
    if(p.data.orderId){
-    const order=await client.query("SELECT id FROM production_orders WHERE id=$1",[p.data.orderId]);
+    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
    }
    if(p.data.paidFromEmployeeId){
     const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);
@@ -66,11 +73,13 @@ export async function accountingRoutes(app:FastifyInstance){
      if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
      if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
     }
+    // Order and employee locks are acquired before the period lock to match collection posting.
+    await assertAccountingDateOpen(client,p.data.expenseDate);
     let r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10) RETURNING *",[p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
    if(p.data.paidFromEmployeeId){
-    // Administrative/direct expense payment is an actual custody OUT movement.
-    // Expenses may drive custody negative as requested; this is distinct from an
-    // ordinary manual OUT movement, which still checks available balance.
+    // A custody-funded expense may temporarily make the employee's balance
+    // negative when they cover a factory expense from personal money.
+    // Later incoming custody movements will settle that negative balance.
     const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,current_date),$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING id",
       [p.data.paidFromEmployeeId,p.data.amount,p.data.expenseDate??null,p.data.description,"صرف مصروف: "+p.data.category,r.rows[0].id,request.user!.userId]);
     r=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,r.rows[0].id]);
@@ -90,8 +99,21 @@ export async function accountingRoutes(app:FastifyInstance){
   const p=revenueSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الإيراد غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
    if(p.data.orderId){
-     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1",[p.data.orderId]);
+     // Serialize every order-linked revenue posting against collection and contract edits.
+     const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
+     await assertAccountingDateOpen(client,p.data.revenueDate);
+     const contractValue=Number(order.rows[0].contract_value||0);
+     if(contractValue>0){
+       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
+       const collected=Number(posted.rows[0]?.total||0);
+       if(collected+p.data.amount>contractValue+1e-7){
+         throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
+       }
+     }
+   }else{
+     await assertAccountingDateOpen(client,p.data.revenueDate);
    }
    const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
    const code=codeResult.rows[0].code;
@@ -171,14 +193,16 @@ export async function accountingRoutes(app:FastifyInstance){
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
    if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
    const orders=await client.query(`SELECT o.id,
-    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id),0)
+    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0)
     +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
-    +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS cost
+    +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0)
+    +COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS cost
     FROM production_orders o WHERE o.status<>'CANCELLED' ORDER BY o.code`);
    const eligibleOrders=orders.rows.filter(row=>Number(row.cost||0)>0);
    const totalCost=eligibleOrders.reduce((sum,row)=>sum+Number(row.cost||0),0);
    if(!eligibleOrders.length||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   let allocationCount=0;
    for(const expense of expenses.rows){
     if(!hasCentPrecision(expense.amount))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل التصفية",409);
     const amountMinor=toMinorUnits(expense.amount);
@@ -194,13 +218,17 @@ export async function accountingRoutes(app:FastifyInstance){
      const order=eligibleOrders[i];
      const share=shares[i];
      if(!order||share===undefined)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
+     // Zero-cent shares do not represent a real allocation; omit them while
+     // preserving the exact per-expense total through largest-remainder rounding.
+     if(share===0)continue;
      await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,share/100,request.user!.userId]);
+     allocationCount++;
     }
     if(shares.reduce((sum,value)=>sum+value,0)!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
    }
    const result=await client.query("SELECT COALESCE(SUM(amount),0) AS allocated FROM accounting_expense_allocations WHERE period_id=$1",[id]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*eligibleOrders.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return {periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*eligibleOrders.length,allocatedAmount:result.rows[0].allocated};
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,expenseCount:expenses.rowCount,allocationCount,allocatedAmount:result.rows[0].allocated};
   })};
  });
  app.put("/api/accounting/periods/:id/allocations",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
@@ -229,11 +257,14 @@ export async function accountingRoutes(app:FastifyInstance){
     else grouped.set(key,{expenseId:a.expenseId,orderId:a.orderId,amount:a.amount});
    }
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   let savedAllocationCount=0;
    for(const a of grouped.values()){
+    if(toMinorUnits(a.amount)===0)continue;
     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,a.expenseId,a.orderId,a.amount,request.user!.userId]);
+    savedAllocationCount++;
    }
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:grouped.size},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return {periodId:id,allocationCount:grouped.size};
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:savedAllocationCount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,allocationCount:savedAllocationCount};
   })};
  });
  app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
@@ -254,35 +285,44 @@ export async function accountingRoutes(app:FastifyInstance){
 
 
  app.get("/api/accounting/orders-dashboard",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
-  const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional()}).safeParse(request.query);
-  if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر حالة الطلبيات غير صحيح",422);
-  const params:unknown[]=[];const where:string[]=[];
-  if(q.data.status){params.push(q.data.status);where.push("o.status=$1");}
-  const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,
-    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS revenue,
-    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0) AS direct_expenses,
-    COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED'),0) AS administrative_allocation,
-    COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0) AS material_cost,
-    COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS labor_cost
-    FROM production_orders o ${where.length?"WHERE "+where.join(" AND "):""} ORDER BY o.created_at DESC`,params);
+  const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),periodId:z.string().uuid().optional()}).safeParse(request.query);
+  if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الحالة أو الفترة المالية غير صحيح",422);
+  let periodStart:string|null=null;let periodEnd:string|null=null;
+  if(q.data.periodId){
+    const period=await pool.query("SELECT id,period_start,period_end,status FROM accounting_periods WHERE id=$1",[q.data.periodId]);
+    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+    if(period.rows[0].status!=="CLOSED")throw new AppError("ACCOUNTING_PERIOD_NOT_CLOSED","اختَر فترة مالية مقفولة لعرض تقريرها المعتمد",409);
+    periodStart=period.rows[0].period_start;periodEnd=period.rows[0].period_end;
+  }
+  const params=[periodStart,periodEnd,q.data.status??null,q.data.periodId??null];
+  const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,o.contract_value,
+    COALESCE(o.contract_value,0) AS accrued_revenue,
+    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id AND ($1::date IS NULL OR r.revenue_date BETWEEN $1::date AND $2::date)),0) AS revenue,
+    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
+    COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED' AND ($4::uuid IS NULL OR a.period_id=$4::uuid)),0) AS administrative_allocation,
+    COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY' AND ($1::date IS NULL OR sm.created_at::date BETWEEN $1::date AND $2::date)),0) AS material_cost,
+    COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND ($1::date IS NULL OR pe.work_date BETWEEN $1::date AND $2::date)),0)
+    +COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN order_price_changes pc ON pc.id=pci.price_change_id JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE AND ($1::date IS NULL OR pc.created_at::date BETWEEN $1::date AND $2::date)),0) AS labor_cost
+    FROM production_orders o WHERE ($3::text IS NULL OR o.status=$3::text) ORDER BY o.created_at DESC`,params);
   const data=result.rows.map(row=>{
    const revenue=Number(row.revenue||0),direct=Number(row.direct_expenses||0),admin=Number(row.administrative_allocation||0),material=Number(row.material_cost||0),labor=Number(row.labor_cost||0);
    const totalCost=direct+admin+material+labor;
-   return {...row,revenue,direct_expenses:direct,administrative_allocation:admin,material_cost:material,labor_cost:labor,total_cost:totalCost,profit:revenue-totalCost,margin_percent:revenue>0?((revenue-totalCost)/revenue)*100:null};
+   const accruedRevenue=Number(row.accrued_revenue??row.contract_value??0);
+   return {...row,revenue,accrued_revenue:accruedRevenue,direct_expenses:direct,administrative_allocation:admin,material_cost:material,labor_cost:labor,total_cost:totalCost,profit:revenue-totalCost,accrued_profit:accruedRevenue-totalCost,margin_percent:revenue>0?((revenue-totalCost)/revenue)*100:null,accrued_margin_percent:accruedRevenue>0?((accruedRevenue-totalCost)/accruedRevenue)*100:null};
   });
   return {data,summary:{orders:data.length,revenue:data.reduce((s,r)=>s+r.revenue,0),cost:data.reduce((s,r)=>s+r.total_cost,0),profit:data.reduce((s,r)=>s+r.profit,0)}};
  });
 
  app.get("/api/accounting/orders/:orderId/profitability",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
   const p=idSchema.safeParse(request.params);if(!p.success)throw new AppError("VALIDATION_ERROR","الطلبية غير صحيحة",422);
-  const order=await pool.query("SELECT id,code,order_name,status,customer_name FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+  const order=await pool.query("SELECT id,code,order_name,status,customer_name,COALESCE(contract_value,0) AS accrued_revenue FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
    pool.query(`SELECT
      COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1 AND expense_type='DIRECT'),0) AS value,
      COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'",[p.data.orderId]),
-   pool.query("SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS value FROM production_entries WHERE order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$1) AND status='APPROVED'",[p.data.orderId])
+   pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS value",[p.data.orderId])
   ]);
   const revenueValue=Number(revenue.rows[0].value||0);
   const explicitExpenses=Number(expenses.rows[0].value||0);
@@ -290,6 +330,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const materialValue=Number(stockOut.rows[0].value||0);
   const laborValue=Number(labor.rows[0].value||0);
   const totalCost=explicitExpenses+administrativeAllocation+materialValue+laborValue;
-  return {data:{order:order.rows[0],revenue:revenueValue,expenses:explicitExpenses,administrativeAllocation,materialCost:materialValue,laborCost:laborValue,totalCost,profit:revenueValue-totalCost,marginPercent:revenueValue>0?((revenueValue-totalCost)/revenueValue)*100:null}};
+  const accruedRevenue=Number(order.rows[0].accrued_revenue||0);
+  return {data:{order:order.rows[0],accruedRevenue,revenue:revenueValue,expenses:explicitExpenses,administrativeAllocation,materialCost:materialValue,laborCost:laborValue,totalCost,profit:revenueValue-totalCost,marginPercent:revenueValue>0?((revenueValue-totalCost)/revenueValue)*100:null}};
  });
 }

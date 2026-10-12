@@ -164,11 +164,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
 
 
-      // An employee with no custody permission can view only their assigned active custody.
+      // An employee without an explicit custody-view permission cannot read even their own custody.
       const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
-      assert.equal(assignedCustody.statusCode,200,assignedCustody.body);
-      assert.equal(assignedCustody.json().data.length,1);
-      assert.equal(assignedCustody.json().data[0].description,"Assigned custody without permission");
+      assert.equal(assignedCustody.statusCode,403,assignedCustody.body);
       const unprivilegedCustodyId=(await apiPool.query("SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Assigned custody without permission'",[unprivilegedEmployee.id])).rows[0].id;
       const closeAssignedCustody=await app.inject({method:"POST",url:"/api/custodies/"+unprivilegedCustodyId+"/settlements",headers:{cookie:managerCookie},payload:{returnedQuantity:2,lostQuantity:0,damageValue:0,shortageValue:0}});
       assert.equal(closeAssignedCustody.statusCode,201,closeAssignedCustody.body);
@@ -298,11 +296,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
         payload: {
           direction: "OUT", amount: 24, transactionDate: "2099-01-10",
-          description: "Must not exceed the remaining cash custody balance"
+          description: "Factory expense temporarily covered by personal funds"
         }
       });
-      assert.equal(overdraft.statusCode, 409, overdraft.body);
-      assert.equal(overdraft.json().error.code, "INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      assert.equal(overdraft.statusCode, 201, overdraft.body);
+      assert.equal(overdraft.json().data.direction, "OUT");
 
       const outOfScope = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
@@ -318,28 +316,34 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         method: "GET", url: "/api/cash-custody", headers: { cookie: workerCookie }
       });
       assert.equal(workerRows.statusCode, 200, workerRows.body);
-      assert.equal(workerRows.json().data.length, 4);
+      assert.equal(workerRows.json().data.length, 5);
       assert.ok(workerRows.json().data.every((row: { employee_id: string }) => row.employee_id === employeeA.id));
       assert.deepEqual(
         workerRows.json().data.map((row: { balance: string }) => Number(row.balance)).sort((a: number, b: number) => a - b),
-        [23, 40, 70, 100],
-        "each transaction must show the running balance immediately after that movement"
+        [-1, 23, 40, 70, 100],
+        "running balances may go negative when factory expenses are covered by personal funds"
       );
 
       const managerEntry = await app.inject({
-        method: "POST", url: "/api/cash-custody", headers: { cookie: managerCookie },
+        method: "POST", url: "/api/cash-custody/top-ups", headers: { cookie: managerCookie },
         payload: {
-          employeeId: employeeA.id, direction: "IN", amount: 25,
+          employeeId: employeeA.id, amount: 25,
           transactionDate: "2099-01-11", description: "Manager records additional custody"
         }
       });
       assert.equal(managerEntry.statusCode, 201, managerEntry.body);
+      const unlinkedCashIn=await app.inject({
+        method:"POST",url:"/api/cash-custody",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,direction:"IN",amount:26,transactionDate:"2099-01-12",description:"Must use the accounting-linked top-up route"}
+      });
+      assert.equal(unlinkedCashIn.statusCode,409,unlinkedCashIn.body);
+      assert.equal(unlinkedCashIn.json().error.code,"USE_CUSTODY_TOP_UP_OR_COLLECTION","manual IN movements must not bypass company revenue posting");
 
       const audit = await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
         [worker.id]
       );
-      assert.equal(audit.rows[0].count, 3, "all successfully created worker transactions must be audited; external funding is manager-only");
+      assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions, including the overdraft, must be audited; external funding is manager-only");
 
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
       const externalTopUp=await app.inject({
@@ -366,24 +370,40 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"Duplicate external funding test"}
       });
       assert.equal(repeatedTopUp.statusCode,409,repeatedTopUp.body);
+      const confirmedRepeatedTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"A second, separately confirmed funding event",confirmDuplicate:true}
+      });
+      assert.equal(confirmedRepeatedTopUp.statusCode,201,confirmedRepeatedTopUp.body);
+      assert.equal(confirmedRepeatedTopUp.json().data.confirmed_duplicate,true,"legitimate repeated funding must be allowed after explicit duplicate confirmation");
       const workerTopUp=await app.inject({
         method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:workerCookie},
         payload:{employeeId:employeeA.id,amount:50,transactionDate:"2099-01-14",description:"Must be forbidden"}
       });
       assert.equal(workerTopUp.statusCode,403,workerTopUp.body);
 
+      const transferSourceTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeB.id,amount:20,transactionDate:"2099-01-08",description:"Fund transfer source for integration test"}
+      });
+      assert.equal(transferSourceTopUp.statusCode,201,transferSourceTopUp.body);
+
       const cashTransfer=await app.inject({
         method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
-        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:10,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
+        payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:10,transactionDate:"2099-01-09",description:"Test cash custody transfer"}
       });
       assert.equal(cashTransfer.statusCode,201,cashTransfer.body);
       assert.equal(Number(cashTransfer.json().data.transfer.amount),10);
       assert.equal(cashTransfer.json().data.outgoing.direction,"OUT");
       assert.equal(cashTransfer.json().data.incoming.direction,"IN");
       assert.equal(cashTransfer.json().data.outgoing.transfer_id,cashTransfer.json().data.incoming.transfer_id);
+      const custodyBeforeExpense=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<='2099-01-10'",
+        [employeeB.id]
+      );
       const custodyPaidExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
-        payload:{category:"مصروف إداري",description:"Negative custody expense integration test",amount:1000,expenseType:"ADMINISTRATIVE",paidFromEmployeeId:employeeB.id,expenseDate:"2099-01-10"}
+        payload:{category:"مصروف إداري",description:"Custody may go negative for factory expenses",amount:Number(custodyBeforeExpense.rows[0].balance)+1000,expenseType:"ADMINISTRATIVE",paidFromEmployeeId:employeeB.id,expenseDate:"2099-01-10"}
       });
       assert.equal(custodyPaidExpense.statusCode,201,custodyPaidExpense.body);
       assert.equal(custodyPaidExpense.json().data.expense_type,"ADMINISTRATIVE");
@@ -393,7 +413,27 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
         [employeeB.id]
       );
-      assert.ok(Number(negativeCustody.rows[0].balance)<0,"an approved expense may make custody negative");
+      assert.ok(Number(negativeCustody.rows[0].balance)<0,"personal funds may temporarily cover a factory expense and make custody negative");
+
+      // A later inflow must first settle the employee's negative custody balance.
+      const negativeBalanceBeforeRecovery=Number(negativeCustody.rows[0].balance);
+      const recoveryTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeB.id,amount:Math.abs(negativeBalanceBeforeRecovery),transactionDate:"2099-01-11",description:"Settle negative custody from later inflow"}
+      });
+      assert.equal(recoveryTopUp.statusCode,201,recoveryTopUp.body);
+      const recoveredCustody=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [employeeB.id]
+      );
+      assert.ok(Math.abs(Number(recoveredCustody.rows[0].balance))<1e-7,"later custody inflow must settle the negative balance");
+
+      const overdrawnTransfer=await app.inject({
+        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
+        payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:1,transactionDate:"2099-01-12",description:"Must not transfer without available balance"}
+      });
+      assert.equal(overdrawnTransfer.statusCode,409,overdrawnTransfer.body);
+      assert.equal(overdrawnTransfer.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
 
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
@@ -406,6 +446,37 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
 
+      const closedPeriodExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"مصروف إداري",description:"Must be rejected in closed period",amount:5,expenseType:"ADMINISTRATIVE",expenseDate:"2099-02-05"}
+      });
+      assert.equal(closedPeriodExpense.statusCode,409,closedPeriodExpense.body);
+      assert.equal(closedPeriodExpense.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:11,transactionDate:"2099-02-05",description:"Must be rejected in closed period"}
+      });
+      assert.equal(closedPeriodTopUp.statusCode,409,closedPeriodTopUp.body);
+      assert.equal(closedPeriodTopUp.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const cancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'CANCELLED') RETURNING id",
+        ["Cancelled order finance guard",manager.id]
+      )).rows[0];
+      const cancelledOrderExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:cancelledOrder.id,category:"مصروف مباشر",description:"Must not post to cancelled order",amount:5,expenseType:"DIRECT",expenseDate:"2099-03-01"}
+      });
+      assert.equal(cancelledOrderExpense.statusCode,409,cancelledOrderExpense.body);
+      assert.equal(cancelledOrderExpense.json().error.code,"ORDER_CANCELLED");
+      const cancelledOrderRevenue=await app.inject({
+        method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+        payload:{orderId:cancelledOrder.id,amount:5,revenueDate:"2099-03-01",source:"MANUAL"}
+      });
+      assert.equal(cancelledOrderRevenue.statusCode,409,cancelledOrderRevenue.body);
+      assert.equal(cancelledOrderRevenue.json().error.code,"ORDER_CANCELLED");
+
       // A collection retry with the same idempotency key must return the original pair,
       // while a separate operation with identical amount/date/business fields is valid.
       const collectionOrder=(await apiPool.query(
@@ -414,12 +485,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       )).rows[0];
       const invalidPrecisionCollection=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
-        payload:{orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.501,transactionDate:"2099-02-10",description:"Invalid precision collection",idempotencyKey:randomUUID()}
+        payload:{orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.501,transactionDate:"2099-03-10",description:"Invalid precision collection",idempotencyKey:randomUUID()}
       });
       assert.equal(invalidPrecisionCollection.statusCode,422,invalidPrecisionCollection.body);
       const collectionPayload={
         orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.50,
-        transactionDate:"2099-02-10",description:"Customer collection idempotency test",
+        transactionDate:"2099-03-10",description:"Customer collection idempotency test",
         notes:"Same request retry",idempotencyKey:randomUUID()
       };
       const collectionFirst=await app.inject({
@@ -444,6 +515,23 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(independentCollection.statusCode,201,independentCollection.body);
       assert.notEqual(independentCollection.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      // A retry of a collection already committed before period close must still
+      // return its original records; it must not attempt a new posting.
+      const collectionPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
+      });
+      assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
+      const closeCollectionPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
+      const closedPeriodCollectionRetry=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
+      });
+      assert.equal(closedPeriodCollectionRetry.statusCode,201,closedPeriodCollectionRetry.body);
+      assert.equal(closedPeriodCollectionRetry.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      assert.equal(closedPeriodCollectionRetry.json().data.cashCustody.id,collectionFirst.json().data.cashCustody.id);
       const collectionCounts=await apiPool.query(
         "SELECT COUNT(*)::int AS revenue_count FROM order_revenues WHERE order_id=$1 AND source='CUSTOMER_COLLECTION'",
         [collectionOrder.id]
