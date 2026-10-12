@@ -115,7 +115,7 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
       LEFT JOIN shift_withdrawal_lines l ON l.withdrawal_id=sw.id
       LEFT JOIN products p ON p.id=l.product_id
      GROUP BY sw.id,s.code,s.name,e.code,e.full_name,o.code,o.order_name
-     ORDER BY sw.withdrawal_date DESC,sw.created_at DESC
+     ORDER BY sw.withdrawal_date DESC,sw.created_at DESC,sw.id DESC
      LIMIT $1 OFFSET $2`,[limit,offset]),
    pool.query("SELECT COUNT(*)::int AS total FROM shift_withdrawals")
   ]);
