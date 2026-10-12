@@ -416,8 +416,20 @@ export async function orderRoutes(app: FastifyInstance) {
     const stageId=(request.params as {id:string}).id;
     const parsed=z.object({productId:z.string().uuid(),isDefault:z.boolean().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات منتج المرحلة غير صحيحة",422);
-    const r=await pool.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,$3) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default RETURNING *",[stageId,parsed.data.productId,parsed.data.isDefault ?? false]);
-    return reply.code(201).send({data:r.rows[0]});
+    const result=await withTransaction(async client=>{
+      const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[stageId]);
+      if(!stageRef.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      const order=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل مخرجات مرحلة في طلبية ملغاة",409);
+      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مخرجات المرحلة",409);
+      const stage=await client.query("SELECT status FROM order_stages WHERE id=$1 AND order_id=$2 FOR UPDATE",[stageId,stageRef.rows[0].order_id]);
+      if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      if(stage.rows[0].status==="CANCELLED"||stage.rows[0].status==="COMPLETED")throw new AppError("ORDER_STAGE_LOCKED","لا يمكن تعديل مخرجات مرحلة مكتملة أو ملغاة",409);
+      const r=await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,$3) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default RETURNING *",[stageId,parsed.data.productId,parsed.data.isDefault ?? false]);
+      return r.rows[0];
+    });
+    return reply.code(201).send({data:result});
   });
 
   app.get("/api/stages/:id/outputs", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
@@ -620,13 +632,19 @@ export async function orderRoutes(app: FastifyInstance) {
         if(!type.rowCount) throw new AppError("PRODUCTION_TYPE_NOT_FOUND","نوع الإنتاج غير موجود أو غير نشط",422);
       }
       if(parsed.data.orderStageId){
-        const stage=await client.query(`SELECT os.id,os.order_id,os.stage_id,os.output_product_id,po.status
+        // Lock the parent order before the stage, matching order edits and worker production.
+        const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[parsed.data.orderStageId]);
+        if(!stageRef.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const order=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+        if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+        const stage=await client.query(`SELECT os.id,os.order_id,os.stage_id,os.output_product_id,os.status AS stage_status,po.status AS order_status
           FROM order_stages os JOIN production_orders po ON po.id=os.order_id
-          WHERE os.id=$1 FOR UPDATE`,[parsed.data.orderStageId]);
+          WHERE os.id=$1 AND os.order_id=$2 FOR UPDATE OF os`,[parsed.data.orderStageId,stageRef.rows[0].order_id]);
         if(!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const s=stage.rows[0];
-        if(s.status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية ملغاة",409);
-        if(s.status==="DRAFT"||s.status==="COMPLETED") throw new AppError("ORDER_NOT_ACTIVE","لا يمكن تسجيل إنتاج ماكينة لطلبية مسودة أو مكتملة؛ فعّل الطلبية أو أعد فتحها أولًا",409);
+        if(s.order_status==="CANCELLED"||s.stage_status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إنتاج ماكينة لمرحلة طلبية أو مرحلة ملغاة",409);
+        if(s.order_status==="DRAFT"||s.order_status==="COMPLETED") throw new AppError("ORDER_NOT_ACTIVE","لا يمكن تسجيل إنتاج ماكينة لطلبية مسودة أو مكتملة؛ فعّل الطلبية أو أعد فتحها أولًا",409);
+        if(s.stage_status==="COMPLETED") throw new AppError("ORDER_STAGE_COMPLETED","لا يمكن تسجيل إنتاج إضافي لمرحلة مكتملة؛ أعد فتح الطلبية أو المرحلة وفق الإجراء المعتمد",409);
         if(!s.output_product_id) throw new AppError("ORDER_STAGE_OUTPUT_REQUIRED","اربط منتجًا ناتجًا بمرحلة الطلبية قبل تسجيل إنتاج الماكينة",422);
         if(s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج المختار لا يطابق المنتج الناتج من المرحلة المحددة",409);
       }
