@@ -99,9 +99,18 @@ export async function accountingRoutes(app:FastifyInstance){
   const row=await withTransaction(async(client)=>{
    await assertAccountingDateOpen(client,p.data.revenueDate);
    if(p.data.orderId){
-     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
+     // Serialize every order-linked revenue posting against collection and contract edits.
+     const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
+     const contractValue=Number(order.rows[0].contract_value||0);
+     if(contractValue>0){
+       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
+       const collected=Number(posted.rows[0]?.total||0);
+       if(collected+p.data.amount>contractValue+1e-7){
+         throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
+       }
+     }
    }
    const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
    const code=codeResult.rows[0].code;
