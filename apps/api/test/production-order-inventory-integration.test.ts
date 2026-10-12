@@ -306,6 +306,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
+    const withdrawalListPage = await app.inject({
+      method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(withdrawalListPage.statusCode, 200, withdrawalListPage.body);
+    assert.ok(withdrawalListPage.json().data.length <= 1);
+    assert.ok(Number(withdrawalListPage.json().pagination.total) >= 1);
+    assert.equal(withdrawalListPage.json().pagination.hasMore, Number(withdrawalListPage.json().pagination.total) > withdrawalListPage.json().data.length);
+    const invalidWithdrawalPage = await app.inject({
+      method: "GET", url: "/api/shift-withdrawals?limit=301&offset=0", headers: { cookie: submitter.cookie }
+    });
+    assert.equal(invalidWithdrawalPage.statusCode, 422, invalidWithdrawalPage.body);
     const consumedWip = await apiPool.query(
       "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [wipStage.output_product_id, expectedWip.id, firstDestination.rows[0].location_id]
