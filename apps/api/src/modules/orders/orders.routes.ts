@@ -386,13 +386,19 @@ export async function orderRoutes(app: FastifyInstance) {
       values.push(id);
       const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=${values.length} RETURNING *`,values);
       let reopenedStageCount=0;
+      let completedStageCount=0;
       // Reopening a completed order must also return its completed stages to active
       // worklists; otherwise the order looks reopened but no stage accepts new work.
       if(before.status==="COMPLETED"&&p.status==="IN_PROGRESS"){
         const reopened=await client.query("UPDATE order_stages SET status='IN_PROGRESS' WHERE order_id=$1 AND status='COMPLETED' RETURNING id",[id]);
         reopenedStageCount=reopened.rowCount??0;
       }
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],metadata:reopenedStageCount?{reopenedStageCount}:undefined,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      if(p.status==="COMPLETED"&&before.status!=="COMPLETED"){
+        const completed=await client.query("UPDATE order_stages SET status='COMPLETED' WHERE order_id=$1 AND status<>'CANCELLED' RETURNING id",[id]);
+        completedStageCount=completed.rowCount??0;
+      }
+      const lifecycleMetadata={...(reopenedStageCount?{reopenedStageCount}:{}),...(completedStageCount?{completedStageCount}:{})};
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],metadata:Object.keys(lifecycleMetadata).length?lifecycleMetadata:undefined,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return { data:result };
