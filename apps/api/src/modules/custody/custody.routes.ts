@@ -448,6 +448,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const row=await withTransaction(async client=>{
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
       const employeeId=access.employeeId!;
+      if(p.data.direction==="IN"&&!access.isFinance)throw new AppError("FINANCE_SCOPE_REQUIRED","إضافة رصيد للعهدة متاحة للمدير المالي فقط؛ التحصيل من العميل له إجراء مستقل",403);
       if(p.data.direction==="IN")throw new AppError("USE_CUSTODY_TOP_UP_OR_COLLECTION","الوارد النقدي يجب تسجيله من إجراء تمويل العهدة أو تحصيل الطلبية حتى يظهر في الإيرادات المحاسبية",409);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
        await assertPostingDateOpen(client,date);
