@@ -388,7 +388,6 @@ export async function orderRoutes(app: FastifyInstance) {
       values.push(id);
       const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length} RETURNING *`,values);
       let reopenedStageCount=0;
-      let completedStageCount=0;
       // Reopening a completed order must also return its completed stages to active
       // worklists; otherwise the order looks reopened but no stage accepts new work.
       if(before.status==="COMPLETED"&&p.status==="IN_PROGRESS"){
@@ -396,7 +395,7 @@ export async function orderRoutes(app: FastifyInstance) {
         reopenedStageCount=reopened.rowCount??0;
       }
 
-      const lifecycleMetadata={...(reopenedStageCount?{reopenedStageCount}:{}),...(completedStageCount?{completedStageCount}:{})};
+      const lifecycleMetadata={...(reopenedStageCount?{reopenedStageCount}:{})};
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],...(Object.keys(lifecycleMetadata).length?{metadata:lifecycleMetadata}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
