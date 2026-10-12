@@ -103,6 +103,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",
         [worker.id]
       );
+      // This fixture explicitly tests the legacy generic OUT permission; worker role
+      // no longer receives that write permission by default after migration 1024.
+      await apiPool.query(
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='cash_custody.create_own' WHERE r.code='worker' ON CONFLICT DO NOTHING"
+      );
       await apiPool.query(
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",
         [manager.id]
@@ -128,7 +133,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [ownScopeUser.id,ownScopeRole.id]
       );
       await apiPool.query(
-        "INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE code IN ('custody.view_own','advances.view_own') ON CONFLICT DO NOTHING",
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE code IN ('custody.view_own','cash_custody.view_own','advances.view_own') ON CONFLICT DO NOTHING",
         [ownScopeRole.id]
       );
 
@@ -163,6 +168,15 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
 
+      // View-only custody access must not imply generic writes or order-linked money movements.
+      const ownCashLedger=await app.inject({method:"GET",url:"/api/cash-custody",headers:{cookie:ownScopeCookie}});
+      assert.equal(ownCashLedger.statusCode,200,ownCashLedger.body);
+      const viewOnlyGenericWrite=await app.inject({method:"POST",url:"/api/cash-custody",headers:{cookie:ownScopeCookie},payload:{direction:"OUT",amount:1,transactionDate:"2099-01-10",description:"Must remain view-only"}});
+      assert.equal(viewOnlyGenericWrite.statusCode,403,viewOnlyGenericWrite.body);
+      const viewOnlyCollection=await app.inject({method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",description:"Unauthorized collection",idempotencyKey:randomUUID()}});
+      assert.equal(viewOnlyCollection.statusCode,403,viewOnlyCollection.body);
+      const viewOnlyExpense=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",category:"Test",description:"Unauthorized order expense"}});
+      assert.equal(viewOnlyExpense.statusCode,403,viewOnlyExpense.body);
 
       // An employee without an explicit custody-view permission cannot read even their own custody.
       const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
