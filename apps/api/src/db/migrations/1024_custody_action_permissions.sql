@@ -1,3 +1,10 @@
+-- Idempotency for custody-funded order expenses prevents duplicate charges on retries.
+ALTER TABLE accounting_expenses
+  ADD COLUMN IF NOT EXISTS idempotency_key UUID,
+  ADD COLUMN IF NOT EXISTS idempotency_payload_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_accounting_expenses_idempotency_key
+  ON accounting_expenses(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
 -- Granular cash-custody actions: viewing a personal ledger does not imply write access.
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('cash_custody.order_collection','finance','order_collection','create','all'),
