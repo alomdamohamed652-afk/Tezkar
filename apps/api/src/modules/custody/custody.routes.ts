@@ -283,7 +283,7 @@ export async function custodyRoutes(app:FastifyInstance){
         CASE WHEN COALESCE(o.contract_value,0)>0
           THEN GREATEST(COALESCE(o.contract_value,0)-COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0),0)
           ELSE NULL END AS remaining_collectible
-        FROM production_orders o WHERE o.status <> 'CANCELLED' ORDER BY o.created_at DESC LIMIT 500`);
+        FROM production_orders o WHERE o.status NOT IN ('DRAFT','COMPLETED','CANCELLED') ORDER BY o.created_at DESC LIMIT 500`);
       return {data:r.rows};
     }finally{client.release();}
   });
