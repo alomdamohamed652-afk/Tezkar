@@ -282,7 +282,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       // Verify direct expense plus closed-period administrative allocation is counted once.
       const financeOrder=(await apiPool.query(
-        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
         ["Profitability no-double-count test order",manager.id]
       )).rows[0];
       const revenue=await app.inject({
