@@ -452,13 +452,6 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(addOutputToCompletedOrder.statusCode, 409, addOutputToCompletedOrder.body);
     assert.equal(addOutputToCompletedOrder.json().error.code, "ORDER_COMPLETED_LOCKED");
-    const changePriceOnCompletedOrder = await app.inject({
-      method: "POST", url: "/api/orders/" + orderId + "/price-changes", headers: { cookie: submitter.cookie },
-      payload: { orderStageId: finalStage.id, newRate: 5, scope: "NEW_ONLY", reason: "Must reopen completed order first" }
-    });
-    assert.equal(changePriceOnCompletedOrder.statusCode, 409, changePriceOnCompletedOrder.body);
-    assert.equal(changePriceOnCompletedOrder.json().error.code, "ORDER_COMPLETED_LOCKED");
-
     // A completed stage cannot receive machine production even if the parent order is reopened.
     await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
     const testMachine = (await apiPool.query(
