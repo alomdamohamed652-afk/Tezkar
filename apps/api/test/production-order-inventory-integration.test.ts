@@ -709,6 +709,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
     assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
 
+    // Reopen a completed order before posting additional manual finance entries.
+    const reopenForFinalCost=await app.inject({
+      method:"PATCH",url:"/api/orders/"+orderId,headers:{cookie:approver.cookie},payload:{status:"IN_PROGRESS"}
+    });
+    assert.equal(reopenForFinalCost.statusCode,200,reopenForFinalCost.body);
+
     // Verify order-linked revenue and expense feed the profitability report.
     const revenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: approver.cookie },
