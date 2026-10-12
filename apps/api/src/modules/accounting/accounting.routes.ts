@@ -245,11 +245,14 @@ export async function accountingRoutes(app:FastifyInstance){
     else grouped.set(key,{expenseId:a.expenseId,orderId:a.orderId,amount:a.amount});
    }
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   let savedAllocationCount=0;
    for(const a of grouped.values()){
+    if(toMinorUnits(a.amount)===0)continue;
     await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,a.expenseId,a.orderId,a.amount,request.user!.userId]);
+    savedAllocationCount++;
    }
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:grouped.size},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return {periodId:id,allocationCount:grouped.size};
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_allocations",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,allocationCount:savedAllocationCount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,allocationCount:savedAllocationCount};
   })};
  });
  app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
