@@ -493,6 +493,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       payload: { status: "CANCELLED" }
     });
     assert.equal(cancelIncompleteStage.statusCode, 200, cancelIncompleteStage.body);
+    // Remove the isolated regression fixture so the existing dashboard assertions
+    // continue to describe the original two-stage order.
+    await apiPool.query("DELETE FROM order_stages WHERE id=$1", [incompleteStageId]);
 
     const rejectIncompleteOrder = await app.inject({
       method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
