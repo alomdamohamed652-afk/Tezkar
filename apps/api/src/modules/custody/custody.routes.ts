@@ -389,7 +389,7 @@ export async function custodyRoutes(app:FastifyInstance){
   app.post("/api/cash-custody/order-expenses",{preHandler:[authenticateRequest]},async(request,reply)=>{
     const p=orderExpenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مصروف الطلبية غير صحيحة",422);
     const result=await withTransaction(async client=>{
-      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
+      const access=await actionCashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.order_expense","cash_custody.order_expense_own");
       const employeeId=access.employeeId!;const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
       await assertPostingDateOpen(client,date);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
