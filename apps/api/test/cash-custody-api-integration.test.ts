@@ -212,6 +212,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(ownOrderExpense.statusCode,201,ownOrderExpense.body);
       assert.equal(ownOrderExpense.json().data.cashCustody.employee_id,ownScopeEmployee.id);
+      const crossEmployeeExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownExpenseOrder.id,employeeId:employeeA.id,amount:7,transactionDate:"2099-04-01",category:"Test",description:"Cross-employee expense denied",idempotencyKey:randomUUID()}
+      });
+      assert.equal(crossEmployeeExpense.statusCode,403,crossEmployeeExpense.body);
+      assert.equal(crossEmployeeExpense.json().error.code,"OWN_SCOPE_ONLY");
       const ownEligibleEmployees=await app.inject({method:"GET",url:"/api/custodies/eligible-employees",headers:{cookie:ownScopeCookie}});
       assert.equal(ownEligibleEmployees.statusCode,200,ownEligibleEmployees.body);
       assert.deepEqual(ownEligibleEmployees.json().data.map((x:{id:string})=>x.id),[ownScopeEmployee.id]);
