@@ -77,6 +77,13 @@ export async function accountingRoutes(app:FastifyInstance){
    if(p.data.orderId){
     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+    if(p.data.idempotencyKey){
+     const concurrentPrior=await client.query("SELECT * FROM accounting_expenses WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+     if(concurrentPrior.rowCount){
+      if(concurrentPrior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+      return concurrentPrior.rows[0];
+     }
+    }
     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
     if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
    }
@@ -140,6 +147,13 @@ export async function accountingRoutes(app:FastifyInstance){
      // Serialize order-linked revenue against collections and contract edits.
      const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+     if(p.data.idempotencyKey){
+      const concurrentPrior=await client.query("SELECT * FROM order_revenues WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+      if(concurrentPrior.rowCount){
+       if(concurrentPrior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لإيراد ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+       return concurrentPrior.rows[0];
+      }
+     }
      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_COLLECTIBLE","لا يمكن تسجيل إيراد جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
      await assertAccountingDateOpen(client,p.data.revenueDate);
