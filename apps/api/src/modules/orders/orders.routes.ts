@@ -371,7 +371,7 @@ export async function orderRoutes(app: FastifyInstance) {
           [id]
         );
         const alreadyRecorded=Number(collected.rows[0]?.total||0);
-        if(p.contractValue>0 && p.contractValue+1e-7<alreadyRecorded){
+        if(p.contractValue+1e-7<alreadyRecorded){
           throw new AppError("CONTRACT_VALUE_BELOW_RECORDED_REVENUE","لا يمكن تخفيض قيمة التعاقد إلى أقل من الإيرادات المسجلة بالفعل على الطلبية",409);
         }
         add("contract_value",p.contractValue);
