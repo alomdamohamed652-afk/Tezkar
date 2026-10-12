@@ -22,14 +22,16 @@ export default function CustodyPage(){
  const [transferCustodyId,setTransferCustodyId]=useState(""),[transferToEmployeeId,setTransferToEmployeeId]=useState(""),[transferNotes,setTransferNotes]=useState(""),[transferSaving,setTransferSaving]=useState(false);
  const [transferHistory,setTransferHistory]=useState<CustodyTransfer[]>([]),[historyCustodyCode,setHistoryCustodyCode]=useState("");
  const [cashTransferFromEmployeeId,setCashTransferFromEmployeeId]=useState(""),[cashTransferToEmployeeId,setCashTransferToEmployeeId]=useState(""),[cashTransferAmount,setCashTransferAmount]=useState(""),[cashTransferDescription,setCashTransferDescription]=useState("تحويل عهدة نقدية"),[cashTransferNotes,setCashTransferNotes]=useState(""),[cashTransferSaving,setCashTransferSaving]=useState(false);
- async function load(){try{
-  try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch{}
-
-  const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
-  setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data);
- }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
+ async function load(){
+  setError("");
+  if(has("cash_custody.view")||has("cash_custody.view_own")){
+   try{setCash((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل دفتر العهدة النقدية")}
+  }else{setCash([])}
+  if(has("custody.view")||has("custody.view_own")||has("custody.create")){
+   try{const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";setItems((await api<{data:Custody[]}>("/api/custodies"+suffix)).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
+  }else{setItems([])}
  }
- useEffect(()=>{void load()},[employeeId]);
+ useEffect(()=>{void load()},[employeeId,permissions]);
  // Load employee options independently from the custody ledger so a ledger-view error
  // cannot block the picker. Support both all-scope and own-scope permissions.
  useEffect(()=>{
@@ -83,6 +85,7 @@ export default function CustodyPage(){
  }
  return <div className="app-shell"><Sidebar active="/custody"/><main className="main"><header className="topbar"><div><h1 className="page-title">عهد الموظفين</h1><p className="page-subtitle">تسجيل العهدة على الموظف، متابعة المتبقي، ثم تسويتها بسجل مستقل.</p></div></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
+ {(has("custody.view")||has("custody.view_own")||has("custody.create"))&&<>
  {has("custody.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل عهدة</h2><div className="form-hint">كل عهدة تحصل على رقم CUS مستقل ولا تتغير قيمتها القديمة بعد التسوية.</div></div></div>
   <div className="form-grid">
    <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
@@ -101,6 +104,8 @@ export default function CustodyPage(){
   {!items.length&&<tr><td colSpan={10}>لا توجد عهد مسجلة.</td></tr>}</tbody></table></div>
   {transferCustodyId&&has("custody.transfer")&&<form className="form-grid" onSubmit={submitCustodyTransfer} style={{padding:16,borderTop:"1px solid var(--border)"}}><h3 className="card-title" style={{gridColumn:"1/-1"}}>تحويل عهدة {items.find(x=>x.id===transferCustodyId)?.code||""}</h3><label>الموظف المستلم<SearchableSelect value={transferToEmployeeId} onChange={setTransferToEmployeeId} options={employees.filter(x=>x.id!==items.find(i=>i.id===transferCustodyId)?.employee_id).map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف المستلم"/></label><label>ملاحظات التحويل<input value={transferNotes} onChange={e=>setTransferNotes(e.target.value)} placeholder="سبب التحويل أو تفاصيل التسليم"/></label><div className="form-actions"><button className="secondary-btn" type="button" onClick={()=>setTransferCustodyId("")}>إلغاء</button><button className="primary-button" disabled={transferSaving||!transferToEmployeeId}>{transferSaving?"جارٍ التحويل...":"تأكيد تحويل العهدة"}</button></div></form>}
  </section>
+
+ </>}
 
  <section className="card" style={{marginTop:16}}>
   <div className="card-header"><div><h2 className="card-title">العهدة النقدية</h2><div className="form-hint">الداخل والخارج يسجلان كحركات مستقلة، والرصيد يحسب تلقائيًا. المحاسب/الأدمن يستطيعان إدارة عهد الجميع، وصاحب العهدة يدير عهدته فقط.</div></div><span className="count-badge">{cash.length}</span></div>
