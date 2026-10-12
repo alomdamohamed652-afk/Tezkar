@@ -398,7 +398,7 @@ export async function orderRoutes(app: FastifyInstance) {
         completedStageCount=completed.rowCount??0;
       }
       const lifecycleMetadata={...(reopenedStageCount?{reopenedStageCount}:{}),...(completedStageCount?{completedStageCount}:{})};
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],metadata:Object.keys(lifecycleMetadata).length?lifecycleMetadata:undefined,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],...(Object.keys(lifecycleMetadata).length?{metadata:lifecycleMetadata}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return { data:result };
