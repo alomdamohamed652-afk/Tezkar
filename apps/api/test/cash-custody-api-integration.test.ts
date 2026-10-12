@@ -528,6 +528,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{contractValue:251}
       });
       assert.equal(contractAtCollected.statusCode,200,contractAtCollected.body);
+      // Cancellation must not hide an order that already has financial activity.
+      const cancelWithCollections=await app.inject({
+        method:"PATCH",url:"/api/orders/"+collectionOrder.id,headers:{cookie:managerCookie},
+        payload:{status:"CANCELLED"}
+      });
+      assert.equal(cancelWithCollections.statusCode,409,cancelWithCollections.body);
+      assert.equal(cancelWithCollections.json().error.code,"ORDER_HAS_ACTIVITY_LOCKED");
       // A retry of a collection already committed before period close must still
       // return its original records; it must not attempt a new posting.
       const collectionPeriod=await app.inject({
