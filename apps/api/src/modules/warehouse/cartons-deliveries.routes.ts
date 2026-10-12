@@ -106,7 +106,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   const row=await withTransaction(async(client)=>{
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
-   if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إنشاء تسليم لطلبية ملغاة",409);
+   if(["DRAFT","COMPLETED","CANCELLED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_AVAILABLE_FOR_DELIVERY","لا يمكن إنشاء إذن تسليم لطلبية مسودة أو مكتملة أو ملغاة",409);
    const d=await client.query("INSERT INTO delivery_permissions(order_id,destination,notes,total_weight,piece_count,sample_quantity,details,status,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,'READY',$8) RETURNING *",[parsed.data.orderId,parsed.data.destination,parsed.data.notes??null,parsed.data.totalWeight??null,parsed.data.pieceCount??null,parsed.data.sampleQuantity??null,parsed.data.details??null,request.user!.userId]);
    for(const line of parsed.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[line.productId]);if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","منتج في الإذن غير موجود",422);
