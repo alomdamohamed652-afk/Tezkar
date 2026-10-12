@@ -325,9 +325,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
 
       const managerEntry = await app.inject({
-        method: "POST", url: "/api/cash-custody", headers: { cookie: managerCookie },
+        method: "POST", url: "/api/cash-custody/top-ups", headers: { cookie: managerCookie },
         payload: {
-          employeeId: employeeA.id, direction: "IN", amount: 25,
+          employeeId: employeeA.id, amount: 25,
           transactionDate: "2099-01-11", description: "Manager records additional custody"
         }
       });
