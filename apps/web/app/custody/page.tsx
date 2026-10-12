@@ -32,14 +32,15 @@ export default function CustodyPage(){
   }else{setItems([])}
  }
  useEffect(()=>{void load()},[employeeId,permissions]);
- // Load employee options independently from the custody ledger so a ledger-view error
- // cannot block the picker. Support both all-scope and own-scope permissions.
+ // Load eligible orders only for users with a specific order-linked custody action.
  useEffect(()=>{
   if(!permissions?.some(code=>["cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"].includes(code)))return;
   let active=true;
   api<{data:CustodyOrder[]}>("/api/cash-custody/eligible-orders").then(r=>{if(!active)return;setOrders(r.data);setCollectionOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));setExpenseOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));}).catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل الطلبيات");});
   return()=>{active=false};
  },[permissions]);
+ // Load employee options independently from ledger access.
+ useEffect(()=>{
   const pickerPermissions=["custody.create","custody.create_own","custody.view","custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.view","cash_custody.view_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"];
   if(!permissions?.some(code=>pickerPermissions.includes(code)))return;
   let active=true;
