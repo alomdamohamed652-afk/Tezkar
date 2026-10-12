@@ -75,11 +75,9 @@ export async function accountingRoutes(app:FastifyInstance){
     }
     let r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10) RETURNING *",[p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
    if(p.data.paidFromEmployeeId){
-    // Any expense paid from an employee's cash custody must be covered by the
-    // available balance on the posting date. The employee row is already locked
-    // above, serializing concurrent custody-funded postings for this employee.
-    const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=COALESCE($2::date,current_date)",[p.data.paidFromEmployeeId,p.data.expenseDate??null]);
-    if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المصروف أكبر من رصيد العهدة النقدية المتاح",409);
+    // A custody-funded expense may temporarily make the employee's balance
+    // negative when they cover a factory expense from personal money.
+    // Later incoming custody movements will settle that negative balance.
     const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,current_date),$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING id",
       [p.data.paidFromEmployeeId,p.data.amount,p.data.expenseDate??null,p.data.description,"صرف مصروف: "+p.data.category,r.rows[0].id,request.user!.userId]);
     r=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,r.rows[0].id]);
