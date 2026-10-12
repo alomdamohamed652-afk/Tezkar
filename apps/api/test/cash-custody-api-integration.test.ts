@@ -566,6 +566,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         });
         assert.equal(genericBlockedExpense.statusCode,409,genericBlockedExpense.body);
         assert.equal(genericBlockedExpense.json().error.code,blockedStatus==="CANCELLED"?"ORDER_CANCELLED":"ORDER_NOT_EXPENSABLE");
+        const genericBlockedRevenue=await app.inject({
+          method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+          payload:{orderId:blockedOrder.id,amount:10,revenueDate:"2099-03-10",source:"MANUAL",notes:`Revenue on ${blockedStatus}`}
+        });
+        assert.equal(genericBlockedRevenue.statusCode,409,genericBlockedRevenue.body);
+        assert.equal(genericBlockedRevenue.json().error.code,blockedStatus==="CANCELLED"?"ORDER_CANCELLED":"ORDER_NOT_COLLECTIBLE");
       }
 
       const expenseOrder=(await apiPool.query(
