@@ -384,7 +384,7 @@ export async function orderRoutes(app: FastifyInstance) {
       if(p.status!==undefined)add("status",p.status);
       if(!fields.length)return before;
       values.push(id);
-      const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=${values.length} RETURNING *`,values);
+      const updated=await client.query(`UPDATE production_orders SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length} RETURNING *`,values);
       let reopenedStageCount=0;
       let completedStageCount=0;
       // Reopening a completed order must also return its completed stages to active
