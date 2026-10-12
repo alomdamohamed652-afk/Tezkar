@@ -181,6 +181,45 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const viewOnlyExpense=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",category:"Test",description:"Unauthorized order expense",idempotencyKey:randomUUID()}});
       assert.equal(viewOnlyExpense.statusCode,403,viewOnlyExpense.body);
 
+      // Own-scope order actions must resolve the employee from the signed-in account and reject cross-employee targets.
+      await apiPool.query(
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE code IN ('cash_custody.order_collection_own','cash_custody.order_expense_own') ON CONFLICT DO NOTHING",
+        [ownScopeRole.id]
+      );
+      const ownOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Own-scope collection integration order",manager.id]
+      )).rows[0];
+      const ownCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownOrder.id,amount:5,transactionDate:"2099-04-01",description:"Own-scope collection",idempotencyKey:randomUUID()}
+      });
+      assert.equal(ownCollection.statusCode,201,ownCollection.body);
+      assert.equal(ownCollection.json().data.cashCustody.employee_id,ownScopeEmployee.id);
+      const crossEmployeeCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownOrder.id,employeeId:employeeA.id,amount:5,transactionDate:"2099-04-01",description:"Cross-employee collection denied",idempotencyKey:randomUUID()}
+      });
+      assert.equal(crossEmployeeCollection.statusCode,403,crossEmployeeCollection.body);
+      assert.equal(crossEmployeeCollection.json().error.code,"OWN_SCOPE_ONLY");
+      const ownExpenseOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Own-scope expense integration order",manager.id]
+      )).rows[0];
+      const ownOrderExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownExpenseOrder.id,amount:7,transactionDate:"2099-04-01",category:"Test",description:"Own-scope expense",idempotencyKey:randomUUID()}
+      });
+      assert.equal(ownOrderExpense.statusCode,201,ownOrderExpense.body);
+      assert.equal(ownOrderExpense.json().data.cashCustody.employee_id,ownScopeEmployee.id);
+      const ownEligibleEmployees=await app.inject({method:"GET",url:"/api/custodies/eligible-employees",headers:{cookie:ownScopeCookie}});
+      assert.equal(ownEligibleEmployees.statusCode,200,ownEligibleEmployees.body);
+      assert.deepEqual(ownEligibleEmployees.json().data.map((x:{id:string})=>x.id),[ownScopeEmployee.id]);
+      const ownEligibleOrders=await app.inject({method:"GET",url:"/api/cash-custody/eligible-orders",headers:{cookie:ownScopeCookie}});
+      assert.equal(ownEligibleOrders.statusCode,200,ownEligibleOrders.body);
+      assert.ok(ownEligibleOrders.json().data.some((x:{id:string})=>x.id===ownOrder.id));
+      assert.ok(ownEligibleOrders.json().data.some((x:{id:string})=>x.id===ownExpenseOrder.id));
+
       // An employee without an explicit custody-view permission cannot read even their own custody.
       const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
       assert.equal(assignedCustody.statusCode,403,assignedCustody.body);
