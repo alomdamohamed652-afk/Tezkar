@@ -611,7 +611,7 @@ export async function productionRoutes(app: FastifyInstance) {
           `SELECT COUNT(*)::int AS total,
                   COUNT(*) FILTER (WHERE status='COMPLETED')::int AS completed
              FROM order_stages
-            WHERE order_id=$1`,
+            WHERE order_id=$1 AND status<>'CANCELLED'`,
           [stageUpdate.rows[0].order_id]
         );
         if(Number(orderCompletion.rows[0]?.total||0)>0 &&
