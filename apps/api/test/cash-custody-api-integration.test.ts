@@ -175,7 +175,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(viewOnlyGenericWrite.statusCode,403,viewOnlyGenericWrite.body);
       const viewOnlyCollection=await app.inject({method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",description:"Unauthorized collection",idempotencyKey:randomUUID()}});
       assert.equal(viewOnlyCollection.statusCode,403,viewOnlyCollection.body);
-      const viewOnlyExpense=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",category:"Test",description:"Unauthorized order expense"}});
+      const viewOnlyExpense=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",category:"Test",description:"Unauthorized order expense",idempotencyKey:randomUUID()}});
       assert.equal(viewOnlyExpense.statusCode,403,viewOnlyExpense.body);
 
       // An employee without an explicit custody-view permission cannot read even their own custody.
