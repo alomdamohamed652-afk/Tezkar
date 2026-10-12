@@ -184,14 +184,24 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(contractOrder.statusCode, 201, contractOrder.body);
     const contractOrderId = contractOrder.json().data.id as string;
+    const contractRevenuePayload={orderId:contractOrderId,amount:80,revenueDate:"2099-01-04",source:"MANUAL",notes:"Contract guard integration",idempotencyKey:randomUUID()};
     const firstContractRevenue = await app.inject({
-      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
-      payload: { orderId: contractOrderId, amount: 80, revenueDate: "2099-01-04", source: "MANUAL", notes: "Contract guard integration" }
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },payload:contractRevenuePayload
     });
     assert.equal(firstContractRevenue.statusCode, 201, firstContractRevenue.body);
+    const retriedContractRevenue=await app.inject({
+      method:"POST",url:"/api/accounting/revenues",headers:{cookie:submitter.cookie},payload:contractRevenuePayload
+    });
+    assert.equal(retriedContractRevenue.statusCode,201,retriedContractRevenue.body);
+    assert.equal(retriedContractRevenue.json().data.id,firstContractRevenue.json().data.id);
+    const reusedRevenueKey=await app.inject({
+      method:"POST",url:"/api/accounting/revenues",headers:{cookie:submitter.cookie},payload:{...contractRevenuePayload,amount:80.01}
+    });
+    assert.equal(reusedRevenueKey.statusCode,409,reusedRevenueKey.body);
+    assert.equal(reusedRevenueKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
     const overContractRevenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
-      payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract" }
+      payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract",idempotencyKey:randomUUID() }
     });
     assert.equal(overContractRevenue.statusCode, 409, overContractRevenue.body);
     assert.equal(overContractRevenue.json().error.code, "CONTRACT_VALUE_EXCEEDED");
