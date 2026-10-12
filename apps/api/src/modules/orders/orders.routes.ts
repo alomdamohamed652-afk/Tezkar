@@ -346,7 +346,20 @@ export async function orderRoutes(app: FastifyInstance) {
       const values:unknown[]=[];
       const add=(field:string,value:unknown)=>{values.push(value);fields.push(field+"=$"+values.length);};
       if(p.orderName!==undefined)add("order_name",p.orderName);
-      if(p.contractValue!==undefined)add("contract_value",p.contractValue);
+      if(p.contractValue!==undefined){
+        // A contract cannot be reduced below revenue already recorded against the order.
+        // The order row is locked above, matching collection posting's lock to serialize
+        // a contract edit against an in-flight customer collection.
+        const collected=await client.query(
+          "SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",
+          [id]
+        );
+        const alreadyRecorded=Number(collected.rows[0]?.total||0);
+        if(p.contractValue>0 && p.contractValue+1e-7<alreadyRecorded){
+          throw new AppError("CONTRACT_VALUE_BELOW_RECORDED_REVENUE","لا يمكن تخفيض قيمة التعاقد إلى أقل من الإيرادات المسجلة بالفعل على الطلبية",409);
+        }
+        add("contract_value",p.contractValue);
+      }
       if(p.customerName!==undefined)add("customer_name",p.customerName);
       if(p.deliveryStartDate!==undefined)add("delivery_start_date",p.deliveryStartDate);
       if(p.dueDate!==undefined)add("due_date",p.dueDate);
