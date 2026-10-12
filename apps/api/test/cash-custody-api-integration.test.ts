@@ -521,6 +521,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         });
         assert.equal(blockedExpense.statusCode,409,blockedExpense.body);
         assert.equal(blockedExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+        const genericBlockedExpense=await app.inject({
+          method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+          payload:{orderId:blockedOrder.id,amount:10,expenseDate:"2099-03-10",category:"Test",description:`Accounting expense on ${blockedStatus}`,expenseType:"DIRECT",paidFromEmployeeId:employeeA.id,idempotencyKey:randomUUID()}
+        });
+        assert.equal(genericBlockedExpense.statusCode,409,genericBlockedExpense.body);
+        assert.equal(genericBlockedExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
       }
 
       const expenseOrder=(await apiPool.query(
@@ -542,6 +548,22 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(expenseCount.rows[0].count,1);
       const linkedCashCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",[expenseFirst.json().data.expense.id]);
       assert.equal(linkedCashCount.rows[0].count,1);
+
+      const genericExpensePayload={orderId:expenseOrder.id,amount:22.50,expenseDate:"2099-03-11",category:"نقل",description:"Accounting expense idempotency integration",expenseType:"DIRECT",paidFromEmployeeId:employeeB.id,idempotencyKey:randomUUID()};
+      const genericExpenseFirst=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:genericExpensePayload});
+      assert.equal(genericExpenseFirst.statusCode,201,genericExpenseFirst.body);
+      assert.ok(genericExpenseFirst.json().data.cash_custody_transaction_id);
+      const genericExpenseRetry=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:genericExpensePayload});
+      assert.equal(genericExpenseRetry.statusCode,201,genericExpenseRetry.body);
+      assert.equal(genericExpenseRetry.json().data.id,genericExpenseFirst.json().data.id);
+      assert.equal(genericExpenseRetry.json().data.cash_custody_transaction_id,genericExpenseFirst.json().data.cash_custody_transaction_id);
+      const genericExpenseChanged=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:{...genericExpensePayload,amount:23}});
+      assert.equal(genericExpenseChanged.statusCode,409,genericExpenseChanged.body);
+      assert.equal(genericExpenseChanged.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const genericExpenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[genericExpensePayload.idempotencyKey]);
+      assert.equal(genericExpenseCount.rows[0].count,1);
+      const genericCashCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",[genericExpenseFirst.json().data.id]);
+      assert.equal(genericCashCount.rows[0].count,1);
 
       const invalidPrecisionCollection=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
