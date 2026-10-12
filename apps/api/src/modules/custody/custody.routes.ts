@@ -112,7 +112,7 @@ export async function custodyRoutes(app:FastifyInstance){
       return {data:own.rows};
     }finally{client.release();}
   });
-  app.get("/api/custodies",{preHandler:[authenticateRequest]},async(request)=>{
+  app.get("/api/custodies",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const user=await workerInfo(request.user!.userId);
     const scopeClient=await pool.connect();
     let canViewAll=false;let canViewOwn=false;
@@ -156,7 +156,7 @@ export async function custodyRoutes(app:FastifyInstance){
     return reply.code(201).send({data:r});
   });
 
-  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest]},async(request)=>{
+  app.get("/api/custodies/:id/settlements",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const user=await workerInfo(request.user!.userId);
     const scopeClient=await pool.connect();
@@ -175,7 +175,7 @@ export async function custodyRoutes(app:FastifyInstance){
     return {data:r.rows};
   });
 
-  app.get("/api/custodies/:id/transfers",{preHandler:[authenticateRequest]},async(request)=>{
+  app.get("/api/custodies/:id/transfers",{preHandler:[authenticateRequest,requireAnyPermission(["custody.view","all"],["custody.view_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;const user=await workerInfo(request.user!.userId);const client=await pool.connect();
     try{
       const all=await hasPermission(client,request.user!.userId,"custody.view","all");const own=await hasPermission(client,request.user!.userId,"custody.view_own","own");
