@@ -223,8 +223,8 @@ export default function AccountingPage() {
        </div>
       </section>
       <div className="stats finance-stats">
-       <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{revenues.length} حركة إيراد محملة</div></article>
-       <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{expenses.length} حركة مصروف محملة</div></article>
+       <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{dashboardRevenues.length} حركة خلال الفترة المحددة</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{dashboardExpenses.length} حركة خلال الفترة المحددة</div></article>
        <article className="card stat"><div className="stat-label">الصافي</div><div className="stat-value">{n(net)}</div><div className="stat-note">الداخل − الخارج</div></article>
        <article className="card stat neutral"><div className="stat-label">الطلبات</div><div className="stat-value">{orders.length}</div><div className="stat-note">متاحة للتحليل المالي</div></article>
        { (has("cash_custody.view")||has("cash_custody.view_own"))&&<article className="card stat accent"><div className="stat-label">الرصيد الحالي للعهد النقدية</div><div className="stat-value">{n(latestCashBalances)}</div><div className="stat-note">آخر رصيد ظاهر لكل موظف ضمن صلاحياتك</div></article>}
