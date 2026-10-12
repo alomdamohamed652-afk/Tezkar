@@ -58,9 +58,9 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
 }
 
 async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,amount:number,requestCode:string,paymentId:string){
-  const canAll=await hasPermission(client,userId,"cash_custody.create","all");
-  const canOwn=await hasPermission(client,userId,"cash_custody.create_own","own");
-  if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","لا يمكن صرف طلب القبض دون صلاحية تسجيل خصم من العهدة النقدية",403);
+  const canAll=await hasPermission(client,userId,"cash_custody.worker_payment_out","all");
+  const canOwn=await hasPermission(client,userId,"cash_custody.worker_payment_out_own","own");
+  if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","يلزم منح صلاحية مستقلة لخصم صرف العامل من العهدة النقدية",403);
   if(!canAll){
     const owner=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
     if(!canOwn||owner.rows[0]?.employee_id!==custodyEmployeeId)throw new AppError("CASH_CUSTODY_SCOPE_DENIED","يمكنك الخصم من عهدتك النقدية فقط",403);
