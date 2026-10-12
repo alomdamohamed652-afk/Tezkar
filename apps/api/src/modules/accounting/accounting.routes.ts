@@ -31,7 +31,8 @@ const revenueSchema=z.object({
   amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   revenueDate:z.string().date().optional(),
   source:z.string().trim().min(2).max(50).default("MANUAL"),
-  notes:z.string().trim().max(500).nullable().optional()
+  notes:z.string().trim().max(500).nullable().optional(),
+  idempotencyKey:z.string().uuid().optional()
 });
 const idSchema=z.object({orderId:z.string().uuid()});
 
@@ -123,8 +124,19 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.create")]},async(request,reply)=>{
   const p=revenueSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الإيراد غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
+   const payloadHash=p.data.idempotencyKey?createHash("sha256").update(JSON.stringify({
+    orderId:p.data.orderId??null,amountMinor:Math.round(p.data.amount*100),revenueDate:p.data.revenueDate??null,
+    source:p.data.source,notes:p.data.notes??null
+   })).digest("hex"):null;
+   if(p.data.idempotencyKey){
+    const prior=await client.query("SELECT * FROM order_revenues WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+    if(prior.rowCount){
+     if(prior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لإيراد ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+     return prior.rows[0];
+    }
+   }
    if(p.data.orderId){
-     // Serialize every order-linked revenue posting against collection and contract edits.
+     // Serialize order-linked revenue against collections and contract edits.
      const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
@@ -133,16 +145,26 @@ export async function accountingRoutes(app:FastifyInstance){
      if(contractValue>0){
        const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
        const collected=Number(posted.rows[0]?.total||0);
-       if(collected+p.data.amount>contractValue+1e-7){
-         throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
-       }
+       if(collected+p.data.amount>contractValue+1e-7)throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
      }
    }else{
      await assertAccountingDateOpen(client,p.data.revenueDate);
    }
    const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
    const code=codeResult.rows[0].code;
-   const r=await client.query("INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,$2,$3,COALESCE($4,current_date),$5,$6,$7) RETURNING *",[p.data.orderId??null,code,p.data.amount,p.data.revenueDate??null,p.data.source,p.data.notes??null,request.user!.userId]);
+   let r;
+   if(p.data.idempotencyKey){
+    r=await client.query("INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,COALESCE($4,current_date),$5,$6,$7,$8,$9) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
+     [p.data.orderId??null,code,p.data.amount,p.data.revenueDate??null,p.data.source,p.data.notes??null,request.user!.userId,p.data.idempotencyKey,payloadHash]);
+    if(!r.rowCount){
+     const prior=await client.query("SELECT * FROM order_revenues WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+     if(!prior.rowCount)throw new AppError("REVENUE_RETRY_CONFLICT","تعذر استرجاع الإيراد السابق؛ أعد المحاولة بنفس المفتاح.",409);
+     if(prior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لإيراد ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+     return prior.rows[0];
+    }
+   }else{
+    r=await client.query("INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,$2,$3,COALESCE($4,current_date),$5,$6,$7) RETURNING *",[p.data.orderId??null,code,p.data.amount,p.data.revenueDate??null,p.data.source,p.data.notes??null,request.user!.userId]);
+   }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"revenue",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   });
