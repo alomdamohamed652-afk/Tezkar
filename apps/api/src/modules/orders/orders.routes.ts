@@ -340,6 +340,8 @@ export async function orderRoutes(app: FastifyInstance) {
         if(p.status==="COMPLETED"){
           const pending=await client.query("SELECT COUNT(*)::int AS count FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='PENDING'",[id]);
           if(Number(pending.rows[0]?.count||0)>0) throw new AppError("ORDER_HAS_PENDING_PRODUCTION","لا يمكن إكمال الطلبية قبل مراجعة كل تسجيلات الإنتاج المعلقة",409);
+          const incomplete=await client.query("SELECT COUNT(*)::int AS count FROM order_stages WHERE order_id=$1 AND status NOT IN ('COMPLETED','CANCELLED')",[id]);
+          if(Number(incomplete.rows[0]?.count||0)>0) throw new AppError("ORDER_STAGES_INCOMPLETE","لا يمكن إكمال الطلبية قبل إكمال مراحلها أو إلغائها بشكل منفصل",409);
         }
         if(p.status==="CANCELLED"){
           const activity=await client.query(
@@ -393,10 +395,7 @@ export async function orderRoutes(app: FastifyInstance) {
         const reopened=await client.query("UPDATE order_stages SET status='IN_PROGRESS' WHERE order_id=$1 AND status='COMPLETED' RETURNING id",[id]);
         reopenedStageCount=reopened.rowCount??0;
       }
-      if(p.status==="COMPLETED"&&before.status!=="COMPLETED"){
-        const completed=await client.query("UPDATE order_stages SET status='COMPLETED' WHERE order_id=$1 AND status<>'CANCELLED' RETURNING id",[id]);
-        completedStageCount=completed.rowCount??0;
-      }
+
       const lifecycleMetadata={...(reopenedStageCount?{reopenedStageCount}:{}),...(completedStageCount?{completedStageCount}:{})};
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:p.status!==undefined&&p.status!==before.status?"status_change":"edit",module:"orders",entityType:"production_order",entityId:id,beforeData:before,afterData:updated.rows[0],...(Object.keys(lifecycleMetadata).length?{metadata:lifecycleMetadata}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
