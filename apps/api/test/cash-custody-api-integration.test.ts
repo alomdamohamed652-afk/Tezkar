@@ -103,8 +103,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",
         [worker.id]
       );
-      // Preserve one explicitly granted generic write in this fixture; migration 1024
-      // removes the worker role's default generic OUT permission.
+      // Migration 1024 must remove the worker role's default generic OUT permission.
+      const workerGenericWrite=(await apiPool.query("SELECT COUNT(*)::int AS count FROM role_permissions rp JOIN roles r ON r.id=rp.role_id JOIN permissions p ON p.id=rp.permission_id WHERE r.code='worker' AND p.code='cash_custody.create_own'")).rows[0];
+      assert.equal(workerGenericWrite.count,0,"workers must not inherit generic custody write access");
+      // Preserve one explicitly granted generic write in this fixture to test that explicit grants still work.
       await apiPool.query(
         "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='cash_custody.create_own' WHERE r.code='worker' ON CONFLICT DO NOTHING"
       );
