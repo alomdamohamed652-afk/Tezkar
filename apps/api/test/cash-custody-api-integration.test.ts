@@ -332,6 +332,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         }
       });
       assert.equal(managerEntry.statusCode, 201, managerEntry.body);
+      const unlinkedCashIn=await app.inject({
+        method:"POST",url:"/api/cash-custody",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,direction:"IN",amount:26,transactionDate:"2099-01-12",description:"Must use the accounting-linked top-up route"}
+      });
+      assert.equal(unlinkedCashIn.statusCode,409,unlinkedCashIn.body);
+      assert.equal(unlinkedCashIn.json().error.code,"USE_CUSTODY_TOP_UP_OR_COLLECTION","manual IN movements must not bypass company revenue posting");
 
       const audit = await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
@@ -364,6 +370,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"Duplicate external funding test"}
       });
       assert.equal(repeatedTopUp.statusCode,409,repeatedTopUp.body);
+      const confirmedRepeatedTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"A second, separately confirmed funding event",confirmDuplicate:true}
+      });
+      assert.equal(confirmedRepeatedTopUp.statusCode,201,confirmedRepeatedTopUp.body);
+      assert.equal(confirmedRepeatedTopUp.json().data.confirmed_duplicate,true,"legitimate repeated funding must be allowed after explicit duplicate confirmation");
       const workerTopUp=await app.inject({
         method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:workerCookie},
         payload:{employeeId:employeeA.id,amount:50,transactionDate:"2099-01-14",description:"Must be forbidden"}
