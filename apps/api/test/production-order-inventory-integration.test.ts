@@ -199,6 +199,19 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(reusedRevenueKey.statusCode,409,reusedRevenueKey.body);
     assert.equal(reusedRevenueKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+    const concurrentRevenueOrder=(await apiPool.query(
+      "INSERT INTO production_orders(order_name,created_by,status,contract_value) VALUES($1,$2,'DRAFT',10) RETURNING id",
+      ["Concurrent revenue idempotency order",submitter.userId]
+    )).rows[0];
+    const concurrentRevenuePayload={orderId:concurrentRevenueOrder.id,amount:6,revenueDate:"2099-01-04",source:"MANUAL",notes:"Concurrent retry",idempotencyKey:randomUUID()};
+    const concurrentRevenueResults=await Promise.all([1,2].map(()=>app.inject({
+      method:"POST",url:"/api/accounting/revenues",headers:{cookie:submitter.cookie},payload:concurrentRevenuePayload
+    })));
+    assert.ok(concurrentRevenueResults.every(x=>x.statusCode===201),concurrentRevenueResults.map(x=>x.body).join("\\n"));
+    assert.equal(concurrentRevenueResults[0].json().data.id,concurrentRevenueResults[1].json().data.id);
+    const concurrentRevenueCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues WHERE idempotency_key=$1",[concurrentRevenuePayload.idempotencyKey]);
+    assert.equal(concurrentRevenueCount.rows[0].count,1,"concurrent revenue retries must create exactly one ledger entry");
+
     const overContractRevenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
       payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract",idempotencyKey:randomUUID() }
