@@ -515,6 +515,23 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(independentCollection.statusCode,201,independentCollection.body);
       assert.notEqual(independentCollection.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      // A retry of a collection already committed before period close must still
+      // return its original records; it must not attempt a new posting.
+      const collectionPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
+      });
+      assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
+      const closeCollectionPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
+      const closedPeriodCollectionRetry=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
+      });
+      assert.equal(closedPeriodCollectionRetry.statusCode,201,closedPeriodCollectionRetry.body);
+      assert.equal(closedPeriodCollectionRetry.json().data.revenue.id,collectionFirst.json().data.revenue.id);
+      assert.equal(closedPeriodCollectionRetry.json().data.cashCustody.id,collectionFirst.json().data.cashCustody.id);
       const collectionCounts=await apiPool.query(
         "SELECT COUNT(*)::int AS revenue_count FROM order_revenues WHERE order_id=$1 AND source='CUSTOMER_COLLECTION'",
         [collectionOrder.id]
