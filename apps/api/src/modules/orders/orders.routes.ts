@@ -420,7 +420,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const refreshed=await client.query("SELECT * FROM order_stages WHERE id=$1",[x.rows[0].id]);
       return refreshed.rows[0];
     });
-    return reply.code(201).send({data:r.rows[0]});
+    return reply.code(201).send({data:r});
   });
 
   app.post("/api/stages/:id/outputs", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request, reply) => {
