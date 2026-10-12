@@ -432,12 +432,15 @@ export async function orderRoutes(app: FastifyInstance) {
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل المرحلة غير صحيحة",422);
     const p=parsed.data;
     const r=await withTransaction(async client=>{
-      const current=await client.query("SELECT * FROM order_stages WHERE id=$1 FOR UPDATE",[id]);
-      if(!current.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
-      const parentOrder=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR SHARE",[current.rows[0].order_id]);
+      const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[id]);
+      if(!stageRef.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      // Lock parent order before stage, matching expense and cancellation flows.
+      const parentOrder=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
       if(!parentOrder.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
       if(parentOrder.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل مرحلة في طلبية ملغاة",409);
       if(parentOrder.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مراحلها",409);
+      const current=await client.query("SELECT * FROM order_stages WHERE id=$1 FOR UPDATE",[id]);
+      if(!current.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
