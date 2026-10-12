@@ -435,6 +435,30 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(stageState.rows[0].status, "COMPLETED");
     assert.equal(stageState.rows[0].order_status, "COMPLETED");
 
+    const addOutputToCompletedOrder = await app.inject({
+      method: "POST", url: "/api/stages/" + finalStage.id + "/outputs", headers: { cookie: submitter.cookie },
+      payload: { productId: finalStage.output_product_id, isDefault: true }
+    });
+    assert.equal(addOutputToCompletedOrder.statusCode, 409, addOutputToCompletedOrder.body);
+    assert.equal(addOutputToCompletedOrder.json().error.code, "ORDER_COMPLETED_LOCKED");
+
+    // A completed stage cannot receive machine production even if the parent order is reopened.
+    await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
+    const testMachine = (await apiPool.query(
+      "INSERT INTO machines(name,machine_type) VALUES($1,$2) RETURNING id",
+      ["Completed stage guard " + randomBytes(4).toString("hex"), "TEST"]
+    )).rows[0];
+    const machineProductionOnCompletedStage = await app.inject({
+      method: "POST", url: "/api/machine-production", headers: { cookie: submitter.cookie },
+      payload: {
+        orderStageId: finalStage.id, machineId: testMachine.id, productId: finalStage.output_product_id,
+        workDate: "2099-01-05", quantity: 1
+      }
+    });
+    assert.equal(machineProductionOnCompletedStage.statusCode, 409, machineProductionOnCompletedStage.body);
+    assert.equal(machineProductionOnCompletedStage.json().error.code, "ORDER_STAGE_COMPLETED");
+    await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1", [orderId]);
+
     const addStageToCompletedOrder = await app.inject({
       method: "POST", url: "/api/orders/" + orderId + "/stages", headers: { cookie: submitter.cookie },
       payload: { stageName: "Must not add to completed order", sequenceNo: 3 }
