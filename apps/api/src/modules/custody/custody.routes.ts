@@ -105,6 +105,9 @@ export async function custodyRoutes(app:FastifyInstance){
         ["custody.view","all"],["custody.view_own","own"],
         ["cash_custody.create","all"],["cash_custody.create_own","own"],
         ["cash_custody.view","all"],["cash_custody.view_own","own"],
+        ["cash_custody.order_collection","all"],["cash_custody.order_collection_own","own"],
+        ["cash_custody.order_expense","all"],["cash_custody.order_expense_own","own"],
+        ["cash_custody.worker_payment_out","all"],["cash_custody.worker_payment_out_own","own"],
         ["custody.transfer","all"],["cash_custody.transfer","all"]
       ];
       let hasAny=false;let hasAll=false;
