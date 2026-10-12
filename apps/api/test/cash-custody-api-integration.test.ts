@@ -434,6 +434,20 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
 
+      const closedPeriodExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"مصروف إداري",description:"Must be rejected in closed period",amount:5,expenseType:"ADMINISTRATIVE",expenseDate:"2099-02-05"}
+      });
+      assert.equal(closedPeriodExpense.statusCode,409,closedPeriodExpense.body);
+      assert.equal(closedPeriodExpense.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:11,transactionDate:"2099-02-05",description:"Must be rejected in closed period"}
+      });
+      assert.equal(closedPeriodTopUp.statusCode,409,closedPeriodTopUp.body);
+      assert.equal(closedPeriodTopUp.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
       // A collection retry with the same idempotency key must return the original pair,
       // while a separate operation with identical amount/date/business fields is valid.
       const collectionOrder=(await apiPool.query(
