@@ -30,15 +30,21 @@ export default function CustodyPage(){
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل العهد")}
  }
  useEffect(()=>{void load()},[employeeId]);
- // Load employee options independently from the custody ledger so a ledger-view error
- // cannot block the picker. Support both all-scope and own-scope permissions.
- useEffect(()=>{
+ // Load order options only for users allowed to create cash-custody postings.
  useEffect(()=>{
   if(!permissions?.some(code=>["cash_custody.create","cash_custody.create_own"].includes(code)))return;
   let active=true;
-  api<{data:CustodyOrder[]}>("/api/cash-custody/eligible-orders").then(r=>{if(!active)return;setOrders(r.data);setCollectionOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));setExpenseOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));}).catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل الطلبيات");});
+  api<{data:CustodyOrder[]}>("/api/cash-custody/eligible-orders").then(r=>{
+   if(!active)return;
+   setOrders(r.data);
+   setCollectionOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));
+   setExpenseOrderId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));
+  }).catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل الطلبيات");});
   return()=>{active=false};
  },[permissions]);
+ // Load employee options independently from the custody ledger so a ledger-view error
+ // cannot block the picker. Support both all-scope and own-scope permissions.
+ useEffect(()=>{
   const pickerPermissions=["custody.create","custody.create_own","custody.view","custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.view","cash_custody.view_own"];
   if(!permissions?.some(code=>pickerPermissions.includes(code)))return;
   let active=true;
@@ -81,8 +87,28 @@ export default function CustodyPage(){
   if(!Number.isFinite(damage)||damage<0||!Number.isFinite(shortage)||shortage<0){setError("قيمة التلف أو العجز غير صحيحة");return}
   try{await api("/api/custodies/"+x.id+"/settlements",{method:"POST",body:JSON.stringify({returnedQuantity:q,lostQuantity:lost,damageValue:damage,shortageValue:shortage})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسوية العهدة")}
  }
- return <div className="app-shell"><Sidebar active="/custody"/><main className="main"><header className="topbar"><div><h1 className="page-title">عهد الموظفين</h1><p className="page-subtitle">تسجيل العهدة على الموظف، متابعة المتبقي، ثم تسويتها بسجل مستقل.</p></div></header><section className="content">
+ const cashSummary=(()=>{
+  const inflow=cash.filter(x=>x.direction==="IN").reduce((sum,x)=>sum+Number(x.amount||0),0);
+  const outflow=cash.filter(x=>x.direction==="OUT").reduce((sum,x)=>sum+Number(x.amount||0),0);
+  // The API returns newest transactions first; take the latest balance once per employee.
+  const latestBalanceByEmployee=new Map<string,number>();
+  for(const tx of cash){if(!latestBalanceByEmployee.has(tx.employee_name))latestBalanceByEmployee.set(tx.employee_name,Number(tx.balance||0));}
+  const balance=[...latestBalanceByEmployee.values()].reduce((sum,value)=>sum+value,0);
+  return {inflow,outflow,balance,transactions:cash.length};
+ })();
+ const canViewCash=has("cash_custody.view")||has("cash_custody.view_own");
+ return <div className="app-shell"><Sidebar active="/custody"/><main className="main"><header className="topbar"><div><h1 className="page-title">عهد الموظفين</h1><p className="page-subtitle">لوحة متابعة العهد والأرصدة والحركات النقدية والمصروفات المرتبطة بالطلبيات.</p></div></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
+ {canViewCash&&<section className="card" style={{marginBottom:16}}>
+  <div className="card-header"><div><h2 className="card-title">ملخص العهدة النقدية</h2><div className="form-hint">ملخص للحركات النقدية التي أعادها النظام حاليًا؛ الأرقام تتحدث بعد تسجيل الحركة أو إعادة تحميل البيانات.</div></div><button type="button" className="secondary-btn" onClick={()=>void load()}>تحديث البيانات</button></div>
+  <div className="form-grid" style={{gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",padding:"0 16px 16px"}}>
+   <div className="card" style={{margin:0,borderTop:"3px solid var(--success,#16a34a)"}}><div className="form-hint">الرصيد الحالي للعهد النقدية المعروضة</div><div className="page-title money" style={{fontSize:24,marginTop:8}}>{formatMoney(cashSummary.balance)}</div></div>
+   <div className="card" style={{margin:0,borderTop:"3px solid var(--success,#16a34a)"}}><div className="form-hint">إجمالي الوارد في الحركات المعروضة</div><div className="page-title money" style={{fontSize:24,marginTop:8}}>{formatMoney(cashSummary.inflow)}</div></div>
+   <div className="card" style={{margin:0,borderTop:"3px solid var(--danger,#dc2626)"}}><div className="form-hint">إجمالي الصادر في الحركات المعروضة</div><div className="page-title money" style={{fontSize:24,marginTop:8}}>{formatMoney(cashSummary.outflow)}</div></div>
+   <div className="card" style={{margin:0}}><div className="form-hint">عدد الحركات النقدية المعروضة</div><div className="page-title" style={{fontSize:24,marginTop:8}}>{formatQuantity(cashSummary.transactions,0)}</div></div>
+  </div>
+  <div className="form-hint" style={{padding:"0 16px 16px"}}>تنبيه: إجماليات الوارد والصادر تخص الحركات المحمّلة فقط، وقد تشمل تحويلات بين العهد؛ لا تُعامل وحدها كإيراد أو مصروف محاسبي. الرصيد يجمع آخر رصيد ظاهر لكل موظف.</div>
+ </section>}
  {has("custody.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل عهدة</h2><div className="form-hint">كل عهدة تحصل على رقم CUS مستقل ولا تتغير قيمتها القديمة بعد التسوية.</div></div></div>
   <div className="form-grid">
    <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
