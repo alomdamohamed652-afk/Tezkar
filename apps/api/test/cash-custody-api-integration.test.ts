@@ -403,6 +403,19 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.ok(Number(negativeCustody.rows[0].balance)<0,"personal funds may temporarily cover a factory expense and make custody negative");
 
+      // A later inflow must first settle the employee's negative custody balance.
+      const negativeBalanceBeforeRecovery=Number(negativeCustody.rows[0].balance);
+      const recoveryTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeB.id,amount:Math.abs(negativeBalanceBeforeRecovery),transactionDate:"2099-01-11",description:"Settle negative custody from later inflow"}
+      });
+      assert.equal(recoveryTopUp.statusCode,201,recoveryTopUp.body);
+      const recoveredCustody=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [employeeB.id]
+      );
+      assert.ok(Math.abs(Number(recoveredCustody.rows[0].balance))<1e-7,"later custody inflow must settle the negative balance");
+
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
