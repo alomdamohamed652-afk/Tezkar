@@ -29,7 +29,7 @@ const groups:NavGroup[]=[
   {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
-  {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own"],conditional:"custody"},
+  {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"],conditional:"custody"},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
  ]},
  {label:"الإدارة",items:[
@@ -59,7 +59,7 @@ export function Sidebar({active}:{active:string}){
    if(!item.permissions?.some(p=>permissions.includes(p)))return false;
    if(!item.conditional)return true;
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
-   if(item.conditional==="custody"&&permissions.some(p=>["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own"].includes(p)))return true;
+   if(item.conditional==="custody"&&permissions.some(p=>["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"].includes(p)))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}

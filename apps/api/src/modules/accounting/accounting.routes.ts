@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -15,7 +16,8 @@ const expenseSchema=z.object({
   expenseDate:z.string().date().optional(),
   paymentMethod:z.string().trim().max(50).nullable().optional(),
   expenseType:z.enum(["DIRECT","ADMINISTRATIVE"]).default("DIRECT"),
-  paidFromEmployeeId:z.string().uuid().nullable().optional()
+  paidFromEmployeeId:z.string().uuid().nullable().optional(),
+  idempotencyKey:z.string().uuid().optional()
 }).superRefine((v,ctx)=>{
   if(v.expenseType==="ADMINISTRATIVE"&&(v.orderId||v.orderStageId)){
     ctx.addIssue({code:"custom",path:["orderId"],message:"المصروف الإداري يوزع على الطلبيات وقت التصفية ولا يرتبط بطلبية أو مرحلة واحدة"});
@@ -29,7 +31,8 @@ const revenueSchema=z.object({
   amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   revenueDate:z.string().date().optional(),
   source:z.string().trim().min(2).max(50).default("MANUAL"),
-  notes:z.string().trim().max(500).nullable().optional()
+  notes:z.string().trim().max(500).nullable().optional(),
+  idempotencyKey:z.string().uuid().optional()
 });
 const idSchema=z.object({orderId:z.string().uuid()});
 
@@ -58,28 +61,59 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async(request,reply)=>{
   const p=expenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المصروف غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
+   const payloadHash=p.data.idempotencyKey?createHash("sha256").update(JSON.stringify({
+    orderId:p.data.orderId??null,orderStageId:p.data.orderStageId??null,category:p.data.category,
+    description:p.data.description,amountMinor:Math.round(p.data.amount*100),expenseDate:p.data.expenseDate??null,
+    paymentMethod:p.data.paymentMethod??null,expenseType:p.data.expenseType,paidFromEmployeeId:p.data.paidFromEmployeeId??null
+   })).digest("hex"):null;
+   if(p.data.idempotencyKey){
+    const prior=await client.query("SELECT * FROM accounting_expenses WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+    if(prior.rowCount){
+     if(prior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+     return prior.rows[0];
+    }
+   }
+   // Use a consistent lock order for order-linked postings: order -> employee -> stage -> period.
    if(p.data.orderId){
     const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+    if(p.data.idempotencyKey){
+     const concurrentPrior=await client.query("SELECT * FROM accounting_expenses WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+     if(concurrentPrior.rowCount){
+      if(concurrentPrior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+      return concurrentPrior.rows[0];
+     }
+    }
     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
+    if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
    }
    if(p.data.paidFromEmployeeId){
     const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);
     if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
    }
    if(p.data.orderStageId){
-     const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);
-     if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);
-     if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
-     if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
+    const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);
+    if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);
+    if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
+    if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
+   }
+   await assertAccountingDateOpen(client,p.data.expenseDate);
+   let r;
+   if(p.data.idempotencyKey){
+    r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10,$11,$12) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
+     [p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null,p.data.idempotencyKey,payloadHash]);
+    if(!r.rowCount){
+     const prior=await client.query("SELECT * FROM accounting_expenses WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+     if(!prior.rowCount)throw new AppError("EXPENSE_RETRY_CONFLICT","تعذر استرجاع المصروف السابق؛ أعد المحاولة بنفس المفتاح.",409);
+     if(prior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+     return prior.rows[0];
     }
-    // Order and employee locks are acquired before the period lock to match collection posting.
-    await assertAccountingDateOpen(client,p.data.expenseDate);
-    let r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10) RETURNING *",[p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
+   }else{
+    r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10) RETURNING *",
+     [p.data.orderId??null,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,p.data.expenseDate??null,p.data.paymentMethod??null,request.user!.userId,p.data.expenseType,p.data.paidFromEmployeeId??null]);
+   }
    if(p.data.paidFromEmployeeId){
-    // A custody-funded expense may temporarily make the employee's balance
-    // negative when they cover a factory expense from personal money.
-    // Later incoming custody movements will settle that negative balance.
+    // Posting the expense and its cash-custody outflow is atomic; a negative balance is allowed for factory spending.
     const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,current_date),$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING id",
       [p.data.paidFromEmployeeId,p.data.amount,p.data.expenseDate??null,p.data.description,"صرف مصروف: "+p.data.category,r.rows[0].id,request.user!.userId]);
     r=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,r.rows[0].id]);
@@ -98,26 +132,55 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.create")]},async(request,reply)=>{
   const p=revenueSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الإيراد غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
+   const payloadHash=p.data.idempotencyKey?createHash("sha256").update(JSON.stringify({
+    orderId:p.data.orderId??null,amountMinor:Math.round(p.data.amount*100),revenueDate:p.data.revenueDate??null,
+    source:p.data.source,notes:p.data.notes??null
+   })).digest("hex"):null;
+   if(p.data.idempotencyKey){
+    const prior=await client.query("SELECT * FROM order_revenues WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+    if(prior.rowCount){
+     if(prior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لإيراد ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+     return prior.rows[0];
+    }
+   }
    if(p.data.orderId){
-     // Serialize every order-linked revenue posting against collection and contract edits.
+     // Serialize order-linked revenue against collections and contract edits.
      const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+     if(p.data.idempotencyKey){
+      const concurrentPrior=await client.query("SELECT * FROM order_revenues WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+      if(concurrentPrior.rowCount){
+       if(concurrentPrior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لإيراد ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+       return concurrentPrior.rows[0];
+      }
+     }
      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل إيراد على طلبية ملغاة",409);
+     if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_COLLECTIBLE","لا يمكن تسجيل إيراد جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
      await assertAccountingDateOpen(client,p.data.revenueDate);
      const contractValue=Number(order.rows[0].contract_value||0);
      if(contractValue>0){
        const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
        const collected=Number(posted.rows[0]?.total||0);
-       if(collected+p.data.amount>contractValue+1e-7){
-         throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
-       }
+       if(collected+p.data.amount>contractValue+1e-7)throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
      }
    }else{
      await assertAccountingDateOpen(client,p.data.revenueDate);
    }
    const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
    const code=codeResult.rows[0].code;
-   const r=await client.query("INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,$2,$3,COALESCE($4,current_date),$5,$6,$7) RETURNING *",[p.data.orderId??null,code,p.data.amount,p.data.revenueDate??null,p.data.source,p.data.notes??null,request.user!.userId]);
+   let r;
+   if(p.data.idempotencyKey){
+    r=await client.query("INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,COALESCE($4,current_date),$5,$6,$7,$8,$9) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
+     [p.data.orderId??null,code,p.data.amount,p.data.revenueDate??null,p.data.source,p.data.notes??null,request.user!.userId,p.data.idempotencyKey,payloadHash]);
+    if(!r.rowCount){
+     const prior=await client.query("SELECT * FROM order_revenues WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
+     if(!prior.rowCount)throw new AppError("REVENUE_RETRY_CONFLICT","تعذر استرجاع الإيراد السابق؛ أعد المحاولة بنفس المفتاح.",409);
+     if(prior.rows[0].idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لإيراد ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+     return prior.rows[0];
+    }
+   }else{
+    r=await client.query("INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,$2,$3,COALESCE($4,current_date),$5,$6,$7) RETURNING *",[p.data.orderId??null,code,p.data.amount,p.data.revenueDate??null,p.data.source,p.data.notes??null,request.user!.userId]);
+   }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"revenue",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   });

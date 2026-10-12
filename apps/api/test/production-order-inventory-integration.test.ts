@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -184,14 +184,37 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(contractOrder.statusCode, 201, contractOrder.body);
     const contractOrderId = contractOrder.json().data.id as string;
+    const contractRevenuePayload={orderId:contractOrderId,amount:80,revenueDate:"2099-01-04",source:"MANUAL",notes:"Contract guard integration",idempotencyKey:randomUUID()};
     const firstContractRevenue = await app.inject({
-      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
-      payload: { orderId: contractOrderId, amount: 80, revenueDate: "2099-01-04", source: "MANUAL", notes: "Contract guard integration" }
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },payload:contractRevenuePayload
     });
     assert.equal(firstContractRevenue.statusCode, 201, firstContractRevenue.body);
+    const retriedContractRevenue=await app.inject({
+      method:"POST",url:"/api/accounting/revenues",headers:{cookie:submitter.cookie},payload:contractRevenuePayload
+    });
+    assert.equal(retriedContractRevenue.statusCode,201,retriedContractRevenue.body);
+    assert.equal(retriedContractRevenue.json().data.id,firstContractRevenue.json().data.id);
+    const reusedRevenueKey=await app.inject({
+      method:"POST",url:"/api/accounting/revenues",headers:{cookie:submitter.cookie},payload:{...contractRevenuePayload,amount:80.01}
+    });
+    assert.equal(reusedRevenueKey.statusCode,409,reusedRevenueKey.body);
+    assert.equal(reusedRevenueKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+    const concurrentRevenueOrder=(await apiPool.query(
+      "INSERT INTO production_orders(order_name,created_by,status,contract_value) VALUES($1,$2,'DRAFT',10) RETURNING id",
+      ["Concurrent revenue idempotency order",submitter.userId]
+    )).rows[0];
+    const concurrentRevenuePayload={orderId:concurrentRevenueOrder.id,amount:6,revenueDate:"2099-01-04",source:"MANUAL",notes:"Concurrent retry",idempotencyKey:randomUUID()};
+    const concurrentRevenueResults=await Promise.all([1,2].map(()=>app.inject({
+      method:"POST",url:"/api/accounting/revenues",headers:{cookie:submitter.cookie},payload:concurrentRevenuePayload
+    })));
+    assert.ok(concurrentRevenueResults.every(x=>x.statusCode===201),concurrentRevenueResults.map(x=>x.body).join("\\n"));
+    assert.equal(concurrentRevenueResults[0].json().data.id,concurrentRevenueResults[1].json().data.id);
+    const concurrentRevenueCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues WHERE idempotency_key=$1",[concurrentRevenuePayload.idempotencyKey]);
+    assert.equal(concurrentRevenueCount.rows[0].count,1,"concurrent revenue retries must create exactly one ledger entry");
+
     const overContractRevenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
-      payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract" }
+      payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract",idempotencyKey:randomUUID() }
     });
     assert.equal(overContractRevenue.statusCode, 409, overContractRevenue.body);
     assert.equal(overContractRevenue.json().error.code, "CONTRACT_VALUE_EXCEEDED");
@@ -699,6 +722,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
     assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
 
+    // Reopen a completed order before posting additional manual finance entries.
+    const reopenForFinalCost=await app.inject({
+      method:"PATCH",url:"/api/orders/"+orderId,headers:{cookie:approver.cookie},payload:{status:"IN_PROGRESS"}
+    });
+    assert.equal(reopenForFinalCost.statusCode,200,reopenForFinalCost.body);
+
     // Verify order-linked revenue and expense feed the profitability report.
     const revenue = await app.inject({
       method: "POST", url: "/api/accounting/revenues", headers: { cookie: approver.cookie },
@@ -729,11 +758,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
     });
     assert.equal(accountingSummary.statusCode, 200, accountingSummary.body);
-    // The contract-guard regression above adds one valid $80 revenue entry to this
-    // disposable database; the over-contract attempt must not add anything else.
-    assert.equal(Number(accountingSummary.json().data.total_in), 1080);
+    // The contract-guard regression adds $80 and its concurrent idempotency case adds
+    // exactly one $6 entry; retries must not increase the total a second time.
+    assert.equal(Number(accountingSummary.json().data.total_in), 1086);
     assert.equal(Number(accountingSummary.json().data.total_out), 50);
-    assert.equal(Number(accountingSummary.json().data.net), 1030);
+    assert.equal(Number(accountingSummary.json().data.net), 1036);
 
     const duplicateApproval = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }

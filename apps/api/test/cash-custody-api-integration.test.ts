@@ -103,6 +103,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",
         [worker.id]
       );
+      // Migration 1024 must remove the worker role's default generic OUT permission.
+      const workerGenericWrite=(await apiPool.query("SELECT COUNT(*)::int AS count FROM role_permissions rp JOIN roles r ON r.id=rp.role_id JOIN permissions p ON p.id=rp.permission_id WHERE r.code='worker' AND p.code='cash_custody.create_own'")).rows[0];
+      assert.equal(workerGenericWrite.count,0,"workers must not inherit generic custody write access");
+      // Preserve one explicitly granted generic write in this fixture to test that explicit grants still work.
+      await apiPool.query(
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='cash_custody.create_own' WHERE r.code='worker' ON CONFLICT DO NOTHING"
+      );
       await apiPool.query(
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",
         [manager.id]
@@ -128,7 +135,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [ownScopeUser.id,ownScopeRole.id]
       );
       await apiPool.query(
-        "INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE code IN ('custody.view_own','advances.view_own') ON CONFLICT DO NOTHING",
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE code IN ('custody.view_own','cash_custody.view_own','advances.view_own') ON CONFLICT DO NOTHING",
         [ownScopeRole.id]
       );
 
@@ -163,6 +170,61 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
 
+
+      // View access must not imply permission to create generic or order-linked cash movements.
+      const ownCashLedger=await app.inject({method:"GET",url:"/api/cash-custody",headers:{cookie:ownScopeCookie}});
+      assert.equal(ownCashLedger.statusCode,200,ownCashLedger.body);
+      const viewOnlyGenericWrite=await app.inject({method:"POST",url:"/api/cash-custody",headers:{cookie:ownScopeCookie},payload:{direction:"OUT",amount:1,transactionDate:"2099-01-10",description:"Must remain view-only"}});
+      assert.equal(viewOnlyGenericWrite.statusCode,403,viewOnlyGenericWrite.body);
+      const viewOnlyCollection=await app.inject({method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",description:"Unauthorized collection",idempotencyKey:randomUUID()}});
+      assert.equal(viewOnlyCollection.statusCode,403,viewOnlyCollection.body);
+      const viewOnlyExpense=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},payload:{orderId:randomUUID(),amount:1,transactionDate:"2099-01-10",category:"Test",description:"Unauthorized order expense",idempotencyKey:randomUUID()}});
+      assert.equal(viewOnlyExpense.statusCode,403,viewOnlyExpense.body);
+
+      // Own-scope order actions must resolve the employee from the signed-in account and reject cross-employee targets.
+      await apiPool.query(
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT $1,id FROM permissions WHERE code IN ('cash_custody.order_collection_own','cash_custody.order_expense_own') ON CONFLICT DO NOTHING",
+        [ownScopeRole.id]
+      );
+      const ownOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Own-scope collection integration order",manager.id]
+      )).rows[0];
+      const ownCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownOrder.id,amount:5,transactionDate:"2099-04-01",description:"Own-scope collection",idempotencyKey:randomUUID()}
+      });
+      assert.equal(ownCollection.statusCode,201,ownCollection.body);
+      assert.equal(ownCollection.json().data.cashCustody.employee_id,ownScopeEmployee.id);
+      const crossEmployeeCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownOrder.id,employeeId:employeeA.id,amount:5,transactionDate:"2099-04-01",description:"Cross-employee collection denied",idempotencyKey:randomUUID()}
+      });
+      assert.equal(crossEmployeeCollection.statusCode,403,crossEmployeeCollection.body);
+      assert.equal(crossEmployeeCollection.json().error.code,"OWN_SCOPE_ONLY");
+      const ownExpenseOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Own-scope expense integration order",manager.id]
+      )).rows[0];
+      const ownOrderExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownExpenseOrder.id,amount:7,transactionDate:"2099-04-01",category:"Test",description:"Own-scope expense",idempotencyKey:randomUUID()}
+      });
+      assert.equal(ownOrderExpense.statusCode,201,ownOrderExpense.body);
+      assert.equal(ownOrderExpense.json().data.cashCustody.employee_id,ownScopeEmployee.id);
+      const crossEmployeeExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:ownScopeCookie},
+        payload:{orderId:ownExpenseOrder.id,employeeId:employeeA.id,amount:7,transactionDate:"2099-04-01",category:"Test",description:"Cross-employee expense denied",idempotencyKey:randomUUID()}
+      });
+      assert.equal(crossEmployeeExpense.statusCode,403,crossEmployeeExpense.body);
+      assert.equal(crossEmployeeExpense.json().error.code,"OWN_SCOPE_ONLY");
+      const ownEligibleEmployees=await app.inject({method:"GET",url:"/api/custodies/eligible-employees",headers:{cookie:ownScopeCookie}});
+      assert.equal(ownEligibleEmployees.statusCode,200,ownEligibleEmployees.body);
+      assert.deepEqual(ownEligibleEmployees.json().data.map((x:{id:string})=>x.id),[ownScopeEmployee.id]);
+      const ownEligibleOrders=await app.inject({method:"GET",url:"/api/cash-custody/eligible-orders",headers:{cookie:ownScopeCookie}});
+      assert.equal(ownEligibleOrders.statusCode,200,ownEligibleOrders.body);
+      assert.ok(ownEligibleOrders.json().data.some((x:{id:string})=>x.id===ownOrder.id));
+      assert.ok(ownEligibleOrders.json().data.some((x:{id:string})=>x.id===ownExpenseOrder.id));
 
       // An employee without an explicit custody-view permission cannot read even their own custody.
       const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
@@ -480,9 +542,91 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       // A collection retry with the same idempotency key must return the original pair,
       // while a separate operation with identical amount/date/business fields is valid.
       const collectionOrder=(await apiPool.query(
-        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
         ["Idempotency integration order",manager.id]
       )).rows[0];
+      const draftOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Draft order must reject custody postings",manager.id]
+      )).rows[0];
+      for (const blockedStatus of ["DRAFT","COMPLETED","CANCELLED"]) {
+        const blockedOrder=blockedStatus==="DRAFT"?draftOrder:(await apiPool.query(
+          "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,$3) RETURNING id",
+          [`Order ${blockedStatus} must reject custody posting`,manager.id,blockedStatus]
+        )).rows[0];
+        const blockedCollection=await app.inject({
+          method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
+          payload:{orderId:blockedOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",description:`Collection on ${blockedStatus}`,idempotencyKey:randomUUID()}
+        });
+        assert.equal(blockedCollection.statusCode,409,blockedCollection.body);
+        assert.equal(blockedCollection.json().error.code,"ORDER_NOT_COLLECTIBLE");
+        const blockedExpense=await app.inject({
+          method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+          payload:{orderId:blockedOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",category:"Test",description:`Expense on ${blockedStatus}`,idempotencyKey:randomUUID()}
+        });
+        assert.equal(blockedExpense.statusCode,409,blockedExpense.body);
+        assert.equal(blockedExpense.json().error.code,blockedStatus==="CANCELLED"?"ORDER_CANCELLED":"ORDER_NOT_EXPENSABLE");
+        if(blockedStatus==="COMPLETED"){
+          const completedAccountingExpense=await app.inject({
+            method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+            payload:{orderId:blockedOrder.id,amount:10,expenseDate:"2099-03-10",category:"Test",description:"Completed order expense must be rejected",expenseType:"DIRECT",idempotencyKey:randomUUID()}
+          });
+          assert.equal(completedAccountingExpense.statusCode,409,completedAccountingExpense.body);
+          assert.equal(completedAccountingExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+          const completedAccountingRevenue=await app.inject({
+            method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+            payload:{orderId:blockedOrder.id,amount:10,revenueDate:"2099-03-10",source:"MANUAL",notes:"Completed order revenue must be rejected",idempotencyKey:randomUUID()}
+          });
+          assert.equal(completedAccountingRevenue.statusCode,409,completedAccountingRevenue.body);
+          assert.equal(completedAccountingRevenue.json().error.code,"ORDER_NOT_COLLECTIBLE");
+        }
+      }
+
+      const expenseOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Idempotent custody expense order",manager.id]
+      )).rows[0];
+      const expensePayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:500,transactionDate:"2099-03-10",category:"مصروفات تشغيل",description:"Expense idempotency integration",notes:"retry safely",idempotencyKey:randomUUID()};
+      const expenseFirst=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:expensePayload});
+      assert.equal(expenseFirst.statusCode,201,expenseFirst.body);
+      assert.ok(expenseFirst.json().data.expense.cash_custody_transaction_id);
+      const expenseRetry=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:expensePayload});
+      assert.equal(expenseRetry.statusCode,201,expenseRetry.body);
+      assert.equal(expenseRetry.json().data.expense.id,expenseFirst.json().data.expense.id);
+      assert.equal(expenseRetry.json().data.cashCustody.id,expenseFirst.json().data.cashCustody.id);
+      const changedExpense=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:{...expensePayload,amount:501}});
+      assert.equal(changedExpense.statusCode,409,changedExpense.body);
+      assert.equal(changedExpense.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const expenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[expensePayload.idempotencyKey]);
+      assert.equal(expenseCount.rows[0].count,1);
+      const linkedCashCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",[expenseFirst.json().data.expense.id]);
+      assert.equal(linkedCashCount.rows[0].count,1);
+
+      const concurrentOrderExpensePayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:1,transactionDate:"2099-03-12",category:"Test",description:"Concurrent order expense retry",idempotencyKey:randomUUID()};
+      const concurrentOrderExpenses=await Promise.all([1,2].map(()=>app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:concurrentOrderExpensePayload
+      })));
+      assert.ok(concurrentOrderExpenses.every(x=>x.statusCode===201),concurrentOrderExpenses.map(x=>x.body).join("\\n"));
+      assert.equal(concurrentOrderExpenses[0].json().data.expense.id,concurrentOrderExpenses[1].json().data.expense.id);
+      const concurrentOrderExpenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[concurrentOrderExpensePayload.idempotencyKey]);
+      assert.equal(concurrentOrderExpenseCount.rows[0].count,1,"concurrent custody expense retries must create exactly one expense");
+
+      const genericExpensePayload={orderId:expenseOrder.id,amount:22.50,expenseDate:"2099-03-11",category:"نقل",description:"Accounting expense idempotency integration",expenseType:"DIRECT",paidFromEmployeeId:employeeB.id,idempotencyKey:randomUUID()};
+      const genericExpenseFirst=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:genericExpensePayload});
+      assert.equal(genericExpenseFirst.statusCode,201,genericExpenseFirst.body);
+      assert.ok(genericExpenseFirst.json().data.cash_custody_transaction_id);
+      const genericExpenseRetry=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:genericExpensePayload});
+      assert.equal(genericExpenseRetry.statusCode,201,genericExpenseRetry.body);
+      assert.equal(genericExpenseRetry.json().data.id,genericExpenseFirst.json().data.id);
+      assert.equal(genericExpenseRetry.json().data.cash_custody_transaction_id,genericExpenseFirst.json().data.cash_custody_transaction_id);
+      const genericExpenseChanged=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:{...genericExpensePayload,amount:23}});
+      assert.equal(genericExpenseChanged.statusCode,409,genericExpenseChanged.body);
+      assert.equal(genericExpenseChanged.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const genericExpenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[genericExpensePayload.idempotencyKey]);
+      assert.equal(genericExpenseCount.rows[0].count,1);
+      const genericCashCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",[genericExpenseFirst.json().data.id]);
+      assert.equal(genericCashCount.rows[0].count,1);
+
       const invalidPrecisionCollection=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
         payload:{orderId:collectionOrder.id,employeeId:employeeA.id,amount:125.501,transactionDate:"2099-03-10",description:"Invalid precision collection",idempotencyKey:randomUUID()}
