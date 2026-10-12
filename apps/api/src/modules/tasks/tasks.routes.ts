@@ -24,6 +24,11 @@ const updateSchema = z.object({
 });
 
 export async function taskRoutes(app: FastifyInstance) {
+  app.get("/api/tasks/eligible-assignees", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.create","all"],["tasks.edit","all"],["tasks.update_own","own"])] }, async () => {
+    const result = await pool.query("SELECT id,code,full_name,is_active FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+    return { data: result.rows };
+  });
+
   app.get("/api/tasks", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.view","all"],["tasks.view_own","own"])] }, async (request) => {
     const client = await pool.connect();
     try {
