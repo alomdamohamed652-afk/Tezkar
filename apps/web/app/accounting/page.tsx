@@ -44,6 +44,7 @@ export default function AccountingPage() {
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
   const [collectionForm,setCollectionForm]=useState({orderId:"",employeeId:"",amount:"",description:"تحصيل من العميل",notes:""});
   const collectionIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
+  const expenseIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
   const [dashboardPeriodId,setDashboardPeriodId]=useState("");
@@ -135,8 +136,14 @@ export default function AccountingPage() {
 
   async function addExpense() {
     setError("");setMessage("");
+    const payload={orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseDate:eForm.expenseDate,expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null};
+    const fingerprint=JSON.stringify(payload);
+    const previous=expenseIdempotency.current;
+    const operationKey=previous?.fingerprint===fingerprint?previous.key:crypto.randomUUID();
+    expenseIdempotency.current={fingerprint,key:operationKey};
     try {
-      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseDate:eForm.expenseDate,expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null})});
+      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:operationKey})});
+      expenseIdempotency.current=null;
       setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId?" وتم خصمه من عهدة الموظف":""));await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
   }
