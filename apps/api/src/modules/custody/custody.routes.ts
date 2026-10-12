@@ -395,7 +395,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const result=await withTransaction(async client=>{
       const access=await actionCashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.order_expense","cash_custody.order_expense_own");
       const employeeId=access.employeeId!;const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
-      const payloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,orderStageId:p.data.orderStageId??null,employeeId,category:p.data.category,description:p.data.description,amountMinor:Math.round(p.data.amount*100),transactionDate:date,notes:p.data.notes??null})).digest("hex");
+      const payloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,orderStageId:p.data.orderStageId??null,employeeId,category:p.data.category,description:p.data.description,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,notes:p.data.notes??null})).digest("hex");
       // A successful retry is a read of the already-committed operation, not a new posting.
       const prior=await client.query("SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",[p.data.idempotencyKey]);
       if(prior.rowCount){
