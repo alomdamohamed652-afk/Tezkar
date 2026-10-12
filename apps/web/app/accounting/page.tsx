@@ -162,10 +162,10 @@ export default function AccountingPage() {
 
   async function addOrderCollection(){
     setError("");setMessage("");
-    if(!collectionForm.orderId||!collectionForm.employeeId||!collectionForm.amount||!collectionForm.description.trim()){
+    if(!collectionForm.orderId||(!has("cash_custody.order_collection")&&!has("cash_custody.order_collection_own"))||(has("cash_custody.order_collection")&&!collectionForm.employeeId)||!collectionForm.amount||!collectionForm.description.trim()){
       setError("اختر الطلبية والموظف واكتب المبلغ والبيان");return;
     }
-    const payload={orderId:collectionForm.orderId,employeeId:collectionForm.employeeId,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null};
+    const payload={orderId:collectionForm.orderId,employeeId:has("cash_custody.order_collection")?collectionForm.employeeId:undefined,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null};
     const fingerprint=JSON.stringify(payload);
     if(!collectionIdempotency.current||collectionIdempotency.current.fingerprint!==fingerprint){
       collectionIdempotency.current={fingerprint,key:crypto.randomUUID()};
@@ -263,11 +263,11 @@ export default function AccountingPage() {
 
      {tab==="in"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">الداخل — الإيرادات</h2><div className="form-hint">الإيرادات المرتبطة بالطلبات والواردات العامة أو الإدارية من المدير المالي.</div></div></div>
-      {(has("cash_custody.create")||has("cash_custody.create_own"))&&<section className="card nested-card">
+      {(has("cash_custody.order_collection")||has("cash_custody.order_collection_own"))&&<section className="card nested-card">
        <div className="card-header"><div><h3 className="card-title">تحصيل عميل على عهدة موظف</h3><div className="form-hint">يسجل إيراد الطلبية ووارد العهدة في حركة واحدة، من غير تكرار عند تحويل الأموال لاحقًا.</div></div></div>
        <div className="form-grid finance-four-grid">
         <label>الطلبية<select value={collectionForm.orderId} onChange={e=>setCollectionForm({...collectionForm,orderId:e.target.value})}><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
-        <label>الموظف المستلم<select value={collectionForm.employeeId} onChange={e=>setCollectionForm({...collectionForm,employeeId:e.target.value})}><option value="">اختر الموظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+        {has("cash_custody.order_collection")&&<label>الموظف المستلم<select value={collectionForm.employeeId} onChange={e=>setCollectionForm({...collectionForm,employeeId:e.target.value})}><option value="">اختر الموظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>}
         <label>المبلغ<input type="number" min="0.01" step="0.01" value={collectionForm.amount} onChange={e=>setCollectionForm({...collectionForm,amount:e.target.value})}/></label>
         <label>البيان<input value={collectionForm.description} onChange={e=>setCollectionForm({...collectionForm,description:e.target.value})}/></label>
         <label>ملاحظات اختيارية<input value={collectionForm.notes} onChange={e=>setCollectionForm({...collectionForm,notes:e.target.value})}/></label>
