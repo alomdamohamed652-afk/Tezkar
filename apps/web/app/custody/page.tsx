@@ -43,7 +43,7 @@ export default function CustodyPage(){
   if(!permissions?.some(code=>pickerPermissions.includes(code)))return;
   let active=true;
   api<{data:Employee[]}>("/api/custodies/eligible-employees")
-   .then(r=>{if(active)setEmployees(r.data)})
+   .then(r=>{if(active){setEmployees(r.data);setCashEmployeeId(current=>current&&r.data.some(x=>x.id===current)?current:(r.data[0]?.id||""));}})
    .catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل قائمة الموظفين للعهد")});
   return()=>{active=false};
  },[permissions]);
