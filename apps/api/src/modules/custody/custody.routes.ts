@@ -295,7 +295,7 @@ export async function custodyRoutes(app:FastifyInstance){
       const r=await client.query(`SELECT o.id,o.code,o.order_name,COALESCE(o.contract_value,0) AS contract_value,
         COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS collected_amount,
         GREATEST(COALESCE(o.contract_value,0)-COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0),0) AS remaining_collectible
-        FROM production_orders o WHERE o.status <> 'CANCELLED' ORDER BY o.created_at DESC LIMIT 500`);
+        FROM production_orders o WHERE o.status NOT IN ('DRAFT','COMPLETED','CANCELLED') ORDER BY o.created_at DESC LIMIT 500`);
       return {data:r.rows};
     }finally{client.release();}
   });
@@ -342,7 +342,7 @@ export async function custodyRoutes(app:FastifyInstance){
           return {revenue:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
         }
       }
-      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل تحصيل لطلبية ملغاة",409);
+      if(["DRAFT","COMPLETED","CANCELLED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_COLLECTIBLE","لا يمكن تسجيل تحصيل لطلبية مسودة أو مكتملة أو ملغاة",409);
       const contractValue=Number(order.rows[0].contract_value||0);
       if(contractValue>0){
         const collected=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
@@ -399,7 +399,7 @@ export async function custodyRoutes(app:FastifyInstance){
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR SHARE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
-      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
+      if(["DRAFT","COMPLETED","CANCELLED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف تشغيلي على طلبية مسودة أو مكتملة أو ملغاة",409);
       if(p.data.orderStageId){const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);}
       const payloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,orderStageId:p.data.orderStageId??null,employeeId,category:p.data.category,description:p.data.description,amountMinor:Math.round(p.data.amount*100),transactionDate:date,notes:p.data.notes??null})).digest("hex");
       const prior=await client.query("SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",[p.data.idempotencyKey]);
@@ -408,8 +408,7 @@ export async function custodyRoutes(app:FastifyInstance){
         if(existing.idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
         return {expense:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
       }
-      const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2",[employeeId,date]);
-      if(p.data.amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","المصروف أكبر من رصيد العهدة النقدية المتاح",409);
+      // Factory operating expenses may be paid personally by the employee; a negative custody balance is allowed and later inflows settle it.
       const expense=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,'DIRECT',$8,$9,$10) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",[p.data.orderId,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId,p.data.idempotencyKey,payloadHash]);
       if(!expense.rowCount){
         const duplicate=await client.query("SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",[p.data.idempotencyKey]);
