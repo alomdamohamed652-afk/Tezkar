@@ -172,6 +172,38 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(markedFinalStages.rows[0].count, 2);
 
     const orderId = orderResponse.json().data.id as string;
+
+    // Contractual value, recognized revenue, and cancellation guards must agree.
+    const contractOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Contract guard integration " + randomBytes(4).toString("hex"), customerName: "Contract guard customer", orderDate: "2099-01-04", contractValue: 100 }
+    });
+    assert.equal(contractOrder.statusCode, 201, contractOrder.body);
+    const contractOrderId = contractOrder.json().data.id as string;
+    const firstContractRevenue = await app.inject({
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
+      payload: { orderId: contractOrderId, amount: 80, revenueDate: "2099-01-04", source: "MANUAL", notes: "Contract guard integration" }
+    });
+    assert.equal(firstContractRevenue.statusCode, 201, firstContractRevenue.body);
+    const overContractRevenue = await app.inject({
+      method: "POST", url: "/api/accounting/revenues", headers: { cookie: submitter.cookie },
+      payload: { orderId: contractOrderId, amount: 20.01, revenueDate: "2099-01-04", source: "MANUAL", notes: "Must exceed contract" }
+    });
+    assert.equal(overContractRevenue.statusCode, 409, overContractRevenue.body);
+    assert.equal(overContractRevenue.json().error.code, "CONTRACT_VALUE_EXCEEDED");
+    const belowRecordedContract = await app.inject({
+      method: "PATCH", url: "/api/orders/" + contractOrderId, headers: { cookie: submitter.cookie },
+      payload: { contractValue: 79.99 }
+    });
+    assert.equal(belowRecordedContract.statusCode, 409, belowRecordedContract.body);
+    assert.equal(belowRecordedContract.json().error.code, "CONTRACT_VALUE_BELOW_RECORDED_REVENUE");
+    const cancelWithRevenue = await app.inject({
+      method: "PATCH", url: "/api/orders/" + contractOrderId, headers: { cookie: submitter.cookie },
+      payload: { status: "CANCELLED" }
+    });
+    assert.equal(cancelWithRevenue.statusCode, 409, cancelWithRevenue.body);
+    assert.equal(cancelWithRevenue.json().error.code, "ORDER_HAS_ACTIVITY_LOCKED");
+
     await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
     const stagesResult = await apiPool.query(
       "SELECT os.id,os.stage_id,os.output_product_id,os.sequence_no,os.stage_rate,os.stage_rate_method,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1 ORDER BY os.sequence_no",
@@ -398,6 +430,19 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stageState.rows[0].completed_quantity), 10);
     assert.equal(stageState.rows[0].status, "COMPLETED");
     assert.equal(stageState.rows[0].order_status, "COMPLETED");
+
+    const addStageToCompletedOrder = await app.inject({
+      method: "POST", url: "/api/orders/" + orderId + "/stages", headers: { cookie: submitter.cookie },
+      payload: { stageName: "Must not add to completed order", sequenceNo: 3 }
+    });
+    assert.equal(addStageToCompletedOrder.statusCode, 409, addStageToCompletedOrder.body);
+    assert.equal(addStageToCompletedOrder.json().error.code, "ORDER_COMPLETED_LOCKED");
+    const editCompletedStage = await app.inject({
+      method: "PATCH", url: "/api/order-stages/" + finalStage.id, headers: { cookie: submitter.cookie },
+      payload: { notes: "Must not edit completed order stage" }
+    });
+    assert.equal(editCompletedStage.statusCode, 409, editCompletedStage.body);
+    assert.equal(editCompletedStage.json().error.code, "ORDER_COMPLETED_LOCKED");
 
     const dashboard = await app.inject({
       method: "GET", url: "/api/orders/" + orderId + "/dashboard", headers: { cookie: submitter.cookie }
