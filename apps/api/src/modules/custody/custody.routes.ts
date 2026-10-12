@@ -410,6 +410,14 @@ export async function custodyRoutes(app:FastifyInstance){
       // Preserve the shared lock order: order -> employee -> stage -> accounting period.
       const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
+      // Recheck after the order lock so a concurrent retry returns the committed record
+      // before lifecycle checks can reject it after the first request has completed.
+      const concurrentPrior=await client.query("SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",[p.data.idempotencyKey]);
+      if(concurrentPrior.rowCount){
+        const existing=concurrentPrior.rows[0];
+        if(existing.idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+        return {expense:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
+      }
       if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
       if(["DRAFT","COMPLETED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف تشغيلي على طلبية مسودة أو مكتملة",409);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
