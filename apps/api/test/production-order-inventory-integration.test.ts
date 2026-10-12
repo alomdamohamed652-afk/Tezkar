@@ -476,13 +476,24 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const reopenedStage = await apiPool.query("SELECT status FROM order_stages WHERE id=$1", [finalStage.id]);
     assert.equal(reopenedStage.rows[0].status, "IN_PROGRESS", "reopening an order must reactivate its completed stages");
 
+    const rejectIncompleteOrder = await app.inject({
+      method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
+      payload: { status: "COMPLETED" }
+    });
+    assert.equal(rejectIncompleteOrder.statusCode, 409, rejectIncompleteOrder.body);
+    assert.equal(rejectIncompleteOrder.json().error.code, "ORDER_STAGES_INCOMPLETE");
+    const completeReopenedStage = await app.inject({
+      method: "PATCH", url: "/api/order-stages/" + finalStage.id, headers: { cookie: submitter.cookie },
+      payload: { status: "COMPLETED" }
+    });
+    assert.equal(completeReopenedStage.statusCode, 200, completeReopenedStage.body);
     const completeOrderAgain = await app.inject({
       method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
       payload: { status: "COMPLETED" }
     });
     assert.equal(completeOrderAgain.statusCode, 200, completeOrderAgain.body);
     const completedStageAgain = await apiPool.query("SELECT status FROM order_stages WHERE id=$1", [finalStage.id]);
-    assert.equal(completedStageAgain.rows[0].status, "COMPLETED", "completing an order must synchronize its active stages");
+    assert.equal(completedStageAgain.rows[0].status, "COMPLETED");
 
     const addStageToCompletedOrder = await app.inject({
       method: "POST", url: "/api/orders/" + orderId + "/stages", headers: { cookie: submitter.cookie },
