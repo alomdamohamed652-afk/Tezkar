@@ -337,7 +337,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
         [worker.id]
       );
-      assert.equal(audit.rows[0].count, 3, "all successfully created worker transactions must be audited; external funding is manager-only");
+      assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions, including the overdraft, must be audited; external funding is manager-only");
 
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
       const externalTopUp=await app.inject({
