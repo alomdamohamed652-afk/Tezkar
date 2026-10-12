@@ -559,13 +559,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
           payload:{orderId:blockedOrder.id,employeeId:employeeA.id,amount:10,transactionDate:"2099-03-10",category:"Test",description:`Expense on ${blockedStatus}`,idempotencyKey:randomUUID()}
         });
         assert.equal(blockedExpense.statusCode,409,blockedExpense.body);
-        assert.equal(blockedExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+        assert.equal(blockedExpense.json().error.code,blockedStatus==="CANCELLED"?"ORDER_CANCELLED":"ORDER_NOT_EXPENSABLE");
         const genericBlockedExpense=await app.inject({
           method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
           payload:{orderId:blockedOrder.id,amount:10,expenseDate:"2099-03-10",category:"Test",description:`Accounting expense on ${blockedStatus}`,expenseType:"DIRECT",paidFromEmployeeId:employeeA.id,idempotencyKey:randomUUID()}
         });
         assert.equal(genericBlockedExpense.statusCode,409,genericBlockedExpense.body);
-        assert.equal(genericBlockedExpense.json().error.code,"ORDER_NOT_EXPENSABLE");
+        assert.equal(genericBlockedExpense.json().error.code,blockedStatus==="CANCELLED"?"ORDER_CANCELLED":"ORDER_NOT_EXPENSABLE");
       }
 
       const expenseOrder=(await apiPool.query(
