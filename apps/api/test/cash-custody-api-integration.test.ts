@@ -370,6 +370,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(workerTopUp.statusCode,403,workerTopUp.body);
 
+      const transferSourceTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeB.id,amount:20,transactionDate:"2099-01-08",description:"Fund transfer source for integration test"}
+      });
+      assert.equal(transferSourceTopUp.statusCode,201,transferSourceTopUp.body);
+
       const cashTransfer=await app.inject({
         method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
         payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:10,transactionDate:"2099-01-09",description:"Test cash custody transfer"}
