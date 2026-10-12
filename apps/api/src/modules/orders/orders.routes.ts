@@ -497,7 +497,8 @@ export async function orderRoutes(app: FastifyInstance) {
       const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
       if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تغيير سعر طلبية ملغاة",409);
-      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تغيير أسعار مراحلها",409);
+      // Price-change scopes are audited financial adjustments and may be needed
+      // after completion to reconcile approved production; cancellation remains blocked.
       const stage=await client.query("SELECT * FROM order_stages WHERE id=$1 AND order_id=$2 FOR UPDATE",[parsed.data.orderStageId,orderId]);
       if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","المرحلة لا تتبع هذه الطلبية",404);
       const oldRate=stage.rows[0].stage_rate==null?null:Number(stage.rows[0].stage_rate);
