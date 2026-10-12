@@ -82,6 +82,17 @@ async function cashAccess(client:import("pg").PoolClient,userId:string,employeeI
   if(employeeId && employeeId!==row.employee_id)throw new AppError("OWN_SCOPE_ONLY","لا يمكنك الحركة إلا على عهدتك",403);
   return {employeeId:row.employee_id,isFinance:false};
 }
+
+async function actionCashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,allPermission:string,ownPermission:string){
+  const user=await client.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
+  const row=user.rows[0];
+  if(!row)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",403);
+  if(await hasPermission(client,userId,allPermission,"all"))return {employeeId:employeeId??null,isAllScope:true};
+  if(!await hasPermission(client,userId,ownPermission,"own"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تنفيذ حركة العهدة المطلوبة",403);
+  if(!row.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+  if(employeeId&&employeeId!==row.employee_id)throw new AppError("OWN_SCOPE_ONLY","لا يمكنك الحركة إلا على عهدتك",403);
+  return {employeeId:row.employee_id,isAllScope:false};
+}
 export async function custodyRoutes(app:FastifyInstance){
   app.get("/api/custodies/eligible-employees",{preHandler:[authenticateRequest]},async(request)=>{
     const client=await pool.connect();
@@ -272,11 +283,12 @@ export async function custodyRoutes(app:FastifyInstance){
   });
 
 
-  app.get("/api/cash-custody/eligible-orders",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request)=>{
+  app.get("/api/cash-custody/eligible-orders",{preHandler:[authenticateRequest]},async(request)=>{
     const client=await pool.connect();
     try{
-      const canCreateAll=await hasPermission(client,request.user!.userId,"cash_custody.create","all");
-      if(!canCreateAll && !await hasPermission(client,request.user!.userId,"cash_custody.create_own","own"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تحصيل طلبية",403);
+      const canCollect=await hasPermission(client,request.user!.userId,"cash_custody.order_collection","all")||await hasPermission(client,request.user!.userId,"cash_custody.order_collection_own","own");
+      const canExpense=await hasPermission(client,request.user!.userId,"cash_custody.order_expense","all")||await hasPermission(client,request.user!.userId,"cash_custody.order_expense_own","own");
+      if(!canCollect&&!canExpense)throw new AppError("FORBIDDEN","ليس لديك صلاحية تنفيذ حركات عهدة مرتبطة بالطلبيات",403);
       const r=await client.query(`SELECT o.id,o.code,o.order_name,COALESCE(o.contract_value,0) AS contract_value,
         COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0) AS collected_amount,
         GREATEST(COALESCE(o.contract_value,0)-COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id),0),0) AS remaining_collectible
@@ -299,15 +311,15 @@ export async function custodyRoutes(app:FastifyInstance){
   // received into the collecting employee's custody. Internal custody transfers
   // never pass through this endpoint and therefore never create new revenue.
   app.post("/api/cash-custody/order-collections",{
-    preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]
+    preHandler:[authenticateRequest]
   },async(request,reply)=>{
     const p=orderCollectionSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحصيل الطلبية غير صحيحة",422);
     const row=await withTransaction(async client=>{
-      const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
+      const access=await actionCashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.order_collection","cash_custody.order_collection_own");
       const employeeId=access.employeeId!;
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
-       await assertPostingDateOpen(client,date);
+      await assertPostingDateOpen(client,date);
       const idempotencyPayloadHash=createHash("sha256").update(JSON.stringify({orderId:p.data.orderId,employeeId,amountMinor:Math.round(p.data.amount*100),transactionDate:p.data.transactionDate??null,description:p.data.description,notes:p.data.notes??null})).digest("hex");
       const order=await client.query("SELECT id,status,COALESCE(contract_value,0) AS contract_value FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -374,7 +386,7 @@ export async function custodyRoutes(app:FastifyInstance){
     transactionDate:z.string().date().optional(),category:z.string().trim().min(2).max(100),description:z.string().trim().min(2).max(300),notes:z.string().trim().max(500).nullable().optional()
   });
   // A custody-funded order expense is one atomic event: direct order expense + custody OUT.
-  app.post("/api/cash-custody/order-expenses",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
+  app.post("/api/cash-custody/order-expenses",{preHandler:[authenticateRequest]},async(request,reply)=>{
     const p=orderExpenseSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مصروف الطلبية غير صحيحة",422);
     const result=await withTransaction(async client=>{
       const access=await cashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.create");
