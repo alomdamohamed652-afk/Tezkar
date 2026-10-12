@@ -464,6 +464,9 @@ export async function orderRoutes(app: FastifyInstance) {
       if(parentOrder.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مراحلها",409);
       const current=await client.query("SELECT * FROM order_stages WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
+      if(p.status==="COMPLETED"&&current.rows[0].planned_quantity!=null&&Number(current.rows[0].completed_quantity||0)+1e-9<Number(current.rows[0].planned_quantity)){
+        throw new AppError("ORDER_STAGE_QUANTITY_INCOMPLETE","لا يمكن إكمال المرحلة قبل تحقيق الكمية المخططة",409);
+      }
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
