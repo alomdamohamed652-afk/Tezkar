@@ -410,7 +410,8 @@ export async function custodyRoutes(app:FastifyInstance){
       // Preserve the shared lock order: order -> employee -> stage -> accounting period.
       const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[p.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
-      if(["DRAFT","COMPLETED","CANCELLED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف تشغيلي على طلبية مسودة أو مكتملة أو ملغاة",409);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
+      if(["DRAFT","COMPLETED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف تشغيلي على طلبية مسودة أو مكتملة",409);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       if(p.data.orderStageId){const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);}
