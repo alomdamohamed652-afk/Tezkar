@@ -18,7 +18,7 @@ type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocation
 type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
-type CashTx = {id:string;code:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
+type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل خارجي لعهدة موظف" } as Record<string,string>)[source]||source);
@@ -46,6 +46,8 @@ export default function AccountingPage() {
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
   const [dashboardPeriodId,setDashboardPeriodId]=useState("");
+  const [dashboardFrom,setDashboardFrom]=useState(new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10));
+  const [dashboardTo,setDashboardTo]=useState(new Date().toISOString().slice(0,10));
   const [selectedPeriodId,setSelectedPeriodId]=useState("");
   const [periodDetail,setPeriodDetail]=useState<PeriodDetail|null>(null);
   const [periodForm,setPeriodForm]=useState({name:"",periodStart:new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10),periodEnd:new Date().toISOString().slice(0,10),notes:""});
@@ -176,8 +178,20 @@ export default function AccountingPage() {
 
   const activeOrders=useMemo(()=>orders.filter(o=>o.status!=="COMPLETED"&&o.status!=="CANCELLED"),[orders]);
   const n=(x:number|null|undefined)=>formatMoney(x||0);
-  const totalIn=useMemo(()=>revenues.reduce((s,x)=>s+Number(x.amount||0),0),[revenues]);
-  const totalOut=useMemo(()=>expenses.reduce((s,x)=>s+Number(x.amount||0),0),[expenses]);
+  const dashboardRevenues=useMemo(()=>revenues.filter(x=>(!dashboardFrom||x.revenue_date>=dashboardFrom)&&(!dashboardTo||x.revenue_date<=dashboardTo)),[revenues,dashboardFrom,dashboardTo]);
+  const dashboardExpenses=useMemo(()=>expenses.filter(x=>(!dashboardFrom||x.expense_date>=dashboardFrom)&&(!dashboardTo||x.expense_date<=dashboardTo)),[expenses,dashboardFrom,dashboardTo]);
+  const totalIn=useMemo(()=>dashboardRevenues.reduce((s,x)=>s+Number(x.amount||0),0),[dashboardRevenues]);
+  const totalOut=useMemo(()=>dashboardExpenses.reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const directExpenseTotal=useMemo(()=>dashboardExpenses.filter(x=>x.expense_type!=="ADMINISTRATIVE").reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const administrativeExpenseTotal=useMemo(()=>dashboardExpenses.filter(x=>x.expense_type==="ADMINISTRATIVE").reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const latestCashBalances=useMemo(()=>{
+    const latest=new Map<string,number>();
+    for(const tx of cashTransactions){
+      const key=tx.employee_id||tx.employee_name;
+      if(!latest.has(key))latest.set(key,Number(tx.balance||0));
+    }
+    return [...latest.values()].reduce((sum,balance)=>sum+balance,0);
+  },[cashTransactions]);
   const net=totalIn-totalOut;
 
   return <div className="app-shell">
@@ -200,23 +214,33 @@ export default function AccountingPage() {
      </div>
 
      {tab==="dashboard"&&<>
+      <section className="card" style={{marginBottom:16}}>
+       <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10));setDashboardTo(new Date().toISOString().slice(0,10));}}>هذا الشهر</button></div>
+       <div className="form-grid finance-four-grid" style={{padding:"0 16px 16px"}}>
+        <label>من تاريخ<input type="date" value={dashboardFrom} max={dashboardTo||undefined} onChange={e=>setDashboardFrom(e.target.value)}/></label>
+        <label>إلى تاريخ<input type="date" value={dashboardTo} min={dashboardFrom||undefined} onChange={e=>setDashboardTo(e.target.value)}/></label>
+       </div>
+      </section>
       <div className="stats finance-stats">
        <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{revenues.length} حركة إيراد محملة</div></article>
        <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{expenses.length} حركة مصروف محملة</div></article>
        <article className="card stat"><div className="stat-label">الصافي</div><div className="stat-value">{n(net)}</div><div className="stat-note">الداخل − الخارج</div></article>
        <article className="card stat neutral"><div className="stat-label">الطلبات</div><div className="stat-value">{orders.length}</div><div className="stat-note">متاحة للتحليل المالي</div></article>
+       { (has("cash_custody.view")||has("cash_custody.view_own"))&&<article className="card stat accent"><div className="stat-label">الرصيد الحالي للعهد النقدية</div><div className="stat-value">{n(latestCashBalances)}</div><div className="stat-note">آخر رصيد ظاهر لكل موظف ضمن صلاحياتك</div></article>}
+       <article className="card stat"><div className="stat-label">المصروفات المباشرة</div><div className="stat-value">{n(directExpenseTotal)}</div><div className="stat-note">مصروفات مرتبطة بتشغيل أو طلبية</div></article>
+       <article className="card stat warning"><div className="stat-label">المصروفات الإدارية</div><div className="stat-value">{n(administrativeExpenseTotal)}</div><div className="stat-note">قبل توزيعها في التصفية المالية</div></article>
       </div>
       <div className="grid">
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الداخل</h2><button className="link-button" onClick={()=>setTab("in")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
-         {!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}
+         {dashboardRevenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
+         {!dashboardRevenues.length&&<tr><td colSpan={5}>لا توجد إيرادات خلال الفترة المحددة.</td></tr>}
         </tbody></table></div>
        </section>
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الخارج</h2><button className="link-button" onClick={()=>setTab("out")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {expenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}{x.stage_name?" — "+x.stage_name:""}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
-         {!expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات.</td></tr>}
+         {dashboardExpenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}{x.stage_name?" — "+x.stage_name:""}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
+         {!dashboardExpenses.length&&<tr><td colSpan={5}>لا توجد مصروفات خلال الفترة المحددة.</td></tr>}
         </tbody></table></div>
        </section>
       </div>
