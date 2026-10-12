@@ -16,7 +16,7 @@ type Line={productId:string;warehouseId:string;quantity:string;notes:string};
 type Row={id:string;code:string;withdrawal_date:string;created_at?:string;shift_code:string;shift_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;line_count:number;total_quantity:number;product_names?:string;line_descriptions?:string;notes?:string|null};
 
 export default function ShiftWithdrawalsPage(){
- const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]);
+ const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]),[totalRows,setTotalRows]=useState(0),[loadingMore,setLoadingMore]=useState(false);
  const [shiftId,setShiftId]=useState(""),[employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[notes,setNotes]=useState("");
  const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);
  const [filterFrom,setFilterFrom]=useState(""),[filterTo,setFilterTo]=useState(""),[filterTimeFrom,setFilterTimeFrom]=useState(""),[filterTimeTo,setFilterTimeTo]=useState(""),[filterShift,setFilterShift]=useState("ALL"),[filterEmployee,setFilterEmployee]=useState("ALL"),[filterOrder,setFilterOrder]=useState("ALL"),[filterProduct,setFilterProduct]=useState(""),[filterDescription,setFilterDescription]=useState("");
@@ -26,10 +26,20 @@ export default function ShiftWithdrawalsPage(){
    const [s,e,p,w,st,o,os,r]=await Promise.all([
     api<{data:Item[]}>("/api/shifts"),api<{data:Employee[]}>("/api/employees"),api<{data:Product[]}>("/api/products"),
     api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Stock[]}>("/api/warehouse/stock"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),
-    api<{data:Row[]}>("/api/shift-withdrawals")
+    api<{data:Row[];pagination?:{total:number}}>("/api/shift-withdrawals?limit=300&offset=0")
    ]);
-   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setStock(st.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setOrderStages(os.data);setRows(r.data);
+   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setStock(st.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setOrderStages(os.data);setRows(r.data);setTotalRows(r.pagination?.total??r.data.length);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مسحوبات الورديات")}
+ }
+ async function loadMore(){
+  if(loadingMore||rows.length>=totalRows)return;
+  setLoadingMore(true);
+  try{
+   const r=await api<{data:Row[];pagination?:{total:number}}>(`/api/shift-withdrawals?limit=300&offset=${rows.length}`);
+   setRows(current=>[...current,...r.data.filter(item=>!current.some(existing=>existing.id===item.id))]);
+   setTotalRows(r.pagination?.total??totalRows);
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المزيد من مسحوبات الورديات")}
+  finally{setLoadingMore(false)}
  }
  useEffect(()=>{void load()},[]);
 
@@ -130,6 +140,7 @@ export default function ShiftWithdrawalsPage(){
     <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الوقت</th><th>الوردية</th><th>الموظف المسؤول</th><th>الطلبية</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead>
      <tbody>{filteredRows.map(r=><tr key={r.id}><td className="mono strong">{r.code}</td><td>{r.withdrawal_date}</td><td>{r.created_at?new Date(r.created_at).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"}):"—"}</td><td>{r.shift_name}</td><td>{r.employee_name||"—"}</td><td>{r.order_code?r.order_code+" — "+r.order_name:"—"}</td><td>{r.line_count}</td><td>{r.total_quantity}</td><td><button className="secondary-btn" onClick={()=>printWithdrawal(r)}>طباعة</button></td></tr>)}{!filteredRows.length&&<tr><td colSpan={9}>لا توجد مسحوبات مطابقة للفلاتر.</td></tr>}</tbody>
     </table></div>
+    {rows.length<totalRows&&<div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>void loadMore()} disabled={loadingMore}>{loadingMore?"جارٍ تحميل المزيد...":"تحميل المزيد من السجل"}</button><span className="form-hint">تم تحميل {rows.length} من إجمالي {totalRows} مسحوب</span></div>}
    </section>
   </section></main></div>;
 }
