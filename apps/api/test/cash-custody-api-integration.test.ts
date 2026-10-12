@@ -296,11 +296,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
         payload: {
           direction: "OUT", amount: 24, transactionDate: "2099-01-10",
-          description: "Must not exceed the remaining cash custody balance"
+          description: "Factory expense temporarily covered by personal funds"
         }
       });
-      assert.equal(overdraft.statusCode, 409, overdraft.body);
-      assert.equal(overdraft.json().error.code, "INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      assert.equal(overdraft.statusCode, 201, overdraft.body);
+      assert.equal(overdraft.json().data.direction, "OUT");
 
       const outOfScope = await app.inject({
         method: "POST", url: "/api/cash-custody", headers: { cookie: workerCookie },
@@ -316,12 +316,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         method: "GET", url: "/api/cash-custody", headers: { cookie: workerCookie }
       });
       assert.equal(workerRows.statusCode, 200, workerRows.body);
-      assert.equal(workerRows.json().data.length, 4);
+      assert.equal(workerRows.json().data.length, 5);
       assert.ok(workerRows.json().data.every((row: { employee_id: string }) => row.employee_id === employeeA.id));
       assert.deepEqual(
         workerRows.json().data.map((row: { balance: string }) => Number(row.balance)).sort((a: number, b: number) => a - b),
-        [23, 40, 70, 100],
-        "each transaction must show the running balance immediately after that movement"
+        [-1, 23, 40, 70, 100],
+        "running balances may go negative when factory expenses are covered by personal funds"
       );
 
       const managerEntry = await app.inject({
@@ -379,24 +379,23 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(cashTransfer.json().data.outgoing.direction,"OUT");
       assert.equal(cashTransfer.json().data.incoming.direction,"IN");
       assert.equal(cashTransfer.json().data.outgoing.transfer_id,cashTransfer.json().data.incoming.transfer_id);
-      const custodyBeforeRejectedExpense=await apiPool.query(
+      const custodyBeforeExpense=await apiPool.query(
         "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<='2099-01-10'",
         [employeeB.id]
       );
-      const expenseCountBeforeRejected=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE paid_from_employee_id=$1",[employeeB.id]);
       const custodyPaidExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
-        payload:{category:"مصروف إداري",description:"Insufficient custody balance integration test",amount:Number(custodyBeforeRejectedExpense.rows[0].balance)+1000,expenseType:"ADMINISTRATIVE",paidFromEmployeeId:employeeB.id,expenseDate:"2099-01-10"}
+        payload:{category:"مصروف إداري",description:"Custody may go negative for factory expenses",amount:Number(custodyBeforeExpense.rows[0].balance)+1000,expenseType:"ADMINISTRATIVE",paidFromEmployeeId:employeeB.id,expenseDate:"2099-01-10"}
       });
-      assert.equal(custodyPaidExpense.statusCode,409,custodyPaidExpense.body);
-      assert.equal(custodyPaidExpense.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
-      const expenseCountAfterRejected=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE paid_from_employee_id=$1",[employeeB.id]);
-      assert.equal(expenseCountAfterRejected.rows[0].count,expenseCountBeforeRejected.rows[0].count,"a rejected custody-funded expense must not persist an accounting expense");
-      const custodyAfterRejectedExpense=await apiPool.query(
-        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<='2099-01-10'",
+      assert.equal(custodyPaidExpense.statusCode,201,custodyPaidExpense.body);
+      assert.equal(custodyPaidExpense.json().data.expense_type,"ADMINISTRATIVE");
+      assert.equal(custodyPaidExpense.json().data.paid_from_employee_id,employeeB.id);
+      assert.ok(custodyPaidExpense.json().data.cash_custody_transaction_id);
+      const negativeCustody=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
         [employeeB.id]
       );
-      assert.equal(Number(custodyAfterRejectedExpense.rows[0].balance),Number(custodyBeforeRejectedExpense.rows[0].balance),"a rejected expense must not create a custody OUT movement");
+      assert.ok(Number(negativeCustody.rows[0].balance)<0,"personal funds may temporarily cover a factory expense and make custody negative");
 
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
