@@ -164,11 +164,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
 
 
-      // An employee with no custody permission can view only their assigned active custody.
+      // An employee without an explicit custody-view permission cannot read even their own custody.
       const assignedCustody = await app.inject({method:"GET",url:"/api/custodies",headers:{cookie:unprivilegedCookie}});
-      assert.equal(assignedCustody.statusCode,200,assignedCustody.body);
-      assert.equal(assignedCustody.json().data.length,1);
-      assert.equal(assignedCustody.json().data[0].description,"Assigned custody without permission");
+      assert.equal(assignedCustody.statusCode,403,assignedCustody.body);
       const unprivilegedCustodyId=(await apiPool.query("SELECT id FROM employee_custodies WHERE employee_id=$1 AND description='Assigned custody without permission'",[unprivilegedEmployee.id])).rows[0].id;
       const closeAssignedCustody=await app.inject({method:"POST",url:"/api/custodies/"+unprivilegedCustodyId+"/settlements",headers:{cookie:managerCookie},payload:{returnedQuantity:2,lostQuantity:0,damageValue:0,shortageValue:0}});
       assert.equal(closeAssignedCustody.statusCode,201,closeAssignedCustody.body);
