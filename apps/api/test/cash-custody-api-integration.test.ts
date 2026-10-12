@@ -372,7 +372,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       const cashTransfer=await app.inject({
         method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
-        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:10,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
+        payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:10,transactionDate:"2099-01-10",description:"Test cash custody transfer"}
       });
       assert.equal(cashTransfer.statusCode,201,cashTransfer.body);
       assert.equal(Number(cashTransfer.json().data.transfer.amount),10);
