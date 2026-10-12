@@ -181,7 +181,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
    if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
    const orders=await client.query(`SELECT o.id,
-    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id),0)
+    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0)
     +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
     +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0) AS cost
     FROM production_orders o WHERE o.status<>'CANCELLED' ORDER BY o.code`);
@@ -189,6 +189,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const totalCost=eligibleOrders.reduce((sum,row)=>sum+Number(row.cost||0),0);
    if(!eligibleOrders.length||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   let allocationCount=0;
    for(const expense of expenses.rows){
     if(!hasCentPrecision(expense.amount))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل التصفية",409);
     const amountMinor=toMinorUnits(expense.amount);
@@ -204,13 +205,17 @@ export async function accountingRoutes(app:FastifyInstance){
      const order=eligibleOrders[i];
      const share=shares[i];
      if(!order||share===undefined)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
+     // Zero-cent shares do not represent a real allocation; omit them while
+     // preserving the exact per-expense total through largest-remainder rounding.
+     if(share===0)continue;
      await client.query("INSERT INTO accounting_expense_allocations(period_id,expense_id,order_id,amount,created_by) VALUES($1,$2,$3,$4,$5)",[id,expense.id,order.id,share/100,request.user!.userId]);
+     allocationCount++;
     }
     if(shares.reduce((sum,value)=>sum+value,0)!==amountMinor)throw new AppError("ALLOCATION_ROUNDING_ERROR","تعذر موازنة توزيع المصروفات إلى القرش",500);
    }
    const result=await client.query("SELECT COALESCE(SUM(amount),0) AS allocated FROM accounting_expense_allocations WHERE period_id=$1",[id]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*eligibleOrders.length,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return {periodId:id,expenseCount:expenses.rowCount,allocationCount:expenses.rowCount*eligibleOrders.length,allocatedAmount:result.rows[0].allocated};
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"auto_allocate",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,expenseCount:expenses.rowCount,allocationCount,allocatedAmount:result.rows[0].allocated},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {periodId:id,expenseCount:expenses.rowCount,allocationCount,allocatedAmount:result.rows[0].allocated};
   })};
  });
  app.put("/api/accounting/periods/:id/allocations",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
