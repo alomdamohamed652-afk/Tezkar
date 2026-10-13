@@ -964,6 +964,11 @@ export async function productionRoutes(app: FastifyInstance) {
          ON CONFLICT (settlement_id) WHERE settlement_id IS NOT NULL DO NOTHING`,
         [parsed.data.employeeId,parsed.data.grossAmount,request.user!.userId,`تسوية إجمالي مستحقات إنتاج ${settlement.rows[0].id}؛ صافي النقد ${cashPaid.toFixed(2)} ج.م؛ خصم السلف ${repaymentTotal.toFixed(2)} ج.م`,settlement.rows[0].id]
       );
+      const custodyBalance=await client.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
+        [request.user!.employeeId,date]
+      );
+      if(cashPaid>Number(custodyBalance.rows[0]?.balance??0)+0.009)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة لا يكفي لصافي النقد المطلوب دفعه للعامل؛ لم يتم تسجيل التسوية",409);
       const cashOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3::date,$4,$5,'PRODUCTION_EARNINGS_SETTLEMENT',$6,$7) RETURNING id",
         [request.user!.employeeId,parsed.data.grossAmount,date,`تسوية إجمالي مستحقات إنتاج ${employee.rows[0].full_name}`,`صافي المدفوع ${cashPaid.toFixed(2)} ج.م؛ مسترد سلف ${repaymentTotal.toFixed(2)} ج.م`,settlement.rows[0].id,request.user!.userId]
