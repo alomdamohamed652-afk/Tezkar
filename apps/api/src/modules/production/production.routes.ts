@@ -868,11 +868,14 @@ export async function productionRoutes(app: FastifyInstance) {
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
       const earnings=await client.query(`
         SELECT
-          COALESCE((SELECT SUM(p.earning_amount) FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED'),0)
+          COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED'),0)
           + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                        FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
                       WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
-          - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS available
+          - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0)
+          - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                       LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+                      WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS available
       `,[parsed.data.employeeId]);
       const available=Math.round(Number(earnings.rows[0].available)*100)/100;
       if(parsed.data.grossAmount>available+0.009)throw new AppError("SETTLEMENT_EXCEEDS_EARNINGS",`المستحقات المتاحة للعامل ${available.toFixed(2)} جنيه فقط`,409);
