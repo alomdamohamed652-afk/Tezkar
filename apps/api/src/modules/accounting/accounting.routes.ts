@@ -125,7 +125,7 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
  app.get("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.view")]},async()=>{
-  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by WHERE r.source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' ORDER BY r.revenue_date DESC,r.created_at DESC");
+  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by WHERE r.UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' ORDER BY r.revenue_date DESC,r.created_at DESC");
   return {data:r.rows};
  });
 
@@ -159,7 +159,7 @@ export async function accountingRoutes(app:FastifyInstance){
      await assertAccountingDateOpen(client,p.data.revenueDate);
      const contractValue=Number(order.rows[0].contract_value||0);
      if(contractValue>0){
-       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1 AND source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]);
+       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]);
        const collected=Number(posted.rows[0]?.total||0);
        if(collected+p.data.amount>contractValue+1e-7)throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
      }
@@ -190,13 +190,13 @@ export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/summary",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view"),requirePermission("finance.revenues.view")]},async()=>{
   const r=await pool.query(`
     SELECT
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS total_in,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS total_in,
       COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS total_out,
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
-      COALESCE((SELECT COUNT(*) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
+      COALESCE((SELECT COUNT(*) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
       COALESCE((SELECT COUNT(*) FROM accounting_expenses),0)::int AS expense_count,
       COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id IS NULL),0) AS general_expenses,
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
   return {data:r.rows[0]};
  });
 
