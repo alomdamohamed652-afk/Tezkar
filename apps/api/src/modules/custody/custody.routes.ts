@@ -439,6 +439,52 @@ export async function custodyRoutes(app:FastifyInstance){
     });return reply.code(201).send({data:result});
   });
 
+
+  const administrativeExpenseSchema=z.object({
+    employeeId:z.string().uuid().optional(),
+    amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
+    transactionDate:z.string().date().optional(),
+    category:z.string().trim().min(2).max(100),
+    description:z.string().trim().min(2).max(300),
+    notes:z.string().trim().max(500).nullable().optional(),
+    idempotencyKey:z.string().uuid()
+  });
+  // One atomic posting from custody: administrative expense + cash-custody outflow.
+  // It remains unassigned to any order until the financial-period allocation step.
+  app.post("/api/cash-custody/administrative-expenses",{preHandler:[authenticateRequest]},async(request,reply)=>{
+    const p=administrativeExpenseSchema.safeParse(request.body);
+    if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المصروف الإداري غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const access=await actionCashAccess(client,request.user!.userId,p.data.employeeId,"cash_custody.order_expense","cash_custody.order_expense_own");
+      const employeeId=access.employeeId!;
+      const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
+      const payloadHash=createHash("sha256").update(JSON.stringify({employeeId,category:p.data.category,description:p.data.description,amountMinor:Math.round(p.data.amount*100),transactionDate:date,notes:p.data.notes??null})).digest("hex");
+      const readPrior=async()=>{
+        const prior=await client.query("SELECT e.*,c.id AS custody_id,c.employee_id AS custody_employee_id,c.amount AS custody_amount,c.transaction_date AS custody_date,c.description AS custody_description,c.notes AS custody_notes FROM accounting_expenses e LEFT JOIN cash_custody_transactions c ON c.id=e.cash_custody_transaction_id WHERE e.idempotency_key=$1 FOR SHARE OF e",[p.data.idempotencyKey]);
+        if(!prior.rowCount)return null;
+        const existing=prior.rows[0];
+        if(existing.idempotency_payload_hash!==payloadHash)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لمصروف ببيانات مختلفة؛ ابدأ عملية جديدة بمفتاح جديد.",409);
+        return {expense:existing,cashCustody:{id:existing.custody_id,employee_id:existing.custody_employee_id,amount:existing.custody_amount,transaction_date:existing.custody_date,description:existing.custody_description,notes:existing.custody_notes}};
+      };
+      const prior=await readPrior();
+      if(prior)return prior;
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      await assertPostingDateOpen(client,date);
+      const inserted=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES(NULL,NULL,$1,$2,$3,$4,$5,'ADMINISTRATIVE',$6,$7,$8) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",[p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId,p.data.idempotencyKey,payloadHash]);
+      if(!inserted.rowCount){
+        const duplicate=await readPrior();
+        if(!duplicate)throw new AppError("EXPENSE_RETRY_CONFLICT","تعذر استرجاع المصروف السابق؛ أعد المحاولة بنفس المفتاح.",409);
+        return duplicate;
+      }
+      const cash=await client.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3,$4,$5,'ACCOUNTING_EXPENSE',$6,$7) RETURNING *",[employeeId,p.data.amount,date,p.data.description,p.data.notes??null,inserted.rows[0].id,request.user!.userId]);
+      const linked=await client.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[cash.rows[0].id,inserted.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"administrative_expense_from_custody",module:"cash_custody",entityType:"expense",entityId:linked.rows[0].id,afterData:{expense:linked.rows[0],cashCustody:cash.rows[0]},metadata:{expenseType:"ADMINISTRATIVE",allocatedDuringPeriodClose:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {expense:linked.rows[0],cashCustody:cash.rows[0]};
+    });
+    return reply.code(201).send({data:result});
+  });
+
   // External custody funding is a custody cash inflow, not company sales revenue.
   // Only all-scope finance users may record it; the custody movement is audited atomically.
   app.post("/api/cash-custody/top-ups",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
