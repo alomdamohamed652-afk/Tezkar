@@ -265,6 +265,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
       if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
+      const periodMonthValue=period.rows[0].period_month;
+      const monthLabel=periodMonthValue instanceof Date?periodMonthValue.toISOString().slice(0,7):String(periodMonthValue).slice(0,7);
       const salaryItems = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
           (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
@@ -274,13 +276,12 @@ export async function payrollRoutes(app: FastifyInstance) {
         if(grossSalary>0&&!item.accounting_expense_id){
           const expense = await client.query(`INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by)
             VALUES(NULL,'SALARIES',$1,$2,$3::date,'PAYROLL',$4) RETURNING id`,
-            [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,grossSalary,period.rows[0].period_month,request.user!.userId]);
+            [`راتب شهر ${monthLabel} - ${item.full_name}`,grossSalary,period.rows[0].period_month,request.user!.userId]);
           await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
         }
         // Post base salary, bonus and deduction as separate account movements.
         // This makes each adjustment visible to the employee; the net effect remains
         // base salary + bonus - deduction. Advance installments are only settled at payout.
-        const monthLabel=String(period.rows[0].period_month).slice(0,7);
         if(Number(item.base_salary)>0){
           await client.query(
             `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
