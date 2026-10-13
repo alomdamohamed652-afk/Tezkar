@@ -52,3 +52,37 @@ test("task transfer history migration stores transfer audit data and validates r
     await pool.end();
   }
 });
+
+test("task transfer permission is dedicated and granted only to manager by default", {
+  skip: !testDatabaseUrl
+}, async () => {
+  const pool = new pg.Pool({ connectionString: testDatabaseUrl, max: 1 });
+  const client = await pool.connect();
+  const schema = "task_transfer_permission_test_" + randomUUID().replaceAll("-", "");
+  try {
+    await client.query(`CREATE SCHEMA "${schema}"`);
+    await client.query(`SET search_path TO "${schema}"`);
+    await client.query("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT now())");
+    await client.query("CREATE TABLE roles (id UUID PRIMARY KEY, code TEXT UNIQUE NOT NULL)");
+    await client.query("CREATE TABLE permissions (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), code TEXT UNIQUE NOT NULL, module TEXT NOT NULL, entity TEXT NOT NULL, action TEXT NOT NULL, scope TEXT)");
+    await client.query("CREATE TABLE role_permissions (role_id UUID NOT NULL REFERENCES roles(id), permission_id UUID NOT NULL REFERENCES permissions(id), PRIMARY KEY(role_id,permission_id))");
+    const managerId = randomUUID();
+    const workerId = randomUUID();
+    await client.query("INSERT INTO roles(id,code) VALUES($1,'manager'),($2,'worker')", [managerId, workerId]);
+    const sql = await readFile(new URL("../src/db/migrations/1026_task_transfer_permission.sql", import.meta.url), "utf8");
+    await client.query(sql);
+    const permission = await client.query("SELECT id,module,action,scope FROM permissions WHERE code='tasks.transfer'");
+    assert.equal(permission.rowCount, 1);
+    assert.equal(permission.rows[0].module, "tasks");
+    assert.equal(permission.rows[0].action, "transfer");
+    assert.equal(permission.rows[0].scope, "all");
+    const grants = await client.query("SELECT role_id FROM role_permissions WHERE permission_id=$1", [permission.rows[0].id]);
+    assert.deepEqual(grants.rows.map((row: {role_id:string}) => row.role_id), [managerId]);
+    assert.equal((await client.query("SELECT 1 FROM role_permissions WHERE role_id=$1 AND permission_id=$2", [workerId, permission.rows[0].id])).rowCount, 0);
+  } finally {
+    await client.query("RESET search_path");
+    await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    client.release();
+    await pool.end();
+  }
+});
