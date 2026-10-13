@@ -407,6 +407,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions, including the overdraft, must be audited; external funding is manager-only");
 
+      const legacyFunding=(await apiPool.query(
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-TEST',99.99,'2099-01-12','EXTERNAL_CUSTODY_TOP_UP','legacy external custody funding',$1) RETURNING id",
+        [manager.id]
+      )).rows[0];
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
       const summaryBeforeTopUp=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(summaryBeforeTopUp.statusCode,200,summaryBeforeTopUp.body);
@@ -425,6 +429,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const topUpSummary=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(topUpSummary.statusCode,200,topUpSummary.body);
       assert.equal(Number(topUpSummary.json().data.total_in),totalInBeforeTopUp,"external custody funding must not increase company revenue");
+      const revenueList=await app.inject({method:"GET",url:"/api/accounting/revenues",headers:{cookie:managerCookie}});
+      assert.equal(revenueList.statusCode,200,revenueList.body);
+      assert.equal(revenueList.json().data.some((row:{id:string})=>row.id===legacyFunding.id),false,"legacy custody funding must be excluded from the sales revenue list");
       const topUpAudit=await apiPool.query("SELECT after_data,metadata FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND entity_id=$1",[externalTopUp.json().data.id]);
       assert.equal(topUpAudit.rowCount,1);
       assert.equal(topUpAudit.rows[0].metadata.companyRevenue,false,"audit must classify external top-up as funding, not revenue");
