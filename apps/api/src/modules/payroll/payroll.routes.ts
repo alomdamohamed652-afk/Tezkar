@@ -156,7 +156,10 @@ export async function payrollRoutes(app: FastifyInstance) {
                   GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding
              FROM advance_requests a
             WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
-              AND a.repayment_method='FIXED_INSTALLMENT' AND a.installment_amount>0
+              AND (
+                (a.repayment_method='FIXED_INSTALLMENT' AND a.installment_amount>0)
+                OR (a.repayment_method='SALARY_PERCENTAGE' AND a.salary_percentage>0)
+              )
               AND a.paid_at < ($2::date + INTERVAL '1 month')
             ORDER BY a.paid_at,a.created_at,a.id
             FOR UPDATE OF a`,
@@ -166,12 +169,15 @@ export async function payrollRoutes(app: FastifyInstance) {
         for (const advance of advances.rows) {
           if (available <= 0) break;
           const outstanding = Number(advance.outstanding);
-          const installmentAmount = Number(advance.installment_amount);
-          const amount = Math.round(Math.min(outstanding,installmentAmount,available)*100)/100;
+          const repaymentType = advance.repayment_method === "SALARY_PERCENTAGE" ? "SALARY_PERCENTAGE" : "FIXED_INSTALLMENT";
+          const scheduledAmount = repaymentType === "SALARY_PERCENTAGE"
+            ? Number(item.base_salary) * Number(advance.salary_percentage) / 100
+            : Number(advance.installment_amount);
+          const amount = Math.round(Math.min(outstanding,scheduledAmount,available)*100)/100;
           if (amount <= 0) continue;
           await client.query(
-            "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,$3,'FIXED_INSTALLMENT')",
-            [item.id,advance.id,amount]
+            "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,$3,$4)",
+            [item.id,advance.id,amount,repaymentType]
           );
           allocated += amount;
           available = Math.max(0,available-amount);
@@ -258,9 +264,9 @@ export async function payrollRoutes(app: FastifyInstance) {
         if (Number(deduction.amount) > remaining+0.0001) throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد السلفة بعد تجهيز المسير؛ أعد توليد المسير قبل الاعتماد",409);
         const repayment = await client.query(
           `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
-           VALUES($1,$2,'FIXED_INSTALLMENT',(($3::date + INTERVAL '1 month - 1 day')::date),$4,$5,$6)
+           VALUES($1,$2,$3,(($4::date + INTERVAL '1 month - 1 day')::date),$5,$6,$7)
            RETURNING id`,
-          [deduction.advance_id,deduction.amount,deduction.period_month,`خصم قسط سلفة ${deduction.advance_code} من مسير ${String(deduction.period_month).slice(0,7)}`,request.user!.userId,deduction.payroll_item_id]
+          [deduction.advance_id,deduction.amount,deduction.repayment_type,deduction.period_month,`خصم قسط سلفة ${deduction.advance_code} من مسير ${String(deduction.period_month).slice(0,7)}`,request.user!.userId,deduction.payroll_item_id]
         );
         const nextRemaining = remaining-Number(deduction.amount);
         await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[nextRemaining<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
