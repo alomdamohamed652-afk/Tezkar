@@ -58,16 +58,11 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
 }
 
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
-  const r=await client.query(`
-    SELECT
-      COALESCE((SELECT SUM(GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)))
-        FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED'),0)
-      + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
-          FROM employee_earnings_adjustments a
-         WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0) AS available
-  `,[employeeId]);
-  return Math.max(0,Number(r.rows[0]?.available??0));
+  // The earnings ledger is net of cash paid and advance payouts. Add back only the
+  // outstanding loan principal to recover gross, un-settled earnings for payout requests.
+  const balance=await getBalance(client,employeeId);
+  const outstanding=await getOutstandingAdvanceAmount(client,employeeId);
+  return Math.max(0,Math.round((balance+outstanding)*100)/100);
 }
 
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
