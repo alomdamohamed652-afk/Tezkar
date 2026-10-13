@@ -70,7 +70,7 @@ export default function ShiftLeadersPage(){
  const rateGroupOptions=useMemo(()=>rateGroups.map(x=>({value:x.id,label:x.name,meta:x.code})),[rateGroups]);
 
  return <div className="app-shell"><Sidebar active="/shift-leaders"/><main className="main">
-  <header className="topbar"><div><h1 className="page-title">الورديات والموظفون</h1><p className="page-subtitle">اربط الموظفين بالوردية مرة واحدة، وبعدها تظهر أسماؤهم تلقائيًا في مسحوبات الوردية والإنتاج.</p></div></header>
+  <header className="topbar"><div><h1 className="page-title">الورديات والموظفون</h1><p className="page-subtitle">أنشئ ورديات متعددة، وعيّن أكثر من رئيس للوردية الواحدة، واربط الموظف بأكثر من وردية مع الاحتفاظ بسجل التكليفات.</p></div></header>
   <section className="content">
    {error&&<div className="alert error">{error}</div>}
    {has("shifts.create")&&<section className="card">
