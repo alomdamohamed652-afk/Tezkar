@@ -33,7 +33,7 @@ export default function PaymentsPage(){
     const req=requests.find(x=>x.id===id);
     let advanceRepaymentAmount=0;
     if(Number(req?.outstanding_advance_amount??0)>0){
-     const raw=window.prompt("إجمالي السلف المفتوحة: "+formatMoney(Number(req?.outstanding_advance_amount))+" ج.م. الاستقطاع الدوري المستحق يُحسب تلقائيًا. اكتب مبلغ خصم إضافي من السلف (أو 0):","0");
+     const raw=window.prompt("إجمالي السلف المفتوحة: "+formatMoney(Number(req?.outstanding_advance_amount))+" ج.م. استقطاع سلف الإنتاج المستحق يُحسب تلقائيًا. اكتب مبلغ خصم إضافي من السلف (أو 0):","0");
      if(raw===null)return;
      advanceRepaymentAmount=Number(raw.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/,/g,""));
      if(!Number.isFinite(advanceRepaymentAmount)||advanceRepaymentAmount<0){setError("مبلغ خصم السلفة غير صحيح");return}
