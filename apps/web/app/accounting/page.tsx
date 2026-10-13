@@ -66,7 +66,7 @@ export default function AccountingPage() {
         api<{data:Expense[]}>("/api/accounting/expenses"),
         api<{data:Revenue[]}>("/api/accounting/revenues")
       ]);
-      setOrders(o.data);setExpenses(e.data);setRevenues(r.data);
+      setOrders(o.data);setExpenses(e.data);setRevenues(r.data.filter(x=>x.source!=="EXTERNAL_CUSTODY_TOP_UP"));
       if(has("finance.profitability.view"))void loadOrderFinance("");
       if(has("cash_custody.view")||has("cash_custody.view_own"))api<{data:CashTx[]}>("/api/cash-custody").then(x=>setCashTransactions(x.data)).catch(()=>{});
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
