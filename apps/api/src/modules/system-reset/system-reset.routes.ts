@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pool } from "../../db/pool.js";
-import { resetTrialData } from "../../db/reset-trial-data.service.js";
+import { previewTrialDataReset, resetTrialData } from "../../db/reset-trial-data.service.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 
@@ -32,6 +32,18 @@ export async function systemResetRoutes(app: FastifyInstance) {
     await assertSystemManager(request.user!.userId);
     const used = await resetUsed();
     return { data: { enabled: enabled() && !used, configured: enabled(), used } };
+  });
+
+  app.get("/api/system/reset/preview", { preHandler: [authenticateRequest] }, async request => {
+    await assertSystemManager(request.user!.userId);
+    if (!enabled()) {
+      throw new AppError("RESET_DISABLED", "ميزة المسح المؤقت غير مفعلة حاليًا", 403);
+    }
+    if (await resetUsed()) {
+      throw new AppError("RESET_ALREADY_USED", "تم تنفيذ مسح بيانات التجربة بالفعل", 409);
+    }
+    const report = await previewTrialDataReset(request.user!.userId);
+    return { data: report };
   });
 
   app.post("/api/system/reset/execute", { preHandler: [authenticateRequest] }, async request => {
