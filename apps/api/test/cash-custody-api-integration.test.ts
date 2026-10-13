@@ -432,6 +432,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const revenueList=await app.inject({method:"GET",url:"/api/accounting/revenues",headers:{cookie:managerCookie}});
       assert.equal(revenueList.statusCode,200,revenueList.body);
       assert.equal(revenueList.json().data.some((row:{id:string})=>row.id===legacyFunding.id),false,"legacy custody funding must be excluded from the sales revenue list");
+      for (const reservedSource of ["EXTERNAL_CUSTODY_TOP_UP", "external_custody_top_up"]) {
+        const misclassifiedFunding=await app.inject({
+          method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+          payload:{amount:15,revenueDate:"2099-01-13",source:reservedSource,notes:"Must use custody funding endpoint"}
+        });
+        assert.equal(misclassifiedFunding.statusCode,422,misclassifiedFunding.body);
+        assert.equal(misclassifiedFunding.json().error.code,"VALIDATION_ERROR");
+      }
       const topUpAudit=await apiPool.query("SELECT after_data,metadata FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND entity_id=$1",[externalTopUp.json().data.id]);
       assert.equal(topUpAudit.rowCount,1);
       assert.equal(topUpAudit.rows[0].metadata.companyRevenue,false,"audit must classify external top-up as funding, not revenue");
