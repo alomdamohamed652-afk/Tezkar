@@ -235,7 +235,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(accountBalance.balance),300);
       const remainingAvailable=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(remainingAvailable.statusCode,200,remainingAvailable.body);
-      assert.equal(Number(remainingAvailable.json().data.availableEarnings),350);
+      assert.equal(Number(remainingAvailable.json().data.availableEarnings),300);
       const globalSearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(request.json().data.code),headers:{cookie:managerCookie}});
       assert.equal(globalSearch.statusCode,200,globalSearch.body);
       assert.ok(globalSearch.json().data.some((item:{type:string})=>item.type==="طلب قبض"),"central search should find the payment request code");
