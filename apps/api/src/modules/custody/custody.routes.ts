@@ -439,8 +439,8 @@ export async function custodyRoutes(app:FastifyInstance){
     });return reply.code(201).send({data:result});
   });
 
-  // External funding is ordinary company revenue and a matching employee-custody inflow.
-  // Both ledger entries are committed atomically; only all-scope finance users may record it.
+  // External custody funding is a custody cash inflow, not company sales revenue.
+  // Only all-scope finance users may record it; the custody movement is audited atomically.
   app.post("/api/cash-custody/top-ups",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.create","all"],["cash_custody.create_own","own"])]},async(request,reply)=>{
     const p=topUpSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات إضافة رصيد العهدة غير صحيحة",422);
