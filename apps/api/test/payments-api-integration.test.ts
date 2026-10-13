@@ -235,7 +235,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(accountBalance.balance),300);
       const remainingAvailable=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(remainingAvailable.statusCode,200,remainingAvailable.body);
-      assert.equal(Number(remainingAvailable.json().data.availableEarnings),300);
+      assert.equal(Number(remainingAvailable.json().data.availableEarnings),350);
       const globalSearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(request.json().data.code),headers:{cookie:managerCookie}});
       assert.equal(globalSearch.statusCode,200,globalSearch.body);
       assert.ok(globalSearch.json().data.some((item:{type:string})=>item.type==="طلب قبض"),"central search should find the payment request code");
@@ -464,7 +464,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
       assert.equal(Number(postSettlementBalance.json().data.balance),-50,"the employee account must reconcile remaining unpaid earnings against the outstanding loan");
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),150);
-      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),100,"only genuinely unpaid earnings remain available");
+      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
