@@ -58,13 +58,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
         import("../src/modules/auth/auth.routes.js"),
         import("../src/modules/payroll/payroll.routes.js"),
         import("../src/modules/operations-master/operations-master.routes.js"),
+        import("../src/modules/advances/advances.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -80,6 +81,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(authRoutes);
     await app.register(payrollRoutes);
     await app.register(operationsMasterRoutes);
+    await app.register(advanceRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -100,6 +102,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         ["payroll-api-" + randomBytes(5).toString("hex"), hashPassword(password), employeeA.rows[0].id]
       );
       const userId = userResult.rows[0].id;
+      const secondUserResult = await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES ($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        ["payroll-api-reviewer-" + randomBytes(5).toString("hex"), hashPassword(password), employeeB.rows[0].id]
+      );
+      const secondUserId = secondUserResult.rows[0].id;
       await apiPool.query(
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",
         [userId]
@@ -108,6 +115,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       await apiPool.query(
         "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING"
       );
+
+      const secondLogin = await app.inject({
+        method: "POST", url: "/api/auth/login",
+        payload: { username: (await apiPool.query("SELECT username FROM users WHERE id=$1", [secondUserId])).rows[0].username, password }
+      });
+      assert.equal(secondLogin.statusCode, 200, secondLogin.body);
+      const secondSetCookie = secondLogin.headers["set-cookie"];
+      assert.ok(secondSetCookie, "reviewer login must issue a session cookie");
+      const secondCookieHeader = (Array.isArray(secondSetCookie) ? secondSetCookie[0] : secondSetCookie).split(";")[0];
 
       const login = await app.inject({
         method: "POST",
@@ -208,6 +224,56 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(salaryHistory.json().data.employee.id, employeeA.rows[0].id);
       assert.equal(salaryHistory.json().data.history.length, 1);
       assert.equal(Number(salaryHistory.json().data.history[0].monthly_salary), 1000);
+
+      // Salary-based advance payout must not debit production earnings; it is recovered by payroll.
+      const ledgerBeforeSalaryAdvance = await apiPool.query(
+        "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
+        [employeeA.rows[0].id]
+      );
+      const salaryAdvanceCreated = await app.inject({
+        method: "POST", url: "/api/advances", headers: { cookie: cookieHeader },
+        payload: { employeeId: employeeA.rows[0].id, amount: 250, reason: "Salary repayment integration test", repaymentMethod: "SALARY_PERCENTAGE", salaryPercentage: 10 }
+      });
+      assert.equal(salaryAdvanceCreated.statusCode, 201, salaryAdvanceCreated.body);
+      const salaryAdvanceId = salaryAdvanceCreated.json().data.id as string;
+      const salaryAdvanceApproved = await app.inject({
+        method: "POST", url: "/api/advances/" + salaryAdvanceId + "/approve", headers: { cookie: secondCookieHeader }
+      });
+      assert.equal(salaryAdvanceApproved.statusCode, 200, salaryAdvanceApproved.body);
+      const salaryAdvancePaid = await app.inject({
+        method: "POST", url: "/api/advances/" + salaryAdvanceId + "/pay", headers: { cookie: secondCookieHeader }
+      });
+      assert.equal(salaryAdvancePaid.statusCode, 200, salaryAdvancePaid.body);
+      assert.equal(salaryAdvancePaid.json().data.status, "PAID");
+      assert.equal(salaryAdvancePaid.json().data.ledger_entry_id, null, "salary-based advance must not debit production earnings");
+      const ledgerAfterSalaryAdvance = await apiPool.query(
+        "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
+        [employeeA.rows[0].id]
+      );
+      assert.equal(Number(ledgerAfterSalaryAdvance.rows[0].balance), Number(ledgerBeforeSalaryAdvance.rows[0].balance));
+
+      // A fixed-installment advance cannot be paid until an effective salary profile exists.
+      const employeeWithoutSalary = await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES ($1) RETURNING id", ["No Salary Profile Advance Test"]
+      );
+      const missingSalaryCreated = await app.inject({
+        method: "POST", url: "/api/advances", headers: { cookie: cookieHeader },
+        payload: { employeeId: employeeWithoutSalary.rows[0].id, amount: 100, reason: "Missing salary profile test", repaymentMethod: "FIXED_INSTALLMENT", installmentAmount: 25 }
+      });
+      assert.equal(missingSalaryCreated.statusCode, 201, missingSalaryCreated.body);
+      const missingSalaryId = missingSalaryCreated.json().data.id as string;
+      const missingSalaryApproved = await app.inject({
+        method: "POST", url: "/api/advances/" + missingSalaryId + "/approve", headers: { cookie: secondCookieHeader }
+      });
+      assert.equal(missingSalaryApproved.statusCode, 200, missingSalaryApproved.body);
+      const missingSalaryPay = await app.inject({
+        method: "POST", url: "/api/advances/" + missingSalaryId + "/pay", headers: { cookie: secondCookieHeader }
+      });
+      assert.equal(missingSalaryPay.statusCode, 409, missingSalaryPay.body);
+      assert.equal(missingSalaryPay.json().error.code, "SALARY_PROFILE_REQUIRED");
+      const missingSalaryState = await apiPool.query("SELECT status,ledger_entry_id FROM advance_requests WHERE id=$1",[missingSalaryId]);
+      assert.equal(missingSalaryState.rows[0].status, "APPROVED", "failed payout must roll back without changing advance status");
+      assert.equal(missingSalaryState.rows[0].ledger_entry_id, null);
 
       const itemA = await apiPool.query(
         "INSERT INTO payroll_items(period_id,employee_id,salary_profile_id,base_salary,bonus_amount,deduction_amount) VALUES ($1,$2,$3,1000,100,100) RETURNING id",
