@@ -337,13 +337,54 @@ try {
   }
   if (present.has("warehouses")) {
     const result = await client.query(
-      `DELETE FROM public.warehouses
-       WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
-         OR (warehouse_type = 'WIP' AND name = $2)
-         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
+      `DELETE FROM public.warehouses w
+       WHERE NOT (
+         (w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
+         OR (w.warehouse_type = 'WIP' AND w.name = $2)
+         OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
+       ) OR w.id IN (
+         SELECT id FROM (
+           SELECT id, row_number() OVER (
+             PARTITION BY warehouse_type ORDER BY created_at, id
+           ) AS position
+           FROM public.warehouses
+           WHERE (warehouse_type = 'RAW_MATERIAL' AND name = $1)
+              OR (warehouse_type = 'WIP' AND name = $2)
+              OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
+         ) duplicates
+         WHERE position > 1
+       )`,
       [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
     );
     deleted.warehouses = result.rowCount ?? 0;
+
+    // Recreate any canonical warehouse that an earlier manual setup replaced.
+    await client.query(
+      `INSERT INTO public.warehouses(name, warehouse_type, is_active)
+       SELECT defaults.name, defaults.warehouse_type, TRUE
+       FROM (VALUES
+         ($1::text, 'RAW_MATERIAL'::text),
+         ($2::text, 'WIP'::text),
+         ($3::text, 'FINISHED_GOODS'::text)
+       ) AS defaults(name, warehouse_type)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM public.warehouses w
+         WHERE w.warehouse_type = defaults.warehouse_type
+           AND w.name = defaults.name
+       )`,
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+    );
+
+    await client.query(
+      `INSERT INTO public.warehouse_locations(warehouse_id, code, name, is_active)
+       SELECT w.id, 'MAIN', 'الرئيسي', TRUE
+       FROM public.warehouses w
+       WHERE (w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
+          OR (w.warehouse_type = 'WIP' AND w.name = $2)
+          OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
+       ON CONFLICT (warehouse_id, code) DO NOTHING`,
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+    );
   }
 
   // Reset owned sequences only when their owning table is now empty, avoiding
