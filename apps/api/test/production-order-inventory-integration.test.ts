@@ -427,10 +427,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="OUT")?.amount),305);
     assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),100);
     const repaymentLedger = await apiPool.query(
-      "SELECT debit_amount,notes FROM employee_earnings_ledger WHERE entry_type='ADJUSTMENT' AND notes LIKE $1",
+      "SELECT credit_amount,debit_amount,notes FROM employee_earnings_ledger WHERE entry_type='ADJUSTMENT' AND notes LIKE $1",
       [`%سداد سلفة ${percentageAdvance.rows[0].code}%`]
     );
-    assert.equal(repaymentLedger.rowCount,0,"the offset is recorded as a repayment and cash-custody IN, not a second production expense");
+    assert.equal(repaymentLedger.rowCount,1,"the repayment must update the employee balance without creating a second production expense");
+    assert.equal(Number(repaymentLedger.rows[0].credit_amount),100);
+    assert.equal(Number(repaymentLedger.rows[0].debit_amount),0);
 
     const finalBalance = await apiPool.query(
       "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
