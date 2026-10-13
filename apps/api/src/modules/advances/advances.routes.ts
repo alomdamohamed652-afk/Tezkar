@@ -118,6 +118,7 @@ export async function advanceRoutes(app:FastifyInstance){
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",409);
       const salaryBased=["FIXED_INSTALLMENT","SALARY_PERCENTAGE"].includes(current.rows[0].repayment_method);
       const salaryProfile=salaryBased?await client.query("SELECT 1 FROM employee_salary_profiles WHERE employee_id=$1 AND effective_from<=CURRENT_DATE AND (effective_to IS NULL OR effective_to>=CURRENT_DATE) LIMIT 1",[current.rows[0].employee_id]):{rowCount:0,rows:[] as any[]};
+      if(salaryBased&&!salaryProfile.rowCount)throw new AppError("SALARY_PROFILE_REQUIRED","لا يمكن صرف سلفة بقسط شهري أو نسبة من الراتب قبل تعريف راتب أساسي ساري للموظف",409);
       let ledgerEntryId:string|null=null;
       let ledgerCode:string|null=null;
       if(!salaryProfile.rowCount){
