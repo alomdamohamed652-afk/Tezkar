@@ -74,16 +74,24 @@ export async function advanceRoutes(app:FastifyInstance){
     if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","حسابك غير مرتبط بملف موظف؛ اطلب من الإدارة ربط الحساب",403);
     const employee=await pool.query("SELECT id,code,full_name FROM employees WHERE id=$1",[employeeId]);
     if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","ملف الموظف المرتبط بالحساب غير موجود",404);
-    const [balance,advances,ledger]=await Promise.all([
+    const [balance,advances,ledger,scheduledDeductions]=await Promise.all([
       pool.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[employeeId]),
       pool.query(`SELECT a.id,a.code,a.amount,a.repayment_method,a.installment_amount,a.salary_percentage,a.production_percentage,a.production_period_days,a.production_installment_amount,a.production_minimum_earning,a.status,a.repayment_status,
         COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
         GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount
         FROM advance_requests a WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
         ORDER BY a.paid_at DESC,a.created_at DESC`,[employeeId]),
-      pool.query("SELECT id,code,entry_type,credit_amount,debit_amount,notes,created_at FROM employee_earnings_ledger WHERE employee_id=$1 ORDER BY created_at DESC LIMIT 100",[employeeId])
+      pool.query("SELECT id,code,entry_type,credit_amount,debit_amount,notes,created_at FROM employee_earnings_ledger WHERE employee_id=$1 ORDER BY created_at DESC LIMIT 100",[employeeId]),
+      pool.query(`SELECT p.period_month,d.amount,a.code AS advance_code,d.repayment_type
+        FROM payroll_advance_deductions d
+        JOIN payroll_items i ON i.id=d.payroll_item_id
+        JOIN payroll_periods p ON p.id=i.period_id
+        JOIN advance_requests a ON a.id=d.advance_id
+        WHERE a.employee_id=$1 AND p.status IN ('APPROVED','CLOSED') AND i.status<>'PAID'
+          AND NOT EXISTS(SELECT 1 FROM advance_repayments ar WHERE ar.advance_id=d.advance_id AND ar.source_payroll_item_id=i.id)
+        ORDER BY p.period_month DESC,a.code`,[employeeId])
     ]);
-    return {data:{employee:employee.rows[0],accountBalance:Number(balance.rows[0].balance),advances:advances.rows,ledger:ledger.rows}};
+    return {data:{employee:employee.rows[0],accountBalance:Number(balance.rows[0].balance),advances:advances.rows,ledger:ledger.rows,scheduledDeductions:scheduledDeductions.rows}};
   });
 
   app.post("/api/advances",{preHandler:[authenticateRequest,requirePermission("advances.create")]},async(request,reply)=>{
@@ -161,7 +169,7 @@ export async function advanceRoutes(app:FastifyInstance){
   });
 
   app.post("/api/advances/:id/repayments",{preHandler:[authenticateRequest,requirePermission("advances.repay")]},async(request,reply)=>{
-    const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","السداد اليدوي يقبل دفعات مخصصة فقط؛ الأقساط الثابتة ونسبة الإنتاج تُسجل آليًا",422);
+    const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات دفعة سداد السلفة غير صحيحة",422);
     const result=await withTransaction(async client=>{
       const advance=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!advance.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
