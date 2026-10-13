@@ -11,6 +11,7 @@ const alwaysKeep = new Set([
   "role_permissions",
   "rate_groups",
   "stages",
+  "units",
   "wage_types",
   "shifts",
   "product_categories",
@@ -40,6 +41,9 @@ const seededReferenceCodes: Record<string, string[]> = {
   production_types: ["PRINTING", "PEELING", "PACKING", "PRESSING", "ASSEMBLY", "CUTTING", "UV_PRINTING", "LASER", "OTHER"],
   coding_packaging_types: ["BAG", "CARTON", "SACK", "OTHER"]
 };
+
+const seededCodingTemplateNames = ["قالب الكيس", "قالب الكرتونة", "قالب الشيكارة", "قالب عام"];
+const seededWarehouseNames = { RAW_MATERIAL: "المخزن الرئيسي للخامات", WIP: "مخزن تحت التشغيل", FINISHED_GOODS: "مخزن المنتجات الجاهزة" };
 
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
 const qualified = (table: string) => '"public".' + quoteIdentifier(table);
@@ -73,6 +77,40 @@ export async function previewTrialDataReset(protectedUserId: string) {
         const result = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM ${qualified(table)} WHERE code <> ALL($1::text[])`,
           [seededReferenceCodes[table]]
+        );
+        deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        continue;
+      }
+      if (table === "coding_templates") {
+        const result = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM public.coding_templates WHERE name <> ALL($1::text[])`,
+          [seededCodingTemplateNames]
+        );
+        deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        continue;
+      }
+      if (table === "warehouses") {
+        const result = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM public.warehouses
+           WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
+             OR (warehouse_type = 'WIP' AND name = $2)
+             OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
+          [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+        );
+        deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        continue;
+      }
+      if (table === "warehouse_locations") {
+        const result = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM public.warehouse_locations wl
+           WHERE NOT (wl.code = 'MAIN' AND EXISTS (
+             SELECT 1 FROM public.warehouses w
+             WHERE w.id = wl.warehouse_id AND
+               ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
+                OR (w.warehouse_type = 'WIP' AND w.name = $2)
+                OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
+           ))`,
+          [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
         continue;
@@ -261,6 +299,51 @@ try {
       [seededReferenceCodes[table]]
     );
     deleted[table] = result.rowCount ?? 0;
+  }
+
+  // Keep only seeded names in the coding-template catalog.
+  if (present.has("coding_templates")) {
+    const result = await client.query(
+      `DELETE FROM public.coding_templates WHERE name <> ALL($1::text[])`,
+      [seededCodingTemplateNames]
+    );
+    deleted.coding_templates = result.rowCount ?? 0;
+  }
+
+  // Remove user-created rows from reference catalogs while retaining migration defaults.
+  for (const table of ["units", "wage_types", "production_types", "coding_packaging_types"]) {
+    if (!present.has(table)) continue;
+    const result = await client.query(
+      `DELETE FROM ${qualified(table)} WHERE code <> ALL($1::text[])`,
+      [seededReferenceCodes[table]]
+    );
+    deleted[table] = result.rowCount ?? 0;
+  }
+
+  // Keep the three canonical system warehouses and their default MAIN locations only.
+  if (present.has("warehouse_locations")) {
+    const result = await client.query(
+      `DELETE FROM public.warehouse_locations wl
+       WHERE NOT (wl.code = 'MAIN' AND EXISTS (
+         SELECT 1 FROM public.warehouses w
+         WHERE w.id = wl.warehouse_id AND
+           ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
+            OR (w.warehouse_type = 'WIP' AND w.name = $2)
+            OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
+       ))`,
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+    );
+    deleted.warehouse_locations = result.rowCount ?? 0;
+  }
+  if (present.has("warehouses")) {
+    const result = await client.query(
+      `DELETE FROM public.warehouses
+       WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
+         OR (warehouse_type = 'WIP' AND name = $2)
+         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+    );
+    deleted.warehouses = result.rowCount ?? 0;
   }
 
   // Reset owned sequences only when their owning table is now empty, avoiding
