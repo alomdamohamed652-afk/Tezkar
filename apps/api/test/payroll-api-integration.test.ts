@@ -200,6 +200,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO employee_salary_profiles(employee_id,monthly_salary,effective_from,created_by) VALUES ($1,1000,'2098-01-01',$2) RETURNING id",
         [employeeB.rows[0].id, userId]
       );
+      const salaryHistory = await app.inject({
+        method: "GET", url: `/api/payroll/employees/${employeeA.rows[0].id}/salary-history`,
+        headers: { cookie: cookieHeader }
+      });
+      assert.equal(salaryHistory.statusCode, 200, salaryHistory.body);
+      assert.equal(salaryHistory.json().data.employee.id, employeeA.rows[0].id);
+      assert.equal(salaryHistory.json().data.history.length, 1);
+      assert.equal(Number(salaryHistory.json().data.history[0].monthly_salary), 1000);
+
       const itemA = await apiPool.query(
         "INSERT INTO payroll_items(period_id,employee_id,salary_profile_id,base_salary,bonus_amount,deduction_amount) VALUES ($1,$2,$3,1000,100,100) RETURNING id",
         [period.rows[0].id, employeeA.rows[0].id, profileA.rows[0].id]
