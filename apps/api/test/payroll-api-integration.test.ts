@@ -410,7 +410,19 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(februaryPayment.json().data.status,"PAID");
       const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
-      assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000);
+      assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000,"the base salary must be credited independently");
+      const bonusEntry=await apiPool.query(
+        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes=$2",
+        [employeeA.rows[0].id,"بونص راتب شهر 2099-02"]
+      );
+      assert.equal(bonusEntry.rowCount,1,"bonus must appear as a separate employee-account credit");
+      assert.equal(Number(bonusEntry.rows[0].credit_amount),100);
+      const deductionEntry=await apiPool.query(
+        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes=$2",
+        [employeeA.rows[0].id,"خصم راتب شهر 2099-02"]
+      );
+      assert.equal(deductionEntry.rowCount,1,"deduction must appear as a separate employee-account debit");
+      assert.equal(Number(deductionEntry.rows[0].debit_amount),100);
       const ownPayroll=await app.inject({method:"GET",url:"/api/payroll/my-account",headers:{cookie:cookieHeader}});
       assert.equal(ownPayroll.statusCode,200,ownPayroll.body);
       assert.equal(ownPayroll.json().data.employee.id,employeeA.rows[0].id);
@@ -419,6 +431,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const ownFebruary=ownPayroll.json().data.payrollItems.find((x:any)=>String(x.period_month).slice(0,7)==="2099-02");
       assert.ok(ownFebruary,"employees should see their approved monthly payslip");
       assert.equal(Number(ownFebruary.net_amount),600);
+      assert.equal(Number(ownFebruary.bonus_amount),100);
+      assert.equal(Number(ownFebruary.deduction_amount),100);
+      assert.equal(Number(ownFebruary.advance_repayment_amount),400);
       assert.equal(ownFebruary.payments.length,1,"employee should see actual salary payment history");
       const salaryPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1",[februaryPayment.json().data.payment.id]);
       assert.equal(salaryPaymentLedger.rowCount,1,"the actual salary payment must have a linked employee-ledger entry");
