@@ -448,7 +448,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(repaymentRows.rows[0].source_worker_payment_id,settledRequest.json().data.payment.id);
       const workerPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[settledRequest.json().data.payment.id]);
       assert.equal(workerPaymentLedger.rowCount,1);
-      assert.equal(Number(workerPaymentLedger.rows[0].debit_amount),150);
+      assert.equal(Number(workerPaymentLedger.rows[0].debit_amount),200,"the employee ledger clears gross earnings, not only the net cash handed over");
       const advanceRemaining=await apiPool.query(
         "SELECT amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
         [workerAdvance.id]
