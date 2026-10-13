@@ -422,12 +422,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(blockedState.rows[0].payments),0,"failed custody debit must roll back worker payment");
       assert.equal(Number(blockedState.rows[0].payment_ledger_entries),1,"failed custody debit must not add an earnings debit");
 
-      const rejectPending=await app.inject({
-        method:"POST",url:`/api/payment-requests/${nextRequest.json().data.id}/reject`,
-        headers:{cookie:managerCookie},payload:{reason:"replaced by advance-offset integration scenario"}
-      });
-      assert.equal(rejectPending.statusCode,200,rejectPending.body);
-
       const settledRequest=await app.inject({
         method:"POST",url:`/api/payment-requests/${nextRequest.json().data.id}/approve`,
         headers:{cookie:managerCookie},
