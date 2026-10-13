@@ -58,12 +58,13 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
         import("../src/modules/auth/auth.routes.js"),
         import("../src/modules/payroll/payroll.routes.js"),
+        import("../src/modules/operations-master/operations-master.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -78,6 +79,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     });
     await app.register(authRoutes);
     await app.register(payrollRoutes);
+    await app.register(operationsMasterRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -127,6 +129,47 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(invalidSession.statusCode, 401, invalidSession.body);
       assert.equal(invalidSessionHandlerExecuted, false, "invalid sessions must stop before route handlers run");
+
+      // Multiple leaders may serve one shift, and the same employee may lead multiple shifts.
+      const rateGroup = await apiPool.query(
+        "INSERT INTO rate_groups(name) VALUES($1) RETURNING id",
+        ["Shift test group " + randomBytes(4).toString("hex")]
+      );
+      async function createShift(name: string) {
+        const response = await app.inject({
+          method: "POST", url: "/api/shifts", headers: { cookie: cookieHeader },
+          payload: { name, startTime: "08:00", endTime: "16:00", crossesMidnight: false, rateGroupId: rateGroup.rows[0].id }
+        });
+        assert.equal(response.statusCode, 201, response.body);
+        return response.json().data.id as string;
+      }
+      const morningShift = await createShift("Morning test shift");
+      const eveningShift = await createShift("Evening test shift");
+      const leaderA = await app.inject({
+        method: "POST", url: `/api/shifts/${morningShift}/leaders`, headers: { cookie: cookieHeader },
+        payload: { employeeId: employeeA.rows[0].id }
+      });
+      assert.equal(leaderA.statusCode, 201, leaderA.body);
+      const leaderB = await app.inject({
+        method: "POST", url: `/api/shifts/${morningShift}/leaders`, headers: { cookie: cookieHeader },
+        payload: { employeeId: employeeB.rows[0].id }
+      });
+      assert.equal(leaderB.statusCode, 201, leaderB.body, "a second leader must be allowed on the same shift");
+      const sameEmployeeSecondShift = await app.inject({
+        method: "POST", url: `/api/shifts/${eveningShift}/leaders`, headers: { cookie: cookieHeader },
+        payload: { employeeId: employeeA.rows[0].id }
+      });
+      assert.equal(sameEmployeeSecondShift.statusCode, 201, sameEmployeeSecondShift.body);
+      const employeeShiftList = await app.inject({
+        method: "GET", url: `/api/employees/${employeeA.rows[0].id}/shifts`, headers: { cookie: cookieHeader }
+      });
+      assert.equal(employeeShiftList.statusCode, 200, employeeShiftList.body);
+      assert.equal(employeeShiftList.json().data.length, 2, "the same employee may be assigned to multiple shifts");
+      const leaderList = await app.inject({
+        method: "GET", url: "/api/shift-leaders", headers: { cookie: cookieHeader }
+      });
+      assert.equal(leaderList.statusCode, 200, leaderList.body);
+      assert.equal(leaderList.json().data.filter((row: {shift_id:string}) => row.shift_id === morningShift).length, 2);
 
       const invalidMonthQuery = await app.inject({
         method: "GET", url: "/api/payroll?month=2099-13", headers: { cookie: cookieHeader }
