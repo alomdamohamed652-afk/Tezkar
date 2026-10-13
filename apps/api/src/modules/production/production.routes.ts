@@ -900,7 +900,10 @@ export async function productionRoutes(app: FastifyInstance) {
         if(elapsed<periodDays)continue;
         const duePeriods=Math.max(1,Math.floor(elapsed/periodDays));
         const production=await client.query(
-          `SELECT COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)),0) AS amount
+          `SELECT GREATEST(0,
+             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)),0)
+             -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+           ) AS amount
              FROM production_entries p
             WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.work_date>$2::date AND p.work_date<=$3::date`,
           [parsed.data.employeeId,startDate,date]
