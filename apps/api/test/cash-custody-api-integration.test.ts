@@ -407,6 +407,8 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions, including the overdraft, must be audited; external funding is manager-only");
 
+      const summaryBeforeLegacyFunding=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
+      assert.equal(summaryBeforeLegacyFunding.statusCode,200,summaryBeforeLegacyFunding.body);
       const legacyFunding=(await apiPool.query(
         "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-TEST',99.99,'2099-01-12','EXTERNAL_CUSTODY_TOP_UP','legacy external custody funding',$1) RETURNING id",
         [manager.id]
@@ -415,6 +417,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-LOWER-TEST',49.99,'2099-01-12','external_custody_top_up','legacy lowercase external custody funding',$1) RETURNING id",
         [manager.id]
       )).rows[0];
+      const summaryAfterLegacyFunding=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
+      assert.equal(summaryAfterLegacyFunding.statusCode,200,summaryAfterLegacyFunding.body);
+      assert.equal(Number(summaryAfterLegacyFunding.json().data.total_in),Number(summaryBeforeLegacyFunding.json().data.total_in),"legacy custody funding in either letter case must not inflate company revenue totals");
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
       const summaryBeforeTopUp=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(summaryBeforeTopUp.statusCode,200,summaryBeforeTopUp.body);
