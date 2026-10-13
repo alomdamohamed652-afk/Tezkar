@@ -19,6 +19,18 @@ const editUserSchema=z.object({
  isActive:z.boolean().optional()
 });
 
+async function assertSystemPermissionAdmin(userId: string) {
+ const result=await pool.query(
+  `SELECT EXISTS (
+    SELECT 1 FROM user_roles ur
+    JOIN roles r ON r.id=ur.role_id
+    WHERE ur.user_id=$1 AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE
+  ) AS allowed`,
+  [userId]
+ );
+ if(!result.rows[0]?.allowed)throw new AppError("RBAC_ADMIN_REQUIRED","إدارة الصلاحيات متاحة لمدير النظام فقط",403);
+}
+
 export async function userRoutes(app: FastifyInstance){
  app.get("/api/users",{preHandler:[authenticateRequest,requirePermission("users.view")]},async()=>{
   const result=await pool.query("SELECT u.id,u.code,u.username,u.employee_id,e.code AS employee_code,e.full_name, u.is_active,u.is_bootstrap,u.must_complete_setup,u.last_login_at,COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}') AS role_codes FROM users u LEFT JOIN employees e ON e.id=u.employee_id LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles r ON r.id=ur.role_id GROUP BY u.id,e.code,e.full_name ORDER BY u.code");
@@ -29,6 +41,7 @@ export async function userRoutes(app: FastifyInstance){
   return {data:result.rows};
  });
  app.post("/api/roles",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(request,reply)=>{
+  await assertSystemPermissionAdmin(request.user!.userId);
   const parsed=z.object({code:z.string().trim().min(2).max(60).regex(/^[a-z][a-z0-9_]*$/),name:z.string().trim().min(2).max(120)}).safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","اسم الدور أو كوده غير صحيح",422);
   const row=await withTransaction(async client=>{
@@ -40,16 +53,19 @@ export async function userRoutes(app: FastifyInstance){
   });
   return reply.code(201).send({data:row});
  });
- app.get("/api/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async()=>{
+ app.get("/api/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(request)=>{
+  await assertSystemPermissionAdmin(request.user!.userId);
   const r=await pool.query("SELECT id,code,module,entity,action,scope FROM permissions ORDER BY module,entity,action,code");
   return {data:r.rows};
  });
  app.get("/api/roles/:id/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(req)=>{
+  await assertSystemPermissionAdmin(req.user!.userId);
   const id=(req.params as {id:string}).id;
   const r=await pool.query("SELECT p.id,p.code FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=$1 ORDER BY p.code",[id]);
   return {data:r.rows};
  });
  app.put("/api/roles/:id/permissions",{preHandler:[authenticateRequest,requirePermission("rbac.manage")]},async(req)=>{
+  await assertSystemPermissionAdmin(req.user!.userId);
   const id=(req.params as {id:string}).id;
   const parsed=z.object({permissionIds:z.array(z.string().uuid())}).safeParse(req.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","قائمة الصلاحيات غير صحيحة",422);
