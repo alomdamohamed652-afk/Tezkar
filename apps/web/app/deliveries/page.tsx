@@ -74,6 +74,7 @@ export default function DeliveriesPage(){
    setDraftId(draft.id);
    if(Array.isArray(draft.lines)&&draft.lines.length){
     const restored=draft.lines.map((line:any)=>({id:line.id,orderItemId:line.order_item_id||"",productId:line.product_id,quantity:String(line.quantity),cartonCode:line.carton_code||"",cartonWeight:line.carton_weight==null?"":String(line.carton_weight),pieceCount:line.piece_count==null?"":String(line.piece_count),sampleQuantity:line.sample_quantity==null?"":String(line.sample_quantity),details:line.details||""}));
+    if(draft.lines[0].warehouse_id)setWarehouseId(draft.lines[0].warehouse_id);if(draft.lines[0].location_id)setLocationId(draft.lines[0].location_id);
     setDeliveryLines(restored);
     setTotalWeight(String(restored.reduce((sum,line)=>sum+Number(normalizeNumber(line.cartonWeight||"0")),0)));
     setPieceCount(String(restored.reduce((sum,line)=>sum+Number(normalizeNumber(line.pieceCount||line.quantity||"0")),0)));
