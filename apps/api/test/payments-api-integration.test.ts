@@ -449,12 +449,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(repaymentRows.rowCount,1);
       assert.equal(Number(repaymentRows.rows[0].amount),50);
       assert.equal(repaymentRows.rows[0].source_worker_payment_id,settledRequest.json().data.payment.id);
-      const workerPaymentCustody=await apiPool.query(
-        "SELECT direction,amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
-        [settledRequest.json().data.payment.id]);
-      assert.equal(workerPaymentCustody.rowCount,2);
-      assert.equal(Number(workerPaymentCustody.rows.find((x:any)=>x.direction==="OUT")?.amount),200);
-      assert.equal(Number(workerPaymentCustody.rows.find((x:any)=>x.direction==="IN")?.amount),50);
       const workerPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[settledRequest.json().data.payment.id]);
       assert.equal(workerPaymentLedger.rowCount,1);
       assert.equal(Number(workerPaymentLedger.rows[0].debit_amount),150);
@@ -469,14 +463,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [settledRequest.json().data.payment.id]
       );
       assert.equal(payoutCustody.rowCount,2);
-      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT")?.amount),150,"custody OUT is gross entitlement");
+      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT")?.amount),200,"custody OUT is gross entitlement");
       assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT_ADVANCE_REPAYMENT")?.amount),50,"custody IN recovers the advance offset");
 
       const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
       assert.equal(Number(postSettlementBalance.json().data.balance),50,"gross earnings are cleared and the repayment reduces the negative loan balance");
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),150);
-      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),200,"only genuinely unpaid earnings remain available");
+      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
