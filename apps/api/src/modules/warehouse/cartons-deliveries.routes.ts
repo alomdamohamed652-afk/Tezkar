@@ -119,11 +119,11 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(duplicateAlias.rowCount)throw new AppError("DUPLICATE_CARTON_CODE","تم مسح الكرتونة بالفعل في هذه المسودة",409);
    const assigned=await client.query("SELECT 1 FROM delivery_permission_lines l JOIN delivery_permissions d ON d.id=l.delivery_permission_id WHERE upper(trim(l.carton_code)) IN (upper(trim($1)),upper(trim($2))) AND d.status IN ('DRAFT','READY') AND d.id<>$3 LIMIT 1",[ref.code,ref.barcode,id]);
    if(assigned.rowCount)throw new AppError("CARTON_ALREADY_ASSIGNED","الكرتونة موجودة في مسودة أو إذن تسليم آخر",409);
-   const product=await client.query("SELECT unit_id FROM products WHERE id=$1 AND is_active=TRUE",[ref.product_id]);
+   const product=await client.query("SELECT unit_id,name,code FROM products WHERE id=$1 AND is_active=TRUE",[ref.product_id]);
    if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","منتج الكرتونة غير موجود أو غير نشط",409);
    const inserted=await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,order_item_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,carton_weight,piece_count,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",[id,orderLine.rows[0].id,ref.product_id,ref.warehouse_id,ref.location_id,ref.quantity,product.rows[0].unit_id,ref.code,ref.weight??null,ref.quantity,"إضافة بالمسح المستمر"]);
    await client.query("UPDATE delivery_permissions SET updated_at=now() WHERE id=$1",[id]);
-   return inserted.rows[0];
+   return {...inserted.rows[0],product_name:product.rows[0].name,product_code:product.rows[0].code,warehouse_id:ref.warehouse_id,location_id:ref.location_id};
   });
   return reply.code(201).send({data:row});
  });
