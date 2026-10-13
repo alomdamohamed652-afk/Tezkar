@@ -197,6 +197,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "unmarking a final stage must remove its now-orphaned line without recreating the remaining line");
       const testAdvance=(await apiPool.query("INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status) VALUES($1,100,'worker payment offset test','PAID',$2,$2,now(),'CUSTOM','OPEN') RETURNING id,code",[workerEmployee.id,manager.id])).rows[0];
       await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,$3)",[workerEmployee.id,manager.id,"صرف سلفة "+testAdvance.code]);
+      const availableBeforePayout=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(availableBeforePayout.statusCode,200,availableBeforePayout.body);
+      const availableBeforePayoutAmount=Number(availableBeforePayout.json().data.availableEarnings);
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}
@@ -235,7 +238,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(accountBalance.balance),300);
       const remainingAvailable=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(remainingAvailable.statusCode,200,remainingAvailable.body);
-      assert.equal(Number(remainingAvailable.json().data.availableEarnings),350);
+      assert.equal(Number(remainingAvailable.json().data.availableEarnings),availableBeforePayoutAmount-150);
       const globalSearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(request.json().data.code),headers:{cookie:managerCookie}});
       assert.equal(globalSearch.statusCode,200,globalSearch.body);
       assert.ok(globalSearch.json().data.some((item:{type:string})=>item.type==="طلب قبض"),"central search should find the payment request code");
