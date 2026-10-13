@@ -28,7 +28,7 @@ export default function AdvancesPage(){
   if(!settleEmployeeId){setSettleAdvances([]);setSettleAdvanceId("");return}
   let active=true;
   api<{data:Advance[]}>("/api/advances?employeeId="+encodeURIComponent(settleEmployeeId))
-   .then(r=>{if(active){setSettleAdvances(r.data.filter(x=>x.status==="PAID"&&x.repayment_status==="OPEN"&&Number(x.remaining_amount)>0));setSettleAdvanceId("");}})
+   .then(r=>{if(active){setSettleAdvances(r.data.filter(x=>x.status==="PAID"&&x.repayment_status==="OPEN"&&x.repayment_method!=="PRODUCTION_PERCENTAGE"&&Number(x.remaining_amount)>0));setSettleAdvanceId("");}})
    .catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل سلف العامل")});
   return()=>{active=false};
  },[settleEmployeeId]);
