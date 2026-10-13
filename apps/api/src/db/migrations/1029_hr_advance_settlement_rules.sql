@@ -22,6 +22,24 @@ ALTER TABLE advance_requests
   ADD CONSTRAINT advance_requests_production_installment_amount_check
   CHECK (production_installment_amount IS NULL OR production_installment_amount > 0);
 
+-- A production-based advance can use either a percentage or a fixed installment per period.
+ALTER TABLE advance_requests
+  DROP CONSTRAINT IF EXISTS advance_requests_production_percentage_check;
+ALTER TABLE advance_requests
+  ADD CONSTRAINT advance_requests_production_percentage_check
+  CHECK (
+    production_percentage IS NULL OR (production_percentage > 0 AND production_percentage <= 100)
+  );
+ALTER TABLE advance_requests
+  DROP CONSTRAINT IF EXISTS advance_requests_production_repayment_rule_check;
+ALTER TABLE advance_requests
+  ADD CONSTRAINT advance_requests_production_repayment_rule_check
+  CHECK (
+    repayment_method <> 'PRODUCTION_PERCENTAGE'
+    OR ((production_percentage IS NOT NULL AND production_installment_amount IS NULL)
+        OR (production_percentage IS NULL AND production_installment_amount IS NOT NULL))
+  );
+
 -- A settlement represents gross approved earnings cleared, actual cash paid, and the
 -- part applied to outstanding advances. Custody OUT(gross) + IN(repayment) nets to cash paid.
 CREATE TABLE IF NOT EXISTS employee_earnings_settlements (
