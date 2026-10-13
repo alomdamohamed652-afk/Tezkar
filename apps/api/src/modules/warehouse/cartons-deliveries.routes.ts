@@ -65,7 +65,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
 
  // Server-persisted continuous-scan drafts. Drafts do not reserve stock until they are marked READY.
  const draftHeaderSchema=z.object({orderId:z.string().uuid(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),totalWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(2000).nullable().optional()});
- const draftScanSchema=z.object({cartonCode:z.string().trim().min(1).max(120)});
+ const draftScanSchema=z.object({cartonCode:z.string().trim().min(1).max(120),warehouseId:z.string().uuid().optional(),locationId:z.string().uuid().optional()});
  app.get("/api/delivery-permissions/drafts/active",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
   const parsed=z.object({orderId:z.string().uuid()}).safeParse(request.query);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","رقم الطلبية غير صحيح",422);
@@ -101,6 +101,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(draft.rows[0].created_by!==request.user!.userId)throw new AppError("FORBIDDEN","لا يمكنك تعديل مسودة أنشأها مستخدم آخر",403);
    if(draft.rows[0].status!=="DRAFT")throw new AppError("INVALID_STATUS","المسودة لم تعد مفتوحة للمسح",409);
    const code=parsed.data.cartonCode.trim();
+   if(Boolean(parsed.data.warehouseId)!==Boolean(parsed.data.locationId))throw new AppError("VALIDATION_ERROR","اختر المخزن والمكان معًا",422);
    const duplicate=await client.query("SELECT 1 FROM delivery_permission_lines WHERE delivery_permission_id=$1 AND upper(trim(carton_code))=upper(trim($2)) LIMIT 1",[id,code]);
    if(duplicate.rowCount)throw new AppError("DUPLICATE_CARTON_CODE","تم مسح الكرتونة بالفعل في هذه المسودة",409);
    const coding=await client.query("SELECT * FROM coding_units WHERE (code=$1 OR barcode=$1) FOR UPDATE",[code]);
@@ -111,6 +112,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(box&&["EMPTY","OPEN"].includes(box.status))throw new AppError("CARTON_UNAVAILABLE","الكرتونة غير مختومة أو فارغة ولا يمكن تسليمها",409);
    if(Number(ref.quantity)<=0)throw new AppError("CARTON_EMPTY","الكرتونة لا تحتوي على كمية متاحة",409);
    if(!ref.warehouse_id||!ref.location_id)throw new AppError("CARTON_LOCATION_REQUIRED","الكرتونة غير مرتبطة بمخزن ومكان تخزين",409);
+   if(parsed.data.warehouseId&&parsed.data.warehouseId!==ref.warehouse_id||parsed.data.locationId&&parsed.data.locationId!==ref.location_id)throw new AppError("CARTON_LOCATION_MISMATCH","الكرتونة من مخزن أو مكان مختلف؛ أنشئ إذنًا منفصلًا لكل موقع تخزين",409);
    const orderLine=await client.query("SELECT id FROM production_order_lines WHERE order_id=$1 AND product_id=$2 ORDER BY id",[draft.rows[0].order_id,ref.product_id]);
    if(!orderLine.rowCount)throw new AppError("PRODUCT_NOT_IN_ORDER","منتج الكرتونة غير موجود ضمن الطلبية المحددة",409);
    if(orderLine.rowCount>1)throw new AppError("ORDER_ITEM_REQUIRED","المنتج مكرر في الطلبية؛ لا يمكن ربط الكرتونة تلقائيًا بسطر محدد",409);
