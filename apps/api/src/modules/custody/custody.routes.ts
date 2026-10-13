@@ -453,18 +453,12 @@ export async function custodyRoutes(app:FastifyInstance){
        await assertPostingDateOpen(client,date);
       const duplicate=await client.query("SELECT id FROM cash_custody_transactions WHERE employee_id=$1 AND direction='IN' AND amount=$2 AND transaction_date=$3 AND source_type='EXTERNAL_TOP_UP' LIMIT 1 FOR SHARE",[p.data.employeeId,p.data.amount,date]);
       if(duplicate.rowCount&&!p.data.confirmDuplicate)throw new AppError("DUPLICATE_CUSTODY_TOP_UP","توجد إضافة رصيد بنفس الموظف والمبلغ والتاريخ؛ راجع الحركة السابقة وأكد تسجيل حركة جديدة إذا كانت مستقلة",409);
-      const codeResult=await client.query("SELECT 'REV-' || lpad(nextval('revenue_code_seq')::text,8,'0') AS code");
-      const revenue=await client.query(
-        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,$1,$2,$3,'EXTERNAL_CUSTODY_TOP_UP',$4,$5) RETURNING *",
-        [codeResult.rows[0].code,p.data.amount,date,[p.data.description,p.data.notes].filter(Boolean).join(" — ")||null,request.user!.userId]
-      );
       const tx=await client.query(
-        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,confirmed_duplicate,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6,$7,$8) RETURNING *",
-        [p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,revenue.rows[0].id,Boolean(duplicate.rowCount&&p.data.confirmDuplicate),request.user!.userId]
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,confirmed_duplicate,created_by) VALUES($1,'IN',$2,$3,$4,$5,'EXTERNAL_TOP_UP',$6,$7) RETURNING *",
+        [p.data.employeeId,p.data.amount,date,p.data.description,p.data.notes??null,Boolean(duplicate.rowCount&&p.data.confirmDuplicate),request.user!.userId]
       );
-      const linkedRevenue=await client.query("UPDATE order_revenues SET cash_custody_transaction_id=$1 WHERE id=$2 RETURNING *",[tx.rows[0].id,revenue.rows[0].id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"external_top_up",module:"cash_custody",entityType:"cash_custody_transaction",entityId:tx.rows[0].id,afterData:{revenue:linkedRevenue.rows[0],cashCustody:tx.rows[0]},metadata:{companyRevenue:true,revenueCode:revenue.rows[0].code},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return {...tx.rows[0],revenue_id:revenue.rows[0].id,revenue_code:revenue.rows[0].code};
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"external_top_up",module:"cash_custody",entityType:"cash_custody_transaction",entityId:tx.rows[0].id,afterData:{cashCustody:tx.rows[0]},metadata:{companyRevenue:false,fundingType:"EXTERNAL_CUSTODY_FUNDING"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return tx.rows[0];
     });
     return reply.code(201).send({data:row});
   });
