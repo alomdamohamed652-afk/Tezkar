@@ -347,8 +347,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(salaryExpenseCount.rows[0].count, 2, "re-approval must not duplicate salary expenses");
 
-      // A fixed monthly advance installment is previewed in a draft payroll, then
-      // recorded exactly once when that payroll is approved.
+      // Fixed monthly and salary-percentage installments reduce net pay in the approved
+      // payroll, but the advance balance is not reduced until the employee is actually paid.
       const fixedAdvance = await apiPool.query(
         `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,installment_amount,repayment_status)
          VALUES($1,800,'Fixed installment integration test','PAID',$2,$2,'2099-01-15T12:00:00Z','FIXED_INSTALLMENT',300,'OPEN')
@@ -379,34 +379,50 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         headers: { cookie: cookieHeader }
       });
       assert.equal(februaryApproval.statusCode, 200, februaryApproval.body);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,0,
+        "approving payroll must not repay an advance before the salary is paid");
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[salaryPercentageAdvance.rows[0].id])).rows[0].count,0);
+
+      const februaryPayment=await app.inject({
+        method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
+        headers:{cookie:cookieHeader},payload:{amount:600,paymentMethod:"TEST"}
+      });
+      assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
+      assert.equal(februaryPayment.json().data.status,"PAID");
       const fixedRepayment = await apiPool.query(
         "SELECT amount,repayment_type,source_payroll_item_id FROM advance_repayments WHERE advance_id=$1",
         [fixedAdvance.rows[0].id]
       );
-      assert.equal(fixedRepayment.rowCount, 1);
-      assert.equal(Number(fixedRepayment.rows[0].amount), 300);
-      assert.equal(fixedRepayment.rows[0].repayment_type, "FIXED_INSTALLMENT");
-      assert.equal(fixedRepayment.rows[0].source_payroll_item_id, februaryItem.id);
+      assert.equal(fixedRepayment.rowCount,1);
+      assert.equal(Number(fixedRepayment.rows[0].amount),300);
+      assert.equal(fixedRepayment.rows[0].repayment_type,"FIXED_INSTALLMENT");
+      assert.equal(fixedRepayment.rows[0].source_payroll_item_id,februaryItem.id);
       const fixedBalance = await apiPool.query(
         "SELECT repayment_status,amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
         [fixedAdvance.rows[0].id]
       );
-      assert.equal(fixedBalance.rows[0].repayment_status, "OPEN");
-      assert.equal(Number(fixedBalance.rows[0].remaining), 500);
+      assert.equal(fixedBalance.rows[0].repayment_status,"OPEN");
+      assert.equal(Number(fixedBalance.rows[0].remaining),500);
       const salaryPercentageRepayment = await apiPool.query(
         "SELECT amount,repayment_type,source_payroll_item_id FROM advance_repayments WHERE advance_id=$1",
         [salaryPercentageAdvance.rows[0].id]
       );
-      assert.equal(salaryPercentageRepayment.rowCount, 1);
-      assert.equal(Number(salaryPercentageRepayment.rows[0].amount), 100);
-      assert.equal(salaryPercentageRepayment.rows[0].repayment_type, "SALARY_PERCENTAGE");
-      assert.equal(salaryPercentageRepayment.rows[0].source_payroll_item_id, februaryItem.id);
+      assert.equal(salaryPercentageRepayment.rowCount,1);
+      assert.equal(Number(salaryPercentageRepayment.rows[0].amount),100);
+      assert.equal(salaryPercentageRepayment.rows[0].repayment_type,"SALARY_PERCENTAGE");
+      assert.equal(salaryPercentageRepayment.rows[0].source_payroll_item_id,februaryItem.id);
+      const custodySummary=await apiPool.query(
+        "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
+        [februaryItem.id]
+      );
+      assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="OUT")?.amount),1000);
+      assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),400);
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
       });
-      assert.equal(duplicateFebruaryApproval.statusCode, 409);
-      assert.equal(duplicateFebruaryApproval.json().error.code, "PAYROLL_PERIOD_LOCKED");
+      assert.equal(duplicateFebruaryApproval.statusCode,409);
+      assert.equal(duplicateFebruaryApproval.json().error.code,"PAYROLL_PERIOD_LOCKED");
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,1);
 
       const partial = await app.inject({
