@@ -180,7 +180,11 @@ export async function advanceRoutes(app:FastifyInstance){
       if(p.data.amount>remaining+1e-9)throw new AppError("REPAYMENT_EXCEEDS_BALANCE","مبلغ السداد أكبر من المتبقي",409);
       if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب مستلم السداد بملف موظف/عهدة حتى تُسجل حركة الداخل",409);
       const x=await client.query("INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[id,p.data.amount,p.data.repaymentType,p.data.paymentDate??new Date().toISOString().slice(0,10),p.data.notes??null,request.user!.userId]);
-      const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id",[advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].code]);
+      const ledger=await client.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,advance_repayment_id)
+         VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+         ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING RETURNING id`,
+        [advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].code,x.rows[0].id]);
       const cash=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'ADVANCE_REPAYMENT',$6,$7) RETURNING id",
         [request.user!.employeeId,p.data.amount,p.data.paymentDate??null,"تحصيل سداد سلفة "+advance.rows[0].code,p.data.notes??null,x.rows[0].id,request.user!.userId]
