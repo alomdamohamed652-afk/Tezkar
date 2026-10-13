@@ -71,6 +71,26 @@ export async function operationsMasterRoutes(app:FastifyInstance){
  });
  app.post("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.create")]},async(req,reply)=>{const p=z.object({name, startTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/), endTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/), crossesMidnight:z.boolean().default(false),rateGroupId:z.string().uuid()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الوردية غير صحيحة",422);const g=await pool.query("SELECT 1 FROM rate_groups WHERE id=$1 AND is_active=TRUE",[p.data.rateGroupId]);if(!g.rowCount)throw new AppError("RATE_GROUP_NOT_FOUND","مجموعة الأجر غير موجودة",422);const r=await withTransaction(async c=>{const x=await c.query("INSERT INTO shifts(name,start_time,end_time,crosses_midnight,rate_group_id) VALUES($1,$2,$3,$4,$5) RETURNING id,code,name,start_time,end_time,crosses_midnight,rate_group_id,is_active",[p.data.name,p.data.startTime,p.data.endTime,p.data.crossesMidnight,p.data.rateGroupId]);await audit(c,req,"create","shift",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 
+
+ app.patch("/api/shifts/:id",{preHandler:[authenticateRequest,requirePermission("shifts.create")]},async(req)=>{
+  const id=(req.params as {id:string}).id;
+  const p=z.object({name:name.optional(),startTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/).optional(),endTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/).optional(),crossesMidnight:z.boolean().optional(),rateGroupId:z.string().uuid().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).safeParse(req.body);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل الوردية غير صحيحة",422);
+  const row=await withTransaction(async c=>{
+   const before=await c.query("SELECT * FROM shifts WHERE id=$1 FOR UPDATE",[id]);
+   if(!before.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة",404);
+   const v=p.data;
+   const next={name:v.name??before.rows[0].name,startTime:v.startTime??String(before.rows[0].start_time).slice(0,5),endTime:v.endTime??String(before.rows[0].end_time).slice(0,5),crossesMidnight:v.crossesMidnight??before.rows[0].crosses_midnight,rateGroupId:v.rateGroupId??before.rows[0].rate_group_id,isActive:v.isActive??before.rows[0].is_active};
+   if(next.startTime===next.endTime)throw new AppError("SHIFT_TIME_INVALID","وقت بداية الوردية ونهايتها لا يمكن أن يكونا متساويين",422);
+   if(v.rateGroupId){const g=await c.query("SELECT 1 FROM rate_groups WHERE id=$1 AND is_active=TRUE",[v.rateGroupId]);if(!g.rowCount)throw new AppError("RATE_GROUP_NOT_FOUND","مجموعة الأجر غير موجودة أو غير نشطة",422);}
+   const updated=await c.query("UPDATE shifts SET name=$1,start_time=$2,end_time=$3,crosses_midnight=$4,rate_group_id=$5,is_active=$6,updated_at=now() WHERE id=$7 RETURNING id,code,name,start_time,end_time,crosses_midnight,rate_group_id,is_active",[next.name,next.startTime,next.endTime,next.crossesMidnight,next.rateGroupId,next.isActive,id]);
+   if(!next.isActive){await c.query("UPDATE shift_employees SET is_active=FALSE,ends_on=COALESCE(ends_on,CURRENT_DATE),updated_at=now() WHERE shift_id=$1 AND is_active=TRUE",[id]);await c.query("UPDATE shift_leaders SET is_active=FALSE,ends_on=COALESCE(ends_on,CURRENT_DATE) WHERE shift_id=$1 AND is_active=TRUE",[id]);}
+   await audit(c,req,"update","shift",id,updated.rows[0]);
+   return updated.rows[0];
+  });
+  return {data:row};
+ });
+
  app.get("/api/shift-leaders",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{
   const r=await pool.query(`SELECT sl.id,sl.shift_id,s.code AS shift_code,s.name AS shift_name,sl.employee_id,e.code AS employee_code,e.full_name AS employee_name,sl.assignment_type,sl.starts_on,sl.ends_on,sl.is_active
     FROM shift_leaders sl JOIN shifts s ON s.id=sl.shift_id JOIN employees e ON e.id=sl.employee_id
@@ -78,10 +98,8 @@ export async function operationsMasterRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
  app.post("/api/shifts/:id/leaders",{preHandler:[authenticateRequest,requirePermission("shifts.assign_leader")]},async(req,reply)=>{const p=z.object({employeeId:z.string().uuid(),assignmentType:z.string().trim().min(2).max(40).default("primary"),startsOn:z.string().date().nullable().optional(),endsOn:z.string().date().nullable().optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات قائد الوردية غير صحيحة",422);const shiftId=(req.params as {id:string}).id;const r=await withTransaction(async c=>{const s=await c.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);if(!s.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة",404);const e=await c.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);if(!e.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
-if(p.data.assignmentType==="primary"){
- const active=await c.query("SELECT id FROM shift_leaders WHERE shift_id=$1 AND assignment_type='primary' AND is_active=TRUE LIMIT 1",[shiftId]);
- if(active.rowCount)throw new AppError("SHIFT_PRIMARY_LEADER_EXISTS","يوجد رئيس وردية أساسي معين بالفعل لهذه الوردية. ألغِ التكليف الحالي أولاً.",409);
-}
+const duplicate=await c.query("SELECT id FROM shift_leaders WHERE shift_id=$1 AND employee_id=$2 AND is_active=TRUE LIMIT 1",[shiftId,p.data.employeeId]);
+if(duplicate.rowCount)throw new AppError("SHIFT_LEADER_ALREADY_ASSIGNED","الموظف معين بالفعل كرئيس لهذه الوردية",409);
 const x=await c.query("INSERT INTO shift_leaders(shift_id,employee_id,assignment_type,starts_on,ends_on,assigned_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,shift_id,employee_id,assignment_type,starts_on,ends_on,is_active",[shiftId,p.data.employeeId,p.data.assignmentType,p.data.startsOn??null,p.data.endsOn??null,req.user!.userId]);
 await c.query(`INSERT INTO shift_employees(shift_id,employee_id,starts_on,ends_on,assigned_by)
   VALUES($1,$2,$3,$4,$5)
