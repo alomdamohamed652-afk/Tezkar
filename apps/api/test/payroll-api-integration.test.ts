@@ -211,6 +211,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
          RETURNING id`,
         [employeeA.rows[0].id,userId]
       );
+      const salaryPercentageAdvance = await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,salary_percentage,repayment_status)
+         VALUES($1,500,'Salary percentage integration test','PAID',$2,$2,'2099-01-15T12:00:00Z','SALARY_PERCENTAGE',10,'OPEN')
+         RETURNING id`,
+        [employeeA.rows[0].id,userId]
+      );
       const februaryGenerate = await app.inject({
         method: "POST", url: "/api/payroll/generate", headers: { cookie: cookieHeader },
         payload: { month: "2099-02" }
@@ -222,8 +228,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(februaryData.statusCode, 200, februaryData.body);
       const februaryItem = februaryData.json().data.items.find((row: {employee_id:string}) => row.employee_id === employeeA.rows[0].id);
       assert.ok(februaryItem, "employee with a salary profile should be included in the February payroll");
-      assert.equal(Number(februaryItem.advance_repayment_amount), 300);
-      assert.equal(Number(februaryItem.net_amount), 700, "fixed installment reduces employee take-home pay");
+      assert.equal(Number(februaryItem.advance_repayment_amount), 400);
+      assert.equal(Number(februaryItem.net_amount), 600, "fixed and salary-percentage installments reduce take-home pay without exceeding salary");
       const februaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
@@ -243,6 +249,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(fixedBalance.rows[0].repayment_status, "OPEN");
       assert.equal(Number(fixedBalance.rows[0].remaining), 500);
+      const salaryPercentageRepayment = await apiPool.query(
+        "SELECT amount,repayment_type,source_payroll_item_id FROM advance_repayments WHERE advance_id=$1",
+        [salaryPercentageAdvance.rows[0].id]
+      );
+      assert.equal(salaryPercentageRepayment.rowCount, 1);
+      assert.equal(Number(salaryPercentageRepayment.rows[0].amount), 100);
+      assert.equal(salaryPercentageRepayment.rows[0].repayment_type, "SALARY_PERCENTAGE");
+      assert.equal(salaryPercentageRepayment.rows[0].source_payroll_item_id, februaryItem.id);
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
