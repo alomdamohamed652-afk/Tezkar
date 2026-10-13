@@ -14,11 +14,15 @@ const createSchema=z.object({
   repaymentMethod:z.enum(["FIXED_INSTALLMENT","SALARY_PERCENTAGE","PRODUCTION_PERCENTAGE","CUSTOM"]).default("CUSTOM"),
   installmentAmount:z.number().positive().optional(),
   salaryPercentage:z.number().positive().max(100).optional(),
-  productionPercentage:z.number().positive().max(100).optional()
+  productionPercentage:z.number().positive().max(100).optional(),
+  productionPeriodDays:z.number().int().min(1).max(90).default(15),
+  productionMinimumEarning:z.number().nonnegative().optional(),
+  productionInstallmentAmount:z.number().positive().optional()
 }).superRefine((v,ctx)=>{
   if(v.repaymentMethod==="FIXED_INSTALLMENT"&&!v.installmentAmount)ctx.addIssue({code:"custom",path:["installmentAmount"],message:"قيمة القسط الشهري مطلوبة"});
   if(v.repaymentMethod==="SALARY_PERCENTAGE"&&!v.salaryPercentage)ctx.addIssue({code:"custom",path:["salaryPercentage"],message:"نسبة الخصم من الراتب مطلوبة"});
-  if(v.repaymentMethod==="PRODUCTION_PERCENTAGE"&&!v.productionPercentage)ctx.addIssue({code:"custom",path:["productionPercentage"],message:"نسبة الإنتاج مطلوبة"});
+  if(v.repaymentMethod==="PRODUCTION_PERCENTAGE"&&!v.productionPercentage&&!v.productionInstallmentAmount)ctx.addIssue({code:"custom",path:["productionPercentage"],message:"حدد نسبة من الإنتاج أو قيمة قسط ثابت لكل فترة"});
+  if(v.repaymentMethod==="PRODUCTION_PERCENTAGE"&&v.productionPercentage&&v.productionInstallmentAmount)ctx.addIssue({code:"custom",path:["productionInstallmentAmount"],message:"اختر نسبة أو قسطًا ثابتًا، وليس الاثنين معًا"});
 });
 
 const rejectSchema=z.object({reason:z.string().trim().min(2).max(500)});
@@ -72,8 +76,8 @@ export async function advanceRoutes(app:FastifyInstance){
       const open=await client.query("SELECT id FROM advance_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED') AND repayment_status='OPEN' LIMIT 1 FOR UPDATE",[p.data.employeeId]);
       if(open.rowCount)throw new AppError("OPEN_ADVANCE_EXISTS","يوجد طلب سلفة قيد الاعتماد بالفعل لهذا الموظف",409);
       const x=await client.query(
-        "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,installment_amount,salary_percentage,production_percentage) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
-        [p.data.employeeId,p.data.amount,p.data.reason,request.user!.userId,p.data.repaymentMethod,p.data.installmentAmount??null,p.data.salaryPercentage??null,p.data.productionPercentage??null]
+        "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,installment_amount,salary_percentage,production_percentage,production_period_days,production_minimum_earning,production_installment_amount) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
+        [p.data.employeeId,p.data.amount,p.data.reason,request.user!.userId,p.data.repaymentMethod,p.data.installmentAmount??null,p.data.salaryPercentage??null,p.data.productionPercentage??null,p.data.productionPeriodDays,p.data.productionMinimumEarning??null,p.data.productionInstallmentAmount??null]
       );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"advances",entityType:"advance_request",entityId:x.rows[0].id,afterData:x.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return x.rows[0];
@@ -119,16 +123,14 @@ export async function advanceRoutes(app:FastifyInstance){
       const salaryBased=["FIXED_INSTALLMENT","SALARY_PERCENTAGE"].includes(current.rows[0].repayment_method);
       const salaryProfile=salaryBased?await client.query("SELECT 1 FROM employee_salary_profiles WHERE employee_id=$1 AND effective_from<=CURRENT_DATE AND (effective_to IS NULL OR effective_to>=CURRENT_DATE) LIMIT 1",[current.rows[0].employee_id]):{rowCount:0,rows:[] as any[]};
       if(salaryBased&&!salaryProfile.rowCount)throw new AppError("SALARY_PROFILE_REQUIRED","لا يمكن صرف سلفة بقسط شهري أو نسبة من الراتب قبل تعريف راتب أساسي ساري للموظف",409);
-      let ledgerEntryId:string|null=null;
-      let ledgerCode:string|null=null;
-      if(!salaryProfile.rowCount){
-        const balance=await client.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[current.rows[0].employee_id]);
-        if(Number(current.rows[0].amount)>Number(balance.rows[0]?.balance??0))throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لا يكفي لصرف السلفة؛ عرّف راتبًا ساريًا للسداد من المرتب أو استخدم مستحقات الإنتاج",409);
-        const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id,code",[current.rows[0].employee_id,current.rows[0].amount,request.user!.userId,"Advance paid: "+current.rows[0].code]);
-        ledgerEntryId=ledger.rows[0].id;ledgerCode=ledger.rows[0].code;
-      }
-      const updated=await client.query("UPDATE advance_requests SET status='PAID',paid_by=$1,paid_at=now(),ledger_entry_id=$2,updated_at=now() WHERE id=$3 RETURNING *",[request.user!.userId,ledgerEntryId,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{ledger_code:ledgerCode,salary_based:Boolean(salaryProfile.rowCount)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف السلفة حتى تُسجل حركة الخزنة",409);
+      const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id,code",[current.rows[0].employee_id,current.rows[0].amount,request.user!.userId,"صرف سلفة "+current.rows[0].code]);
+      const cash=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'ADVANCE_PAYOUT',$5,$6) RETURNING id",
+        [request.user!.employeeId,current.rows[0].amount,"صرف سلفة "+current.rows[0].code,"سلفة الموظف "+current.rows[0].employee_id,id,request.user!.userId]
+      );
+      const updated=await client.query("UPDATE advance_requests SET status='PAID',paid_by=$1,paid_at=now(),ledger_entry_id=$2,updated_at=now() WHERE id=$3 RETURNING *",[request.user!.userId,ledger.rows[0].id,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{ledger_code:ledger.rows[0].code,cash_custody_transaction_id:cash.rows[0].id,salary_based:Boolean(salaryProfile.rowCount)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return {data:row};
@@ -150,10 +152,16 @@ export async function advanceRoutes(app:FastifyInstance){
       const paid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[id]);
       const remaining=Number(advance.rows[0].amount)-Number(paid.rows[0].amount||0);
       if(p.data.amount>remaining+1e-9)throw new AppError("REPAYMENT_EXCEEDS_BALANCE","مبلغ السداد أكبر من المتبقي",409);
+      if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب مستلم السداد بملف موظف/عهدة حتى تُسجل حركة الداخل",409);
       const x=await client.query("INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[id,p.data.amount,p.data.repaymentType,p.data.paymentDate??new Date().toISOString().slice(0,10),p.data.notes??null,request.user!.userId]);
+      const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id",[advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].code]);
+      const cash=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'ADVANCE_REPAYMENT',$6,$7) RETURNING id",
+        [request.user!.employeeId,p.data.amount,p.data.paymentDate??null,"تحصيل سداد سلفة "+advance.rows[0].code,p.data.notes??null,x.rows[0].id,request.user!.userId]
+      );
       const next=remaining-p.data.amount;
       const updated=await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2 RETURNING *",[next<=1e-9?"SETTLED":"OPEN",id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"repay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{repayment:x.rows[0],remaining:next},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"repay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{repayment:x.rows[0],remaining:next,earnings_ledger_entry_id:ledger.rows[0].id,cash_custody_transaction_id:cash.rows[0].id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {advance:updated.rows[0],repayment:x.rows[0],remaining:next};
     });
     return reply.code(201).send({data:result});
