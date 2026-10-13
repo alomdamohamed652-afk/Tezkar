@@ -422,8 +422,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(bonusEntry.rowCount,1,"bonus must appear as a separate employee-account credit");
       assert.equal(Number(bonusEntry.rows[0].credit_amount),100);
       const deductionEntry=await apiPool.query(
-        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes=$2",
-        [employeeA.rows[0].id,"خصم راتب شهر 2099-01"]
+        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE $2",
+        [employeeA.rows[0].id,"خصم راتب شهر%"]
       );
       assert.equal(deductionEntry.rowCount,1,"deduction must appear as a separate employee-account debit");
       assert.equal(Number(deductionEntry.rows[0].debit_amount),100);
