@@ -7,8 +7,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_earnings_settlements_worker_paymen
   ON employee_earnings_settlements(worker_payment_id)
   WHERE worker_payment_id IS NOT NULL;
 
--- Payroll disbursement is an administrative action, not an employee self-service action.
-UPDATE permissions SET scope='all' WHERE code='payroll.pay';
+-- Ensure the payout permission exists and is administrative (the payroll payment endpoint requires all scope).
+INSERT INTO permissions(code,module,entity,action,scope)
+VALUES('payroll.pay','payroll','payroll','pay','all')
+ON CONFLICT(code) DO UPDATE SET scope='all';
+
+-- Grant payout to the same roles already authorized to approve payroll periods.
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT approval_grant.role_id,payout_permission.id
+FROM role_permissions approval_grant
+JOIN permissions approval_permission ON approval_permission.id=approval_grant.permission_id
+JOIN permissions payout_permission ON payout_permission.code='payroll.pay'
+WHERE approval_permission.code='payroll.approve'
+ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version)
 VALUES ('1032_worker_payment_settlement_link')
