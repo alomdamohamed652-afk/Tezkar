@@ -159,7 +159,7 @@ export async function payrollRoutes(app: FastifyInstance) {
                                  FROM payroll_advance_deductions d
                                  JOIN payroll_items ri ON ri.id=d.payroll_item_id
                                  JOIN payroll_periods rp ON rp.id=ri.period_id
-                                WHERE d.advance_id=a.id AND rp.status IN ('APPROVED','CLOSED') AND ri.status<>'PAID'),0),0) AS outstanding
+                                WHERE d.advance_id=a.id AND rp.status IN ('DRAFT','APPROVED','CLOSED') AND ri.status<>'PAID'),0),0) AS outstanding
              FROM advance_requests a
             WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
               AND (
