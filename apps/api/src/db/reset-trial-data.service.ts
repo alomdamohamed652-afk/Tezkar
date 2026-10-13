@@ -78,7 +78,8 @@ try {
   await client.query(`
     UPDATE public.users
     SET employee_id = NULL
-    WHERE COALESCE(is_bootstrap, FALSE) = TRUE OR username = 'admin' OR ($1::uuid IS NOT NULL AND id = $1)
+    WHERE ($1::uuid IS NOT NULL AND id = $1)
+       OR ($1::uuid IS NULL AND (COALESCE(is_bootstrap, FALSE) = TRUE OR username = 'admin'))
   `, [protectedUserId]);
 
   // Delete all ordinary business/master-data tables child-first. Employees
@@ -139,14 +140,14 @@ try {
       WHERE NOT EXISTS (
         SELECT 1 FROM public.users u
         WHERE u.id = ur.user_id
-          AND (COALESCE(u.is_bootstrap, FALSE) = TRUE OR u.username = 'admin' OR ($1::uuid IS NOT NULL AND u.id = $1))
+          AND (($1::uuid IS NOT NULL AND u.id = $1)
+               OR ($1::uuid IS NULL AND (COALESCE(u.is_bootstrap, FALSE) = TRUE OR u.username = 'admin')))
       )`, [protectedUserId]);
   }
   await client.query(`
     DELETE FROM public.users
-    WHERE COALESCE(is_bootstrap, FALSE) = FALSE
-      AND username <> 'admin'
-      AND ($1::uuid IS NULL OR id <> $1)
+    WHERE ($1::uuid IS NULL AND COALESCE(is_bootstrap, FALSE) = FALSE AND username <> 'admin')
+       OR ($1::uuid IS NOT NULL AND id <> $1)
   `, [protectedUserId]);
   const employeeDelete = await client.query("DELETE FROM public.employees");
   deleted.employees = employeeDelete.rowCount ?? 0;
