@@ -375,6 +375,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
          RETURNING id`,
         [employeeA.rows[0].id,userId]
       );
+      await apiPool.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
+         VALUES($1,'ADJUSTMENT',800,$2,'صرف سلفة ثابتة للاختبار'),($1,'ADJUSTMENT',500,$2,'صرف سلفة نسبة راتب للاختبار')`,
+        [employeeA.rows[0].id,userId]
+      );
       const februaryGenerate = await app.inject({
         method: "POST", url: "/api/payroll/generate", headers: { cookie: cookieHeader },
         payload: { month: "2099-02" }
@@ -408,7 +413,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000);
       const salaryPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1",[februaryPayment.json().data.payment.id]);
       assert.equal(salaryPaymentLedger.rowCount,1,"the actual salary payout must clear only the amount paid");
-      assert.equal(Number(salaryPaymentLedger.rows[0].debit_amount),600);
+      assert.equal(Number(salaryPaymentLedger.rows[0].debit_amount),1000,"the gross salary entitlement must be cleared even when only 600 cash is paid");
       const fixedRepayment = await apiPool.query(
         "SELECT amount,repayment_type,source_payroll_item_id FROM advance_repayments WHERE advance_id=$1",
         [fixedAdvance.rows[0].id]
@@ -431,6 +436,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(Number(salaryPercentageRepayment.rows[0].amount),100);
       assert.equal(salaryPercentageRepayment.rows[0].repayment_type,"SALARY_PERCENTAGE");
       assert.equal(salaryPercentageRepayment.rows[0].source_payroll_item_id,februaryItem.id);
+      const repaymentLedger=await apiPool.query(
+        `SELECT credit_amount,advance_repayment_id FROM employee_earnings_ledger
+          WHERE employee_id=$1 AND advance_repayment_id IN (SELECT id FROM advance_repayments WHERE source_payroll_item_id=$2)`,
+        [employeeA.rows[0].id,februaryItem.id]
+      );
+      assert.equal(repaymentLedger.rowCount,2,"each salary advance repayment must update the employee account");
+      assert.equal(repaymentLedger.reduce((sum:any,row:any)=>sum+Number(row.credit_amount),0),400);
+      const reconciledAccount=await apiPool.query(
+        "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
+        [employeeA.rows[0].id]
+      );
+      assert.equal(Number(reconciledAccount.rows[0].balance),-900,"the employee account must reconcile to the 900 remaining advance balance");
       const custodySummary=await apiPool.query(
         "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
         [februaryItem.id]
