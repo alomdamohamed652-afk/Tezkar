@@ -119,6 +119,23 @@ export async function taskRoutes(app: FastifyInstance) {
         afterData: { task, assignees: target.rows, transfer: transfer.rows[0] },
         ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null
       });
+      const recipientEmployeeIds = [...new Set([
+        ...previous.rows.map((assignee: {id:string}) => assignee.id),
+        target.rows[0].id
+      ])];
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         SELECT u.id,'TASK_TRANSFER',
+           CASE WHEN u.employee_id=$3 THEN 'تم إسناد مهمة إليك' ELSE 'تم نقل مهمة من مسؤوليتك' END,
+           CASE WHEN u.employee_id=$3
+             THEN 'تم إسناد المهمة "' || $4 || '" إليك. السبب: ' || $6
+             ELSE 'تم نقل المهمة "' || $4 || '" إلى موظف آخر. السبب: ' || $6
+           END,
+           'task',$5
+         FROM users u
+         WHERE u.employee_id=ANY($1::uuid[]) AND u.id<>$2 AND u.is_active=TRUE`,
+        [recipientEmployeeIds, request.user!.userId, target.rows[0].id, task.title, id, parsed.data.reason]
+      );
       return { data: { ...transfer.rows[0], to_employee_name: target.rows[0].full_name, to_employee_code: target.rows[0].code } };
     });
     return reply.code(201).send(result);
