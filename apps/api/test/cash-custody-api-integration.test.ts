@@ -501,7 +501,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.ok(autoAllocationRows.length>=2,"automatic allocation should include both cost-bearing test orders");
       assert.ok(allocationShareA>0&&allocationShareB>0,"both test orders must receive a positive cost-weighted share");
       assert.ok(Math.abs(allocationShareB-allocationShareA*3)<=0.04,"the 300-cost order should receive approximately three times the share of the 100-cost order, with only cent-rounding differences");
-      assert.equal(Number(autoAllocationRows.reduce((sum,row)=>sum+Number(row.amount),0)),10,"automatic allocation must preserve the exact original administrative expense total");
+      assert.equal(Math.round(autoAllocationRows.reduce((sum,row)=>sum+Number(row.amount),0)*100),1000,"automatic allocation must preserve the exact original administrative expense total to the cent");
       const adjustedAllocation=await app.inject({
         method:"PUT",url:"/api/accounting/periods/"+allocationPeriodId+"/allocations",headers:{cookie:managerCookie},
         payload:{allocations:[
