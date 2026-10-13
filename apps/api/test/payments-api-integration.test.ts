@@ -468,7 +468,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
-      assert.equal(Number(postSettlementBalance.json().data.balance),50,"gross earnings are cleared and the repayment reduces the negative loan balance");
+      assert.equal(Number(postSettlementBalance.json().data.balance),0,"the remaining 150 EGP earnings and 150 EGP loan offset to a zero net employee account balance");
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),150);
       assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
     }finally{await app.close()}
