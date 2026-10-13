@@ -61,7 +61,8 @@ export async function advanceRoutes(app:FastifyInstance){
     const r=await pool.query(
       `SELECT a.*,e.code AS employee_code,e.full_name AS employee_name,
               COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
-              GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount
+              GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount,
+              COALESCE((SELECT SUM(l.credit_amount-l.debit_amount) FROM employee_earnings_ledger l WHERE l.employee_id=a.employee_id),0) AS account_balance
          FROM advance_requests a JOIN employees e ON e.id=a.employee_id
         ${where.length?"WHERE "+where.join(" AND "):""}
         ORDER BY a.created_at DESC LIMIT 500`,params);
