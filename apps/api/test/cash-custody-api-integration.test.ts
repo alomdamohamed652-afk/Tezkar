@@ -411,6 +411,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-TEST',99.99,'2099-01-12','EXTERNAL_CUSTODY_TOP_UP','legacy external custody funding',$1) RETURNING id",
         [manager.id]
       )).rows[0];
+      const legacyLowercaseFunding=(await apiPool.query(
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-LOWER-TEST',49.99,'2099-01-12','external_custody_top_up','legacy lowercase external custody funding',$1) RETURNING id",
+        [manager.id]
+      )).rows[0];
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
       const summaryBeforeTopUp=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(summaryBeforeTopUp.statusCode,200,summaryBeforeTopUp.body);
@@ -432,6 +436,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const revenueList=await app.inject({method:"GET",url:"/api/accounting/revenues",headers:{cookie:managerCookie}});
       assert.equal(revenueList.statusCode,200,revenueList.body);
       assert.equal(revenueList.json().data.some((row:{id:string})=>row.id===legacyFunding.id),false,"legacy custody funding must be excluded from the sales revenue list");
+      assert.equal(revenueList.json().data.some((row:{id:string})=>row.id===legacyLowercaseFunding.id),false,"legacy lowercase custody funding must also be excluded from the sales revenue list");
       for (const reservedSource of ["EXTERNAL_CUSTODY_TOP_UP", "external_custody_top_up"]) {
         const misclassifiedFunding=await app.inject({
           method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
