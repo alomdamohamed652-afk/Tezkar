@@ -112,8 +112,13 @@ async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:s
     if(elapsed<periodDays)continue;
     const duePeriods=Math.max(1,Math.floor(elapsed/periodDays));
     const production=await client.query(
-      `SELECT COALESCE(SUM(GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-         COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0))),0) AS amount
+      `SELECT GREATEST(0,
+          COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0)
+          -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+          -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+                     WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
+        ) AS amount
          FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.work_date>$2::date AND pe.work_date<=$3::date`,
       [employeeId,startDate,paymentDate]
     );
