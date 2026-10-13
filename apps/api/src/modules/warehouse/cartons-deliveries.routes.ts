@@ -69,7 +69,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  app.get("/api/delivery-permissions/drafts/active",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
   const parsed=z.object({orderId:z.string().uuid()}).safeParse(request.query);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","رقم الطلبية غير صحيح",422);
-  const result=await pool.query(`SELECT d.*,COALESCE(json_agg(jsonb_build_object('id',l.id,'order_item_id',l.order_item_id,'product_id',l.product_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY l.created_at) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
+  const result=await pool.query(`SELECT d.*,COALESCE(json_agg(jsonb_build_object('id',l.id,'order_item_id',l.order_item_id,'product_id',l.product_id,'warehouse_id',l.warehouse_id,'location_id',l.location_id,'product_code',p.code,'product_name',p.name,'quantity',l.quantity,'carton_code',l.carton_code,'carton_weight',l.carton_weight,'piece_count',l.piece_count,'sample_quantity',l.sample_quantity,'details',l.details,'unit_name',u.name) ORDER BY l.created_at) FILTER (WHERE l.id IS NOT NULL),'[]') AS lines
    FROM delivery_permissions d LEFT JOIN delivery_permission_lines l ON l.delivery_permission_id=d.id LEFT JOIN products p ON p.id=l.product_id LEFT JOIN units u ON u.id=l.unit_id
    WHERE d.order_id=$1 AND d.created_by=$2 AND d.status='DRAFT'
    GROUP BY d.id ORDER BY d.updated_at DESC LIMIT 1`,[parsed.data.orderId,request.user!.userId]);
