@@ -69,6 +69,23 @@ export async function advanceRoutes(app:FastifyInstance){
     return {data:r.rows};
   });
 
+  app.get("/api/advances/my-account",{preHandler:[authenticateRequest,requireAnyPermission(["advances.view_own","own"],["advances.view","all"])]},async(request)=>{
+    const employeeId=request.user!.employeeId;
+    if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","حسابك غير مرتبط بملف موظف؛ اطلب من الإدارة ربط الحساب",403);
+    const employee=await pool.query("SELECT id,code,full_name FROM employees WHERE id=$1",[employeeId]);
+    if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","ملف الموظف المرتبط بالحساب غير موجود",404);
+    const [balance,advances,ledger]=await Promise.all([
+      pool.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[employeeId]),
+      pool.query(`SELECT a.id,a.code,a.amount,a.repayment_method,a.installment_amount,a.salary_percentage,a.production_percentage,a.production_period_days,a.production_installment_amount,a.production_minimum_earning,a.status,a.repayment_status,
+        COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
+        GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount
+        FROM advance_requests a WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+        ORDER BY a.paid_at DESC,a.created_at DESC`,[employeeId]),
+      pool.query("SELECT id,code,entry_type,credit_amount,debit_amount,notes,created_at FROM employee_earnings_ledger WHERE employee_id=$1 ORDER BY created_at DESC LIMIT 100",[employeeId])
+    ]);
+    return {data:{employee:employee.rows[0],accountBalance:Number(balance.rows[0].balance),advances:advances.rows,ledger:ledger.rows}};
+  });
+
   app.post("/api/advances",{preHandler:[authenticateRequest,requirePermission("advances.create")]},async(request,reply)=>{
     const p=createSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات السلفة غير صحيحة",422);
     const r=await withTransaction(async client=>{
