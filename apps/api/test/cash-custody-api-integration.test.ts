@@ -396,7 +396,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(managerEntry.statusCode, 201, managerEntry.body);
       const unlinkedCashIn=await app.inject({
         method:"POST",url:"/api/cash-custody",headers:{cookie:managerCookie},
-        payload:{employeeId:employeeA.id,direction:"IN",amount:26,transactionDate:"2099-01-12",description:"Must use the accounting-linked top-up route"}
+        payload:{employeeId:employeeA.id,direction:"IN",amount:26,transactionDate:"2099-01-12",description:"Must use the dedicated custody funding or order collection route"}
       });
       assert.equal(unlinkedCashIn.statusCode,409,unlinkedCashIn.body);
       assert.equal(unlinkedCashIn.json().error.code,"USE_CUSTODY_TOP_UP_OR_COLLECTION","manual IN movements must not bypass company revenue posting");
@@ -415,18 +415,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(externalTopUp.statusCode,201,externalTopUp.body);
       assert.equal(externalTopUp.json().data.direction,"IN");
       assert.equal(externalTopUp.json().data.source_type,"EXTERNAL_TOP_UP");
-      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count),revenueCountBeforeTopUp+1,"external custody funding must create exactly one company revenue record");
-      assert.equal(externalTopUp.json().data.revenue_code?.startsWith("REV-"),true);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count),revenueCountBeforeTopUp,"external custody funding must not create a company revenue record");
+      assert.equal(externalTopUp.json().data.revenue_code,undefined);
       const topUpRevenue=(await apiPool.query("SELECT * FROM order_revenues WHERE source='EXTERNAL_CUSTODY_TOP_UP' AND amount=333.33 AND revenue_date='2099-01-13'")).rows[0];
-      assert.ok(topUpRevenue,"external funding must appear in the company revenue ledger");
-      assert.equal(topUpRevenue.order_id,null,"external custody funding is general company revenue, not order revenue");
-      assert.equal(topUpRevenue.cash_custody_transaction_id,externalTopUp.json().data.id);
-      const topUpRevenueList=await app.inject({method:"GET",url:"/api/accounting/revenues",headers:{cookie:managerCookie}});
-      assert.equal(topUpRevenueList.statusCode,200,topUpRevenueList.body);
-      assert.ok(topUpRevenueList.json().data.some((row:{id:string;source:string;amount:string})=>row.id===topUpRevenue.id&&row.source==="EXTERNAL_CUSTODY_TOP_UP"&&Number(row.amount)===333.33));
+      assert.equal(topUpRevenue,undefined,"new external funding must not be posted to the sales revenue ledger");
       const topUpSummary=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(topUpSummary.statusCode,200,topUpSummary.body);
-      assert.ok(Number(topUpSummary.json().data.total_in)>=333.33,"company income summary must include external custody funding");
+      assert.equal(Number(topUpSummary.json().data.total_in),0,"external custody funding must not increase company revenue");
+      const topUpAudit=await apiPool.query("SELECT after_data,metadata FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND entity_id=$1",[externalTopUp.json().data.id]);
+      assert.equal(topUpAudit.rowCount,1);
+      assert.equal(topUpAudit.rows[0].metadata.companyRevenue,false,"audit must classify external top-up as funding, not revenue");
       const repeatedTopUp=await app.inject({
         method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
         payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"Duplicate external funding test"}
