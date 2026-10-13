@@ -316,17 +316,18 @@ export async function payrollRoutes(app: FastifyInstance) {
         await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payroll_repayment",module:"advances",entityType:"advance_request",entityId:deduction.advance_id,metadata:{payrollItemId:id,amount:Number(deduction.amount),remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       }
       if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف المرتب",409);
+      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+        [id,parsed.data.amount,parsed.data.paymentDate??new Date().toISOString().slice(0,10),parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId]);
       const custodyOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'PAYROLL_PAYMENT',$6,$7) RETURNING id",
-        [request.user!.employeeId,parsed.data.amount+committedAdvanceRepayment,parsed.data.paymentDate??null,"تسوية راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,id,request.user!.userId]
+        [request.user!.employeeId,parsed.data.amount+committedAdvanceRepayment,parsed.data.paymentDate??null,"تسوية راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,payment.rows[0].id,request.user!.userId]
       );
       let custodyIn=null;
       if(committedAdvanceRepayment>0)custodyIn=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
-        [request.user!.employeeId,committedAdvanceRepayment,parsed.data.paymentDate??null,"استرداد سلف من مستحقات الراتب",`خصم سلف إجمالي ${committedAdvanceRepayment.toFixed(2)} ج.م`,id,request.user!.userId]
+        [request.user!.employeeId,committedAdvanceRepayment,parsed.data.paymentDate??null,"استرداد سلف من مستحقات الراتب",`خصم سلف إجمالي ${committedAdvanceRepayment.toFixed(2)} ج.م`,payment.rows[0].id,request.user!.userId]
       );
-      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-        [id,parsed.data.amount,parsed.data.paymentDate??new Date().toISOString().slice(0,10),parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId]);
+
       await client.query(
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id)
          VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
