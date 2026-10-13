@@ -229,7 +229,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(salaryHistory.json().data.history.length, 1);
       assert.equal(Number(salaryHistory.json().data.history[0].monthly_salary), 1000);
 
-      // Salary-based advance payout must not debit production earnings; it is recovered by payroll.
+      // Salary-based advance payout must appear as a debit on the employee account immediately.
       const ledgerBeforeSalaryAdvance = await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
         [employeeB.rows[0].id]
@@ -249,12 +249,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(salaryAdvancePaid.statusCode, 200, salaryAdvancePaid.body);
       assert.equal(salaryAdvancePaid.json().data.status, "PAID");
-      assert.equal(salaryAdvancePaid.json().data.ledger_entry_id, null, "salary-based advance must not debit production earnings");
+      assert.ok(salaryAdvancePaid.json().data.ledger_entry_id, "salary-based advance must debit the employee account so the negative balance is visible");
       const ledgerAfterSalaryAdvance = await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
         [employeeB.rows[0].id]
       );
-      assert.equal(Number(ledgerAfterSalaryAdvance.rows[0].balance), Number(ledgerBeforeSalaryAdvance.rows[0].balance));
+      assert.equal(Number(ledgerAfterSalaryAdvance.rows[0].balance), Number(ledgerBeforeSalaryAdvance.rows[0].balance)-250);
 
       // A paid, still-open advance must not block another advance; payroll can repay both.
       const secondSalaryAdvanceCreated = await app.inject({
