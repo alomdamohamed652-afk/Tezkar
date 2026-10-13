@@ -140,7 +140,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
   if(netAmount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة النقدية لا يكفي لصافي المبلغ المدفوع للعامل. تم إيقاف العملية دون ترحيل أي جزء منها.",409);
   const row=await client.query(
     "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT',$5,$6) RETURNING *",
-    [custodyEmployeeId,grossAmount,"تسوية إجمالي طلب القبض "+requestCode,repaymentAmount>0?`إجمالي المستحق ${grossAmount.toFixed(2)} ج.م؛ صافي النقد المدفوع ${netAmount.toFixed(2)} ج.م؛ استرداد سلف ${repaymentAmount.toFixed(2)} ج.م`:"صرف طلب القبض بالقيمة كاملة. رقم السند: "+paymentId,paymentId,userId]
+    [custodyEmployeeId,grossAmount,"صرف طلب القبض "+requestCode+" (تسوية إجمالي المستحق)",repaymentAmount>0?`إجمالي المستحق ${grossAmount.toFixed(2)} ج.م؛ صافي النقد المدفوع ${netAmount.toFixed(2)} ج.م؛ استرداد سلف ${repaymentAmount.toFixed(2)} ج.م`:"صرف طلب القبض بالقيمة كاملة. رقم السند: "+paymentId,paymentId,userId]
   );
   if(repaymentAmount>0)await client.query(
     "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT_ADVANCE_REPAYMENT',$5,$6)",
