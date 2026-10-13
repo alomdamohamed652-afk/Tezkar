@@ -3,6 +3,7 @@
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
+import {useToast} from "../../components/toast-provider";
 
 type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string;is_active:boolean};
@@ -28,11 +29,13 @@ function describePermission(p:Permission){
 
 export default function SettingsPage(){
  const {has}=usePermissions();
+ const toast=useToast();
  const [tab,setTab]=useState("permissions"),[roles,setRoles]=useState<Item[]>([]),[permissions,setPermissions]=useState<Permission[]>([]),[roleId,setRoleId]=useState(""),[rolePermissionIds,setRolePermissionIds]=useState<string[]>([]);
  const [users,setUsers]=useState<User[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[departments,setDepartments]=useState<Item[]>([]),[jobs,setJobs]=useState<Item[]>([]);
- const [message,setMessage]=useState(""),[error,setError]=useState(""),[query,setQuery]=useState(""),[permissionSearch,setPermissionSearch]=useState("");
+ const [query,setQuery]=useState(""),[permissionSearch,setPermissionSearch]=useState("");
  const [showCreateUser,setShowCreateUser]=useState(false),[newUsername,setNewUsername]=useState(""),[newPassword,setNewPassword]=useState(""),[newUserRoleCode,setNewUserRoleCode]=useState(""),[creatingUser,setCreatingUser]=useState(false);
  const [showCreateRole,setShowCreateRole]=useState(false),[newRoleCode,setNewRoleCode]=useState(""),[newRoleName,setNewRoleName]=useState(""),[creatingRole,setCreatingRole]=useState(false);
+ const [resetEnabled,setResetEnabled]=useState(false),[resetVisible,setResetVisible]=useState(false),[resetUsed,setResetUsed]=useState(false),[resetBusy,setResetBusy]=useState(false),[resetPhrase,setResetPhrase]=useState("");
 
  async function load(){
   try{
@@ -43,30 +46,33 @@ export default function SettingsPage(){
    setRoles(r.data);setPermissions(p.data);setUsers(u.data);setEmployees(e.data);setDepartments(d.data);setJobs(j.data);
    if(!roleId&&r.data[0])setRoleId(r.data[0].id);
    if(!newUserRoleCode&&r.data[0])setNewUserRoleCode(r.data[0].code);
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإعدادات")}
+  }catch(e){toast.error(e instanceof Error?e.message:"تعذر تحميل الإعدادات")}
  }
  useEffect(()=>{void load()},[]);
+ useEffect(()=>{api<{data:{enabled:boolean;used:boolean;configured:boolean}}>("/api/system/reset/status").then(r=>{setResetVisible(true);setResetEnabled(r.data.enabled);setResetUsed(r.data.used)}).catch(()=>{setResetVisible(false);setResetEnabled(false);setResetUsed(false)})},[]);
  useEffect(()=>{if(!roleId)return;api<{data:{id:string}[]}>("/api/roles/"+roleId+"/permissions").then(x=>setRolePermissionIds(x.data.map(v=>v.id))).catch(()=>setRolePermissionIds([]))},[roleId]);
 
  const groups=useMemo(()=>{const m=new Map<string,Permission[]>();for(const p of permissions){const arr=m.get(p.module)||[];arr.push(p);m.set(p.module,arr)}return Array.from(m.entries())},[permissions]);
  const filteredUsers=users.filter(x=>(x.username+" "+(x.full_name??"")+" "+x.role_codes.join(" ")).toLowerCase().includes(query.toLowerCase()));
  const filteredEmployees=employees.filter(x=>(x.full_name+" "+x.code).toLowerCase().includes(query.toLowerCase()));
 
- async function savePermissions(){try{await api("/api/roles/"+roleId+"/permissions",{method:"PUT",body:JSON.stringify({permissionIds:rolePermissionIds})});setMessage("تم حفظ صلاحيات الدور");}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
- async function createRole(event:FormEvent<HTMLFormElement>){event.preventDefault();setCreatingRole(true);setError("");setMessage("");try{const result=await api<{data:Item}>("/api/roles",{method:"POST",body:JSON.stringify({code:newRoleCode.trim().toLowerCase(),name:newRoleName.trim()})});setRoles(v=>[...v,result.data]);setRoleId(result.data.id);setNewUserRoleCode(result.data.code);setNewRoleCode("");setNewRoleName("");setShowCreateRole(false);setRolePermissionIds([]);setMessage("تم إنشاء الدور. فعّل صلاحياته ثم احفظها قبل إسناده للمستخدمين.");}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الدور")}finally{setCreatingRole(false)}}
- async function createStandaloneUser(event:FormEvent<HTMLFormElement>){event.preventDefault();setCreatingUser(true);setError("");setMessage("");try{await api("/api/users",{method:"POST",body:JSON.stringify({username:newUsername.trim(),password:newPassword,employeeId:null,roleCode:newUserRoleCode})});setMessage("تم إنشاء حساب المستخدم المستقل بنجاح، بدون إنشاء سجل موظف.");setNewUsername("");setNewPassword("");setShowCreateUser(false);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء حساب المستخدم")}finally{setCreatingUser(false)}}
- async function deactivateUser(id:string){if(!confirm("تعطيل الحساب؟ لن يستطيع تسجيل الدخول بعد ذلك."))return;try{await api("/api/users/"+id,{method:"DELETE"});setMessage("تم تعطيل الحساب");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الحساب")}}
- async function deactivateEmployee(id:string){if(!confirm("تعطيل الموظف وحسابه المرتبط؟"))return;try{await api("/api/employees/"+id,{method:"DELETE"});setMessage("تم تعطيل الموظف");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
+ async function savePermissions(){try{await api("/api/roles/"+roleId+"/permissions",{method:"PUT",body:JSON.stringify({permissionIds:rolePermissionIds})});toast.success("تم حفظ صلاحيات الدور");}catch(e){toast.error(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
+ async function createRole(event:FormEvent<HTMLFormElement>){event.preventDefault();setCreatingRole(true);try{const result=await api<{data:Item}>("/api/roles",{method:"POST",body:JSON.stringify({code:newRoleCode.trim().toLowerCase(),name:newRoleName.trim()})});setRoles(v=>[...v,result.data]);setRoleId(result.data.id);setNewUserRoleCode(result.data.code);setNewRoleCode("");setNewRoleName("");setShowCreateRole(false);setRolePermissionIds([]);toast.success("تم إنشاء الدور. فعّل صلاحياته ثم احفظها قبل إسناده للمستخدمين.");}catch(e){toast.error(e instanceof Error?e.message:"تعذر إنشاء الدور")}finally{setCreatingRole(false)}}
+ async function createStandaloneUser(event:FormEvent<HTMLFormElement>){event.preventDefault();setCreatingUser(true);try{await api("/api/users",{method:"POST",body:JSON.stringify({username:newUsername.trim(),password:newPassword,employeeId:null,roleCode:newUserRoleCode})});toast.success("تم إنشاء حساب المستخدم المستقل بنجاح، بدون إنشاء سجل موظف.");setNewUsername("");setNewPassword("");setShowCreateUser(false);await load()}catch(e){toast.error(e instanceof Error?e.message:"تعذر إنشاء حساب المستخدم")}finally{setCreatingUser(false)}}
+ async function deactivateUser(id:string){if(!confirm("تعطيل الحساب؟ لن يستطيع تسجيل الدخول بعد ذلك."))return;try{await api("/api/users/"+id,{method:"DELETE"});toast.success("تم تعطيل الحساب");await load()}catch(e){toast.error(e instanceof Error?e.message:"تعذر تعطيل الحساب")}}
+ async function deactivateEmployee(id:string){if(!confirm("تعطيل الموظف وحسابه المرتبط؟"))return;try{await api("/api/employees/"+id,{method:"DELETE"});toast.success("تم تعطيل الموظف");await load()}catch(e){toast.error(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
+ async function resetAllData(event:FormEvent<HTMLFormElement>){event.preventDefault();if(resetPhrase!=="امسح كل بيانات النظام"){toast.warning("اكتب عبارة التأكيد كاملة كما هي قبل المتابعة");return}setResetBusy(true);try{const result=await api<{data:{deletedRows:Record<string,number>;preservedTables:string[]}}>("/api/system/reset/execute",{method:"POST",body:JSON.stringify({confirmation:resetPhrase})});toast.success("تم مسح البيانات التشغيلية بنجاح. سيتم تسجيل خروجك للحفاظ على جلسات الدخول.","اكتمل المسح");setResetPhrase("");setResetUsed(true);setResetEnabled(false);setTimeout(()=>window.location.assign("/login"),1300);}catch(e){toast.error(e instanceof Error?e.message:"تعذر مسح بيانات النظام")}finally{setResetBusy(false)}}
 
  return <div className="app-shell"><Sidebar active="/settings"/><main className="main">
   <header className="topbar"><div><h1 className="page-title">الإعدادات والإدارة</h1><p className="page-subtitle">تحكم كامل في الحسابات، الصلاحيات والبيانات الإدارية.</p></div></header>
   <section className="content">
-   {message&&<div className="success-box">{message}</div>}{error&&<div className="alert error">{error}</div>}
+   
    <div className="settings-tabs">
     <button className={"tab "+(tab==="permissions"?"active":"")} onClick={()=>setTab("permissions")}>الصلاحيات والأدوار</button>
     <button className={"tab "+(tab==="users"?"active":"")} onClick={()=>setTab("users")}>حسابات المستخدمين</button>
     <button className={"tab "+(tab==="employees"?"active":"")} onClick={()=>setTab("employees")}>الموظفون</button>
     <button className={"tab "+(tab==="structure"?"active":"")} onClick={()=>setTab("structure")}>الهيكل الإداري</button>
+    {resetVisible&&<button className={"tab "+(tab==="reset"?"active":"")} onClick={()=>setTab("reset")}>مسح بيانات التجربة</button>}
    </div>
 
    {tab==="permissions"&&<section className="card settings-wide"><div className="card-header settings-card-title"><div><h2 className="card-title">إدارة صلاحيات المستخدمين</h2><div className="settings-help">اختار الدور، ثم فعّل فقط المهام التي تريد السماح بها. الشرح مكتوب بالعربي؛ أكواد النظام الداخلية مخفية من الشاشة.</div></div><div className="settings-toolbar" style={{border:0,padding:0}}><select aria-label="اختيار الدور" value={roleId} onChange={e=>setRoleId(e.target.value)}>{roles.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><button className="secondary-btn" onClick={()=>setShowCreateRole(v=>!v)} disabled={!has("rbac.manage")}>{showCreateRole?"إلغاء":"＋ دور جديد"}</button><button className="primary-button" onClick={savePermissions} disabled={!has("rbac.manage")}>حفظ التعديلات</button></div></div>
@@ -88,6 +94,7 @@ export default function SettingsPage(){
    </section>}
 
    {tab==="structure"&&<div className="settings-grid"><section className="card"><div className="card-header"><h2 className="card-title">الأقسام</h2><span className="count-badge">{departments.length}</span></div><div className="simple-list">{departments.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section><section className="card"><div className="card-header"><h2 className="card-title">الوظائف</h2><span className="count-badge">{jobs.length}</span></div><div className="simple-list">{jobs.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section></div>}
+   {tab==="reset"&&resetVisible&&<section className="card settings-wide"><div className="card-header"><div><h2 className="card-title">{resetUsed?"تم استخدام مسح بيانات التجربة":"مسح بيانات التجربة — إجراء نهائي"}</h2><div className="settings-help">{resetUsed?"تم تنفيذ العملية مرة واحدة بالفعل، ولن يقبل الخادم إعادة تنفيذها.":"هذه الوظيفة مؤقتة ومقفولة افتراضيًا على الخادم. لن تعمل حتى يتم تفعيل TEZKAR_ENABLE_ONE_TIME_RESET=true، ولا تستخدمها إلا بعد التأكد من أن قاعدة البيانات تحتوي بيانات تجريبية فقط."}</div></div><span className="status rejected">حذف نهائي</span></div><div className="card-body"><div className="alert error" style={{marginBottom:16}}>سيتم حذف الطلبيات ومراحلها، الموظفين، الحسابات غير المحمية، الملفات الشخصية، الإنتاج، المخزون وحركاته، التسليمات والاستلامات، العهد والسلف، المصروفات، المرتبات، المهام، وسجلات التشغيل اليدوية. لن يتم حذف حساب مدير النظام الحالي أو الأدوار والصلاحيات والبيانات المرجعية الأساسية، وسيُحتفظ بمخزن أساسي وموقع واحد إن وُجدا. سيتم حذف سجلات الجلسات وسيتطلب منك تسجيل الدخول من جديد.</div><form onSubmit={resetAllData} className="stack-form"><label>اكتب العبارة التالية للتأكيد: <strong>امسح كل بيانات النظام</strong><input value={resetPhrase} onChange={e=>setResetPhrase(e.target.value)} autoComplete="off" placeholder="اكتب عبارة التأكيد حرفيًا" required/></label><div className="form-actions" style={{padding:"0"}}><button className="danger-button" type="submit" disabled={!resetEnabled||resetUsed||resetBusy||resetPhrase!=="امسح كل بيانات النظام"}>{resetBusy?"جارٍ مسح البيانات...":"مسح جميع بيانات التجربة نهائيًا"}</button></div><p className="form-hint">{resetUsed?"تم قفل الأداة بعد الاستخدام الأول.":resetEnabled?"لن ينفذ الطلب إلا إذا كان الحساب مدير نظام وعبارة التأكيد مطابقة تمامًا.":"زر المسح مقفول حاليًا على الخادم؛ لا توجد أي بيانات ستُحذف في هذه الحالة."}</p></form></div></section>}
   </section>
  </main></div>;
 }
