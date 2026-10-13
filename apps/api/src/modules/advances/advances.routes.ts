@@ -11,11 +11,13 @@ const createSchema=z.object({
   employeeId:z.string().uuid(),
   amount:z.number().positive(),
   reason:z.string().trim().min(2).max(500),
-  repaymentMethod:z.enum(["FIXED_INSTALLMENT","PRODUCTION_PERCENTAGE","CUSTOM"]).default("CUSTOM"),
+  repaymentMethod:z.enum(["FIXED_INSTALLMENT","SALARY_PERCENTAGE","PRODUCTION_PERCENTAGE","CUSTOM"]).default("CUSTOM"),
   installmentAmount:z.number().positive().optional(),
+  salaryPercentage:z.number().positive().max(100).optional(),
   productionPercentage:z.number().positive().max(100).optional()
 }).superRefine((v,ctx)=>{
-  if(v.repaymentMethod==="FIXED_INSTALLMENT"&&!v.installmentAmount)ctx.addIssue({code:"custom",path:["installmentAmount"],message:"قيمة القسط مطلوبة"});
+  if(v.repaymentMethod==="FIXED_INSTALLMENT"&&!v.installmentAmount)ctx.addIssue({code:"custom",path:["installmentAmount"],message:"قيمة القسط الشهري مطلوبة"});
+  if(v.repaymentMethod==="SALARY_PERCENTAGE"&&!v.salaryPercentage)ctx.addIssue({code:"custom",path:["salaryPercentage"],message:"نسبة الخصم من الراتب مطلوبة"});
   if(v.repaymentMethod==="PRODUCTION_PERCENTAGE"&&!v.productionPercentage)ctx.addIssue({code:"custom",path:["productionPercentage"],message:"نسبة الإنتاج مطلوبة"});
 });
 
@@ -70,8 +72,8 @@ export async function advanceRoutes(app:FastifyInstance){
       const open=await client.query("SELECT id FROM advance_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED','PAID') AND repayment_status='OPEN' LIMIT 1 FOR UPDATE",[p.data.employeeId]);
       if(open.rowCount)throw new AppError("OPEN_ADVANCE_EXISTS","يوجد سلفة مفتوحة بالفعل لهذا الموظف",409);
       const x=await client.query(
-        "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,installment_amount,production_percentage) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-        [p.data.employeeId,p.data.amount,p.data.reason,request.user!.userId,p.data.repaymentMethod,p.data.installmentAmount??null,p.data.productionPercentage??null]
+        "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,installment_amount,salary_percentage,production_percentage) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+        [p.data.employeeId,p.data.amount,p.data.reason,request.user!.userId,p.data.repaymentMethod,p.data.installmentAmount??null,p.data.salaryPercentage??null,p.data.productionPercentage??null]
       );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"advances",entityType:"advance_request",entityId:x.rows[0].id,afterData:x.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return x.rows[0];
@@ -114,11 +116,18 @@ export async function advanceRoutes(app:FastifyInstance){
       if(current.rows[0].status!=="APPROVED")throw new AppError("INVALID_STATUS","يجب اعتماد السلفة قبل صرفها",409);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[current.rows[0].employee_id]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",409);
-      const balance=await client.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[current.rows[0].employee_id]);
-      if(Number(current.rows[0].amount)>Number(balance.rows[0]?.balance??0))throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لا يكفي لصرف السلفة",409);
-      const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id,code",[current.rows[0].employee_id,current.rows[0].amount,request.user!.userId,"Advance paid: "+current.rows[0].code]);
-      const updated=await client.query("UPDATE advance_requests SET status='PAID',paid_by=$1,paid_at=now(),ledger_entry_id=$2,updated_at=now() WHERE id=$3 RETURNING *",[request.user!.userId,ledger.rows[0].id,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{ledger_code:ledger.rows[0].code},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      const salaryBased=["FIXED_INSTALLMENT","SALARY_PERCENTAGE"].includes(current.rows[0].repayment_method);
+      const salaryProfile=salaryBased?await client.query("SELECT 1 FROM employee_salary_profiles WHERE employee_id=$1 AND effective_from<=CURRENT_DATE AND (effective_to IS NULL OR effective_to>=CURRENT_DATE) LIMIT 1",[current.rows[0].employee_id]):{rowCount:0,rows:[] as any[]};
+      let ledgerEntryId:string|null=null;
+      let ledgerCode:string|null=null;
+      if(!salaryProfile.rowCount){
+        const balance=await client.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[current.rows[0].employee_id]);
+        if(Number(current.rows[0].amount)>Number(balance.rows[0]?.balance??0))throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لا يكفي لصرف السلفة؛ عرّف راتبًا ساريًا للسداد من المرتب أو استخدم مستحقات الإنتاج",409);
+        const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id,code",[current.rows[0].employee_id,current.rows[0].amount,request.user!.userId,"Advance paid: "+current.rows[0].code]);
+        ledgerEntryId=ledger.rows[0].id;ledgerCode=ledger.rows[0].code;
+      }
+      const updated=await client.query("UPDATE advance_requests SET status='PAID',paid_by=$1,paid_at=now(),ledger_entry_id=$2,updated_at=now() WHERE id=$3 RETURNING *",[request.user!.userId,ledgerEntryId,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{ledger_code:ledgerCode,salary_based:Boolean(salaryProfile.rowCount)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return {data:row};
