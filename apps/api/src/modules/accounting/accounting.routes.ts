@@ -125,7 +125,7 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
  app.get("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.view")]},async()=>{
-  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by WHERE r.UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' ORDER BY r.revenue_date DESC,r.created_at DESC");
+  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by WHERE UPPER(r.source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' ORDER BY r.revenue_date DESC,r.created_at DESC");
   return {data:r.rows};
  });
 
