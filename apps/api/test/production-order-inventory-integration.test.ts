@@ -102,6 +102,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const submitter = await makeUser("submitter", true);
     const approver = await makeUser("approver", true);
+    await apiPool.query(
+      "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening custody for production settlement',$2)",
+      [approver.employeeId,approver.userId]
+    );
     const limitedUser = await makeUser("limited", false);
     await apiPool.query("DELETE FROM user_roles WHERE user_id=$1", [limitedUser.userId]);
     const unauthenticatedCartons = await app.inject({ method: "GET", url: "/api/warehouse/cartons" });
