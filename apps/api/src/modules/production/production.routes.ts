@@ -929,6 +929,12 @@ export async function productionRoutes(app: FastifyInstance) {
           "INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,settlement_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id",
           [item.advance.id,item.amount,item.type,date,item.notes,request.user!.userId,settlement.rows[0].id]
         );
+        await client.query(
+          `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
+           VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+           ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING`,
+          [parsed.data.employeeId,item.amount,repayment.rows[0].id,request.user!.userId,`سداد سلفة ${item.advance.code} من مستحقات الإنتاج`]
+        );
         const next=Number(item.advance.outstanding)-item.amount;
         await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.009?"SETTLED":"OPEN",item.advance.id]);
         await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_earnings_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{settlementId:settlement.rows[0].id,repaymentId:repayment.rows[0].id,amount:item.amount,remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -937,7 +943,7 @@ export async function productionRoutes(app: FastifyInstance) {
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,settlement_id)
          VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
          ON CONFLICT (settlement_id) WHERE settlement_id IS NOT NULL DO NOTHING`,
-        [parsed.data.employeeId,cashPaid,request.user!.userId,`صرف صافي مستحقات إنتاج ${settlement.rows[0].id}`,settlement.rows[0].id]
+        [parsed.data.employeeId,parsed.data.grossAmount,request.user!.userId,`تسوية إجمالي مستحقات إنتاج ${settlement.rows[0].id}؛ صافي النقد ${cashPaid.toFixed(2)} ج.م؛ خصم السلف ${repaymentTotal.toFixed(2)} ج.م`,settlement.rows[0].id]
       );
       const cashOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3::date,$4,$5,'PRODUCTION_EARNINGS_SETTLEMENT',$6,$7) RETURNING id",
