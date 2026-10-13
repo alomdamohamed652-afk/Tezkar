@@ -31,6 +31,30 @@ const paymentSchema = z.object({
 });
 
 export async function payrollRoutes(app: FastifyInstance) {
+  app.get("/api/payroll/my-account", { preHandler: [authenticateRequest, requirePermission("earnings.view_own")] }, async request => {
+    const employeeId=request.user!.employeeId;
+    if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","حسابك غير مرتبط بملف موظف؛ اطلب من الإدارة ربط الحساب",403);
+    const employee=await pool.query("SELECT id,code,full_name FROM employees WHERE id=$1",[employeeId]);
+    if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","ملف الموظف غير موجود",404);
+    const [profiles,items]=await Promise.all([
+      pool.query(`SELECT id,monthly_salary,effective_from,effective_to,notes
+        FROM employee_salary_profiles WHERE employee_id=$1
+        ORDER BY effective_from DESC,created_at DESC LIMIT 24`,[employeeId]),
+      pool.query(`SELECT i.id,p.period_month,p.status AS period_status,i.base_salary,i.bonus_amount,i.deduction_amount,
+          i.advance_repayment_amount,i.net_amount,i.status,i.notes,
+          COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0) AS paid_amount,
+          GREATEST(i.net_amount-COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0),0) AS remaining_amount,
+          COALESCE((SELECT json_agg(json_build_object(
+            'id',pp.id,'amount',pp.amount,'payment_date',pp.payment_date,'payment_method',pp.payment_method,
+            'reference',pp.reference,'notes',pp.notes
+          ) ORDER BY pp.payment_date DESC,pp.created_at DESC) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),'[]'::json) AS payments
+        FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+        WHERE i.employee_id=$1 AND p.status IN ('APPROVED','CLOSED')
+        ORDER BY p.period_month DESC LIMIT 24`,[employeeId])
+    ]);
+    return {data:{employee:employee.rows[0],salaryHistory:profiles.rows,payrollItems:items.rows}};
+  });
+
   app.get("/api/payroll/employees", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async () => {
     const r = await pool.query(`SELECT e.id,e.code,e.full_name,e.department_id,d.name AS department_name,e.is_active,
       p.id AS salary_profile_id,p.monthly_salary,p.effective_from,p.effective_to,p.notes AS salary_notes
