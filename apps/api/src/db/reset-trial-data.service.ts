@@ -224,6 +224,29 @@ try {
   const employeeDelete = await client.query("DELETE FROM public.employees");
   deleted.employees = employeeDelete.rowCount ?? 0;
 
+  // Reattach stable defaults to their canonical parents before removing custom rows.
+  if (present.has("shifts") && present.has("rate_groups")) {
+    await client.query(`
+      UPDATE public.shifts
+      SET rate_group_id = (SELECT id FROM public.rate_groups WHERE code = 'PRODUCTION')
+      WHERE code IN ('MORNING', 'EVENING')
+        AND EXISTS (SELECT 1 FROM public.rate_groups WHERE code = 'PRODUCTION')
+    `);
+  }
+  if (present.has("job_titles") && present.has("departments")) {
+    await client.query(`
+      UPDATE public.job_titles jt
+      SET department_id = d.id
+      FROM (VALUES
+        ('WORKER','PROD'), ('SHIFT_LEADER','PROD'), ('PROD_SUPERVISOR','PROD'),
+        ('WAREHOUSE_KEEPER','WH'), ('WAREHOUSE_MANAGER','WH'),
+        ('HR_SPECIALIST','HR'), ('ACCOUNTANT','ACC'), ('MANAGER','ADMIN')
+      ) AS defaults(title_code, department_code)
+      JOIN public.departments d ON d.code = defaults.department_code
+      WHERE jt.code = defaults.title_code
+    `);
+  }
+
   // Remove user-created rows from reference tables while retaining the known
   // migration-provided defaults needed by the fresh system.
   for (const table of ["job_titles", "departments", "shifts", "rate_groups", "product_categories", "payment_methods"]) {
