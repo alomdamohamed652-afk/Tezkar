@@ -10,7 +10,6 @@ const alwaysKeep = new Set([
   "permissions",
   "role_permissions",
   "rate_groups",
-  "units",
   "stages",
   "wage_types",
   "shifts",
@@ -18,7 +17,9 @@ const alwaysKeep = new Set([
   "payment_methods",
   "production_types",
   "coding_packaging_types",
-  "coding_templates"
+  "coding_templates",
+  "warehouses",
+  "warehouse_locations"
 ]);
 const partiallyKeep = new Set([
   "users",
@@ -33,7 +34,11 @@ const seededReferenceCodes: Record<string, string[]> = {
   rate_groups: ["DEFAULT", "PRODUCTION"],
   shifts: ["MORNING", "EVENING"],
   product_categories: ["PRODUCTS", "RAW_MATERIALS", "PRODUCTION_SUPPLIES", "OPERATING_SUPPLIES"],
-  payment_methods: ["CASH", "VODAFONE_CASH", "INSTAPAY", "BANK"]
+  payment_methods: ["CASH", "VODAFONE_CASH", "INSTAPAY", "BANK"],
+  units: ["PCS", "KG", "G", "M", "CM", "L", "ML", "BOX", "PACK", "HOUR"],
+  wage_types: ["PER_PIECE", "PER_1000", "PER_HOUR", "PER_DAY", "PERCENTAGE_ORDER", "PERCENTAGE_LINE"],
+  production_types: ["PRINTING", "PEELING", "PACKING", "PRESSING", "ASSEMBLY", "CUTTING", "UV_PRINTING", "LASER", "OTHER"],
+  coding_packaging_types: ["BAG", "CARTON", "SACK", "OTHER"]
 };
 
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
