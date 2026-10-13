@@ -890,7 +890,8 @@ export async function productionRoutes(app: FastifyInstance) {
       let remaining=parsed.data.grossAmount;
       for(const advance of advances.rows){
         if(remaining<=0)break;
-        const startDate=String(advance.last_repayment_date??advance.paid_at).slice(0,10);
+        const startValue=advance.last_repayment_date??advance.paid_at;
+        const startDate=startValue instanceof Date?startValue.toISOString().slice(0,10):String(startValue).slice(0,10);
         const elapsed= Math.floor((Date.parse(date+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
         if(elapsed<Number(advance.production_period_days??15))continue;
         const production=await client.query(
