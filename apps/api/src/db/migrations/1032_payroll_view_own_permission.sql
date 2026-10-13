@@ -1,9 +1,10 @@
 -- Employees can view only their own salary profile and approved payslips.
-INSERT INTO permissions(code,name,description,scope)
+INSERT INTO permissions(code,module,entity,action,scope)
 VALUES (
   'payroll.view_own',
-  'عرض الرواتب الشخصية',
-  'عرض سجل الراتب الأساسي ومسيرات الرواتب والمدفوعات الخاصة بصاحب الحساب فقط',
+  'payroll',
+  'payroll',
+  'view',
   'own'
 )
 ON CONFLICT(code) DO NOTHING;
