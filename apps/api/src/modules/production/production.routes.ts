@@ -908,7 +908,13 @@ export async function productionRoutes(app: FastifyInstance) {
             WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.work_date>$2::date AND p.work_date<=$3::date`,
           [parsed.data.employeeId,startDate,date]
         );
-        const periodEarning=Number(production.rows[0].amount);
+        const legacyPaid=await client.query(
+          `SELECT COALESCE(SUM(wp.gross_amount),0) AS amount FROM worker_payments wp
+             LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date`,
+          [parsed.data.employeeId,startDate,date]
+        );
+        const periodEarning=Math.max(0,Number(production.rows[0].amount)-Number(legacyPaid.rows[0].amount));
         if(advance.production_minimum_earning!==null&&advance.production_minimum_earning!==undefined&&periodEarning<Number(advance.production_minimum_earning))continue;
         const scheduled=advance.production_installment_amount!==null
           ? Number(advance.production_installment_amount)*duePeriods
