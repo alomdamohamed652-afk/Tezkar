@@ -58,8 +58,18 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
 }
 
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
-  // The earnings ledger is net of cash paid and advance payouts. Add back only the
-  // outstanding loan principal to recover gross, un-settled earnings for payout requests.
+  // Worker payout requests are limited to unallocated, approved production earnings.
+  // Employee salary accruals are paid through payroll, not through this endpoint.
+  const production=await client.query(`
+    SELECT COUNT(*) FILTER(WHERE pe.status='APPROVED')::int AS approved_count,
+      COALESCE(SUM(GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)))
+        FILTER(WHERE pe.status='APPROVED'),0) AS available
+    FROM production_entries pe WHERE pe.employee_id=$1
+  `,[employeeId]);
+  if(Number(production.rows[0]?.approved_count??0)>0)
+    return Math.round(Number(production.rows[0].available??0)*100)/100;
+  // Legacy ledger-only balances remain supported for existing imported worker accounts.
   const balance=await getBalance(client,employeeId);
   const outstanding=await getOutstandingAdvanceAmount(client,employeeId);
   return Math.max(0,Math.round((balance+outstanding)*100)/100);
@@ -164,11 +174,16 @@ async function executeWorkerPayment(
       planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
       input.transferReference]);
   for(const item of planned.plan){
-    await client.query(
+    const repayment=await client.query(
       `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_worker_payment_id)
-       VALUES($1,$2,$3,$4,$5,$6,$7)`,
+       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
       [item.advance.id,item.amount,item.repaymentType,paymentDate,
        `سداد سلفة ${item.advance.code} من طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
+    await client.query(
+      `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
+       VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+       ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING`,
+      [input.employeeId,item.amount,repayment.rows[0].id,input.userId,`سداد سلفة ${item.advance.code} من مستحقات طلب قبض ${input.requestCode}`]);
     const next=Number(item.advance.outstanding)-item.amount;
     await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.009?"SETTLED":"OPEN",item.advance.id]);
     await writeAudit(client,{actorUserId:input.userId,actorEmployeeId:input.actorEmployeeId,action:"worker_payment_advance_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{workerPaymentId:payment.rows[0].id,requestId:input.requestId,amount:item.amount,remaining:Math.max(0,next)},ipAddress:input.ipAddress,userAgent:input.userAgent});
