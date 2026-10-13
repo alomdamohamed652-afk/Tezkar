@@ -933,8 +933,10 @@ export async function productionRoutes(app: FastifyInstance) {
         await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_earnings_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{settlementId:settlement.rows[0].id,repaymentId:repayment.rows[0].id,amount:item.amount,remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       }
       if(cashPaid>0)await client.query(
-        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4)",
-        [parsed.data.employeeId,cashPaid,request.user!.userId,`صرف صافي مستحقات إنتاج ${settlement.rows[0].id}`]
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,settlement_id)
+         VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+         ON CONFLICT (settlement_id) WHERE settlement_id IS NOT NULL DO NOTHING`,
+        [parsed.data.employeeId,cashPaid,request.user!.userId,`صرف صافي مستحقات إنتاج ${settlement.rows[0].id}`,settlement.rows[0].id]
       );
       const cashOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3::date,$4,$5,'PRODUCTION_EARNINGS_SETTLEMENT',$6,$7) RETURNING id",
