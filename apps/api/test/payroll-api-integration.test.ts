@@ -411,6 +411,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000);
+      const ownPayroll=await app.inject({method:"GET",url:"/api/payroll/my-account",headers:{cookie:cookieHeader}});
+      assert.equal(ownPayroll.statusCode,200,ownPayroll.body);
+      assert.equal(ownPayroll.json().data.employee.id,employeeA.rows[0].id);
+      assert.ok(ownPayroll.json().data.payrollItems.every((x:any)=>x.employee_id===undefined||x.employee_id===employeeA.rows[0].id),
+        "employee salary history must never include another employee");
+      const ownFebruary=ownPayroll.json().data.payrollItems.find((x:any)=>String(x.period_month).slice(0,7)==="2099-02");
+      assert.ok(ownFebruary,"employees should see their approved monthly payslip");
+      assert.equal(Number(ownFebruary.net_amount),600);
+      assert.equal(ownFebruary.payments.length,1,"employee should see actual salary payment history");
       const salaryPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1",[februaryPayment.json().data.payment.id]);
       assert.equal(salaryPaymentLedger.rowCount,1,"the actual salary payment must have a linked employee-ledger entry");
       assert.equal(Number(salaryPaymentLedger.rows[0].debit_amount),1000,"the gross salary entitlement must be cleared even when only 600 cash is paid");
