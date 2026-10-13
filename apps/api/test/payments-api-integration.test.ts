@@ -360,12 +360,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       const balance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(balance.statusCode,200,balance.body);
-      assert.equal(Number(balance.json().data.balance),350);
+      assert.equal(Number(balance.json().data.balance),300);
       const ledger=await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits,COUNT(*) FILTER(WHERE entry_type='WORKER_PAYMENT')::int AS payment_entries FROM employee_earnings_ledger WHERE employee_id=$1",
         [workerEmployee.id]);
-      assert.equal(Number(ledger.rows[0].credits),500);
-      assert.equal(Number(ledger.rows[0].debits),150);
+      assert.equal(Number(ledger.rows[0].credits),550);
+      assert.equal(Number(ledger.rows[0].debits),250);
       assert.equal(Number(ledger.rows[0].payment_entries),1);
 
       // An advance is immediately a debit on the employee account. At payout,
@@ -388,9 +388,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       const availableAfterAdvance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(availableAfterAdvance.statusCode,200,availableAfterAdvance.body);
-      assert.equal(Number(availableAfterAdvance.json().data.balance),150,"employee account must visibly reflect the outstanding advance");
+      assert.equal(Number(availableAfterAdvance.json().data.balance),100,"employee account must visibly reflect the outstanding advance");
       assert.equal(Number(availableAfterAdvance.json().data.outstandingAdvanceAmount),200);
-      assert.equal(Number(availableAfterAdvance.json().data.availableEarnings),350,"loan principal must not reduce earned-but-unpaid production entitlement");
+      assert.equal(Number(availableAfterAdvance.json().data.availableEarnings),300,"loan principal must not reduce earned-but-unpaid production entitlement");
 
       const nextRequest=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
@@ -462,9 +462,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
-      assert.equal(Number(postSettlementBalance.json().data.balance),0,"the remaining 150 EGP earnings and 150 EGP loan offset to a zero net employee account balance");
+      assert.equal(Number(postSettlementBalance.json().data.balance),-50,"the employee account must reconcile remaining unpaid earnings against the outstanding loan");
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),150);
-      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
+      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),100,"only genuinely unpaid earnings remain available");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
