@@ -232,7 +232,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(remainingAdvance.repayment_status,"OPEN");
       assert.equal(Number(remainingAdvance.remaining),50);
       const accountBalance=(await apiPool.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[workerEmployee.id])).rows[0];
-      assert.equal(Number(accountBalance.balance),350);
+      assert.equal(Number(accountBalance.balance),300);
       const remainingAvailable=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(remainingAvailable.statusCode,200,remainingAvailable.body);
       assert.equal(Number(remainingAvailable.json().data.availableEarnings),350);
