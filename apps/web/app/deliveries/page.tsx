@@ -57,13 +57,13 @@ export default function DeliveriesPage(){
  }
  async function startContinuousScan(){
   if(!orderId){setScanFeedback("اختار الطلبية أولًا قبل بدء المسح");return}
-  if(!destination.trim()){setScanFeedback("اكتب جهة التسليم أولًا لحفظ المسودة");return}
   setScanBusy(true);setScanFeedback("");
   try{
    const params=new URLSearchParams({orderId});
    const active=await api<{data:any|null}>("/api/delivery-permissions/drafts/active?"+params.toString());
    let draft=active.data;
    if(!draft){
+    if(!destination.trim())throw new Error("اكتب جهة التسليم أولًا لحفظ المسودة");
     const created=await api<{data:{id:string}}>("/api/delivery-permissions/drafts",{method:"POST",body:JSON.stringify({orderId,destination:destination.trim(),totalWeight:totalWeight.trim()?Number(normalizeNumber(totalWeight)):null,pieceCount:pieceCount.trim()?Number(normalizeNumber(pieceCount)):null,sampleQuantity:sampleQuantity.trim()?Number(normalizeNumber(sampleQuantity)):null,details:details.trim()||null,notes:notes.trim()||null})});
     draft=created.data;
    }else{
