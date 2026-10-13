@@ -458,6 +458,66 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const orderProfitability=await app.inject({method:"GET",url:"/api/accounting/orders/"+profitabilityOrder.id+"/profitability",headers:{cookie:managerCookie}});
       assert.equal(orderProfitability.statusCode,200,orderProfitability.body);
       assert.equal(Number(orderProfitability.json().data.revenue),25,"single-order profitability must exclude legacy custody funding");
+
+      const allocationOrderA=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status,contract_value) VALUES($1,$2,'PLANNED',0) RETURNING id",
+        ["Administrative allocation test order A",manager.id]
+      )).rows[0];
+      const allocationOrderB=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status,contract_value) VALUES($1,$2,'PLANNED',0) RETURNING id",
+        ["Administrative allocation test order B",manager.id]
+      )).rows[0];
+      for (const [orderId,amount,description] of [
+        [allocationOrderA.id,100,"Allocation cost basis A"],
+        [allocationOrderB.id,300,"Allocation cost basis B"]
+      ] as const) {
+        const directCost=await app.inject({
+          method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+          payload:{orderId,category:"Test direct cost",description,amount,expenseType:"DIRECT",expenseDate:"2099-04-05"}
+        });
+        assert.equal(directCost.statusCode,201,directCost.body);
+      }
+      const adminAllocationExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"Test administrative cost",description:"Allocation rounding and override test",amount:10,expenseType:"ADMINISTRATIVE",expenseDate:"2099-04-10"}
+      });
+      assert.equal(adminAllocationExpense.statusCode,201,adminAllocationExpense.body);
+      const allocationPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Administrative allocation test",periodStart:"2099-04-01",periodEnd:"2099-04-30"}
+      });
+      assert.equal(allocationPeriod.statusCode,201,allocationPeriod.body);
+      const allocationPeriodId=allocationPeriod.json().data.id;
+      const autoAllocation=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/auto-allocate",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(autoAllocation.statusCode,200,autoAllocation.body);
+      const autoAllocationRows=(await apiPool.query(
+        "SELECT order_id,amount FROM accounting_expense_allocations WHERE period_id=$1 AND expense_id=$2",
+        [allocationPeriodId,adminAllocationExpense.json().data.id]
+      )).rows;
+      assert.equal(autoAllocationRows.length,2,"automatic allocation should distribute the full expense to both cost-bearing orders");
+      assert.equal(Number(autoAllocationRows.find((row:{order_id:string})=>row.order_id===allocationOrderA.id)?.amount),2.5);
+      assert.equal(Number(autoAllocationRows.find((row:{order_id:string})=>row.order_id===allocationOrderB.id)?.amount),7.5);
+      const adjustedAllocation=await app.inject({
+        method:"PUT",url:"/api/accounting/periods/"+allocationPeriodId+"/allocations",headers:{cookie:managerCookie},
+        payload:{allocations:[
+          {expenseId:adminAllocationExpense.json().data.id,orderId:allocationOrderA.id,amount:4},
+          {expenseId:adminAllocationExpense.json().data.id,orderId:allocationOrderB.id,amount:6}
+        ]}
+      });
+      assert.equal(adjustedAllocation.statusCode,200,adjustedAllocation.body);
+      const closeAllocationPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/close",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(closeAllocationPeriod.statusCode,200,closeAllocationPeriod.body);
+      const allocationProfitA=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderA.id+"/profitability",headers:{cookie:managerCookie}});
+      const allocationProfitB=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderB.id+"/profitability",headers:{cookie:managerCookie}});
+      assert.equal(allocationProfitA.statusCode,200,allocationProfitA.body);
+      assert.equal(allocationProfitB.statusCode,200,allocationProfitB.body);
+      assert.equal(Number(allocationProfitA.json().data.administrativeAllocation),4,"profitability must use the manually adjusted closed-period allocation");
+      assert.equal(Number(allocationProfitB.json().data.administrativeAllocation),6,"the adjusted allocation must remain balanced to the original administrative expense");
+
       for (const reservedSource of ["EXTERNAL_CUSTODY_TOP_UP", "external_custody_top_up"]) {
         const misclassifiedFunding=await app.inject({
           method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
