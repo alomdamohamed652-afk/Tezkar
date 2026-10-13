@@ -277,14 +277,39 @@ export async function payrollRoutes(app: FastifyInstance) {
             [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,grossSalary,period.rows[0].period_month,request.user!.userId]);
           await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
         }
-        // Accrue gross salary on the employee account at approval, even before payout.
-        // Advance installments are shown separately and only reduce the loan when paid.
-        await client.query(
-          `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
-           VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
-           ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
-          [item.employee_id,grossSalary,request.user!.userId,`استحقاق راتب شهر ${String(period.rows[0].period_month).slice(0,7)}`,item.id]
-        );
+        // Post base salary, bonus and deduction as separate account movements.
+        // This makes each adjustment visible to the employee; the net effect remains
+        // base salary + bonus - deduction. Advance installments are only settled at payout.
+        const monthLabel=String(period.rows[0].period_month).slice(0,7);
+        if(Number(item.base_salary)>0){
+          await client.query(
+            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
+             VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+             ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
+            [item.employee_id,Number(item.base_salary),request.user!.userId,`الراتب الأساسي لشهر ${monthLabel}`,item.id]
+          );
+        }else if(Number(item.bonus_amount)>0){
+          await client.query(
+            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
+             VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+             ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
+            [item.employee_id,Number(item.bonus_amount),request.user!.userId,`بونص راتب شهر ${monthLabel}`,item.id]
+          );
+        }
+        if(Number(item.base_salary)>0&&Number(item.bonus_amount)>0){
+          await client.query(
+            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes)
+             VALUES($1,'ADJUSTMENT',$2,$3,$4)`,
+            [item.employee_id,Number(item.bonus_amount),request.user!.userId,`بونص راتب شهر ${monthLabel}`]
+          );
+        }
+        if(Number(item.deduction_amount)>0){
+          await client.query(
+            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
+             VALUES($1,'ADJUSTMENT',$2,$3,$4)`,
+            [item.employee_id,Number(item.deduction_amount),request.user!.userId,`خصم راتب شهر ${monthLabel}`]
+          );
+        }
       }
       // Advance deductions remain reserved on the approved payroll item until the
       // salary is actually paid. The payment endpoint commits them exactly once.
