@@ -7,6 +7,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_earnings_settlements_worker_paymen
   ON employee_earnings_settlements(worker_payment_id)
   WHERE worker_payment_id IS NOT NULL;
 
+-- Payroll disbursement is an administrative action, not an employee self-service action.
+UPDATE permissions SET scope='all' WHERE code='payroll.pay';
+
 INSERT INTO schema_migrations(version)
 VALUES ('1032_worker_payment_settlement_link')
 ON CONFLICT(version) DO NOTHING;
