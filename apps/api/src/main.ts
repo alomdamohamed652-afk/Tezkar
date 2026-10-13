@@ -27,6 +27,7 @@ import { taskRoutes } from "./modules/tasks/tasks.routes.js";
 import { payrollRoutes } from "./modules/payroll/payroll.routes.js";
 import { globalSearchRoutes } from "./modules/search/global-search.routes.js";
 import { notificationRoutes } from "./modules/notifications/notifications.routes.js";
+import { systemResetRoutes } from "./modules/system-reset/system-reset.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -81,5 +82,6 @@ await app.register(taskRoutes);
 await app.register(payrollRoutes);
 await app.register(globalSearchRoutes);
 await app.register(notificationRoutes);
+await app.register(systemResetRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });
