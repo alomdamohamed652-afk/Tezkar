@@ -103,6 +103,14 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  
  app.post("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request,reply)=>{
   const parsed=deliverySchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إذن التسليم غير صحيحة",422);
+  const scannedCodes=new Set<string>();
+  for(const line of parsed.data.lines){
+   const code=line.cartonCode?.trim();
+   if(!code)continue;
+   const normalized=code.toLocaleUpperCase("en-US");
+   if(scannedCodes.has(normalized))throw new AppError("DUPLICATE_CARTON_CODE","لا يمكن إضافة كود الكرتونة نفسه أكثر من مرة في إذن التسليم",409);
+   scannedCodes.add(normalized);
+  }
   const row=await withTransaction(async(client)=>{
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -121,6 +129,22 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     }
     if(!orderLine.rowCount || Number(orderLine.rows[0].quantity)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","المنتج المحدد ليس ضمن منتجات الطلبية",422);
     const resolvedOrderItemId=orderLine.rows[0].id;
+
+    if(line.cartonCode){
+     const coding=await client.query("SELECT * FROM coding_units WHERE (code=$1 OR barcode=$1) FOR UPDATE",[line.cartonCode]);
+     const carton=coding.rowCount?null:await client.query("SELECT * FROM cartons WHERE (code=$1 OR barcode=$1) FOR UPDATE",[line.cartonCode]);
+     const unit=coding.rowCount?coding.rows[0]:null;
+     const box=carton?.rowCount?carton.rows[0]:null;
+     if(!unit&&!box)throw new AppError("CARTON_NOT_FOUND","كود الكرتونة غير موجود في مرجع التكويد أو المخزن",422);
+     const reference=unit??box;
+     if(reference.product_id!==line.productId||reference.warehouse_id!==line.warehouseId||reference.location_id!==line.locationId)
+      throw new AppError("CARTON_MISMATCH","بيانات الكرتونة لا تطابق الصنف أو المخزن أو المكان المحدد",409);
+     if(unit&&["CANCELLED","OUT","DELIVERED","RESERVED"].includes(unit.status))throw new AppError("CARTON_UNAVAILABLE","الكرتونة غير متاحة للتسليم بالحالة الحالية",409);
+     if(box&&["EMPTY","OPEN"].includes(box.status))throw new AppError("CARTON_UNAVAILABLE","الكرتونة غير مختومة أو فارغة ولا يمكن تسليمها",409);
+     if(Number(reference.quantity)<Number(line.quantity))throw new AppError("CARTON_INSUFFICIENT","كمية الكرتونة أقل من كمية التسليم المطلوبة",409);
+     const alreadyAssigned=await client.query("SELECT 1 FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id WHERE upper(trim(dl.carton_code))=upper(trim($1)) AND dp.status IN ('DRAFT','READY') LIMIT 1",[line.cartonCode]);
+     if(alreadyAssigned.rowCount)throw new AppError("CARTON_ALREADY_ASSIGNED","الكرتونة مرتبطة بالفعل بإذن تسليم آخر غير منتهٍ",409);
+    }
 
     const produced=await client.query(
       `SELECT COALESCE(SUM(pe.quantity),0) AS quantity
