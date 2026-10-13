@@ -108,7 +108,7 @@ async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:s
     const elapsed=Math.floor((Date.parse(paymentDate+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
     if(elapsed<Number(advance.production_period_days??15))continue;
     const production=await client.query(
-      "SELECT COALESCE(SUM(earning_amount),0) AS amount FROM production_entries WHERE employee_id=$1 AND status='APPROVED' AND work_date>$2::date AND work_date<=$3::date",
+      "SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS amount FROM production_entries WHERE employee_id=$1 AND status='APPROVED' AND work_date>$2::date AND work_date<=$3::date",
       [employeeId,startDate,paymentDate]
     );
     const periodEarning=Number(production.rows[0].amount);
