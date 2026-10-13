@@ -153,7 +153,13 @@ export async function payrollRoutes(app: FastifyInstance) {
         if (available <= 0) continue;
         const advances = await client.query(
           `SELECT a.*,
-                  GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding
+                  GREATEST(a.amount
+                    -COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0)
+                    -COALESCE((SELECT SUM(d.amount)
+                                 FROM payroll_advance_deductions d
+                                 JOIN payroll_items ri ON ri.id=d.payroll_item_id
+                                 JOIN payroll_periods rp ON rp.id=ri.period_id
+                                WHERE d.advance_id=a.id AND rp.status IN ('APPROVED','CLOSED') AND ri.status<>'PAID'),0),0) AS outstanding
              FROM advance_requests a
             WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
               AND (
@@ -244,34 +250,8 @@ export async function payrollRoutes(app: FastifyInstance) {
           [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,item.salary_expense_amount,period.rows[0].period_month,request.user!.userId]);
         await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
       }
-      // Commit each precomputed fixed installment exactly once when the payroll is approved.
-      const advanceDeductions = await client.query(
-        `SELECT d.*,a.amount AS advance_amount,a.repayment_status,a.code AS advance_code,a.employee_id,
-                i.period_id,p.period_month
-           FROM payroll_advance_deductions d
-           JOIN advance_requests a ON a.id=d.advance_id
-           JOIN payroll_items i ON i.id=d.payroll_item_id
-           JOIN payroll_periods p ON p.id=i.period_id
-          WHERE i.period_id=$1
-          ORDER BY a.id
-          FOR UPDATE OF a,i`,
-        [id]
-      );
-      for (const deduction of advanceDeductions.rows) {
-        if (deduction.repayment_status !== "OPEN") throw new AppError("ADVANCE_NOT_OPEN","السلفة المرتبطة بالمسير لم تعد مفتوحة؛ أعد مراجعة المسير",409);
-        const paid = await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
-        const remaining = Number(deduction.advance_amount)-Number(paid.rows[0].amount);
-        if (Number(deduction.amount) > remaining+0.0001) throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد السلفة بعد تجهيز المسير؛ أعد توليد المسير قبل الاعتماد",409);
-        const repayment = await client.query(
-          `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
-           VALUES($1,$2,$3,(($4::date + INTERVAL '1 month - 1 day')::date),$5,$6,$7)
-           RETURNING id`,
-          [deduction.advance_id,deduction.amount,deduction.repayment_type,deduction.period_month,`خصم قسط سلفة ${deduction.advance_code} من مسير ${String(deduction.period_month).slice(0,7)}`,request.user!.userId,deduction.payroll_item_id]
-        );
-        const nextRemaining = remaining-Number(deduction.amount);
-        await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[nextRemaining<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
-        await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"automatic_repayment",module:"advances",entityType:"advance_request",entityId:deduction.advance_id,metadata:{repaymentId:repayment.rows[0].id,payrollItemId:deduction.payroll_item_id,amount:Number(deduction.amount),remaining:Math.max(0,nextRemaining)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      }
+      // Advance deductions remain reserved on the approved payroll item until the
+      // salary is actually paid. The payment endpoint commits them exactly once.
       const updated = await client.query("UPDATE payroll_periods SET status='APPROVED',approved_by=$1,approved_at=now() WHERE id=$2 RETURNING *", [request.user!.userId,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"payroll",entityType:"payroll_period",entityId:id,beforeData:period.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
@@ -290,12 +270,47 @@ export async function payrollRoutes(app: FastifyInstance) {
       const paid = await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM payroll_payments WHERE payroll_item_id=$1", [id]);
       const remaining = Number(item.rows[0].net_amount)-Number(paid.rows[0].amount);
       if (parsed.data.amount > remaining + 0.0001) throw new AppError("PAYROLL_OVERPAYMENT", "مبلغ الصرف أكبر من الراتب المتبقي", 409);
-      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-        [id,parsed.data.amount,parsed.data.paymentDate??new Date().toISOString().slice(0,10),parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId]);
       const newPaid = Number(paid.rows[0].amount)+parsed.data.amount;
       const status = newPaid >= Number(item.rows[0].net_amount)-0.0001 ? "PAID" : "PARTIAL";
+      const advanceDeductions = status==="PAID" ? await client.query(
+        `SELECT d.*,a.amount AS advance_amount,a.code AS advance_code,a.repayment_status
+           FROM payroll_advance_deductions d
+           JOIN advance_requests a ON a.id=d.advance_id
+          WHERE d.payroll_item_id=$1
+          ORDER BY a.id FOR UPDATE OF a`,[id]
+      ) : {rows:[] as any[]};
+      let committedAdvanceRepayment=0;
+      for(const deduction of advanceDeductions.rows){
+        const prior=await client.query("SELECT id FROM advance_repayments WHERE source_payroll_item_id=$1 AND advance_id=$2",[id,deduction.advance_id]);
+        if(prior.rowCount)continue;
+        if(deduction.repayment_status!=="OPEN")throw new AppError("ADVANCE_NOT_OPEN","السلفة المرتبطة بالراتب لم تعد مفتوحة؛ راجع المسير قبل الصرف",409);
+        const repaid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
+        const remaining=Number(deduction.advance_amount)-Number(repaid.rows[0].amount);
+        if(Number(deduction.amount)>remaining+0.0001)throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد السلفة؛ أعد مراجعة مسير الرواتب قبل الصرف",409);
+        await client.query(
+          `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7)`,
+          [deduction.advance_id,deduction.amount,deduction.repayment_type,parsed.data.paymentDate??new Date().toISOString().slice(0,10),`خصم قسط سلفة ${deduction.advance_code} عند صرف راتب ${String(item.rows[0].period_month??"")}`,request.user!.userId,id]
+        );
+        const next=remaining-Number(deduction.amount);
+        await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
+        committedAdvanceRepayment+=Number(deduction.amount);
+        await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payroll_repayment",module:"advances",entityType:"advance_request",entityId:deduction.advance_id,metadata:{payrollItemId:id,amount:Number(deduction.amount),remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      }
+      if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف المرتب",409);
+      const custodyOut=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'PAYROLL_PAYMENT',$6,$7) RETURNING id",
+        [request.user!.employeeId,parsed.data.amount+committedAdvanceRepayment,parsed.data.paymentDate??null,"تسوية راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,null,request.user!.userId]
+      );
+      let custodyIn=null;
+      if(committedAdvanceRepayment>0)custodyIn=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
+        [request.user!.employeeId,committedAdvanceRepayment,parsed.data.paymentDate??null,"استرداد سلف من مستحقات الراتب",`خصم سلف إجمالي ${committedAdvanceRepayment.toFixed(2)} ج.م`,id,request.user!.userId]
+      );
+      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+        [id,parsed.data.amount,parsed.data.paymentDate??new Date().toISOString().slice(0,10),parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId]);
       await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2", [status,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,cashCustodyOutId:custodyOut.rows[0].id,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status };
     });
     return reply.code(201).send({ data: result });
