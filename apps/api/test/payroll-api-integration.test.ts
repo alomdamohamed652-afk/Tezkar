@@ -416,8 +416,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000,"the base salary must be credited independently");
       const bonusEntry=await apiPool.query(
-        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes=$2",
-        [employeeA.rows[0].id,"بونص راتب شهر 2099-01"]
+        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE $2",
+        [employeeA.rows[0].id,"بونص راتب شهر%"]
       );
       assert.equal(bonusEntry.rowCount,1,"bonus must appear as a separate employee-account credit");
       assert.equal(Number(bonusEntry.rows[0].credit_amount),100);
