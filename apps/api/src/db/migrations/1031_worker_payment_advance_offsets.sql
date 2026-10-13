@@ -21,6 +21,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_earnings_ledger_worker_payment
   ON employee_earnings_ledger(worker_payment_id)
   WHERE worker_payment_id IS NOT NULL;
 
+ALTER TABLE employee_earnings_settlements
+  ADD COLUMN IF NOT EXISTS worker_payment_id UUID REFERENCES worker_payments(id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_earnings_settlements_worker_payment
+  ON employee_earnings_settlements(worker_payment_id)
+  WHERE worker_payment_id IS NOT NULL;
+
 ALTER TABLE advance_repayments
   ADD COLUMN IF NOT EXISTS source_worker_payment_id UUID REFERENCES worker_payments(id);
 
