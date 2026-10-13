@@ -399,7 +399,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{employeeId:employeeA.id,direction:"IN",amount:26,transactionDate:"2099-01-12",description:"Must use the dedicated custody funding or order collection route"}
       });
       assert.equal(unlinkedCashIn.statusCode,409,unlinkedCashIn.body);
-      assert.equal(unlinkedCashIn.json().error.code,"USE_CUSTODY_TOP_UP_OR_COLLECTION","manual IN movements must not bypass company revenue posting");
+      assert.equal(unlinkedCashIn.json().error.code,"USE_CUSTODY_TOP_UP_OR_COLLECTION","manual IN movements must use a classified funding or collection flow");
 
       const audit = await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND actor_user_id=$1",
