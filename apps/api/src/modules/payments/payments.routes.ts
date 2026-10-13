@@ -150,6 +150,46 @@ async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:s
   return {plan,total,cashPaid:Math.round((grossAmount-total)*100)/100};
 }
 
+async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,employeeId:string,paymentDate:string){
+  const advances=await client.query(`
+    SELECT a.*,
+      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+      (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
+    FROM advance_requests a
+    WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+      AND a.repayment_method='PRODUCTION_PERCENTAGE'
+    ORDER BY a.paid_at,a.created_at,a.id
+  `,[employeeId]);
+  const items:Array<{advanceId:string;advanceCode:string;amount:number;periodDays:number;duePeriods:number}>=[];
+  for(const advance of advances.rows){
+    const startValue=advance.last_repayment_date??advance.paid_at;
+    const startDate=startValue instanceof Date?startValue.toISOString().slice(0,10):String(startValue).slice(0,10);
+    const elapsed=Math.floor((Date.parse(paymentDate+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
+    const periodDays=Number(advance.production_period_days??15);
+    if(elapsed<periodDays)continue;
+    const duePeriods=Math.max(1,Math.floor(elapsed/periodDays));
+    const production=await client.query(
+      `SELECT GREATEST(0,
+          COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0)
+          -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+          -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+                     WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
+        ) AS amount
+         FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.work_date>$2::date AND pe.work_date<=$3::date`,
+      [employeeId,startDate,paymentDate]
+    );
+    const periodEarning=Number(production.rows[0].amount);
+    if(advance.production_minimum_earning!==null&&advance.production_minimum_earning!==undefined&&periodEarning<Number(advance.production_minimum_earning))continue;
+    const scheduled=advance.production_installment_amount!==null
+      ?Number(advance.production_installment_amount)*duePeriods
+      :periodEarning*Number(advance.production_percentage??0)/100;
+    const amount=Math.round(Math.min(Number(advance.outstanding),scheduled)*100)/100;
+    if(amount>0)items.push({advanceId:advance.id,advanceCode:advance.code,amount,periodDays,duePeriods});
+  }
+  return {total:Math.round(items.reduce((sum,x)=>sum+x.amount,0)*100)/100,items};
+}
+
 async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,netAmount:number,requestCode:string,paymentId:string,grossAmount=netAmount,repaymentAmount=0){
   const canAll=await hasPermission(client,userId,"cash_custody.worker_payment_out","all");
   const canOwn=await hasPermission(client,userId,"cash_custody.worker_payment_out_own","own");
