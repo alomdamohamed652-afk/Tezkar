@@ -50,12 +50,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
-      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
-      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
+      import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/coding/coding.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
       import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
@@ -70,6 +70,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(orderRoutes);
     await app.register(warehouseRoutes);
     await app.register(cartonDeliveryRoutes);
+    await app.register(codingRoutes);
     await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
     await app.register(reportsRoutes);
@@ -721,6 +722,278 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
     assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
+
+    // Continuous-scan regression: legacy cartons are resolved by the delivery API,
+    // drafts survive reload, duplicate scans and wrong locations are rejected,
+    // removal releases the draft line, and final release changes stock exactly once.
+    const scanDraftResponse = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/drafts", headers: { cookie: approver.cookie },
+      payload: { orderId, destination: "Continuous scan integration draft" }
+    });
+    assert.equal(scanDraftResponse.statusCode, 201, scanDraftResponse.body);
+    const scanDraftId = scanDraftResponse.json().data.id as string;
+
+    const wrongScanLocation = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie },
+      payload: {
+        cartonCode: carton.barcode,
+        warehouseId: "00000000-0000-4000-8000-000000000001",
+        locationId: finalSaved.rows[0].location_id
+      }
+    });
+    assert.equal(wrongScanLocation.statusCode, 409, wrongScanLocation.body);
+    assert.equal(wrongScanLocation.json().error.code, "CARTON_LOCATION_MISMATCH");
+
+    const legacyCartonScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: carton.barcode }
+    });
+    assert.equal(legacyCartonScan.statusCode, 201, legacyCartonScan.body);
+    assert.equal(legacyCartonScan.json().data.product_id, finalStage.output_product_id);
+    assert.equal(Number(legacyCartonScan.json().data.quantity), 1);
+    assert.equal(legacyCartonScan.json().data.product_name, (await apiPool.query(
+      "SELECT name FROM products WHERE id=$1", [finalStage.output_product_id]
+    )).rows[0].name);
+
+    const duplicateLegacyScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: carton.code }
+    });
+    assert.equal(duplicateLegacyScan.statusCode, 409, duplicateLegacyScan.body);
+    assert.equal(duplicateLegacyScan.json().error.code, "DUPLICATE_CARTON_CODE");
+
+    const restoredDraft = await app.inject({
+      method: "GET", url: "/api/delivery-permissions/drafts/active?orderId=" + orderId,
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(restoredDraft.statusCode, 200, restoredDraft.body);
+    assert.equal(restoredDraft.json().data.id, scanDraftId);
+    assert.equal(restoredDraft.json().data.lines.length, 1);
+
+    const removedDraftLineId = legacyCartonScan.json().data.id as string;
+    const removeDraftLine = await app.inject({
+      method: "DELETE", url: "/api/delivery-permissions/" + scanDraftId + "/scan/" + removedDraftLineId,
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(removeDraftLine.statusCode, 200, removeDraftLine.body);
+    const emptyRestoredDraft = await app.inject({
+      method: "GET", url: "/api/delivery-permissions/drafts/active?orderId=" + orderId,
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(emptyRestoredDraft.statusCode, 200, emptyRestoredDraft.body);
+    assert.equal(emptyRestoredDraft.json().data.lines.length, 0);
+
+    const rescannedLegacyCarton = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: carton.barcode }
+    });
+    assert.equal(rescannedLegacyCarton.statusCode, 201, rescannedLegacyCarton.body);
+    const readyScannedDraft = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/ready",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(readyScannedDraft.statusCode, 200, readyScannedDraft.body);
+    assert.equal(readyScannedDraft.json().data.status, "READY");
+
+    const scannedDraftRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: readyScannedDraft.json().data.code }
+    });
+    assert.equal(scannedDraftRelease.statusCode, 200, scannedDraftRelease.body);
+    assert.equal(scannedDraftRelease.json().data.status, "RELEASED");
+    const afterScannedDraftRelease = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(afterScannedDraftRelease.rows[0].quantity), 3,
+      "continuous-scan release must subtract the scanned carton quantity exactly once");
+    const emptyLegacyCarton = await apiPool.query("SELECT quantity,status FROM cartons WHERE id=$1", [carton.id]);
+    assert.equal(Number(emptyLegacyCarton.rows[0].quantity), 0);
+    assert.equal(emptyLegacyCarton.rows[0].status, "EMPTY");
+
+    // Continuous-scan must also resolve coding units (not only legacy cartons),
+    // and release must update both the coding-unit ledger and inventory exactly once.
+    const codingPackagingType = await apiPool.query(
+      "SELECT id FROM coding_packaging_types WHERE is_active=TRUE ORDER BY id LIMIT 1"
+    );
+    assert.ok(codingPackagingType.rowCount, "migrations must seed an active coding packaging type");
+    const codingProduction = await apiPool.query(
+      "SELECT id FROM production_entries WHERE order_stage_id=$1 AND product_id=$2 AND status='APPROVED' ORDER BY created_at DESC LIMIT 1",
+      [finalStage.id, finalStage.output_product_id]
+    );
+    assert.ok(codingProduction.rowCount, "approved final-stage production must be available for coding");
+    const codingUnitResponse = await app.inject({
+      method: "POST", url: "/api/coding/units", headers: { cookie: approver.cookie },
+      payload: {
+        packagingTypeId: codingPackagingType.rows[0].id,
+        productId: finalStage.output_product_id,
+        productionEntryId: codingProduction.rows[0].id,
+        quantity: 1,
+        weight: 0.4
+      }
+    });
+    assert.equal(codingUnitResponse.statusCode, 201, codingUnitResponse.body);
+    const codingUnit = codingUnitResponse.json().data;
+    assert.equal(Number(codingUnit.quantity), 1);
+    assert.ok(codingUnit.barcode);
+
+    const codingDraftResponse = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/drafts", headers: { cookie: approver.cookie },
+      payload: { orderId, destination: "Continuous scan coding-unit integration" }
+    });
+    assert.equal(codingDraftResponse.statusCode, 201, codingDraftResponse.body);
+    const codingDraftId = codingDraftResponse.json().data.id as string;
+    const codingScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + codingDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: codingUnit.barcode }
+    });
+    assert.equal(codingScan.statusCode, 201, codingScan.body);
+    const readyCodingDraft = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + codingDraftId + "/ready",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(readyCodingDraft.statusCode, 200, readyCodingDraft.body);
+    const codingRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + codingDraftId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: readyCodingDraft.json().data.code }
+    });
+    assert.equal(codingRelease.statusCode, 200, codingRelease.body);
+    assert.equal(codingRelease.json().data.status, "RELEASED");
+    const codingUnitAfterRelease = await apiPool.query(
+      "SELECT quantity,status FROM coding_units WHERE id=$1", [codingUnit.id]
+    );
+    assert.equal(Number(codingUnitAfterRelease.rows[0].quantity), 0);
+    assert.equal(codingUnitAfterRelease.rows[0].status, "OUT");
+    const codingMovementCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM coding_unit_movements WHERE coding_unit_id=$1 AND movement_type='OUT'",
+      [codingUnit.id]
+    );
+    assert.equal(codingMovementCount.rows[0].count, 1);
+    const stockAfterCodingRelease = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(stockAfterCodingRelease.rows[0].quantity), 2);
+    const duplicateCodingRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + codingDraftId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: readyCodingDraft.json().data.code }
+    });
+    assert.equal(duplicateCodingRelease.statusCode, 409, duplicateCodingRelease.body);
+    assert.equal(duplicateCodingRelease.json().error.code, "INVALID_STATUS");
+    assert.equal((await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      [codingDraftId]
+    )).rows[0].count, 1, "releasing a coding-unit delivery twice must not duplicate stock movements");
+
+    // Finalization must re-check approved production, not just carton quantity.
+    // Temporarily provide enough stock to create an oversized test carton, then restore
+    // the isolated test balance so the assertion exercises the production guard first.
+    await apiPool.query(
+      "UPDATE stock_balances SET quantity=4 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    const overProductionCartonResponse = await app.inject({
+      method: "POST", url: "/api/warehouse/cartons", headers: { cookie: approver.cookie },
+      payload: {
+        productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+        locationId: finalSaved.rows[0].location_id, quantity: 4, weight: 1,
+        batchCode: "CONTINUOUS-OVER-PRODUCTION", status: "SEALED"
+      }
+    });
+    await apiPool.query(
+      "UPDATE stock_balances SET quantity=3 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(overProductionCartonResponse.statusCode, 201, overProductionCartonResponse.body);
+    const overProductionDraftResponse = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/drafts", headers: { cookie: approver.cookie },
+      payload: { orderId, destination: "Reject over-production scan draft" }
+    });
+    assert.equal(overProductionDraftResponse.statusCode, 201, overProductionDraftResponse.body);
+    const overProductionDraftId = overProductionDraftResponse.json().data.id as string;
+    const overProductionScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + overProductionDraftId + "/scan",
+      headers: { cookie: approver.cookie },
+      payload: { cartonCode: overProductionCartonResponse.json().data.barcode }
+    });
+    assert.equal(overProductionScan.statusCode, 201, overProductionScan.body);
+    const stockBeforeProductionRejection = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    const stockBeforeGuardTestValueForProductionCheck = Number(stockBeforeProductionRejection.rows[0].inventory_value);
+    const rejectOverProduction = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + overProductionDraftId + "/ready",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(rejectOverProduction.statusCode, 409, rejectOverProduction.body);
+    assert.equal(rejectOverProduction.json().error.code, "DELIVERY_EXCEEDS_PRODUCTION");
+    const stockAfterProductionRejection = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(stockAfterProductionRejection.rows[0].quantity), 3,
+      "rejected over-production draft must not change stock quantity");
+    assert.equal(Number(stockAfterProductionRejection.rows[0].inventory_value),
+      Number(stockBeforeGuardTestValueForProductionCheck),
+      "rejected over-production draft must not change stock inventory value");
+    const cancelOverProductionDraft = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + overProductionDraftId + "/cancel-draft",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(cancelOverProductionDraft.statusCode, 200, cancelOverProductionDraft.body);
+
+    // Independently verify the stock guard while production availability is still sufficient.
+    const lowStockCartonResponse = await app.inject({
+      method: "POST", url: "/api/warehouse/cartons", headers: { cookie: approver.cookie },
+      payload: {
+        productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
+        locationId: finalSaved.rows[0].location_id, quantity: 2, weight: 0.8,
+        batchCode: "CONTINUOUS-LOW-STOCK", status: "SEALED"
+      }
+    });
+    assert.equal(lowStockCartonResponse.statusCode, 201, lowStockCartonResponse.body);
+    const lowStockDraftResponse = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/drafts", headers: { cookie: approver.cookie },
+      payload: { orderId, destination: "Reject low-stock scan draft" }
+    });
+    assert.equal(lowStockDraftResponse.statusCode, 201, lowStockDraftResponse.body);
+    const lowStockDraftId = lowStockDraftResponse.json().data.id as string;
+    const lowStockScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + lowStockDraftId + "/scan",
+      headers: { cookie: approver.cookie },
+      payload: { cartonCode: lowStockCartonResponse.json().data.barcode }
+    });
+    assert.equal(lowStockScan.statusCode, 201, lowStockScan.body);
+    const stockBeforeGuardTest = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(stockBeforeGuardTest.rows[0].quantity), 3);
+    try {
+      await apiPool.query(
+        "UPDATE stock_balances SET quantity=1 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+        [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+      );
+      const rejectLowStock = await app.inject({
+        method: "POST", url: "/api/delivery-permissions/" + lowStockDraftId + "/ready",
+        headers: { cookie: approver.cookie }
+      });
+      assert.equal(rejectLowStock.statusCode, 409, rejectLowStock.body);
+      assert.equal(rejectLowStock.json().error.code, "DELIVERY_EXCEEDS_STOCK");
+    } finally {
+      await apiPool.query(
+        "UPDATE stock_balances SET quantity=$1,inventory_value=$2 WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5",
+        [stockBeforeGuardTest.rows[0].quantity, stockBeforeGuardTest.rows[0].inventory_value,
+          finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+      );
+    }
+    const cancelLowStockDraft = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + lowStockDraftId + "/cancel-draft",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(cancelLowStockDraft.statusCode, 200, cancelLowStockDraft.body);
 
     // Reopen a completed order before posting additional manual finance entries.
     const reopenForFinalCost=await app.inject({
