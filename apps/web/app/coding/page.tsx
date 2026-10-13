@@ -20,6 +20,7 @@ export default function CodingPage(){
  const [typeId,setTypeId]=useState(""),[templateId,setTemplateId]=useState(""),[productionEntryId,setProductionEntryId]=useState(""),[productId,setProductId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[batch,setBatch]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState("");
  const [productionOwner,setProductionOwner]=useState(""),[packedBy,setPackedBy]=useState(""),[receivedBy,setReceivedBy]=useState(""),[packedAt,setPackedAt]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState("");
  const [search,setSearch]=useState(""),[selected,setSelected]=useState<Unit|null>(null),[error,setError]=useState(""),[saving,setSaving]=useState(false),[printUnit,setPrintUnit]=useState<Unit|null>(null),[cancelTarget,setCancelTarget]=useState<Unit|null>(null),[cancelReason,setCancelReason]=useState("");
+ const [sessionUnits,setSessionUnits]=useState<Unit[]>([]);
  const [productionOrderId,setProductionOrderId]=useState(""),[settingsTemplateId,setSettingsTemplateId]=useState(""),[settingsWidth,setSettingsWidth]=useState(""),[settingsHeight,setSettingsHeight]=useState(""),[settingsOrientation,setSettingsOrientation]=useState("LANDSCAPE"),[companyName,setCompanyName]=useState("تذكار"),[companyAddress,setCompanyAddress]=useState("عنوان الشركة"),[companyLogoUrl,setCompanyLogoUrl]=useState(""),[settingsSaving,setSettingsSaving]=useState(false),[newTemplateName,setNewTemplateName]=useState(""),[newTemplateType,setNewTemplateType]=useState(""),[newTemplateWidth,setNewTemplateWidth]=useState(""),[newTemplateHeight,setNewTemplateHeight]=useState(""),[newTemplateOrientation,setNewTemplateOrientation]=useState("LANDSCAPE");
 
  async function load(){
@@ -42,7 +43,11 @@ export default function CodingPage(){
   e.preventDefault();setSaving(true);setError("");
   try{
    const result=await api<{data:Unit}>("/api/coding/units",{method:"POST",body:JSON.stringify({packagingTypeId:typeId,templateId:templateId||null,productId,productionOrderId:productionOrderId||null,orderStageId:orderStageId||null,productionEntryId:productionEntryId||null,batchCode:batch.trim()||null,quantity:Number(quantity),unitId:null,weight:weight?Number(weight):null,productionOwnerEmployeeId:productionOwner||null,packedByEmployeeId:packedBy||null,receivedByEmployeeId:receivedBy||null,packedAt:packedAt?new Date(packedAt).toISOString():null,warehouseId:warehouseId||null,locationId:locationId||null})});
-   setPrintUnit(result.data);setUnits(prev=>[result.data,...prev]);setQuantity("");setProductionOrderId("");setOrderStageId("");setProductionEntryId("");setWeight("");setBatch("");setProductionOwner("");setPackedBy("");setReceivedBy("");setPackedAt("");setWarehouseId("");setLocationId("");
+   setPrintUnit(result.data);setUnits(prev=>[result.data,...prev]);setSessionUnits(prev=>[result.data,...prev]);
+   // Keep session-level fields unchanged so the next carton inherits the same order/product/worker context.
+   // Only per-carton values are cleared; this prevents repeated entry and accidental context drift.
+   setQuantity("");setWeight("");
+   if(productionEntryId){void load();}
    setTimeout(()=>window.print(),100);
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء التكويد")}finally{setSaving(false)}
  }
@@ -82,6 +87,13 @@ export default function CodingPage(){
     </div>
     <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ إنشاء الكود...":"إنشاء التكويد وطباعة الكارت"}</button><span className="form-hint">{selectedType?"المقاس الحالي: "+selectedType.default_width_mm+" × "+selectedType.default_height_mm+" مم":"اختر نوع العبوة"}</span></div>
    </form>}
+   <section className="card">
+    <div className="card-header"><div><h2 className="card-title">جلسة التكويد الحالية</h2><div className="form-hint">تظل بيانات الطلبية والمنتج والعامل ثابتة؛ أدخل عدد ووزن كل كرتونة ثم أنشئ التالية.</div></div><span className="count-badge">{sessionUnits.length} كرتونة</span></div>
+    <div className="card-body">
+     <div className="detail-grid"><div><b>عدد الكراتين</b><span>{sessionUnits.length}</span></div><div><b>إجمالي القطع</b><span>{sessionUnits.reduce((sum,x)=>sum+Number(x.quantity||0),0).toLocaleString("ar-EG")}</span></div><div><b>إجمالي الوزن (كجم)</b><span>{sessionUnits.reduce((sum,x)=>sum+Number(x.weight||0),0).toLocaleString("ar-EG",{maximumFractionDigits:3})}</span></div></div>
+     <div className="table-wrap"><table><thead><tr><th>كود الكرتونة</th><th>المنتج</th><th>عدد القطع</th><th>الوزن</th><th>وقت الإنشاء</th></tr></thead><tbody>{sessionUnits.map(x=><tr key={x.id}><td className="mono strong">{x.code}</td><td>{x.product_name}</td><td>{Number(x.quantity).toLocaleString("ar-EG")}</td><td>{x.weight??"—"}</td><td>{new Date(x.coded_at).toLocaleString("ar-EG")}</td></tr>)}{!sessionUnits.length&&<tr><td colSpan={5}>لم يتم إنشاء كراتين في الجلسة الحالية بعد.</td></tr>}</tbody></table></div>
+    </div>
+   </section>
    <section className="card">
     <div className="card-header"><div><h2 className="card-title">سجل التكويدات</h2><div className="form-hint">ابحث بالكود أو المنتج أو التشغيل. الـBarcode يحتوي الكود فقط.</div></div><span className="count-badge">{filtered.length}</span></div>
     <div className="card-body coding-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="ابحث بالكود أو المنتج أو التشغيل..."/></div>
