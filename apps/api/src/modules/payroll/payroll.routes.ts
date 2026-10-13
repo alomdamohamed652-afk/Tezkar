@@ -31,7 +31,7 @@ const paymentSchema = z.object({
 });
 
 export async function payrollRoutes(app: FastifyInstance) {
-  app.get("/api/payroll/my-account", { preHandler: [authenticateRequest, requirePermission("payroll.view_own")] }, async request => {
+  app.get("/api/payroll/my-account", { preHandler: [authenticateRequest, requirePermission("payroll.view_own","own")] }, async request => {
     const employeeId=request.user!.employeeId;
     if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","حسابك غير مرتبط بملف موظف؛ اطلب من الإدارة ربط الحساب",403);
     const employee=await pool.query("SELECT id,code,full_name FROM employees WHERE id=$1",[employeeId]);
