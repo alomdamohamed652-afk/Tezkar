@@ -442,7 +442,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [employeeA.rows[0].id,februaryItem.id]
       );
       assert.equal(repaymentLedger.rowCount,2,"each salary advance repayment must update the employee account");
-      assert.equal(repaymentLedger.reduce((sum:any,row:any)=>sum+Number(row.credit_amount),0),400);
+      assert.equal(repaymentLedger.rows.reduce((sum:number,row:any)=>sum+Number(row.credit_amount),0),400);
       const reconciledAccount=await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
         [employeeA.rows[0].id]
