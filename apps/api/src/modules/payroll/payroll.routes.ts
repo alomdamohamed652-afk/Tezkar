@@ -290,7 +290,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         await client.query(
           `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
            VALUES($1,$2,$3,$4,$5,$6,$7)`,
-          [deduction.advance_id,deduction.amount,deduction.repayment_type,parsed.data.paymentDate??new Date().toISOString().slice(0,10),`خصم قسط سلفة ${deduction.advance_code} عند صرف راتب ${String(item.rows[0].period_month??"")}`,request.user!.userId,id]
+          [deduction.advance_id,deduction.amount,deduction.repayment_type,parsed.data.paymentDate??new Date().toISOString().slice(0,10),`خصم قسط سلفة ${deduction.advance_code} عند صرف الراتب`,request.user!.userId,id]
         );
         const next=remaining-Number(deduction.amount);
         await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
@@ -300,7 +300,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف المرتب",409);
       const custodyOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'PAYROLL_PAYMENT',$6,$7) RETURNING id",
-        [request.user!.employeeId,parsed.data.amount+committedAdvanceRepayment,parsed.data.paymentDate??null,"تسوية راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,null,request.user!.userId]
+        [request.user!.employeeId,parsed.data.amount+committedAdvanceRepayment,parsed.data.paymentDate??null,"تسوية راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,id,request.user!.userId]
       );
       let custodyIn=null;
       if(committedAdvanceRepayment>0)custodyIn=await client.query(
