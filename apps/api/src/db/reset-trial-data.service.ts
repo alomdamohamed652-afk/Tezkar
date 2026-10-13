@@ -25,6 +25,17 @@ const partiallyKeep = new Set([
   "user_roles"
 ]);
 
+// Keep only the stable rows installed by migrations in these configurable
+// reference tables; user-created rows in the same tables are reset as well.
+const seededReferenceCodes: Record<string, string[]> = {
+  departments: ["PROD", "WH", "ADMIN", "HR", "ACC"],
+  job_titles: ["WORKER", "SHIFT_LEADER", "PROD_SUPERVISOR", "WAREHOUSE_KEEPER", "WAREHOUSE_MANAGER", "HR_SPECIALIST", "ACCOUNTANT", "MANAGER"],
+  rate_groups: ["DEFAULT", "PRODUCTION"],
+  shifts: ["MORNING", "EVENING"],
+  product_categories: ["PRODUCTS", "RAW_MATERIALS", "PRODUCTION_SUPPLIES", "OPERATING_SUPPLIES"],
+  payment_methods: ["CASH", "VODAFONE_CASH", "INSTAPAY", "BANK"]
+};
+
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
 const qualified = (table: string) => '"public".' + quoteIdentifier(table);
 
@@ -53,6 +64,14 @@ export async function previewTrialDataReset(protectedUserId: string) {
 
     const deletedRows: Record<string, number> = {};
     for (const table of allTables) {
+      if (seededReferenceCodes[table]) {
+        const result = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM ${qualified(table)} WHERE code <> ALL($1::text[])`,
+          [seededReferenceCodes[table]]
+        );
+        deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        continue;
+      }
       if (alwaysKeep.has(table) || keep.has(table)) {
         if (table === "users") {
           const result = await client.query<{ count: string }>(
@@ -204,6 +223,17 @@ try {
   `, [protectedUserId]);
   const employeeDelete = await client.query("DELETE FROM public.employees");
   deleted.employees = employeeDelete.rowCount ?? 0;
+
+  // Remove user-created rows from reference tables while retaining the known
+  // migration-provided defaults needed by the fresh system.
+  for (const table of ["job_titles", "departments", "shifts", "rate_groups", "product_categories", "payment_methods"]) {
+    if (!present.has(table)) continue;
+    const result = await client.query(
+      `DELETE FROM ${qualified(table)} WHERE code <> ALL($1::text[])`,
+      [seededReferenceCodes[table]]
+    );
+    deleted[table] = result.rowCount ?? 0;
+  }
 
   // Reset owned sequences only when their owning table is now empty, avoiding
   // collisions in retained reference/permission tables.
