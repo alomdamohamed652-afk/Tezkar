@@ -40,7 +40,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       pool.query(`SELECT id,monthly_salary,effective_from,effective_to,notes
         FROM employee_salary_profiles WHERE employee_id=$1
         ORDER BY effective_from DESC,created_at DESC LIMIT 24`,[employeeId]),
-      pool.query(`SELECT i.id,p.period_month,p.status AS period_status,i.base_salary,i.bonus_amount,i.deduction_amount,
+      pool.query(`SELECT i.id,i.employee_id,p.period_month,p.status AS period_status,i.base_salary,i.bonus_amount,i.deduction_amount,
           i.advance_repayment_amount,i.net_amount,i.status,i.notes,
           COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0) AS paid_amount,
           GREATEST(i.net_amount-COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0),0) AS remaining_amount,
