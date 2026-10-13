@@ -895,16 +895,20 @@ export async function productionRoutes(app: FastifyInstance) {
         if(remaining<=0)break;
         const startValue=advance.last_repayment_date??advance.paid_at;
         const startDate=startValue instanceof Date?startValue.toISOString().slice(0,10):String(startValue).slice(0,10);
-        const elapsed= Math.floor((Date.parse(date+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
-        if(elapsed<Number(advance.production_period_days??15))continue;
+        const elapsed=Math.floor((Date.parse(date+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
+        const periodDays=Number(advance.production_period_days??15);
+        if(elapsed<periodDays)continue;
+        const duePeriods=Math.max(1,Math.floor(elapsed/periodDays));
         const production=await client.query(
-          "SELECT COALESCE(SUM(earning_amount),0) AS amount FROM production_entries WHERE employee_id=$1 AND status='APPROVED' AND work_date>$2::date AND work_date<=$3::date",
+          `SELECT COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)),0) AS amount
+             FROM production_entries p
+            WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.work_date>$2::date AND p.work_date<=$3::date`,
           [parsed.data.employeeId,startDate,date]
         );
         const periodEarning=Number(production.rows[0].amount);
         if(advance.production_minimum_earning!==null&&advance.production_minimum_earning!==undefined&&periodEarning<Number(advance.production_minimum_earning))continue;
         const scheduled=advance.production_installment_amount!==null
-          ? Number(advance.production_installment_amount)
+          ? Number(advance.production_installment_amount)*duePeriods
           : periodEarning*Number(advance.production_percentage??0)/100;
         const amount=Math.round(Math.min(Number(advance.outstanding),scheduled,remaining)*100)/100;
         if(amount<=0)continue;
@@ -942,7 +946,7 @@ export async function productionRoutes(app: FastifyInstance) {
         await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.009?"SETTLED":"OPEN",item.advance.id]);
         await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_earnings_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{settlementId:settlement.rows[0].id,repaymentId:repayment.rows[0].id,amount:item.amount,remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       }
-      if(cashPaid>0)await client.query(
+      await client.query(
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,settlement_id)
          VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
          ON CONFLICT (settlement_id) WHERE settlement_id IS NOT NULL DO NOTHING`,
