@@ -30,7 +30,7 @@ export default function PayrollPage(){
  const [ownPayroll,setOwnPayroll]=useState<OwnPayrollData|null>(null);
  async function load(){setLoading(true);setError("");try{
   if(!has("payroll.view")){
-   if(!has("earnings.view_own")){setError("ليس لديك صلاحية عرض الرواتب.");return}
+   if(!has("payroll.view_own")){setError("ليس لديك صلاحية عرض الرواتب.");return}
    const r=await api<{data:OwnPayrollData}>("/api/payroll/my-account");setOwnPayroll(r.data);return;
   }
   const [e,p]=await Promise.all([api<{data:Employee[]}>("/api/payroll/employees"),api<{data:PayrollData}>("/api/payroll?month="+encodeURIComponent(month))]);setEmployees(e.data);setPayroll(p.data);setAdjustments(Object.fromEntries(p.data.items.map(i=>[i.id,{bonus:String(i.bonus_amount??0),deduction:String(i.deduction_amount??0),deductionMode:i.deduction_mode==="PERCENTAGE"?"PERCENTAGE":"FIXED",deductionPercentage:String(i.deduction_percentage??""),deductionBasis:i.deduction_basis==="BASE_PLUS_BONUS"?"BASE_PLUS_BONUS":"BASE_SALARY",notes:i.notes??""}])));if(!employeeId&&e.data.find(x=>x.is_active))setEmployeeId(e.data.find(x=>x.is_active)!.id)
