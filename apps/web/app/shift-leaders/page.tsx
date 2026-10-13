@@ -20,7 +20,7 @@ export default function ShiftLeadersPage(){
   try{
    const [l,s,e]=await Promise.all([api<{data:Leader[]}>("/api/shift-leaders"),api<{data:Shift[]}>("/api/shifts"),api<{data:Employee[]}>("/api/employees")]);
    setLeaders(l.data);setShifts(s.data);setEmployees(e.data);
-   try{const g=await api<{data:RateGroup[]}>("/api/rate-groups");setRateGroups(g.data.filter(x=>x.is_active));if(!shiftRateGroup&&g.data.find(x=>x.is_active))setShiftRateGroup(g.data.find(x=>x.is_active)!.id)}catch{}
+   try{const g=await api<{data:RateGroup[]}>("/api/shifts/rate-groups");setRateGroups(g.data.filter(x=>x.is_active));if(!shiftRateGroup&&g.data.find(x=>x.is_active))setShiftRateGroup(g.data.find(x=>x.is_active)!.id)}catch{}
    const activeShifts=s.data.filter(x=>x.is_active);
    if(!shift&&activeShifts[0])setShift(activeShifts[0].id);
    if(!employee&&e.data[0])setEmployee(e.data[0].id);
