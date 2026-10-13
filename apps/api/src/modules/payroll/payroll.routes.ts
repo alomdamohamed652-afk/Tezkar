@@ -62,7 +62,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: result });
   });
 
-  app.get("/api/payroll/employees/:id/salary-history", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
+  app.get("/api/payroll/employees/:id/salary-history", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const employeeId=(request.params as {id:string}).id;
     const employee=await pool.query("SELECT id,full_name,code FROM employees WHERE id=$1",[employeeId]);
     if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
