@@ -241,14 +241,26 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
       if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
-      const salaryItems = await client.query(`SELECT i.id,i.net_amount,(i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
+      const salaryItems = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
+          (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
       for (const item of salaryItems.rows) {
-        if (Number(item.salary_expense_amount) <= 0 || item.accounting_expense_id) continue;
-        const expense = await client.query(`INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by)
-          VALUES(NULL,'SALARIES',$1,$2,$3::date,'PAYROLL',$4) RETURNING id`,
-          [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,item.salary_expense_amount,period.rows[0].period_month,request.user!.userId]);
-        await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
+        const grossSalary=Number(item.salary_expense_amount);
+        if(grossSalary<=0)continue;
+        if(!item.accounting_expense_id){
+          const expense = await client.query(`INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by)
+            VALUES(NULL,'SALARIES',$1,$2,$3::date,'PAYROLL',$4) RETURNING id`,
+            [`راتب شهر ${String(period.rows[0].period_month).slice(0,7)} - ${item.full_name}`,grossSalary,period.rows[0].period_month,request.user!.userId]);
+          await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
+        }
+        // Accrue gross salary on the employee account at approval, even before payout.
+        // Advance installments are shown separately and only reduce the loan when paid.
+        await client.query(
+          `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
+           VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+           ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
+          [item.employee_id,grossSalary,request.user!.userId,`استحقاق راتب شهر ${String(period.rows[0].period_month).slice(0,7)}`,item.id]
+        );
       }
       // Advance deductions remain reserved on the approved payroll item until the
       // salary is actually paid. The payment endpoint commits them exactly once.
@@ -309,6 +321,12 @@ export async function payrollRoutes(app: FastifyInstance) {
       );
       const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
         [id,parsed.data.amount,parsed.data.paymentDate??new Date().toISOString().slice(0,10),parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId]);
+      await client.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id)
+         VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+         ON CONFLICT (payroll_payment_id) WHERE payroll_payment_id IS NOT NULL DO NOTHING`,
+        [item.rows[0].employee_id,parsed.data.amount,request.user!.userId,`صرف صافي راتب - دفعة ${payment.rows[0].id}`,payment.rows[0].id]
+      );
       await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2", [status,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,cashCustodyOutId:custodyOut.rows[0].id,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status };
