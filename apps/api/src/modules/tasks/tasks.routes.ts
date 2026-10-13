@@ -79,7 +79,7 @@ export async function taskRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: result });
   });
 
-  app.post("/api/tasks/:id/transfer", { preHandler: [authenticateRequest, requirePermission("tasks.edit")] }, async (request, reply) => {
+  app.post("/api/tasks/:id/transfer", { preHandler: [authenticateRequest, requirePermission("tasks.transfer")] }, async (request, reply) => {
     const id = (request.params as { id: string }).id;
     const parsed = z.object({
       toEmployeeId: z.string().uuid(),
