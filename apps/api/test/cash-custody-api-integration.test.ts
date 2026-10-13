@@ -407,15 +407,23 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions, including the overdraft, must be audited; external funding is manager-only");
 
+      const profitabilityOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status,contract_value) VALUES($1,$2,'PLANNED',1000) RETURNING id",
+        ["Custody funding profitability exclusion",manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,'REV-REAL-ORDER-TEST',25,'2099-01-12','MANUAL','genuine order revenue',$2)",
+        [profitabilityOrder.id,manager.id]
+      );
       const summaryBeforeLegacyFunding=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(summaryBeforeLegacyFunding.statusCode,200,summaryBeforeLegacyFunding.body);
       const legacyFunding=(await apiPool.query(
-        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-TEST',99.99,'2099-01-12','EXTERNAL_CUSTODY_TOP_UP','legacy external custody funding',$1) RETURNING id",
-        [manager.id]
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,'REV-LEGACY-FUNDING-TEST',99.99,'2099-01-12','EXTERNAL_CUSTODY_TOP_UP','legacy external custody funding',$2) RETURNING id",
+        [profitabilityOrder.id,manager.id]
       )).rows[0];
       const legacyLowercaseFunding=(await apiPool.query(
-        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES(NULL,'REV-LEGACY-FUNDING-LOWER-TEST',49.99,'2099-01-12','external_custody_top_up','legacy lowercase external custody funding',$1) RETURNING id",
-        [manager.id]
+        "INSERT INTO order_revenues(order_id,code,amount,revenue_date,source,notes,created_by) VALUES($1,'REV-LEGACY-FUNDING-LOWER-TEST',49.99,'2099-01-12','external_custody_top_up','legacy lowercase external custody funding',$2) RETURNING id",
+        [profitabilityOrder.id,manager.id]
       )).rows[0];
       const summaryAfterLegacyFunding=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(summaryAfterLegacyFunding.statusCode,200,summaryAfterLegacyFunding.body);
@@ -442,6 +450,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(revenueList.statusCode,200,revenueList.body);
       assert.equal(revenueList.json().data.some((row:{id:string})=>row.id===legacyFunding.id),false,"legacy custody funding must be excluded from the sales revenue list");
       assert.equal(revenueList.json().data.some((row:{id:string})=>row.id===legacyLowercaseFunding.id),false,"legacy lowercase custody funding must also be excluded from the sales revenue list");
+      const orderDashboard=await app.inject({method:"GET",url:"/api/accounting/orders-dashboard",headers:{cookie:managerCookie}});
+      assert.equal(orderDashboard.statusCode,200,orderDashboard.body);
+      const orderDashboardRow=orderDashboard.json().data.find((row:{id:string})=>row.id===profitabilityOrder.id);
+      assert.ok(orderDashboardRow,"the isolated test order must appear in the profitability dashboard");
+      assert.equal(Number(orderDashboardRow.revenue),25,"the order dashboard must exclude both uppercase and lowercase legacy custody funding");
+      const orderProfitability=await app.inject({method:"GET",url:"/api/accounting/orders/"+profitabilityOrder.id+"/profitability",headers:{cookie:managerCookie}});
+      assert.equal(orderProfitability.statusCode,200,orderProfitability.body);
+      assert.equal(Number(orderProfitability.json().data.revenue),25,"single-order profitability must exclude legacy custody funding");
       for (const reservedSource of ["EXTERNAL_CUSTODY_TOP_UP", "external_custody_top_up"]) {
         const misclassifiedFunding=await app.inject({
           method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
