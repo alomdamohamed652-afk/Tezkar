@@ -337,23 +337,10 @@ try {
   }
   if (present.has("warehouses")) {
     const result = await client.query(
-      `DELETE FROM public.warehouses w
-       WHERE NOT (
-         (w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
-         OR (w.warehouse_type = 'WIP' AND w.name = $2)
-         OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
-       ) OR w.id IN (
-         SELECT id FROM (
-           SELECT id, row_number() OVER (
-             PARTITION BY warehouse_type ORDER BY created_at, id
-           ) AS position
-           FROM public.warehouses
-           WHERE (warehouse_type = 'RAW_MATERIAL' AND name = $1)
-              OR (warehouse_type = 'WIP' AND name = $2)
-              OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
-         ) duplicates
-         WHERE position > 1
-       )`,
+      `DELETE FROM public.warehouses
+       WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
+         OR (warehouse_type = 'WIP' AND name = $2)
+         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
       [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
     );
     deleted.warehouses = result.rowCount ?? 0;
