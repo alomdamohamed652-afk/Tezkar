@@ -14,7 +14,6 @@ type DeliveryDraftLine={id:string;orderItemId:string;productId:string;quantity:s
 type DeliveryLine={id:string;order_item_id?:string|null;product_id:string;product_code:string;product_name:string;quantity:number;carton_code:string|null;carton_weight:number|null;piece_count:number|null;sample_quantity:number|null;details:string|null;unit_name:string};
 type Delivery={id:string;code:string;destination:string;status:string;line_count:number;created_at:string;order_code:string|null;order_name:string|null;total_weight:number|null;piece_count:number|null;sample_quantity:number|null;details:string|null;notes:string|null;lines:DeliveryLine[]};
 type DeliveryAvailability={orderedQuantity:number;approvedProduction:number;reservedDelivery:number;productionAvailable:number;stockQuantity:number|null;stockReserved:number|null;stockAvailable:number|null};
-type CodingUnit={id:string;code:string;barcode:string;product_id:string;product_name:string;product_code:string;quantity:number;weight:number|null;warehouse_id:string|null;location_id:string|null;status:string};
 const labels:Record<string,string>={READY:"جاهز للخروج",RELEASED:"خرج",DRAFT:"مسودة",CANCELLED:"ملغى"};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 export default function DeliveriesPage(){
@@ -96,12 +95,9 @@ export default function DeliveriesPage(){
   if(deliveryLines.some(line=>line.cartonCode.trim().toLowerCase()===code.toLowerCase())){setScanFeedback("تمت إضافة هذه الكرتونة بالفعل إلى الإذن");setCartonScan("");return}
   setScanBusy(true);setScanFeedback("");
   try{
-   const saved=await api<{data:{id:string;product_id:string;quantity:number;carton_code:string;carton_weight:number|null;warehouse_id:string;location_id:string;product_name:string}}>("/api/delivery-permissions/"+draftId+"/scan",{method:"POST",body:JSON.stringify({cartonCode:code,...(warehouseId?{warehouseId}:{}),...(locationId?{locationId}:{})})});
+   const saved=await api<{data:{id:string;order_item_id:string;product_id:string;quantity:number;carton_code:string;carton_weight:number|null;warehouse_id:string;location_id:string;product_name:string}}>("/api/delivery-permissions/"+draftId+"/scan",{method:"POST",body:JSON.stringify({cartonCode:code,...(warehouseId?{warehouseId}:{}),...(locationId?{locationId}:{})})});
    const carton=saved.data;
-   const matching=orderProducts.filter(x=>x.product_id===carton.product_id);
-   if(matching.length!==1){throw new Error(matching.length===0?"منتج الكرتونة غير موجود ضمن أصناف الطلبية المختارة":"المنتج مكرر في الطلبية؛ لا يمكن تحديد سطر المنتج تلقائيًا")}
-   const orderLine=matching[0];
-   const newLine:DeliveryDraftLine={id:carton.id,orderItemId:orderLine.id,productId:carton.product_id,quantity:String(carton.quantity),cartonCode:carton.carton_code,cartonWeight:carton.carton_weight==null?"":String(carton.carton_weight),pieceCount:String(carton.quantity),sampleQuantity:"",details:"إضافة بالمسح المستمر"};
+   const newLine:DeliveryDraftLine={id:carton.id,orderItemId:carton.order_item_id,productId:carton.product_id,quantity:String(carton.quantity),cartonCode:carton.carton_code,cartonWeight:carton.carton_weight==null?"":String(carton.carton_weight),pieceCount:String(carton.quantity),sampleQuantity:"",details:"إضافة بالمسح المستمر"};
    const nextScanned=[...deliveryLines.filter(line=>line.cartonCode.trim()),newLine];
    setDeliveryLines([...deliveryLines.filter(line=>line.quantity.trim()||line.cartonCode.trim()),newLine]);
    setTotalWeight(String(nextScanned.reduce((sum,line)=>sum+Number(normalizeNumber(line.cartonWeight||"0")),0)));
