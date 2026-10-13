@@ -30,7 +30,7 @@ const revenueSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
   amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   revenueDate:z.string().date().optional(),
-  source:z.string().trim().min(2).max(50).default("MANUAL"),
+  source:z.string().trim().min(2).max(50).default("MANUAL").refine(v=>v.toUpperCase()!=="EXTERNAL_CUSTODY_TOP_UP",{message:"تمويل العهدة لا يُسجَّل كإيراد؛ استخدم إجراء تمويل العهدة"}),
   notes:z.string().trim().max(500).nullable().optional(),
   idempotencyKey:z.string().uuid().optional()
 });
@@ -159,7 +159,7 @@ export async function accountingRoutes(app:FastifyInstance){
      await assertAccountingDateOpen(client,p.data.revenueDate);
      const contractValue=Number(order.rows[0].contract_value||0);
      if(contractValue>0){
-       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
+       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1 AND source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]);
        const collected=Number(posted.rows[0]?.total||0);
        if(collected+p.data.amount>contractValue+1e-7)throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
      }
