@@ -114,7 +114,7 @@ export async function advanceRoutes(app:FastifyInstance){
   app.post("/api/advances/:id/approve",{preHandler:[authenticateRequest,requirePermission("advances.approve")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const row=await withTransaction(async(client)=>{
-      const current=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
+      const current=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
       if(!current.rowCount)throw new AppError("NOT_FOUND","طلب السلفة غير موجود",404);
       if(current.rows[0].status!=="PENDING")throw new AppError("INVALID_STATUS","حالة السلفة لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId)throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد سلفة أنشأتها بنفسك",409);
@@ -153,7 +153,7 @@ export async function advanceRoutes(app:FastifyInstance){
       const ledger=await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4) RETURNING id,code",[current.rows[0].employee_id,current.rows[0].amount,request.user!.userId,"صرف سلفة "+current.rows[0].code]);
       const cash=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'ADVANCE_PAYOUT',$5,$6) RETURNING id",
-        [request.user!.employeeId,current.rows[0].amount,"صرف سلفة "+current.rows[0].code,"سلفة الموظف "+current.rows[0].employee_id,id,request.user!.userId]
+        [request.user!.employeeId,current.rows[0].amount,"صرف سلفة "+current.rows[0].code,"سلفة الموظف "+current.rows[0].employee_name,id,request.user!.userId]
       );
       const updated=await client.query("UPDATE advance_requests SET status='PAID',paid_by=$1,paid_at=now(),ledger_entry_id=$2,updated_at=now() WHERE id=$3 RETURNING *",[request.user!.userId,ledger.rows[0].id,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"advances",entityType:"advance_request",entityId:id,afterData:updated.rows[0],metadata:{ledger_code:ledger.rows[0].code,cash_custody_transaction_id:cash.rows[0].id,salary_based:Boolean(salaryProfile.rowCount)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -171,7 +171,7 @@ export async function advanceRoutes(app:FastifyInstance){
   app.post("/api/advances/:id/repayments",{preHandler:[authenticateRequest,requirePermission("advances.repay")]},async(request,reply)=>{
     const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات دفعة سداد السلفة غير صحيحة",422);
     const result=await withTransaction(async client=>{
-      const advance=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
+      const advance=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
       if(!advance.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
       if(advance.rows[0].status!=="PAID")throw new AppError("INVALID_STATUS","لا يمكن تسجيل السداد قبل صرف السلفة",409);
       if(advance.rows[0].repayment_status==="SETTLED")throw new AppError("ADVANCE_SETTLED","السلفة مسددة بالكامل",409);
@@ -184,10 +184,10 @@ export async function advanceRoutes(app:FastifyInstance){
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,advance_repayment_id)
          VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
          ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING RETURNING id`,
-        [advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].code,x.rows[0].id]);
+        [advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].employee_name+" ("+advance.rows[0].code+"),x.rows[0].id]);
       const cash=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'ADVANCE_REPAYMENT',$6,$7) RETURNING id",
-        [request.user!.employeeId,p.data.amount,p.data.paymentDate??null,"تحصيل سداد سلفة "+advance.rows[0].code,p.data.notes??null,x.rows[0].id,request.user!.userId]
+        [request.user!.employeeId,p.data.amount,p.data.paymentDate??null,"تحصيل سداد سلفة "+advance.rows[0].employee_name+" ("+advance.rows[0].code+"),p.data.notes??null,x.rows[0].id,request.user!.userId]
       );
       const next=remaining-p.data.amount;
       const updated=await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2 RETURNING *",[next<=1e-9?"SETTLED":"OPEN",id]);
