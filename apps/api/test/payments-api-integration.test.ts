@@ -195,6 +195,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unmarkFinal.json().data.order_item_id,null);
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM production_order_lines WHERE order_id=$1",[repeatedOrderId])).rows[0].count),1,
         "unmarking a final stage must remove its now-orphaned line without recreating the remaining line");
+      const testAdvance=(await apiPool.query("INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status) VALUES($1,100,'worker payment offset test','PAID',$2,$2,now(),'CUSTOM','OPEN') RETURNING id,code",[workerEmployee.id,manager.id])).rows[0];
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,$3)",[workerEmployee.id,manager.id,"صرف سلفة "+testAdvance.code]);
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}
