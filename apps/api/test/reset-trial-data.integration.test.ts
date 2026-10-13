@@ -17,7 +17,7 @@ test("trial reset removes manual operational/catalog data and preserves manager 
 
   const target = new URL(adminUrl!);
   target.pathname = "/" + databaseName;
-  const apiDir = new URL(".", import.meta.url).pathname.replace(/\\/test\\/$/, "");
+  const apiDir = new URL("../", import.meta.url).pathname;
   const env = {
     ...process.env,
     DATABASE_URL: target.toString(),
