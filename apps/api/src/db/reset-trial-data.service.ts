@@ -81,6 +81,21 @@ export async function previewTrialDataReset(protectedUserId: string) {
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
         continue;
       }
+      if (table === "roles") {
+        const result = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM public.roles WHERE is_system = FALSE`
+        );
+        deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        continue;
+      }
+      if (table === "role_permissions") {
+        const result = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM public.role_permissions rp
+           JOIN public.roles r ON r.id = rp.role_id WHERE r.is_system = FALSE`
+        );
+        deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        continue;
+      }
       if (table === "coding_templates") {
         const result = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM public.coding_templates WHERE name <> ALL($1::text[])`,
@@ -124,7 +139,9 @@ export async function previewTrialDataReset(protectedUserId: string) {
           deletedRows[table] = Number(result.rows[0]?.count ?? 0);
         } else if (table === "user_roles") {
           const result = await client.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM public.user_roles WHERE user_id <> $1",
+            `SELECT count(*)::text AS count FROM public.user_roles ur
+             WHERE ur.user_id <> $1
+                OR EXISTS (SELECT 1 FROM public.roles r WHERE r.id = ur.role_id AND r.is_system = FALSE)`,
             [protectedUserId]
           );
           deletedRows[table] = Number(result.rows[0]?.count ?? 0);
@@ -395,6 +412,12 @@ try {
     if (Number(remaining.rows[0]?.count ?? 0) === 0) {
       await client.query("SELECT setval($1::regclass, 1, false)", [`public.${sequence_name}`]);
     }
+  }
+
+  // Custom roles are user-created configuration, not platform roles; remove them and their linked assignments.
+  if (present.has("roles")) {
+    const result = await client.query("DELETE FROM public.roles WHERE is_system = FALSE");
+    deleted.roles = result.rowCount ?? 0;
   }
 
   const afterCounts: Record<string, number> = {};
