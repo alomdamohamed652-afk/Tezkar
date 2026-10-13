@@ -823,11 +823,14 @@ export async function productionRoutes(app: FastifyInstance) {
   app.get("/api/production/earnings/settlement-eligible", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async () => {
     const result = await pool.query(`
       SELECT e.id,e.code,e.full_name,
-        COALESCE((SELECT SUM(p.earning_amount) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED'),0)
+        COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED'),0)
         + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                      FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
                     WHERE a.employee_id=e.id AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
-        - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id),0) AS available_earnings,
+        - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id),0)
+        - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                     LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+                    WHERE wp.employee_id=e.id AND s.id IS NULL),0) AS available_earnings,
         COALESCE((SELECT SUM(l.credit_amount-l.debit_amount) FROM employee_earnings_ledger l WHERE l.employee_id=e.id),0) AS account_balance,
         COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0))
                     FROM advance_requests a WHERE a.employee_id=e.id AND a.status='PAID' AND a.repayment_status='OPEN'),0) AS outstanding_advances
