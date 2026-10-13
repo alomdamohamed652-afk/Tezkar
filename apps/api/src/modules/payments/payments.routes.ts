@@ -72,7 +72,11 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
   // Legacy ledger-only balances remain supported for existing imported worker accounts.
   const balance=await getBalance(client,employeeId);
   const outstanding=await getOutstandingAdvanceAmount(client,employeeId);
-  return Math.max(0,Math.round((balance+outstanding)*100)/100);
+  const offsetRepayments=await client.query(
+    "SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE source_worker_payment_id IS NOT NULL AND advance_id IN (SELECT id FROM advance_requests WHERE employee_id=$1)",
+    [employeeId]
+  );
+  return Math.max(0,Math.round((balance+outstanding-Number(offsetRepayments.rows[0]?.amount??0))*100)/100);
 }
 
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
