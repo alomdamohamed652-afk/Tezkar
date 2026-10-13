@@ -22,7 +22,7 @@ type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;so
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const localDateInput=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
-const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل خارجي لعهدة موظف" } as Record<string,string>)[source]||source);
+const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل عهدة خارجي (ليس إيراد مبيعات)" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
   const { has } = usePermissions();
@@ -155,7 +155,7 @@ export default function AccountingPage() {
     try{
       await api("/api/cash-custody/top-ups",{method:"POST",body:JSON.stringify({employeeId:topUpForm.employeeId,amount:Number(topUpForm.amount),transactionDate:topUpForm.transactionDate,description:topUpForm.description.trim(),notes:topUpForm.notes.trim()||null})});
       setTopUpForm(v=>({...v,amount:"",notes:""}));
-      setMessage("تمت إضافة رصيد العهدة وتسجيل المبلغ كإيراد للشركة.");
+      setMessage("تمت إضافة رصيد العهدة كتمويل، دون تسجيله كإيراد مبيعات.");
       await load();
     }catch(e){setError(e instanceof Error?e.message:"تعذر إضافة رصيد العهدة")}
   }
@@ -370,7 +370,7 @@ export default function AccountingPage() {
      </section>}
      {tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own"))&&<section className="card">
       {has("cash_custody.create")&&has("finance.expenses.create")&&<section className="nested-card">
-       <div className="card-header"><div><h2 className="card-title">إضافة رصيد عهدة من خارج حسابات الشركة</h2><div className="form-hint">للمدير المالي فقط. تزيد رصيد الموظف وتُسجل في الوقت نفسه كإيراد للشركة من تمويل خارجي، وليس كتحصيل من عميل.</div></div></div>
+       <div className="card-header"><div><h2 className="card-title">إضافة رصيد عهدة من خارج حسابات الشركة</h2><div className="form-hint">للمدير المالي فقط. تزيد رصيد الموظف كتمويل للعهدة، ولا تُسجل إيراد مبيعات أو تحصيلًا من عميل.</div></div></div>
        <div className="form-grid finance-four-grid">
         <label>الموظف<select value={topUpForm.employeeId} onChange={e=>setTopUpForm({...topUpForm,employeeId:e.target.value})}><option value="">اختر صاحب العهدة</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
         <label>المبلغ<input type="number" min="0.01" step="0.01" value={topUpForm.amount} onChange={e=>setTopUpForm({...topUpForm,amount:e.target.value})}/></label>
