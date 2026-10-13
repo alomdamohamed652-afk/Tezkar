@@ -255,6 +255,20 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [employeeB.rows[0].id]
       );
       assert.equal(Number(ledgerAfterSalaryAdvance.rows[0].balance), Number(ledgerBeforeSalaryAdvance.rows[0].balance)-250);
+      const advanceCustodyOut=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ADVANCE_PAYOUT' AND source_id=$1",[salaryAdvanceId]);
+      assert.equal(advanceCustodyOut.rowCount,1);
+      assert.equal(advanceCustodyOut.rows[0].direction,"OUT");
+      assert.equal(Number(advanceCustodyOut.rows[0].amount),250);
+      const earlyRepayment=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:{amount:50,repaymentType:"CUSTOM",notes:"early repayment integration test"}
+      });
+      assert.equal(earlyRepayment.statusCode,201,earlyRepayment.body);
+      assert.equal(Number(earlyRepayment.json().data.remaining),200);
+      const advanceCustodyIn=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[earlyRepayment.json().data.repayment.id]);
+      assert.equal(advanceCustodyIn.rowCount,1);
+      assert.equal(advanceCustodyIn.rows[0].direction,"IN");
+      assert.equal(Number(advanceCustodyIn.rows[0].amount),50);
 
       // A paid, still-open advance must not block another advance; payroll can repay both.
       const secondSalaryAdvanceCreated = await app.inject({
@@ -271,7 +285,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         method: "POST", url: "/api/advances/" + secondSalaryAdvanceId + "/pay", headers: { cookie: secondCookieHeader }
       });
       assert.equal(secondSalaryAdvancePaid.statusCode, 200, secondSalaryAdvancePaid.body);
-      assert.equal(secondSalaryAdvancePaid.json().data.ledger_entry_id, null);
+      assert.ok(secondSalaryAdvancePaid.json().data.ledger_entry_id,"every advance payout must be posted to the employee account");
       const openPaidAdvances = await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM advance_requests WHERE employee_id=$1 AND status='PAID' AND repayment_status='OPEN'",
         [employeeB.rows[0].id]
