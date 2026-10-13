@@ -10,7 +10,7 @@ type PayrollData={period:{id:string;period_month:string;status:string}|null;item
 type PayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;reference:string|null;notes:string|null;paid_by_username:string|null;created_at:string};
 type SalaryHistoryItem={id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null;created_at:string;created_by_username:string|null};
 type OwnPayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;reference:string|null;notes:string|null};
-type OwnPayrollItem={id:string;period_month:string;period_status:string;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount:string|number;net_amount:string|number;status:string;notes:string|null;paid_amount:string|number;remaining_amount:string|number;payments:OwnPayrollPayment[]};
+type OwnPayrollItem={id:string;employee_id:string;period_month:string;period_status:string;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount:string|number;net_amount:string|number;status:string;notes:string|null;paid_amount:string|number;remaining_amount:string|number;payments:OwnPayrollPayment[]};
 type OwnPayrollData={employee:{id:string;code:string;full_name:string};salaryHistory:Array<{id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null}>;payrollItems:OwnPayrollItem[]};
 const paymentMethodLabel:Record<string,string>={CASH:"نقدي",BANK_TRANSFER:"تحويل بنكي",WALLET:"محفظة إلكترونية",OTHER:"أخرى"};
 const money=(v:string|number)=>formatMoney(v);
