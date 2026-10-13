@@ -96,16 +96,12 @@ export default function DeliveriesPage(){
   if(deliveryLines.some(line=>line.cartonCode.trim().toLowerCase()===code.toLowerCase())){setScanFeedback("تمت إضافة هذه الكرتونة بالفعل إلى الإذن");setCartonScan("");return}
   setScanBusy(true);setScanFeedback("");
   try{
-   const result=await api<{data:CodingUnit}>("/api/coding/units/"+encodeURIComponent(code));
-   const carton=result.data;
-   if(!["CODED","IN_STOCK","READY_FOR_DELIVERY"].includes(carton.status)){throw new Error("الكرتونة غير متاحة للتسليم؛ حالتها الحالية: "+carton.status)}
-   if(!carton.warehouse_id||!carton.location_id){throw new Error("الكرتونة غير مرتبطة بمخزن ومكان تخزين؛ لا يمكن إضافتها للتسليم")}
-   if(warehouseId&&warehouseId!==carton.warehouse_id||locationId&&locationId!==carton.location_id){throw new Error("الكرتونة من مخزن أو مكان مختلف. أنشئ إذنًا منفصلًا لكل موقع تخزين")}
+   const saved=await api<{data:{id:string;product_id:string;quantity:number;carton_code:string;carton_weight:number|null;warehouse_id:string;location_id:string;product_name:string}}>("/api/delivery-permissions/"+draftId+"/scan",{method:"POST",body:JSON.stringify({cartonCode:code,...(warehouseId?{warehouseId}:{}),...(locationId?{locationId}:{})})});
+   const carton=saved.data;
    const matching=orderProducts.filter(x=>x.product_id===carton.product_id);
    if(matching.length!==1){throw new Error(matching.length===0?"منتج الكرتونة غير موجود ضمن أصناف الطلبية المختارة":"المنتج مكرر في الطلبية؛ لا يمكن تحديد سطر المنتج تلقائيًا")}
    const orderLine=matching[0];
-   const saved=await api<{data:{id:string}}>("/api/delivery-permissions/"+draftId+"/scan",{method:"POST",body:JSON.stringify({cartonCode:carton.code||carton.barcode||code})});
-   const newLine:DeliveryDraftLine={id:saved.data.id,orderItemId:orderLine.id,productId:carton.product_id,quantity:String(carton.quantity),cartonCode:carton.code||carton.barcode,cartonWeight:carton.weight==null?"":String(carton.weight),pieceCount:String(carton.quantity),sampleQuantity:"",details:"إضافة بالمسح المستمر"};
+   const newLine:DeliveryDraftLine={id:carton.id,orderItemId:orderLine.id,productId:carton.product_id,quantity:String(carton.quantity),cartonCode:carton.carton_code,cartonWeight:carton.carton_weight==null?"":String(carton.carton_weight),pieceCount:String(carton.quantity),sampleQuantity:"",details:"إضافة بالمسح المستمر"};
    const nextScanned=[...deliveryLines.filter(line=>line.cartonCode.trim()),newLine];
    setDeliveryLines([...deliveryLines.filter(line=>line.quantity.trim()||line.cartonCode.trim()),newLine]);
    setTotalWeight(String(nextScanned.reduce((sum,line)=>sum+Number(normalizeNumber(line.cartonWeight||"0")),0)));
