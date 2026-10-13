@@ -280,6 +280,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(firstEntry.statusCode, 201, firstEntry.body);
     const firstId = firstEntry.json().data.id as string;
+    // Regression guard for PostgreSQL positional placeholders in the production list filters.
+    const pendingFilter = await app.inject({
+      method: "GET", url: "/api/production?status=PENDING&employeeId=" + submitterEmployee,
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(pendingFilter.statusCode, 200, pendingFilter.body);
+    assert.ok(pendingFilter.json().data.some((row: { id: string }) => row.id === firstId),
+      "status and employee filters must return the matching pending production entry");
     const firstDestination = await apiPool.query("SELECT warehouse_id,location_id,earning_amount,total_earning_amount FROM production_entries WHERE id=$1", [firstId]);
     assert.equal(firstDestination.rows[0].warehouse_id, expectedWip.id, "intermediate production must ignore the client-supplied raw material warehouse");
     assert.notEqual(firstDestination.rows[0].warehouse_id, wrongWarehouse.rows[0].id);
@@ -294,6 +302,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/production/" + firstId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(approveFirst.statusCode, 200, approveFirst.body);
+    const approvedFilter = await app.inject({
+      method: "GET", url: "/api/production?status=APPROVED&employeeId=" + submitterEmployee,
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(approvedFilter.statusCode, 200, approvedFilter.body);
+    assert.ok(approvedFilter.json().data.some((row: { id: string }) => row.id === firstId),
+      "approved status filter must return the approved production entry");
     const wipBalance = await apiPool.query(
       "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [wipStage.output_product_id, expectedWip.id, firstDestination.rows[0].location_id]
