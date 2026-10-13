@@ -154,6 +154,61 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
   return row.rows[0];
 }
 
+async function executeWorkerPayment(
+  client:import("pg").PoolClient,
+  input:{userId:string;custodyEmployeeId:string;employeeId:string;requestId:string;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number}
+){
+  const available=await getAvailableEarnings(client,input.employeeId);
+  if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
+  const paymentDate=new Date().toISOString().slice(0,10);
+  const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
+  const payment=await client.query(
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,payment_request_id,paid_by,notes,transfer_reference)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [input.employeeId,planned.cashPaid,input.grossAmount,planned.total,input.method,input.requestId,input.userId,
+      planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
+      input.transferReference]);
+  for(const item of planned.plan){
+    await client.query(
+      `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_worker_payment_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [item.advance.id,item.amount,item.repaymentType,paymentDate,
+       `سداد سلفة ${item.advance.code} من طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
+    const next=Number(item.advance.outstanding)-item.amount;
+    await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.009?"SETTLED":"OPEN",item.advance.id]);
+    await writeAudit(client,{actorUserId:input.userId,action:"worker_payment_advance_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{workerPaymentId:payment.rows[0].id,requestId:input.requestId,amount:item.amount,remaining:Math.max(0,next)},ipAddress:null,userAgent:null});
+  }
+  await client.query(
+    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
+     VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
+     ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
+    [input.employeeId,planned.cashPaid,payment.rows[0].id,input.userId,
+      planned.total>0?`صرف صافي طلب قبض ${input.requestCode} بعد خصم السلف ${planned.total.toFixed(2)} ج.م`:`صرف طلب قبض ${input.requestCode}`]);
+  await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
+
+  let allocationRemaining=input.grossAmount;
+  const productions=await client.query(
+    `SELECT pe.id,
+      GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+      FROM production_entries pe
+     WHERE pe.employee_id=$1 AND pe.status='APPROVED'
+     ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
+    [input.employeeId]);
+  for(const production of productions.rows){
+    if(allocationRemaining<=0.000001)break;
+    const take=Math.min(allocationRemaining,Number(production.remaining));
+    if(take<=0.000001)continue;
+    await client.query(
+      `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
+       VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
+       DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
+      [payment.rows[0].id,production.id,take]);
+    allocationRemaining-=take;
+  }
+  return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
+}
+
 export async function paymentsRoutes(app:FastifyInstance){
   app.get("/api/payment-methods",{
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
