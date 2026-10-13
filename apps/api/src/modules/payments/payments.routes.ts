@@ -156,7 +156,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;custodyEmployeeId:string;employeeId:string;requestId:string;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
@@ -176,7 +176,7 @@ async function executeWorkerPayment(
        `سداد سلفة ${item.advance.code} من طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
     const next=Number(item.advance.outstanding)-item.amount;
     await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.009?"SETTLED":"OPEN",item.advance.id]);
-    await writeAudit(client,{actorUserId:input.userId,action:"worker_payment_advance_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{workerPaymentId:payment.rows[0].id,requestId:input.requestId,amount:item.amount,remaining:Math.max(0,next)},ipAddress:null,userAgent:null});
+    await writeAudit(client,{actorUserId:input.userId,actorEmployeeId:input.actorEmployeeId,action:"worker_payment_advance_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{workerPaymentId:payment.rows[0].id,requestId:input.requestId,amount:item.amount,remaining:Math.max(0,next)},ipAddress:input.ipAddress,userAgent:input.userAgent});
   }
   await client.query(
     `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
@@ -315,50 +315,20 @@ export async function paymentsRoutes(app:FastifyInstance){
       const available=await getAvailableEarnings(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>available+0.009) throw new AppError("INSUFFICIENT_BALANCE","مستحقات الإنتاج المتاحة لم تعد تكفي لهذا الطلب",409);
 
-      // Approval means the finance user confirms that the money was actually paid.
-      // Record the payment and ledger debit atomically to keep the available balance accurate.
-      const payment=await client.query(
-        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
-         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
-      await client.query(
-        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
-         VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
-         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
-        [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId,
-         current.rows[0].transfer_reference ? "صرف طلب قبض "+current.rows[0].code+" — مرجع التحويل: "+current.rows[0].transfer_reference : "صرف طلب قبض "+current.rows[0].code]);
-
       const custodyEmployeeId=actionBody.data.cashCustodyEmployeeId??request.user!.employeeId;
       if(!custodyEmployeeId)throw new AppError("CASH_CUSTODY_EMPLOYEE_REQUIRED","اختار الموظف صاحب العهدة التي سيُخصم منها المبلغ",422);
-      await recordCashCustodyOut(client,request.user!.userId,custodyEmployeeId,Number(payment.rows[0].amount),String(current.rows[0].code),String(payment.rows[0].id));
-
-      let allocationRemaining=Number(payment.rows[0].amount);
-      const productions=await client.query(
-        `SELECT pe.id,
-                GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-                  COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
-           FROM production_entries pe
-          WHERE pe.employee_id=$1 AND pe.status='APPROVED'
-          ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC
-          FOR UPDATE`,
-        [payment.rows[0].employee_id]);
-      for(const production of productions.rows){
-        if(allocationRemaining<=0.000001) break;
-        const take=Math.min(allocationRemaining,Number(production.remaining));
-        if(take<=0.000001) continue;
-        await client.query(
-          `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
-           VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
-           DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
-          [payment.rows[0].id,production.id,take]);
-        allocationRemaining-=take;
-      }
+      const settlement=await executeWorkerPayment(client,{
+        userId:request.user!.userId,actorEmployeeId:request.user!.employeeId,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null,
+        custodyEmployeeId,employeeId:current.rows[0].employee_id,requestId:id,requestCode:String(current.rows[0].code),
+        grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
+        manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
+      });
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
           WHERE id=$3 RETURNING *`,
-        [request.user!.userId,payment.rows[0].id,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:payment.rows[0].id,amount:payment.rows[0].amount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return {request:updated.rows[0],payment:payment.rows[0]};
+        [request.user!.userId,settlement.payment.id,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:settlement.payment.id,gross_amount:settlement.grossAmount,net_amount:settlement.cashPaid,advance_repayment_amount:settlement.advanceRepaymentAmount,repayments:settlement.repayments},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {request:updated.rows[0],...settlement};
     });
     return {data:row};
   });
@@ -386,7 +356,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     preHandler:[authenticateRequest,requirePermission("worker_payments.pay")]
   },async(request)=>{
     const id=(request.params as {id:string}).id;
-    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional()}).safeParse(request.body??{});
+    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional(),advanceRepaymentAmount:z.number().nonnegative().default(0)}).safeParse(request.body??{});
     if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
@@ -398,51 +368,19 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(current.rows[0].status!=="APPROVED") throw new AppError("INVALID_STATUS","يجب اعتماد الطلب قبل الدفع",409);
       const available=await getAvailableEarnings(client,current.rows[0].employee_id);
       if(Number(current.rows[0].amount)>available+0.009) throw new AppError("INSUFFICIENT_BALANCE","مستحقات الإنتاج المتاحة لم تعد تكفي لهذا الطلب",409);
-      const payment=await client.query(
-        `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
-         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [current.rows[0].employee_id,current.rows[0].amount,current.rows[0].method,id,request.user!.userId,current.rows[0].transfer_reference ? "مرجع التحويل: "+current.rows[0].transfer_reference : null,current.rows[0].transfer_reference || null]);
-      const updated=await client.query(
-        `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
-        [payment.rows[0].id,id]);
-      await client.query(
-        `INSERT INTO employee_earnings_ledger(
-           employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes
-         )
-         VALUES($1,'WORKER_PAYMENT',$2,$3,$4,'Worker payment')
-         ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
-        [payment.rows[0].employee_id,payment.rows[0].amount,payment.rows[0].id,request.user!.userId]);
-
       const custodyEmployeeId=actionBody.data.cashCustodyEmployeeId??request.user!.employeeId;
       if(!custodyEmployeeId)throw new AppError("CASH_CUSTODY_EMPLOYEE_REQUIRED","اختار الموظف صاحب العهدة التي سيُخصم منها المبلغ",422);
-      await recordCashCustodyOut(client,request.user!.userId,custodyEmployeeId,Number(payment.rows[0].amount),String(current.rows[0].code),String(payment.rows[0].id));
-
-      let allocationRemaining = Number(payment.rows[0].amount);
-      const productions = await client.query(
-        `SELECT pe.id,
-                GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-                  COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
-           FROM production_entries pe
-          WHERE pe.employee_id=$1 AND pe.status='APPROVED'
-          ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC
-          FOR UPDATE`,
-        [payment.rows[0].employee_id]
-      );
-      for (const production of productions.rows) {
-        if (allocationRemaining <= 0.000001) break;
-        const take = Math.min(allocationRemaining, Number(production.remaining));
-        if (take <= 0.000001) continue;
-        await client.query(
-          `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
-           VALUES($1,$2,$3)
-           ON CONFLICT(worker_payment_id,production_entry_id) DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
-          [payment.rows[0].id,production.id,take]
-        );
-        allocationRemaining -= take;
-      }
-
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"payments",entityType:"worker_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{payment_request_id:id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return {request:updated.rows[0],payment:payment.rows[0]};
+      const settlement=await executeWorkerPayment(client,{
+        userId:request.user!.userId,actorEmployeeId:request.user!.employeeId,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null,
+        custodyEmployeeId,employeeId:current.rows[0].employee_id,requestId:id,requestCode:String(current.rows[0].code),
+        grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
+        manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
+      });
+      const updated=await client.query(
+        `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
+        [settlement.payment.id,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"pay",module:"payments",entityType:"worker_payment",entityId:settlement.payment.id,afterData:settlement.payment,metadata:{payment_request_id:id,gross_amount:settlement.grossAmount,net_amount:settlement.cashPaid,advance_repayment_amount:settlement.advanceRepaymentAmount,repayments:settlement.repayments},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {request:updated.rows[0],...settlement};
     });
     return {data:row};
   });
