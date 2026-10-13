@@ -28,6 +28,62 @@ const partiallyKeep = new Set([
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
 const qualified = (table: string) => '"public".' + quoteIdentifier(table);
 
+export async function previewTrialDataReset(protectedUserId: string) {
+  const client = await pool.connect();
+  try {
+    const tableResult = await client.query<{ table_name: string }>(
+      `SELECT tablename AS table_name
+       FROM pg_tables
+       WHERE schemaname = 'public'
+       ORDER BY tablename`
+    );
+    const allTables = tableResult.rows.map(row => row.table_name);
+    const present = new Set(allTables);
+    if (!present.has("users") || !present.has("employees") || !present.has("warehouses")) {
+      throw new Error("Required Tezkar tables were not found; refusing to preview reset.");
+    }
+
+    const keep = new Set(alwaysKeep);
+    for (const name of allTables) {
+      if (/settings/i.test(name) || /^(company_profile|company_profiles|factory|factories)$/i.test(name)) {
+        keep.add(name);
+      }
+    }
+    for (const name of partiallyKeep) keep.add(name);
+
+    const deletedRows: Record<string, number> = {};
+    for (const table of allTables) {
+      if (alwaysKeep.has(table) || keep.has(table)) {
+        if (table === "users") {
+          const result = await client.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM public.users WHERE id <> $1",
+            [protectedUserId]
+          );
+          deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        } else if (table === "user_roles") {
+          const result = await client.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM public.user_roles WHERE user_id <> $1",
+            [protectedUserId]
+          );
+          deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+        }
+        continue;
+      }
+      const result = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM ${qualified(table)}`
+      );
+      deletedRows[table] = Number(result.rows[0]?.count ?? 0);
+    }
+    return {
+      deletedRows,
+      totalRows: Object.values(deletedRows).reduce((sum, count) => sum + count, 0),
+      preservedTables: [...keep].filter(table => present.has(table)).sort()
+    };
+  } finally {
+    client.release();
+  }
+}
+
 export async function resetTrialData(protectedUserId: string | null = null) {
 const client = await pool.connect();
 try {
