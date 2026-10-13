@@ -843,12 +843,26 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       payload: { cartonCode: overProductionCartonResponse.json().data.barcode }
     });
     assert.equal(overProductionScan.statusCode, 201, overProductionScan.body);
+    const stockBeforeProductionRejection = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    const stockBeforeGuardTestValueForProductionCheck = Number(stockBeforeProductionRejection.rows[0].inventory_value);
     const rejectOverProduction = await app.inject({
       method: "POST", url: "/api/delivery-permissions/" + overProductionDraftId + "/ready",
       headers: { cookie: approver.cookie }
     });
     assert.equal(rejectOverProduction.statusCode, 409, rejectOverProduction.body);
     assert.equal(rejectOverProduction.json().error.code, "DELIVERY_EXCEEDS_PRODUCTION");
+    const stockAfterProductionRejection = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(stockAfterProductionRejection.rows[0].quantity), 3,
+      "rejected over-production draft must not change stock quantity");
+    assert.equal(Number(stockAfterProductionRejection.rows[0].inventory_value),
+      Number(stockBeforeGuardTestValueForProductionCheck),
+      "rejected over-production draft must not change stock inventory value");
     const cancelOverProductionDraft = await app.inject({
       method: "POST", url: "/api/delivery-permissions/" + overProductionDraftId + "/cancel-draft",
       headers: { cookie: approver.cookie }
