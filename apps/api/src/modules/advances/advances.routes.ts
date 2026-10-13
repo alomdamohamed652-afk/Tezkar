@@ -114,7 +114,7 @@ export async function advanceRoutes(app:FastifyInstance){
   app.post("/api/advances/:id/approve",{preHandler:[authenticateRequest,requirePermission("advances.approve")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const row=await withTransaction(async(client)=>{
-      const current=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
+      const current=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount)throw new AppError("NOT_FOUND","طلب السلفة غير موجود",404);
       if(current.rows[0].status!=="PENDING")throw new AppError("INVALID_STATUS","حالة السلفة لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId)throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد سلفة أنشأتها بنفسك",409);
@@ -141,7 +141,7 @@ export async function advanceRoutes(app:FastifyInstance){
   app.post("/api/advances/:id/pay",{preHandler:[authenticateRequest,requirePermission("advances.pay")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const row=await withTransaction(async(client)=>{
-      const current=await client.query("SELECT * FROM advance_requests WHERE id=$1 FOR UPDATE",[id]);
+      const current=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
       if(!current.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
       if(current.rows[0].status!=="APPROVED")throw new AppError("INVALID_STATUS","يجب اعتماد السلفة قبل صرفها",409);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[current.rows[0].employee_id]);
@@ -184,10 +184,10 @@ export async function advanceRoutes(app:FastifyInstance){
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,advance_repayment_id)
          VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
          ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING RETURNING id`,
-        [advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].employee_name+" ("+advance.rows[0].code+"),x.rows[0].id]);
+        [advance.rows[0].employee_id,p.data.amount,request.user!.userId,"سداد نقدي من سلفة "+advance.rows[0].employee_name+" ("+advance.rows[0].code+")",x.rows[0].id]);
       const cash=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,COALESCE($3::date,CURRENT_DATE),$4,$5,'ADVANCE_REPAYMENT',$6,$7) RETURNING id",
-        [request.user!.employeeId,p.data.amount,p.data.paymentDate??null,"تحصيل سداد سلفة "+advance.rows[0].employee_name+" ("+advance.rows[0].code+"),p.data.notes??null,x.rows[0].id,request.user!.userId]
+        [request.user!.employeeId,p.data.amount,p.data.paymentDate??null,"تحصيل سداد سلفة "+advance.rows[0].employee_name+" ("+advance.rows[0].code+")",p.data.notes??null,x.rows[0].id,request.user!.userId]
       );
       const next=remaining-p.data.amount;
       const updated=await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2 RETURNING *",[next<=1e-9?"SETTLED":"OPEN",id]);
