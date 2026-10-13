@@ -15,7 +15,7 @@ export async function reportsRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
  app.get("/api/reports/employee-earnings",{preHandler:[authenticateRequest,requirePermission("reports.view")]},async()=>{
-  const r=await pool.query(`SELECT e.code,e.full_name,COALESCE(SUM(l.credit_amount),0) AS earned,COALESCE(SUM(l.debit_amount),0) AS debited,COALESCE(SUM(l.credit_amount-l.debit_amount),0) AS balance FROM employees e LEFT JOIN employee_earnings_ledger l ON l.employee_id=e.id WHERE e.is_active=TRUE GROUP BY e.id ORDER BY e.full_name`);
+  const r=await pool.query(`SELECT e.code,e.full_name,COALESCE(SUM(l.credit_amount) FILTER(WHERE l.advance_repayment_id IS NULL),0) AS earned,COALESCE(SUM(l.debit_amount),0) AS debited,COALESCE(SUM(l.credit_amount-l.debit_amount),0) AS balance FROM employees e LEFT JOIN employee_earnings_ledger l ON l.employee_id=e.id WHERE e.is_active=TRUE GROUP BY e.id ORDER BY e.full_name`);
   return {data:r.rows};
  });
  app.get("/api/reports/warehouse",{preHandler:[authenticateRequest,requirePermission("reports.view")]},async()=>{
@@ -23,7 +23,7 @@ export async function reportsRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
  app.get("/api/reports/summary",{preHandler:[authenticateRequest,requirePermission("reports.view")]},async()=>{
-  const [p,s,e,pay,a]=await Promise.all([pool.query("SELECT COUNT(*)::int AS entries,COALESCE(SUM(quantity),0) AS quantity,COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS earnings FROM production_entries WHERE work_date=CURRENT_DATE AND status='APPROVED'"),pool.query("SELECT COUNT(*)::int AS lines,COALESCE(SUM(quantity),0) AS quantity FROM stock_balances WHERE quantity>0"),pool.query("SELECT COALESCE(SUM(credit_amount),0) AS earned,COALESCE(SUM(debit_amount),0) AS debited,COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger"),pool.query("SELECT COUNT(*)::int AS count FROM payment_requests WHERE status='PENDING'"),pool.query("SELECT COUNT(*)::int AS count FROM advance_requests WHERE status='PENDING'")]);
+  const [p,s,e,pay,a]=await Promise.all([pool.query("SELECT COUNT(*)::int AS entries,COALESCE(SUM(quantity),0) AS quantity,COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS earnings FROM production_entries WHERE work_date=CURRENT_DATE AND status='APPROVED'"),pool.query("SELECT COUNT(*)::int AS lines,COALESCE(SUM(quantity),0) AS quantity FROM stock_balances WHERE quantity>0"),pool.query("SELECT COALESCE(SUM(credit_amount) FILTER(WHERE advance_repayment_id IS NULL),0) AS earned,COALESCE(SUM(debit_amount),0) AS debited,COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger"),pool.query("SELECT COUNT(*)::int AS count FROM payment_requests WHERE status='PENDING'"),pool.query("SELECT COUNT(*)::int AS count FROM advance_requests WHERE status='PENDING'")]);
   return {data:{production:p.rows[0],stock:s.rows[0],earnings:e.rows[0],pendingPayments:pay.rows[0].count,pendingAdvances:a.rows[0].count}};
  });
  app.get("/api/audit-log",{preHandler:[authenticateRequest,requirePermission("audit.view")]},async(request)=>{
