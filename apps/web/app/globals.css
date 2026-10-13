@@ -875,10 +875,10 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
  body:has(.coding-print-sheet) .coding-print-sheet,
  body:has(.coding-print-sheet) .coding-print-sheet *{visibility:visible!important}
  body:has(.coding-print-sheet) .coding-print-sheet{display:block;position:fixed;inset:0;width:var(--print-width);height:var(--print-height);margin:0;padding:0;background:#fff}
- body:has(.coding-print-queue-sheet) *{visibility:hidden!important}
+ body:has(.coding-print-queue-sheet) .app-shell{display:none!important}
  body:has(.coding-print-queue-sheet) .coding-print-queue-sheet,
  body:has(.coding-print-queue-sheet) .coding-print-queue-sheet *{visibility:visible!important}
- body:has(.coding-print-queue-sheet) .coding-print-queue-sheet{display:block!important;position:absolute;top:0;left:0;margin:0;padding:0;background:#fff}
+ body:has(.coding-print-queue-sheet) .coding-print-queue-sheet{display:block!important;position:static;width:auto;height:auto;margin:0;padding:0;background:#fff}
  body:has(.coding-print-queue-sheet) .coding-print-queue-label{break-after:page;page-break-after:always}
  body:has(.coding-print-queue-sheet) .coding-print-queue-label:last-child{break-after:auto;page-break-after:auto}
 }
