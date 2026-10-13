@@ -392,7 +392,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const availableAfterAdvance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(availableAfterAdvance.statusCode,200,availableAfterAdvance.body);
       assert.equal(Number(availableAfterAdvance.json().data.balance),100,"employee account must visibly reflect the outstanding advance");
-      assert.equal(Number(availableAfterAdvance.json().data.outstandingAdvanceAmount),200);
+      assert.equal(Number(availableAfterAdvance.json().data.outstandingAdvanceAmount),250,"both the earlier and current advances remain open");
       assert.equal(Number(availableAfterAdvance.json().data.availableEarnings),350,"loan principal must not reduce earned-but-unpaid production entitlement");
 
       const nextRequest=await app.inject({
