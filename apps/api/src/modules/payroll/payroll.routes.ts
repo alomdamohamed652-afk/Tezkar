@@ -331,7 +331,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id)
          VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
          ON CONFLICT (payroll_payment_id) WHERE payroll_payment_id IS NOT NULL DO NOTHING`,
-        [item.rows[0].employee_id,parsed.data.amount,request.user!.userId,`صرف صافي راتب - دفعة ${payment.rows[0].id}`,payment.rows[0].id]
+        [item.rows[0].employee_id,parsed.data.amount+committedAdvanceRepayment,request.user!.userId,
+          committedAdvanceRepayment>0?`تسوية إجمالي راتب بعد خصم السلف - دفعة ${payment.rows[0].id}`:`صرف راتب - دفعة ${payment.rows[0].id}`,payment.rows[0].id]
       );
       await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2", [status,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,cashCustodyOutId:custodyOut.rows[0].id,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
