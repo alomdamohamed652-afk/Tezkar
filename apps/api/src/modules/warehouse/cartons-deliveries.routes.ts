@@ -150,6 +150,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(!order.rowCount||order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","الطلبية غير موجودة أو ملغاة",409);
    const sums=new Map<string,number>();
    for(const line of lines.rows){
+    await assertLocation(client,line.warehouse_id,line.location_id);
     const key=String(line.order_item_id);sums.set(key,(sums.get(key)??0)+Number(line.quantity));
     const coding=await client.query("SELECT * FROM coding_units WHERE (code=$1 OR barcode=$1) FOR UPDATE",[line.carton_code]);
     const carton=coding.rowCount?null:await client.query("SELECT * FROM cartons WHERE (code=$1 OR barcode=$1) FOR UPDATE",[line.carton_code]);
