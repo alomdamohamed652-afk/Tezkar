@@ -643,46 +643,9 @@ export async function productionRoutes(app: FastifyInstance) {
         [current.employee_id, current.earning_amount, id, request.user!.userId]
       );
 
-      // Production-percentage advances are recovered from each approved production earning.
-      // The advance row is locked so concurrent approvals cannot over-repay the balance.
-      const percentageAdvance = await client.query(
-        `SELECT a.*,
-                GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding
-           FROM advance_requests a
-          WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
-            AND a.repayment_method='PRODUCTION_PERCENTAGE' AND a.production_percentage>0
-            AND a.paid_at::date <= $2::date
-          ORDER BY a.paid_at,a.created_at,a.id
-          LIMIT 1
-          FOR UPDATE OF a`,
-        [current.employee_id,current.work_date]
-      );
-      if (percentageAdvance.rowCount) {
-        const advance = percentageAdvance.rows[0];
-        const outstanding = Number(advance.outstanding);
-        const percentageAmount = Number(current.earning_amount)*Number(advance.production_percentage)/100;
-        const repaymentAmount = Math.round(Math.min(outstanding,percentageAmount)*100)/100;
-        if (repaymentAmount > 0) {
-          const repayment = await client.query(
-            `INSERT INTO advance_repayments(
-               advance_id,amount,repayment_type,payment_date,notes,created_by,source_production_entry_id
-             ) VALUES($1,$2,'PRODUCTION_PERCENTAGE',$3,$4,$5,$6)
-             ON CONFLICT(source_production_entry_id) WHERE source_production_entry_id IS NOT NULL DO NOTHING
-             RETURNING id`,
-            [advance.id,repaymentAmount,current.work_date,`خصم ${Number(advance.production_percentage)}٪ من إنتاج ${current.code} لسداد السلفة ${advance.code}`,request.user!.userId,id]
-          );
-          if (repayment.rowCount) {
-            const nextRemaining = outstanding-repaymentAmount;
-            await client.query(
-              "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4)",
-              [current.employee_id,repaymentAmount,request.user!.userId,`سداد سلفة ${advance.code} من إنتاج ${current.code}`]
-            );
-            await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[nextRemaining<=0.0001?"SETTLED":"OPEN",advance.id]);
-            await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"automatic_production_repayment",module:"advances",entityType:"advance_request",entityId:advance.id,metadata:{repaymentId:repayment.rows[0].id,productionEntryId:id,productionCode:current.code,amount:repaymentAmount,remaining:Math.max(0,nextRemaining)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-          }
-        }
-      }
-
+      // Advance repayment is intentionally not posted when production is approved.
+      // It is settled when the employee is actually paid, so production cost remains gross
+      // and the cash-custody payout can be split into gross due and advance recovery.
       const adjustments = await client.query(
         `SELECT id,adjustment_type,amount,reason
            FROM employee_earnings_adjustments
@@ -855,5 +818,170 @@ export async function productionRoutes(app: FastifyInstance) {
     return reply.code(201).send({data:row});
   });
 
+
+ 
+  app.get("/api/production/earnings/settlement-eligible", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async () => {
+    const result = await pool.query(`
+      SELECT e.id,e.code,e.full_name,
+        COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED'),0)
+        + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+                     FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
+                    WHERE a.employee_id=e.id AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
+        - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id),0)
+        - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                     LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+                    WHERE wp.employee_id=e.id AND s.id IS NULL),0) AS available_earnings,
+        COALESCE((SELECT SUM(l.credit_amount-l.debit_amount) FROM employee_earnings_ledger l WHERE l.employee_id=e.id),0) AS account_balance,
+        COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0))
+                    FROM advance_requests a WHERE a.employee_id=e.id AND a.status='PAID' AND a.repayment_status='OPEN'),0) AS outstanding_advances
+      FROM employees e WHERE e.is_active=TRUE
+      ORDER BY e.full_name
+    `);
+    return {data:result.rows};
+  });
+
+  app.get("/api/production/earnings/settlements", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async request => {
+    const q=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
+    if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الموظف غير صحيح",422);
+    const values:unknown[]=[];let where="";
+    if(q.data.employeeId){values.push(q.data.employeeId);where="WHERE s.employee_id=$1";}
+    const result=await pool.query(`
+      SELECT s.*,e.code AS employee_code,e.full_name AS employee_name,u.username AS created_by_username
+        FROM employee_earnings_settlements s
+        JOIN employees e ON e.id=s.employee_id
+        LEFT JOIN users u ON u.id=s.created_by
+        ${where}
+       ORDER BY s.settlement_date DESC,s.created_at DESC LIMIT 300
+    `,values);
+    return {data:result.rows};
+  });
+
+  app.post("/api/production/earnings/settlements", { preHandler: [authenticateRequest, requirePermission("production.adjustments.create")] }, async (request,reply) => {
+    const parsed=z.object({
+      employeeId:z.string().uuid(),
+      grossAmount:z.number().positive(),
+      settlementDate:z.string().date().optional(),
+      notes:z.string().trim().max(500).optional(),
+      repayments:z.array(z.object({advanceId:z.string().uuid(),amount:z.number().positive()})).max(20).optional()
+    }).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات صرف مستحقات العامل غير صحيحة",422);
+    if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف المستحقات",409);
+    const result=await withTransaction(async client=>{
+      const employee=await client.query("SELECT id,full_name FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
+      const earnings=await client.query(`
+        SELECT
+          COALESCE((SELECT SUM(p.earning_amount) FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED'),0)
+          + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+                       FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
+                      WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
+          - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0)
+          - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                       LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+                      WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS available
+      `,[parsed.data.employeeId]);
+      const available=Math.round(Number(earnings.rows[0].available)*100)/100;
+      if(parsed.data.grossAmount>available+0.009)throw new AppError("SETTLEMENT_EXCEEDS_EARNINGS",`المستحقات المتاحة للعامل ${available.toFixed(2)} جنيه فقط`,409);
+      const date=parsed.data.settlementDate??new Date().toISOString().slice(0,10);
+      const advances=await client.query(`
+        SELECT a.*,
+          GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+          (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
+        FROM advance_requests a
+        WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+          AND a.repayment_method='PRODUCTION_PERCENTAGE'
+        ORDER BY a.paid_at,a.created_at,a.id FOR UPDATE
+      `,[parsed.data.employeeId]);
+      const repaymentPlan:Array<{advance:any;amount:number;type:string;notes:string}>=[];
+      let remaining=parsed.data.grossAmount;
+      for(const advance of advances.rows){
+        if(remaining<=0)break;
+        const startValue=advance.last_repayment_date??advance.paid_at;
+        const startDate=startValue instanceof Date?startValue.toISOString().slice(0,10):String(startValue).slice(0,10);
+        const elapsed=Math.floor((Date.parse(date+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
+        const periodDays=Number(advance.production_period_days??15);
+        if(elapsed<periodDays)continue;
+        const duePeriods=Math.max(1,Math.floor(elapsed/periodDays));
+        const production=await client.query(
+          `SELECT GREATEST(0,
+             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)),0)
+             -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+           ) AS amount
+             FROM production_entries p
+            WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.work_date>$2::date AND p.work_date<=$3::date`,
+          [parsed.data.employeeId,startDate,date]
+        );
+        const legacyPaid=await client.query(
+          `SELECT COALESCE(SUM(wp.gross_amount),0) AS amount FROM worker_payments wp
+             LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date`,
+          [parsed.data.employeeId,startDate,date]
+        );
+        const periodEarning=Math.max(0,Number(production.rows[0].amount)-Number(legacyPaid.rows[0].amount));
+        if(advance.production_minimum_earning!==null&&advance.production_minimum_earning!==undefined&&periodEarning<Number(advance.production_minimum_earning))continue;
+        const scheduled=advance.production_installment_amount!==null
+          ? Number(advance.production_installment_amount)*duePeriods
+          : periodEarning*Number(advance.production_percentage??0)/100;
+        const amount=Math.round(Math.min(Number(advance.outstanding),scheduled,remaining)*100)/100;
+        if(amount<=0)continue;
+        repaymentPlan.push({advance,amount,type:"PRODUCTION_PERCENTAGE",notes:`استقطاع دوري من مستحقات إنتاج ${employee.rows[0].full_name} لسداد السلفة ${advance.code}`});
+        remaining=Math.round((remaining-amount)*100)/100;
+      }
+      for(const manual of parsed.data.repayments??[]){
+        if(remaining<=0)throw new AppError("REPAYMENT_EXCEEDS_SETTLEMENT","مبلغ سداد السلف أكبر من المستحق المتاح",422);
+        if(repaymentPlan.some(x=>x.advance.id===manual.advanceId))throw new AppError("DUPLICATE_ADVANCE_REPAYMENT","السلفة محددة أكثر من مرة",422);
+        const advance=await client.query("SELECT a.*,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding FROM advance_requests a WHERE a.id=$1 AND a.employee_id=$2 AND a.status='PAID' AND a.repayment_status='OPEN' FOR UPDATE",[manual.advanceId,parsed.data.employeeId]);
+        if(!advance.rowCount)throw new AppError("ADVANCE_NOT_OPEN","السلفة المحددة غير مفتوحة أو لا تخص العامل",409);
+        if(manual.amount>Number(advance.rows[0].outstanding)+0.009)throw new AppError("REPAYMENT_EXCEEDS_BALANCE","مبلغ السداد أكبر من باقي السلفة",409);
+        if(manual.amount>remaining+0.009)throw new AppError("REPAYMENT_EXCEEDS_SETTLEMENT","مبلغ السداد أكبر من المستحق المتاح",409);
+        repaymentPlan.push({advance:advance.rows[0],amount:Math.round(manual.amount*100)/100,type:"CUSTOM",notes:`سداد سلفة ${advance.rows[0].code} من مستحقات العامل`});
+        remaining=Math.round((remaining-manual.amount)*100)/100;
+      }
+      const repaymentTotal=Math.round(repaymentPlan.reduce((sum,x)=>sum+x.amount,0)*100)/100;
+      const cashPaid=Math.round((parsed.data.grossAmount-repaymentTotal)*100)/100;
+      const settlement=await client.query(
+        "INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+        [parsed.data.employeeId,parsed.data.grossAmount,cashPaid,repaymentTotal,date,parsed.data.notes??null,request.user!.userId]
+      );
+      for(const item of repaymentPlan){
+        const repayment=await client.query(
+          "INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,settlement_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+          [item.advance.id,item.amount,item.type,date,item.notes,request.user!.userId,settlement.rows[0].id]
+        );
+        await client.query(
+          `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
+           VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+           ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING`,
+          [parsed.data.employeeId,item.amount,repayment.rows[0].id,request.user!.userId,`سداد سلفة ${item.advance.code} من مستحقات الإنتاج`]
+        );
+        const next=Number(item.advance.outstanding)-item.amount;
+        await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.009?"SETTLED":"OPEN",item.advance.id]);
+        await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_earnings_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{settlementId:settlement.rows[0].id,repaymentId:repayment.rows[0].id,amount:item.amount,remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      }
+      await client.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,settlement_id)
+         VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+         ON CONFLICT (settlement_id) WHERE settlement_id IS NOT NULL DO NOTHING`,
+        [parsed.data.employeeId,parsed.data.grossAmount,request.user!.userId,`تسوية إجمالي مستحقات إنتاج ${settlement.rows[0].id}؛ صافي النقد ${cashPaid.toFixed(2)} ج.م؛ خصم السلف ${repaymentTotal.toFixed(2)} ج.م`,settlement.rows[0].id]
+      );
+      const custodyBalance=await client.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
+        [request.user!.employeeId,date]
+      );
+      if(cashPaid>Number(custodyBalance.rows[0]?.balance??0)+0.009)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة لا يكفي لصافي النقد المطلوب دفعه للعامل؛ لم يتم تسجيل التسوية",409);
+      const cashOut=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3::date,$4,$5,'PRODUCTION_EARNINGS_SETTLEMENT',$6,$7) RETURNING id",
+        [request.user!.employeeId,parsed.data.grossAmount,date,`تسوية إجمالي مستحقات إنتاج ${employee.rows[0].full_name}`,`صافي المدفوع ${cashPaid.toFixed(2)} ج.م؛ مسترد سلف ${repaymentTotal.toFixed(2)} ج.م`,settlement.rows[0].id,request.user!.userId]
+      );
+      let cashIn=null;
+      if(repaymentTotal>0)cashIn=await client.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3::date,$4,$5,'ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
+        [request.user!.employeeId,repaymentTotal,date,`استرداد سلفة من مستحقات ${employee.rows[0].full_name}`,repaymentPlan.map(x=>`${x.advance.code}: ${x.amount.toFixed(2)} ج.م`).join("؛ "),settlement.rows[0].id,request.user!.userId]
+      );
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"settle_production_earnings",module:"production",entityType:"employee_earnings_settlement",entityId:settlement.rows[0].id,afterData:settlement.rows[0],metadata:{cashPaid,repaymentTotal,repayments:repaymentPlan.map(x=>({advanceId:x.advance.id,amount:x.amount})),cashCustodyOutId:cashOut.rows[0].id,cashCustodyInId:cashIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {settlement:settlement.rows[0],employee:employee.rows[0],availableBefore:available,grossAmount:parsed.data.grossAmount,cashPaid,advanceRepaymentAmount:repaymentTotal,repayments:repaymentPlan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
+    });
+    return reply.code(201).send({data:result});
+  });
 
 }

@@ -103,6 +103,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const submitter = await makeUser("submitter", true);
     const approver = await makeUser("approver", true);
+    await apiPool.query(
+      "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening custody for production settlement',$2)",
+      [approver.employeeId,approver.userId]
+    );
     const limitedUser = await makeUser("limited", false);
     await apiPool.query("DELETE FROM user_roles WHERE user_id=$1", [limitedUser.userId]);
     const unauthenticatedCartons = await app.inject({ method: "GET", url: "/api/warehouse/cartons" });
@@ -379,38 +383,61 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(finalSaved.rows[0].deduction_amount), 5);
     assert.equal(Number(finalSaved.rows[0].total_earning_amount), 305);
 
-    // A production-percentage advance is recovered from approved production only,
-    // capped at the outstanding balance and linked to the source production entry.
+    // Production percentage is accrued over the configured period and is only
+    // collected when approved production earnings are actually paid to the employee.
     const percentageAdvance = await apiPool.query(
-      `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,production_percentage,repayment_status)
-       VALUES($1,100,'Production percentage integration test','PAID',$2,$3,'2099-01-01T12:00:00Z','PRODUCTION_PERCENTAGE',20,'OPEN')
-       RETURNING id`,
+      `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,production_percentage,production_period_days,repayment_status)
+       VALUES($1,100,'Production percentage integration test','PAID',$2,$3,'2099-01-01T12:00:00Z','PRODUCTION_PERCENTAGE',20,15,'OPEN')
+       RETURNING id,code`,
       [submitterEmployee,submitter.userId,approver.userId]
+    );
+    await apiPool.query(
+      "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,$3)",
+      [submitterEmployee,approver.userId,"صرف سلفة "+percentageAdvance.rows[0].code]
     );
     const approveFinal = await app.inject({
       method: "POST", url: "/api/production/" + finalId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(approveFinal.statusCode, 200, approveFinal.body);
+    assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[percentageAdvance.rows[0].id])).rows[0].count,0,
+      "production approval must not settle an advance before worker payout");
+
+    const settlementResponse=await app.inject({
+      method:"POST",url:"/api/production/earnings/settlements",headers:{cookie:approver.cookie},
+      payload:{employeeId:submitterEmployee,grossAmount:305,settlementDate:"2099-01-16",notes:"integration production settlement"}
+    });
+    assert.equal(settlementResponse.statusCode,201,settlementResponse.body);
+    const settlement=settlementResponse.json().data;
+    assert.equal(Number(settlement.cashPaid),205);
+    assert.equal(Number(settlement.advanceRepaymentAmount),100,"20% of 500 approved production earnings over the 15-day period is recovered at payout");
     const productionRepayment = await apiPool.query(
-      "SELECT amount,repayment_type,source_production_entry_id FROM advance_repayments WHERE advance_id=$1",
+      "SELECT amount,repayment_type,source_production_entry_id,settlement_id FROM advance_repayments WHERE advance_id=$1",
       [percentageAdvance.rows[0].id]
     );
-    assert.equal(productionRepayment.rowCount, 1);
-    assert.equal(Number(productionRepayment.rows[0].amount), 60, "20% of 300 production earnings must be recovered");
-    assert.equal(productionRepayment.rows[0].repayment_type, "PRODUCTION_PERCENTAGE");
-    assert.equal(productionRepayment.rows[0].source_production_entry_id, finalId);
+    assert.equal(productionRepayment.rowCount,1);
+    assert.equal(Number(productionRepayment.rows[0].amount),100);
+    assert.equal(productionRepayment.rows[0].repayment_type,"PRODUCTION_PERCENTAGE");
+    assert.equal(productionRepayment.rows[0].source_production_entry_id,null);
+    assert.equal(productionRepayment.rows[0].settlement_id,settlement.settlement.id);
     const remainingAdvance = await apiPool.query(
       "SELECT repayment_status,amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
       [percentageAdvance.rows[0].id]
     );
-    assert.equal(remainingAdvance.rows[0].repayment_status, "OPEN");
-    assert.equal(Number(remainingAdvance.rows[0].remaining), 40);
-    const repaymentLedger = await apiPool.query(
-      "SELECT debit_amount,notes FROM employee_earnings_ledger WHERE entry_type='ADJUSTMENT' AND notes LIKE $1",
-      [`%سداد سلفة ${(await apiPool.query("SELECT code FROM advance_requests WHERE id=$1",[percentageAdvance.rows[0].id])).rows[0].code}%`]
+    assert.equal(remainingAdvance.rows[0].repayment_status,"SETTLED");
+    assert.equal(Number(remainingAdvance.rows[0].remaining),0);
+    const custodySummary=await apiPool.query(
+      "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('PRODUCTION_EARNINGS_SETTLEMENT','ADVANCE_REPAYMENT_OFFSET') GROUP BY direction",
+      [settlement.settlement.id]
     );
-    assert.equal(repaymentLedger.rowCount, 1);
-    assert.equal(Number(repaymentLedger.rows[0].debit_amount), 60);
+    assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="OUT")?.amount),305);
+    assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),100);
+    const repaymentLedger = await apiPool.query(
+      "SELECT credit_amount,debit_amount,notes FROM employee_earnings_ledger WHERE entry_type='ADJUSTMENT' AND notes LIKE $1",
+      [`%سداد سلفة ${percentageAdvance.rows[0].code}%`]
+    );
+    assert.equal(repaymentLedger.rowCount,1,"the repayment must update the employee balance without creating a second production expense");
+    assert.equal(Number(repaymentLedger.rows[0].credit_amount),100);
+    assert.equal(Number(repaymentLedger.rows[0].debit_amount),0);
 
     const finalBalance = await apiPool.query(
       "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
@@ -459,8 +486,8 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.ok(reportedEmployee, "active employee should appear in earnings report");
     assert.equal(Number(reportedEmployee.earned), 510, "employee earnings report must include base wages and bonus");
-    assert.equal(Number(reportedEmployee.debited), 65, "employee earnings report must include production deductions and advance recovery");
-    assert.equal(Number(reportedEmployee.balance), 445, "employee earnings balance must reconcile after automatic advance recovery");
+    assert.equal(Number(reportedEmployee.debited), 410, "employee earnings report includes the advance payout, production deduction, and gross settlement; loan recovery is separately credited");
+    assert.equal(Number(reportedEmployee.balance), 200, "unpaid approved earnings remain as the employee's positive balance after settling the advance");
 
     const stageState = await apiPool.query(
       "SELECT os.completed_quantity,os.status,po.status AS order_status FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.id=$1",

@@ -195,6 +195,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unmarkFinal.json().data.order_item_id,null);
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM production_order_lines WHERE order_id=$1",[repeatedOrderId])).rows[0].count),1,
         "unmarking a final stage must remove its now-orphaned line without recreating the remaining line");
+      const testAdvance=(await apiPool.query("INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status) VALUES($1,100,'worker payment offset test','PAID',$2,$2,now(),'CUSTOM','OPEN') RETURNING id,code",[workerEmployee.id,manager.id])).rows[0];
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,$3)",[workerEmployee.id,manager.id,"صرف سلفة "+testAdvance.code]);
+      const availableBeforePayout=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(availableBeforePayout.statusCode,200,availableBeforePayout.body);
+      const availableBeforePayoutAmount=Number(availableBeforePayout.json().data.availableEarnings);
       const request=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
         payload:{amount:150,method:"INSTAPAY",transferReference:"IP-TEST-2026-001"}
@@ -203,7 +208,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(request.json().data.transfer_reference,"IP-TEST-2026-001");
       const requestId=request.json().data.id;
       const approved=await app.inject({
-        method:"POST",url:`/api/payment-requests/${requestId}/approve`,headers:{cookie:managerCookie}
+        method:"POST",url:`/api/payment-requests/${requestId}/approve`,headers:{cookie:managerCookie},payload:{advanceRepaymentAmount:50}
       });
       assert.equal(approved.statusCode,200,approved.body);
       assert.equal(approved.json().data.request.status,"PAID");
@@ -215,6 +220,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(custodyDebit.rows[0].amount),150);
       assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
       assert.match(custodyDebit.rows[0].description,/صرف طلب القبض/);
+      assert.equal(Number(approved.json().data.payment.amount),100);
+      assert.equal(Number(approved.json().data.grossAmount),150);
+      assert.equal(Number(approved.json().data.advanceRepaymentAmount),50);
+      const repayment=await apiPool.query("SELECT amount,source_worker_payment_id,advance_id FROM advance_repayments WHERE source_worker_payment_id=$1",[approved.json().data.payment.id]);
+      assert.equal(repayment.rowCount,1);
+      assert.equal(Number(repayment.rows[0].amount),50);
+      assert.equal(repayment.rows[0].advance_id,testAdvance.id);
+      const custodyOffset=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT_ADVANCE_REPAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
+      assert.equal(custodyOffset.rowCount,1);
+      assert.equal(custodyOffset.rows[0].direction,"IN");
+      assert.equal(Number(custodyOffset.rows[0].amount),50);
+      const remainingAdvance=(await apiPool.query("SELECT repayment_status,amount-(SELECT COALESCE(SUM(amount),0) FROM advance_repayments WHERE advance_id=$1) AS remaining FROM advance_requests WHERE id=$1",[testAdvance.id])).rows[0];
+      assert.equal(remainingAdvance.repayment_status,"OPEN");
+      assert.equal(Number(remainingAdvance.remaining),50);
+      const accountBalance=(await apiPool.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[workerEmployee.id])).rows[0];
+      assert.equal(Number(accountBalance.balance),300);
+      const remainingAvailable=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(remainingAvailable.statusCode,200,remainingAvailable.body);
+      assert.equal(Number(remainingAvailable.json().data.availableEarnings),availableBeforePayoutAmount-150);
       const globalSearch=await app.inject({method:"GET",url:"/api/search/global?q="+encodeURIComponent(request.json().data.code),headers:{cookie:managerCookie}});
       assert.equal(globalSearch.statusCode,200,globalSearch.body);
       assert.ok(globalSearch.json().data.some((item:{type:string})=>item.type==="طلب قبض"),"central search should find the payment request code");
@@ -339,17 +363,41 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       const balance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(balance.statusCode,200,balance.body);
-      assert.equal(Number(balance.json().data.balance),350);
+      assert.equal(Number(balance.json().data.balance),300);
       const ledger=await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits,COUNT(*) FILTER(WHERE entry_type='WORKER_PAYMENT')::int AS payment_entries FROM employee_earnings_ledger WHERE employee_id=$1",
         [workerEmployee.id]);
-      assert.equal(Number(ledger.rows[0].credits),500);
-      assert.equal(Number(ledger.rows[0].debits),150);
+      assert.equal(Number(ledger.rows[0].credits),550);
+      assert.equal(Number(ledger.rows[0].debits),250);
       assert.equal(Number(ledger.rows[0].payment_entries),1);
+
+      // An advance is immediately a debit on the employee account. At payout,
+      // the gross production entitlement clears the account, only net cash leaves
+      // custody, and the advance offset returns to company cash in the same transaction.
+      const workerAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status)
+         VALUES($1,200,'payment integration advance','PAID',$2,$3,now(),'CUSTOM','OPEN') RETURNING id,code`,
+        [workerEmployee.id,worker.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
+         VALUES($1,'ADJUSTMENT',200,$2,$3)`,
+        [workerEmployee.id,manager.id,"صرف سلفة "+workerAdvance.code]
+      );
+      await apiPool.query(
+        `INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,notes,source_type,source_id,created_by)
+         VALUES($1,'OUT',200,$2,$3,'ADVANCE_PAYOUT',$4,$5)`,
+        [managerEmployee.id,"صرف سلفة "+workerAdvance.code,"payment integration test",workerAdvance.id,manager.id]
+      );
+      const availableAfterAdvance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(availableAfterAdvance.statusCode,200,availableAfterAdvance.body);
+      assert.equal(Number(availableAfterAdvance.json().data.balance),100,"employee account must visibly reflect the outstanding advance");
+      assert.equal(Number(availableAfterAdvance.json().data.outstandingAdvanceAmount),250,"both the earlier and current advances remain open");
+      assert.equal(Number(availableAfterAdvance.json().data.availableEarnings),350,"loan principal must not reduce earned-but-unpaid production entitlement");
 
       const nextRequest=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
-        payload:{amount:150,method:"CASH"}
+        payload:{amount:200,method:"CASH"}
       });
       assert.equal(nextRequest.statusCode,201,nextRequest.body,"paid requests must not block a new request");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE payment_request_id=$1",[requestId])).rows[0].count),1);
@@ -376,6 +424,51 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(blockedState.rows[0].status,"PENDING");
       assert.equal(Number(blockedState.rows[0].payments),0,"failed custody debit must roll back worker payment");
       assert.equal(Number(blockedState.rows[0].payment_ledger_entries),1,"failed custody debit must not add an earnings debit");
+
+      const settledRequest=await app.inject({
+        method:"POST",url:`/api/payment-requests/${nextRequest.json().data.id}/approve`,
+        headers:{cookie:managerCookie},
+        payload:{cashCustodyEmployeeId:managerEmployee.id,advanceRepaymentAmount:50}
+      });
+      assert.equal(settledRequest.statusCode,200,settledRequest.body);
+      assert.equal(settledRequest.json().data.request.status,"PAID");
+      assert.equal(Number(settledRequest.json().data.grossAmount),200);
+      assert.equal(Number(settledRequest.json().data.advanceRepaymentAmount),50);
+      assert.equal(Number(settledRequest.json().data.cashPaid),150);
+      assert.equal(Number(settledRequest.json().data.payment.gross_amount),200);
+      assert.equal(Number(settledRequest.json().data.payment.amount),150);
+      assert.equal(Number(settledRequest.json().data.payment.advance_repayment_amount),50);
+
+      const repaymentRows=await apiPool.query(
+        "SELECT amount,source_worker_payment_id,advance_id FROM advance_repayments WHERE source_worker_payment_id=$1",
+        [settledRequest.json().data.payment.id]
+      );
+      assert.equal(repaymentRows.rowCount,1);
+      assert.equal(Number(repaymentRows.rows[0].amount),50);
+      assert.equal(repaymentRows.rows[0].source_worker_payment_id,settledRequest.json().data.payment.id);
+      assert.equal(repaymentRows.rows[0].advance_id,testAdvance.id,"manual repayment applies to the oldest open advance first");
+      const workerPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[settledRequest.json().data.payment.id]);
+      assert.equal(workerPaymentLedger.rowCount,1);
+      assert.equal(Number(workerPaymentLedger.rows[0].debit_amount),200,"the employee ledger clears gross earnings, not only the net cash handed over");
+      const advanceRemaining=await apiPool.query(
+        "SELECT amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
+        [workerAdvance.id]
+      );
+      assert.equal(Number(advanceRemaining.rows[0].remaining),200,"the newer advance remains open because the older advance was settled first");
+
+      const payoutCustody=await apiPool.query(
+        "SELECT direction,amount,source_type FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
+        [settledRequest.json().data.payment.id]
+      );
+      assert.equal(payoutCustody.rowCount,2);
+      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT")?.amount),200,"custody OUT is gross entitlement");
+      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT_ADVANCE_REPAYMENT")?.amount),50,"custody IN recovers the advance offset");
+
+      const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
+      assert.equal(Number(postSettlementBalance.json().data.balance),-50,"the employee account must reconcile remaining unpaid earnings against the outstanding loan");
+      assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),200);
+      assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();

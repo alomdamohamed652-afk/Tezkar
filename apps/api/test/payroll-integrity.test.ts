@@ -200,3 +200,46 @@ test("simultaneous payroll payments cannot exceed the remaining amount", { skip:
     assert.equal(Number(totals.rows[0].paid), 700);
   });
 });
+
+
+test("salary-based advances support percentage caps and multiple advance repayments in one payroll item", { skip: !adminUrl && "TEST_DATABASE_URL not set" }, async () => {
+  await withPayrollDatabase(async db => {
+    const ids = await seedPayroll(db);
+    const fixed = await db.query(
+      `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,installment_amount,repayment_status)
+       VALUES($1,300,'fixed monthly test','PAID',$2,$2,'2098-12-01','FIXED_INSTALLMENT',100,'OPEN') RETURNING id`,
+      [ids.employeeId, ids.userId]
+    );
+    const percentage = await db.query(
+      `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,salary_percentage,repayment_status)
+       VALUES($1,500,'salary percentage test','PAID',$2,$2,'2098-12-01','SALARY_PERCENTAGE',10,'OPEN') RETURNING id`,
+      [ids.employeeId, ids.userId]
+    );
+
+    await db.query(
+      "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,100,'FIXED_INSTALLMENT'),($1,$3,100,'SALARY_PERCENTAGE')",
+      [ids.itemId, fixed.rows[0].id, percentage.rows[0].id]
+    );
+    await db.query(
+      `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,created_by,source_payroll_item_id)
+       VALUES($1,100,'FIXED_INSTALLMENT','2099-01-31',$3,$2),($4,100,'SALARY_PERCENTAGE','2099-01-31',$3,$2)`,
+      [fixed.rows[0].id, ids.itemId, ids.userId, percentage.rows[0].id]
+    );
+
+    const deductions = await db.query(
+      "SELECT COUNT(*)::int AS count,SUM(amount) AS total FROM advance_repayments WHERE source_payroll_item_id=$1",
+      [ids.itemId]
+    );
+    assert.equal(deductions.rows[0].count, 2);
+    assert.equal(Number(deductions.rows[0].total), 200);
+
+    await assert.rejects(
+      db.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,salary_percentage)
+         VALUES($1,100,'invalid percentage', $2,'SALARY_PERCENTAGE',0)`,
+        [ids.employeeId, ids.userId]
+      ),
+      /advance_requests_salary_percentage_check/
+    );
+  });
+});
