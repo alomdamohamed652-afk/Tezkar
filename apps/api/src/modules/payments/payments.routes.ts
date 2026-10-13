@@ -57,7 +57,80 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   return Number(r.rows[0]?.balance ?? 0);
 }
 
-async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,amount:number,requestCode:string,paymentId:string){
+async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
+  const r=await client.query(`
+    SELECT
+      COALESCE((SELECT SUM(GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)))
+        FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED'),0)
+      + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+          FROM employee_earnings_adjustments a
+         WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0) AS available
+  `,[employeeId]);
+  return Math.max(0,Number(r.rows[0]?.available??0));
+}
+
+async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
+  const r=await client.query(`
+    SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
+      FROM advance_requests a WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+  `,[employeeId]);
+  return Number(r.rows[0]?.outstanding??0);
+}
+
+type PlannedAdvanceRepayment={advance:any;amount:number;repaymentType:"CUSTOM"|"PRODUCTION_PERCENTAGE"};
+
+async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:string,grossAmount:number,manualAmount:number,paymentDate:string) {
+  const advances=await client.query(`
+    SELECT a.*,
+      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+      (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
+    FROM advance_requests a
+    WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
+    ORDER BY a.paid_at,a.created_at,a.id FOR UPDATE
+  `,[employeeId]);
+  const plan:PlannedAdvanceRepayment[]=[];
+  let remainingGross=Math.max(0,Math.round(grossAmount*100)/100);
+  for(const advance of advances.rows){
+    if(remainingGross<=0.01)break;
+    if(advance.repayment_method!=="PRODUCTION_PERCENTAGE")continue;
+    const startValue=advance.last_repayment_date??advance.paid_at;
+    const startDate=startValue instanceof Date?startValue.toISOString().slice(0,10):String(startValue).slice(0,10);
+    const elapsed=Math.floor((Date.parse(paymentDate+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
+    if(elapsed<Number(advance.production_period_days??15))continue;
+    const production=await client.query(
+      "SELECT COALESCE(SUM(earning_amount),0) AS amount FROM production_entries WHERE employee_id=$1 AND status='APPROVED' AND work_date>$2::date AND work_date<=$3::date",
+      [employeeId,startDate,paymentDate]
+    );
+    const periodEarning=Number(production.rows[0].amount);
+    if(advance.production_minimum_earning!==null&&advance.production_minimum_earning!==undefined&&periodEarning<Number(advance.production_minimum_earning))continue;
+    const scheduled=advance.production_installment_amount!==null?Number(advance.production_installment_amount):periodEarning*Number(advance.production_percentage??0)/100;
+    const amount=Math.round(Math.min(Number(advance.outstanding),scheduled,Math.max(0,remainingGross-0.01))*100)/100;
+    if(amount<=0)continue;
+    plan.push({advance,amount,repaymentType:"PRODUCTION_PERCENTAGE"});
+    remainingGross=Math.round((remainingGross-amount)*100)/100;
+  }
+  if(manualAmount>remainingGross+0.009)throw new AppError("REPAYMENT_EXCEEDS_GROSS","مبلغ الخصم اليدوي أكبر من صافي المستحق بعد الاستقطاع الدوري",422);
+  let manualRemaining=Math.round(manualAmount*100)/100;
+  for(const advance of advances.rows){
+    if(manualRemaining<=0)break;
+    const planned=plan.find(x=>x.advance.id===advance.id);
+    const availableForAdvance=Math.max(0,Number(advance.outstanding)-(planned?.amount??0));
+    if(availableForAdvance<=0)continue;
+    const amount=Math.round(Math.min(availableForAdvance,manualRemaining,Math.max(0,remainingGross-0.01))*100)/100;
+    if(amount<=0)continue;
+    if(planned){planned.amount=Math.round((planned.amount+amount)*100)/100;planned.repaymentType="CUSTOM";}
+    else plan.push({advance,amount,repaymentType:"CUSTOM"});
+    manualRemaining=Math.round((manualRemaining-amount)*100)/100;
+    remainingGross=Math.round((remainingGross-amount)*100)/100;
+  }
+  if(manualRemaining>0.009)throw new AppError("REPAYMENT_EXCEEDS_ADVANCES","مبلغ الخصم اليدوي أكبر من إجمالي السلف المفتوحة",422);
+  const total=Math.round(plan.reduce((sum,x)=>sum+x.amount,0)*100)/100;
+  if(total>=grossAmount)throw new AppError("NO_NET_PAYOUT","الخصم سيستهلك كامل المستحق؛ سجّل سداد السلفة منفصلًا بدل سند قبض بصافي صفر",422);
+  return {plan,total,cashPaid:Math.round((grossAmount-total)*100)/100};
+}
+
+async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,netAmount:number,requestCode:string,paymentId:string,grossAmount=netAmount,repaymentAmount=0){
   const canAll=await hasPermission(client,userId,"cash_custody.worker_payment_out","all");
   const canOwn=await hasPermission(client,userId,"cash_custody.worker_payment_out_own","own");
   if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","يلزم منح صلاحية مستقلة لخصم صرف العامل من العهدة النقدية",403);
@@ -69,10 +142,14 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
   const existing=await client.query("SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 LIMIT 1",[paymentId]);
   if(existing.rowCount)return existing.rows[0];
   const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=CURRENT_DATE",[custodyEmployeeId]);
-  if(amount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة النقدية لا يكفي لصرف طلب القبض. تم إيقاف العملية دون ترحيل أي جزء منها.",409);
+  if(netAmount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة النقدية لا يكفي لصافي المبلغ المدفوع للعامل. تم إيقاف العملية دون ترحيل أي جزء منها.",409);
   const row=await client.query(
     "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT',$5,$6) RETURNING *",
-    [custodyEmployeeId,amount,"صرف طلب القبض "+requestCode,"خصم تلقائي مرتبط بسند صرف العامل. رقم السند: "+paymentId,paymentId,userId]
+    [custodyEmployeeId,grossAmount,"تسوية إجمالي طلب القبض "+requestCode,repaymentAmount>0?`إجمالي المستحق ${grossAmount.toFixed(2)} ج.م؛ صافي النقد المدفوع ${netAmount.toFixed(2)} ج.م؛ استرداد سلف ${repaymentAmount.toFixed(2)} ج.م`:"صرف طلب القبض بالقيمة كاملة. رقم السند: "+paymentId,paymentId,userId]
+  );
+  if(repaymentAmount>0)await client.query(
+    "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT_ADVANCE_REPAYMENT',$5,$6)",
+    [custodyEmployeeId,repaymentAmount,"استرداد سلفة من مستحقات العامل","مقاصة من طلب القبض "+requestCode+"؛ رقم سند الصرف "+paymentId,paymentId,userId]
   );
   return row.rows[0];
 }
