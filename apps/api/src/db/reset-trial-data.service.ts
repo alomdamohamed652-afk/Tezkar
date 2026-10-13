@@ -22,9 +22,7 @@ const alwaysKeep = new Set([
 ]);
 const partiallyKeep = new Set([
   "users",
-  "user_roles",
-  "warehouses",
-  "warehouse_locations"
+  "user_roles"
 ]);
 
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
@@ -48,7 +46,7 @@ try {
   const allTables = tableResult.rows.map((row) => row.table_name);
   const present = new Set(allTables);
 
-  // Keep any existing settings tables even if their exact name differs by version.
+  // Preserve only platform/reference configuration. Every other public table is treated as manually entered or operational data and is cleared, including audit/activity logs, notifications, report records, preferences, warehouses, and warehouse locations.
   const keep = new Set(alwaysKeep);
   for (const name of allTables) {
     if (/settings/i.test(name) || /^(company_profile|company_profiles|factory|factories)$/i.test(name)) {
@@ -82,8 +80,7 @@ try {
        OR ($1::uuid IS NULL AND (COALESCE(is_bootstrap, FALSE) = TRUE OR username = 'admin'))
   `, [protectedUserId]);
 
-  // Delete all ordinary business/master-data tables child-first. Employees
-  // are handled after dependent tables and non-admin users are removed.
+  // Delete every non-core table child-first. Employees and non-admin users are handled after dependent records are removed.
   const targets = allTables.filter((table) => !keep.has(table) && table !== "employees");
   const targetSet = new Set(targets);
   const dependencies = await client.query<{ child: string; parent: string }>(
@@ -151,29 +148,6 @@ try {
   `, [protectedUserId]);
   const employeeDelete = await client.query("DELETE FROM public.employees");
   deleted.employees = employeeDelete.rowCount ?? 0;
-
-  // Preserve one base warehouse and, if available, one of its locations.
-  // All inventory and movements have already been removed above.
-  if (present.has("warehouse_locations")) {
-    await client.query(`
-      DELETE FROM public.warehouse_locations
-      WHERE id <> COALESCE(
-        (
-          SELECT wl.id
-          FROM public.warehouse_locations wl
-          JOIN public.warehouses w ON w.id = wl.warehouse_id
-          ORDER BY w.created_at NULLS LAST, w.code, wl.created_at NULLS LAST, wl.code
-          LIMIT 1
-        ),
-        '00000000-0000-0000-0000-000000000000'::uuid
-      )`);
-  }
-  await client.query(`
-    DELETE FROM public.warehouses
-    WHERE id <> COALESCE(
-      (SELECT id FROM public.warehouses ORDER BY created_at NULLS LAST, code LIMIT 1),
-      '00000000-0000-0000-0000-000000000000'::uuid
-    )`);
 
   // Reset owned sequences only when their owning table is now empty, avoiding
   // collisions in retained reference/permission tables.
