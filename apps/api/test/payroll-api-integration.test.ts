@@ -389,6 +389,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
       assert.equal(februaryPayment.json().data.status,"PAID");
+      const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
+      assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
+      assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000);
+      const salaryPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1",[februaryPayment.json().data.payment.id]);
+      assert.equal(salaryPaymentLedger.rowCount,1,"the actual salary payout must clear only the amount paid");
+      assert.equal(Number(salaryPaymentLedger.rows[0].debit_amount),600);
       const fixedRepayment = await apiPool.query(
         "SELECT amount,repayment_type,source_payroll_item_id FROM advance_repayments WHERE advance_id=$1",
         [fixedAdvance.rows[0].id]
