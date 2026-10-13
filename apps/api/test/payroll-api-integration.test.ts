@@ -412,7 +412,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000);
       const salaryPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1",[februaryPayment.json().data.payment.id]);
-      assert.equal(salaryPaymentLedger.rowCount,1,"the actual salary payout must clear only the amount paid");
+      assert.equal(salaryPaymentLedger.rowCount,1,"the actual salary payment must have a linked employee-ledger entry");
       assert.equal(Number(salaryPaymentLedger.rows[0].debit_amount),1000,"the gross salary entitlement must be cleared even when only 600 cash is paid");
       const fixedRepayment = await apiPool.query(
         "SELECT amount,repayment_type,source_payroll_item_id FROM advance_repayments WHERE advance_id=$1",
@@ -447,7 +447,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
         [employeeA.rows[0].id]
       );
-      assert.equal(Number(reconciledAccount.rows[0].balance),-900,"the employee account must reconcile to the 900 remaining advance balance");
+      assert.equal(Number(reconciledAccount.rows[0].balance),100,"unpaid January wages remain a positive employee balance until they are paid");
       const custodySummary=await apiPool.query(
         "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
         [februaryItem.id]
@@ -477,6 +477,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(full.statusCode, 201, full.body);
       assert.equal(full.json().data.status, "PAID");
       assert.equal(Number(full.json().data.remainingAmount), 0);
+      const finalEmployeeAccount=await apiPool.query(
+        "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
+        [employeeA.rows[0].id]
+      );
+      assert.equal(Number(finalEmployeeAccount.rows[0].balance),-900,"after all earned wages are paid, the employee account must equal the 900 remaining advance debt");
 
       const overpay = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
