@@ -58,24 +58,29 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
 }
 
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
-  // Worker payout requests are limited to unallocated, approved production earnings.
-  // Employee salary accruals are paid through payroll, not through this endpoint.
-  const production=await client.query(`
+  // Gross approved earnings less unified settlements and legacy payments that predate settlement links.
+  const totals=await client.query(`
     SELECT COUNT(*) FILTER(WHERE pe.status='APPROVED')::int AS approved_count,
-      COALESCE(SUM(GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)))
-        FILTER(WHERE pe.status='APPROVED'),0) AS available
+      COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FILTER(WHERE pe.status='APPROVED'),0) AS production_earned,
+      COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+        FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0) AS adjustments,
+      COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+      COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+        LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+        WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid
     FROM production_entries pe WHERE pe.employee_id=$1
   `,[employeeId]);
-  if(Number(production.rows[0]?.approved_count??0)>0)
-    return Math.round(Number(production.rows[0].available??0)*100)/100;
-  // Legacy ledger-only balances remain supported for existing imported worker accounts.
+  if(Number(totals.rows[0]?.approved_count??0)>0) {
+    const available=Number(totals.rows[0].production_earned)+Number(totals.rows[0].adjustments)
+      -Number(totals.rows[0].settled)-Number(totals.rows[0].legacy_paid);
+    return Math.max(0,Math.round(available*100)/100);
+  }
+  // Imported ledger-only balances remain supported where no approved production rows exist.
   const balance=await getBalance(client,employeeId);
   const outstanding=await getOutstandingAdvanceAmount(client,employeeId);
-  // Repayments are credited to the employee ledger; the remaining loan principal is added back once.
   return Math.max(0,Math.round((balance+outstanding)*100)/100);
 }
-
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
   const r=await client.query(`
     SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
@@ -178,12 +183,16 @@ async function executeWorkerPayment(
     [input.employeeId,planned.cashPaid,input.grossAmount,planned.total,input.method,input.requestId,input.userId,
       planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
       input.transferReference]);
+  const settlement=await client.query(
+    `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [input.employeeId,input.grossAmount,planned.cashPaid,planned.total,paymentDate,`تسوية طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
   for(const item of planned.plan){
     const repayment=await client.query(
-      `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_worker_payment_id)
-       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_worker_payment_id,settlement_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
       [item.advance.id,item.amount,item.repaymentType,paymentDate,
-       `سداد سلفة ${item.advance.code} من طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
+       `سداد سلفة ${item.advance.code} من طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id,settlement.rows[0].id]);
     await client.query(
       `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
        VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
@@ -194,10 +203,10 @@ async function executeWorkerPayment(
     await writeAudit(client,{actorUserId:input.userId,actorEmployeeId:input.actorEmployeeId,action:"worker_payment_advance_repayment",module:"advances",entityType:"advance_request",entityId:item.advance.id,metadata:{workerPaymentId:payment.rows[0].id,requestId:input.requestId,amount:item.amount,remaining:Math.max(0,next)},ipAddress:input.ipAddress,userAgent:input.userAgent});
   }
   await client.query(
-    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
-     VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
+    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,settlement_id,created_by,notes)
+     VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5,$6)
      ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
-    [input.employeeId,input.grossAmount,payment.rows[0].id,input.userId,
+    [input.employeeId,input.grossAmount,payment.rows[0].id,settlement.rows[0].id,input.userId,
       planned.total>0?`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}؛ سداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي نقد مدفوع ${planned.cashPaid.toFixed(2)} ج.م`:`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}`]);
   await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
 
