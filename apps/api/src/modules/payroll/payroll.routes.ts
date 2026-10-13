@@ -266,7 +266,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
       if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
       const periodMonthValue=period.rows[0].period_month;
-      const monthLabel=periodMonthValue instanceof Date?periodMonthValue.toISOString().slice(0,7):String(periodMonthValue).slice(0,7);
+      const parsedPeriodMonth=periodMonthValue instanceof Date?periodMonthValue:new Date(String(periodMonthValue));
+      const monthLabel=Number.isNaN(parsedPeriodMonth.getTime())?String(periodMonthValue).slice(0,7):parsedPeriodMonth.toISOString().slice(0,7);
       const salaryItems = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
           (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
