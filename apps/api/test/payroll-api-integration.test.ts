@@ -414,7 +414,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const ownPayroll=await app.inject({method:"GET",url:"/api/payroll/my-account",headers:{cookie:cookieHeader}});
       assert.equal(ownPayroll.statusCode,200,ownPayroll.body);
       assert.equal(ownPayroll.json().data.employee.id,employeeA.rows[0].id);
-      assert.ok(ownPayroll.json().data.payrollItems.every((x:any)=>x.employee_id===undefined||x.employee_id===employeeA.rows[0].id),
+      assert.ok(ownPayroll.json().data.payrollItems.every((x:any)=>x.employee_id===employeeA.rows[0].id),
         "employee salary history must never include another employee");
       const ownFebruary=ownPayroll.json().data.payrollItems.find((x:any)=>String(x.period_month).slice(0,7)==="2099-02");
       assert.ok(ownFebruary,"employees should see their approved monthly payslip");
