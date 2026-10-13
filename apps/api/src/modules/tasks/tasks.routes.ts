@@ -100,7 +100,7 @@ export async function taskRoutes(app: FastifyInstance) {
         "SELECT e.id,e.full_name,e.code FROM task_assignees ta JOIN employees e ON e.id=ta.employee_id WHERE ta.task_id=$1 ORDER BY e.full_name",
         [id]
       );
-      if (previous.rows.length === 1 && previous.rows[0].id === parsed.data.toEmployeeId) {
+      if (previous.rows.some((assignee: {id:string}) => assignee.id === parsed.data.toEmployeeId)) {
         throw new AppError("TASK_ALREADY_ASSIGNED", "المهمة مسندة بالفعل إلى هذا الموظف", 409);
       }
       await client.query("DELETE FROM task_assignees WHERE task_id=$1", [id]);
