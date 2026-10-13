@@ -408,6 +408,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(audit.rows[0].count, 4, "all successfully created worker transactions, including the overdraft, must be audited; external funding is manager-only");
 
       const revenueCountBeforeTopUp=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM order_revenues")).rows[0].count);
+      const summaryBeforeTopUp=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
+      assert.equal(summaryBeforeTopUp.statusCode,200,summaryBeforeTopUp.body);
+      const totalInBeforeTopUp=Number(summaryBeforeTopUp.json().data.total_in);
       const externalTopUp=await app.inject({
         method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
         payload:{employeeId:employeeA.id,amount:333.33,transactionDate:"2099-01-13",description:"External funding test",notes:"Company revenue and employee custody inflow"}
@@ -421,7 +424,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(topUpRevenue,undefined,"new external funding must not be posted to the sales revenue ledger");
       const topUpSummary=await app.inject({method:"GET",url:"/api/accounting/summary",headers:{cookie:managerCookie}});
       assert.equal(topUpSummary.statusCode,200,topUpSummary.body);
-      assert.equal(Number(topUpSummary.json().data.total_in),0,"external custody funding must not increase company revenue");
+      assert.equal(Number(topUpSummary.json().data.total_in),totalInBeforeTopUp,"external custody funding must not increase company revenue");
       const topUpAudit=await apiPool.query("SELECT after_data,metadata FROM audit_log WHERE module='cash_custody' AND entity_type='cash_custody_transaction' AND entity_id=$1",[externalTopUp.json().data.id]);
       assert.equal(topUpAudit.rowCount,1);
       assert.equal(topUpAudit.rows[0].metadata.companyRevenue,false,"audit must classify external top-up as funding, not revenue");
