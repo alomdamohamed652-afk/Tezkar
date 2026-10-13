@@ -49,6 +49,11 @@ export default function ShiftLeadersPage(){
  function editShift(x:Shift){
   setShiftEditId(x.id);setShiftName(x.name);setShiftStart(String(x.start_time).slice(0,5));setShiftEnd(String(x.end_time).slice(0,5));setShiftCrossesMidnight(x.crosses_midnight);setShiftRateGroup(x.rate_group_id);
  }
+ async function reactivateShift(id:string){
+  setSaving(true);setError("");
+  try{await api("/api/shifts/"+id,{method:"PATCH",body:JSON.stringify({isActive:true})});await load()}
+  catch(e){setError(e instanceof Error?e.message:"تعذر إعادة تفعيل الوردية")}finally{setSaving(false)}
+ }
  async function deactivateShift(id:string){
   if(!window.confirm("تعطيل الوردية؟ سيتم إنهاء ربط الموظفين ورؤساء الوردية بها مع الاحتفاظ بالسجلات التاريخية."))return;
   setSaving(true);setError("");
@@ -83,7 +88,7 @@ export default function ShiftLeadersPage(){
    <section className="card">
     <div className="card-header"><div><h2 className="card-title">إدارة الورديات</h2><div className="form-hint">تعطيل الوردية يحفظ تاريخها ولا يحذف سجلاتها.</div></div><span className="count-badge">{shifts.length}</span></div>
     <div className="table-wrap"><table><thead><tr><th>الكود</th><th>اسم الوردية</th><th>من</th><th>إلى</th><th>مجموعة الأجر</th><th>الحالة</th><th></th></tr></thead><tbody>
-     {shifts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="strong">{x.name}</td><td>{String(x.start_time).slice(0,5)}</td><td>{String(x.end_time).slice(0,5)}{x.crosses_midnight?" · اليوم التالي":""}</td><td>{x.rate_group_name||"—"}</td><td>{x.is_active?"نشطة":"معطلة"}</td><td>{x.is_active&&has("shifts.create")&&<div className="row-actions"><button className="secondary-btn" onClick={()=>editShift(x)}>تعديل</button><button className="danger-button" disabled={saving} onClick={()=>void deactivateShift(x.id)}>تعطيل</button></div>}</td></tr>)}
+     {shifts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="strong">{x.name}</td><td>{String(x.start_time).slice(0,5)}</td><td>{String(x.end_time).slice(0,5)}{x.crosses_midnight?" · اليوم التالي":""}</td><td>{x.rate_group_name||"—"}</td><td>{x.is_active?"نشطة":"معطلة"}</td><td>{has("shifts.create")&&(x.is_active?<div className="row-actions"><button className="secondary-btn" onClick={()=>editShift(x)}>تعديل</button><button className="danger-button" disabled={saving} onClick={()=>void deactivateShift(x.id)}>تعطيل</button></div>:<button className="secondary-btn" disabled={saving} onClick={()=>void reactivateShift(x.id)}>إعادة تفعيل</button>)}</td></tr>)}
      {!shifts.length&&<tr><td colSpan={7}>لا توجد ورديات مسجلة.</td></tr>}
     </tbody></table></div>
    </section>
