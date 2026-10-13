@@ -115,7 +115,7 @@ export default function CodingPage(){
    {printUnit&&<div className="coding-print-sheet" style={{"--print-width":printWidth+"mm","--print-height":printHeight+"mm"} as CSSProperties}><div className="coding-print-inner">
     <div className="coding-print-head">{printTemplate?.config?.logoUrl?<img src={printTemplate.config.logoUrl} alt="شعار الشركة"/>:<div style={{width:"8mm",height:"8mm"}}/>}<div><strong>{printTemplate?.config?.companyName||"تذكار"}</strong><small>إدارة وتشغيل المصنع</small></div></div>
     <div className="coding-print-title">بطاقة تعريف الإنتاج</div>
-    <div className="coding-print-data"><span>المنتج: <b>{printUnit.product_name}</b></span><span>التشغيل: <b>{printUnit.batch_code||"—"}</b></span><span>الكمية: <b>{printUnit.quantity}</b></span><span>الوزن: <b>{printUnit.weight??"—"}</b></span></div>
+    <div className="coding-print-data"><span>المنتج: <b>{printUnit.product_name}</b></span><span>التشغيل: <b>{printUnit.batch_code||"—"}</b></span><span>الكمية: <b>{formatQuantity(printUnit.quantity,3)}</b></span><span>الوزن: <b>{printUnit.weight==null?"—":formatQuantity(printUnit.weight,3)}</b></span></div>
     <div className="coding-print-code">{printUnit.code}</div><Code128Barcode value={printUnit.code} height={Math.max(34,Math.min(52,printHeight*0.9))}/>
     <div className="coding-print-meta"><span>التقفيل: {printUnit.packed_at?new Date(printUnit.packed_at).toLocaleDateString("ar-EG"):"—"}</span><span>التكويد: {new Date(printUnit.coded_at).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"})}</span></div>
     <div className="coding-print-address">{printTemplate?.config?.companyAddress||"عنوان الشركة"}</div>
