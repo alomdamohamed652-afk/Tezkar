@@ -167,6 +167,8 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    for(const [orderItemId,quantity] of sums){
     const orderLine=await client.query("SELECT id,product_id FROM production_order_lines WHERE id=$1 AND order_id=$2",[orderItemId,d.rows[0].order_id]);
     if(!orderLine.rowCount)throw new AppError("ORDER_ITEM_MISMATCH","سطر منتج لا يتبع الطلبية",409);
+    if(lines.rows.some((line:any)=>String(line.order_item_id)===orderItemId&&line.product_id!==orderLine.rows[0].product_id))
+     throw new AppError("ORDER_ITEM_MISMATCH","المنتج في مسودة التسليم لا يطابق المنتج المرتبط بسطر الطلبية",409);
     const produced=await client.query("SELECT COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3",[d.rows[0].order_id,orderLine.rows[0].product_id,orderItemId]);
     const reserved=await client.query("SELECT COALESCE(SUM(l.quantity),0) AS quantity FROM delivery_permission_lines l JOIN delivery_permissions p ON p.id=l.delivery_permission_id WHERE p.order_id=$1 AND l.product_id=$2 AND (l.order_item_id=$3 OR l.order_item_id IS NULL) AND p.status IN ('READY','RELEASED') AND p.id<>$4",[d.rows[0].order_id,orderLine.rows[0].product_id,orderItemId,id]);
     if(quantity>Number(produced.rows[0].quantity)-Number(reserved.rows[0].quantity)+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION","إجمالي الكراتين يتجاوز الإنتاج المعتمد المتبقي للطلبية",409);
