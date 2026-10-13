@@ -190,13 +190,13 @@ export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/summary",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view"),requirePermission("finance.revenues.view")]},async()=>{
   const r=await pool.query(`
     SELECT
-      COALESCE((SELECT SUM(amount) FROM order_revenues),0) AS total_in,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS total_in,
       COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS total_out,
-      COALESCE((SELECT SUM(amount) FROM order_revenues),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
-      COALESCE((SELECT COUNT(*) FROM order_revenues),0)::int AS revenue_count,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
+      COALESCE((SELECT COUNT(*) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
       COALESCE((SELECT COUNT(*) FROM accounting_expenses),0)::int AS expense_count,
       COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id IS NULL),0) AS general_expenses,
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL),0) AS general_income`);
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
   return {data:r.rows[0]};
  });
 
