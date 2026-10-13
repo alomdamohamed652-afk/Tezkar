@@ -183,8 +183,12 @@ export async function paymentsRoutes(app:FastifyInstance){
     }
     if(q.data.status){params.push(q.data.status);where.push(`pr.status=$${params.length}`);}
     const r=await pool.query(
-      `SELECT pr.*,e.code employee_code,e.full_name employee_name
+      `SELECT pr.*,e.code employee_code,e.full_name employee_name,
+         COALESCE((SELECT SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0))
+           FROM advance_requests a WHERE a.employee_id=pr.employee_id AND a.status='PAID' AND a.repayment_status='OPEN'),0) AS outstanding_advance_amount,
+         wp.amount AS net_paid_amount,wp.gross_amount AS gross_paid_amount,wp.advance_repayment_amount
        FROM payment_requests pr JOIN employees e ON e.id=pr.employee_id
+       LEFT JOIN worker_payments wp ON wp.id=pr.paid_payment_id
        ${where.length?"WHERE "+where.join(" AND "):""}
        ORDER BY pr.requested_at DESC LIMIT 200`,params);
     return {data:r.rows};
@@ -196,7 +200,11 @@ export async function paymentsRoutes(app:FastifyInstance){
     const user=await isWorker(request.user!.userId);
     if(!user?.employee_id) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
     const client=await pool.connect();
-    try{return {data:{balance:await getBalance(client,user.employee_id)}}}finally{client.release();}
+    try{return {data:{
+      balance:await getBalance(client,user.employee_id),
+      availableEarnings:await getAvailableEarnings(client,user.employee_id),
+      outstandingAdvanceAmount:await getOutstandingAdvanceAmount(client,user.employee_id)
+    }}}finally{client.release();}
   });
 
   app.post("/api/payment-requests",{
@@ -214,8 +222,8 @@ export async function paymentsRoutes(app:FastifyInstance){
     try {
       row=await withTransaction(async(client)=>{
       await lockEmployee(client,user.employee_id);
-      const balance=await getBalance(client,user.employee_id);
-      if(parsed.data.amount>balance) throw new AppError("INSUFFICIENT_BALANCE","المبلغ المطلوب أكبر من المستحق المتاح",409);
+      const available=await getAvailableEarnings(client,user.employee_id);
+      if(parsed.data.amount>available+0.009) throw new AppError("INSUFFICIENT_BALANCE",`المبلغ المطلوب أكبر من مستحقات الإنتاج غير المصروفة (${available.toFixed(2)} ج.م)`,409);
       const open=await client.query(
         "SELECT id FROM payment_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED') LIMIT 1 FOR UPDATE",
         [user.employee_id]);
@@ -239,7 +247,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     preHandler:[authenticateRequest,requirePermission("payment_requests.approve")]
   },async(request)=>{
     const id=(request.params as {id:string}).id;
-    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional()}).safeParse(request.body??{});
+    const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional(),advanceRepaymentAmount:z.number().nonnegative().default(0)}).safeParse(request.body??{});
     if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
@@ -249,8 +257,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       if(current.rows[0].status!=="PENDING") throw new AppError("INVALID_STATUS","حالة الطلب لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId) throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد طلب قبض أنشأته بنفسك",409);
-      const balance=await getBalance(client,current.rows[0].employee_id);
-      if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
+      const available=await getAvailableEarnings(client,current.rows[0].employee_id);
+      if(Number(current.rows[0].amount)>available+0.009) throw new AppError("INSUFFICIENT_BALANCE","مستحقات الإنتاج المتاحة لم تعد تكفي لهذا الطلب",409);
 
       // Approval means the finance user confirms that the money was actually paid.
       // Record the payment and ledger debit atomically to keep the available balance accurate.
@@ -333,8 +341,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       const current=await client.query("SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       if(current.rows[0].status!=="APPROVED") throw new AppError("INVALID_STATUS","يجب اعتماد الطلب قبل الدفع",409);
-      const balance=await getBalance(client,current.rows[0].employee_id);
-      if(Number(current.rows[0].amount)>balance) throw new AppError("INSUFFICIENT_BALANCE","المستحق المتاح لم يعد يكفي لهذا الطلب",409);
+      const available=await getAvailableEarnings(client,current.rows[0].employee_id);
+      if(Number(current.rows[0].amount)>available+0.009) throw new AppError("INSUFFICIENT_BALANCE","مستحقات الإنتاج المتاحة لم تعد تكفي لهذا الطلب",409);
       const payment=await client.query(
         `INSERT INTO worker_payments(employee_id,amount,method,payment_request_id,paid_by,notes,transfer_reference)
          VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
