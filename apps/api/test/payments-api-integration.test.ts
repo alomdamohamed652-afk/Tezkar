@@ -394,7 +394,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       const nextRequest=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
-        payload:{amount:150,method:"CASH"}
+        payload:{amount:200,method:"CASH"}
       });
       assert.equal(nextRequest.statusCode,201,nextRequest.body,"paid requests must not block a new request");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE payment_request_id=$1",[requestId])).rows[0].count),1);
@@ -428,51 +428,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(rejectPending.statusCode,200,rejectPending.body);
 
-      // A gross 200 EGP payout with a 50 EGP advance recovery must keep production
-      // earnings gross, record custody OUT 200 + IN 50, and reduce the loan by 50.
-      const advance=workerAdvance;
-
-      const offsetRequest=await app.inject({
-        method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
-        payload:{amount:200,method:"CASH"}
-      });
-      assert.equal(offsetRequest.statusCode,201,offsetRequest.body);
-      const offsetPayment=await app.inject({
-        method:"POST",url:`/api/payment-requests/${offsetRequest.json().data.id}/approve`,
-        headers:{cookie:managerCookie},payload:{advanceRepaymentAmount:50}
-      });
-      assert.equal(offsetPayment.statusCode,200,offsetPayment.body);
-      assert.equal(Number(offsetPayment.json().data.grossAmount),200);
-      assert.equal(Number(offsetPayment.json().data.advanceRepaymentAmount),50);
-      assert.equal(Number(offsetPayment.json().data.cashPaid),150);
-      assert.equal(Number(offsetPayment.json().data.payment.amount),150);
-      assert.equal(Number(offsetPayment.json().data.payment.gross_amount),200);
-      assert.equal(Number(offsetPayment.json().data.payment.advance_repayment_amount),50);
-
-      const offsetRepayment=await apiPool.query(
-        "SELECT amount,source_worker_payment_id FROM advance_repayments WHERE advance_id=$1",
-        [advance.id]);
-      assert.equal(offsetRepayment.rowCount,1);
-      assert.equal(Number(offsetRepayment.rows[0].amount),50);
-      assert.equal(offsetRepayment.rows[0].source_worker_payment_id,offsetPayment.json().data.payment.id);
-      const remainingAdvance=await apiPool.query(
-        "SELECT repayment_status,amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
-        [advance.id]);
-      assert.equal(remainingAdvance.rows[0].repayment_status,"OPEN");
-      assert.equal(Number(remainingAdvance.rows[0].remaining),150);
-      const offsetCustody=await apiPool.query(
-        "SELECT direction,amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
-        [offsetPayment.json().data.payment.id]);
-      assert.equal(offsetCustody.rowCount,2);
-      assert.equal(Number(offsetCustody.rows.find((x:any)=>x.direction==="OUT")?.amount),200);
-      assert.equal(Number(offsetCustody.rows.find((x:any)=>x.direction==="IN")?.amount),50);
-      const payoutLedger=await apiPool.query(
-        "SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",
-        [offsetPayment.json().data.payment.id]);
-      assert.equal(payoutLedger.rowCount,1);
-      assert.equal(Number(payoutLedger.rows[0].debit_amount),150);
-      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE payment_request_id=$1",[offsetRequest.json().data.id])).rows[0].count),1);
-
       const settledRequest=await app.inject({
         method:"POST",url:`/api/payment-requests/${nextRequest.json().data.id}/approve`,
         headers:{cookie:managerCookie},
@@ -480,11 +435,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(settledRequest.statusCode,200,settledRequest.body);
       assert.equal(settledRequest.json().data.request.status,"PAID");
-      assert.equal(Number(settledRequest.json().data.grossAmount),150);
+      assert.equal(Number(settledRequest.json().data.grossAmount),200);
       assert.equal(Number(settledRequest.json().data.advanceRepaymentAmount),50);
-      assert.equal(Number(settledRequest.json().data.cashPaid),100);
-      assert.equal(Number(settledRequest.json().data.payment.gross_amount),150);
-      assert.equal(Number(settledRequest.json().data.payment.amount),100);
+      assert.equal(Number(settledRequest.json().data.cashPaid),150);
+      assert.equal(Number(settledRequest.json().data.payment.gross_amount),200);
+      assert.equal(Number(settledRequest.json().data.payment.amount),150);
       assert.equal(Number(settledRequest.json().data.payment.advance_repayment_amount),50);
 
       const repaymentRows=await apiPool.query(
@@ -494,6 +449,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(repaymentRows.rowCount,1);
       assert.equal(Number(repaymentRows.rows[0].amount),50);
       assert.equal(repaymentRows.rows[0].source_worker_payment_id,settledRequest.json().data.payment.id);
+      const workerPaymentCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
+        [settledRequest.json().data.payment.id]);
+      assert.equal(workerPaymentCustody.rowCount,2);
+      assert.equal(Number(workerPaymentCustody.rows.find((x:any)=>x.direction==="OUT")?.amount),200);
+      assert.equal(Number(workerPaymentCustody.rows.find((x:any)=>x.direction==="IN")?.amount),50);
+      const workerPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[settledRequest.json().data.payment.id]);
+      assert.equal(workerPaymentLedger.rowCount,1);
+      assert.equal(Number(workerPaymentLedger.rows[0].debit_amount),150);
       const advanceRemaining=await apiPool.query(
         "SELECT amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
         [workerAdvance.id]
