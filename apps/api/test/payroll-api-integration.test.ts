@@ -116,6 +116,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING"
       );
 
+      await apiPool.query(
+        "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code=$2 ON CONFLICT DO NOTHING",
+        [secondUserId, "manager"]
+      );
       const secondLogin = await app.inject({
         method: "POST", url: "/api/auth/login",
         payload: { username: (await apiPool.query("SELECT username FROM users WHERE id=$1", [secondUserId])).rows[0].username, password }
