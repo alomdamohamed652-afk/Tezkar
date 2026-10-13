@@ -871,15 +871,22 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .coding-print-queue-label:last-child{break-after:auto;page-break-after:auto}
 @media print{
  @page{size:auto;margin:0}
- body:has(.coding-print-sheet) *{visibility:hidden!important}
- body:has(.coding-print-sheet) .coding-print-sheet,
- body:has(.coding-print-sheet) .coding-print-sheet *{visibility:visible!important}
- body:has(.coding-print-sheet) .coding-print-sheet{display:block;position:fixed;inset:0;width:var(--print-width);height:var(--print-height);margin:0;padding:0;background:#fff}
- body:has(.coding-print-queue-sheet) .app-shell{display:none!important}
- body:has(.coding-print-queue-sheet) .coding-print-queue-sheet,
- body:has(.coding-print-queue-sheet) .coding-print-queue-sheet *{visibility:visible!important}
- body:has(.coding-print-queue-sheet) .coding-print-queue-sheet{display:block!important;position:static;width:auto;height:auto;margin:0;padding:0;background:#fff}
- body:has(.coding-print-queue-sheet) .coding-print-queue-label{break-after:page;page-break-after:always}
+ /* Hide the screen UI with display:none so it cannot create blank/extra print pages. */
+ body:has(.coding-print-sheet) .sidebar,
+ body:has(.coding-print-sheet) .topbar,
+ body:has(.coding-print-sheet) .content>*:not(.coding-print-sheet){display:none!important}
+ body:has(.coding-print-sheet) .app-shell,
+ body:has(.coding-print-sheet) .main,
+ body:has(.coding-print-sheet) .content{display:block!important;min-height:0!important;height:auto!important;margin:0!important;padding:0!important}
+ body:has(.coding-print-sheet) .coding-print-sheet{display:block!important;position:fixed;top:0;left:0;width:var(--print-width);height:var(--print-height);margin:0;padding:0;background:#fff}
+ body:has(.coding-print-queue-sheet) .sidebar,
+ body:has(.coding-print-queue-sheet) .topbar,
+ body:has(.coding-print-queue-sheet) .content>*:not(.coding-print-queue-sheet){display:none!important}
+ body:has(.coding-print-queue-sheet) .app-shell,
+ body:has(.coding-print-queue-sheet) .main,
+ body:has(.coding-print-queue-sheet) .content{display:block!important;min-height:0!important;height:auto!important;margin:0!important;padding:0!important}
+ body:has(.coding-print-queue-sheet) .coding-print-queue-sheet{display:block!important;position:static!important;width:auto;margin:0;padding:0;background:#fff}
+ body:has(.coding-print-queue-sheet) .coding-print-queue-label{break-after:page;page-break-after:always;margin:0;padding:0}
  body:has(.coding-print-queue-sheet) .coding-print-queue-label:last-child{break-after:auto;page-break-after:auto}
 }
 
