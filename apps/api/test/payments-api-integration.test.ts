@@ -205,7 +205,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(request.json().data.transfer_reference,"IP-TEST-2026-001");
       const requestId=request.json().data.id;
       const approved=await app.inject({
-        method:"POST",url:`/api/payment-requests/${requestId}/approve`,headers:{cookie:managerCookie}
+        method:"POST",url:`/api/payment-requests/${requestId}/approve`,headers:{cookie:managerCookie},payload:{advanceRepaymentAmount:50}
       });
       assert.equal(approved.statusCode,200,approved.body);
       assert.equal(approved.json().data.request.status,"PAID");
