@@ -232,11 +232,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       // Salary-based advance payout must not debit production earnings; it is recovered by payroll.
       const ledgerBeforeSalaryAdvance = await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
-        [employeeA.rows[0].id]
+        [employeeB.rows[0].id]
       );
       const salaryAdvanceCreated = await app.inject({
         method: "POST", url: "/api/advances", headers: { cookie: cookieHeader },
-        payload: { employeeId: employeeA.rows[0].id, amount: 250, reason: "Salary repayment integration test", repaymentMethod: "SALARY_PERCENTAGE", salaryPercentage: 10 }
+        payload: { employeeId: employeeB.rows[0].id, amount: 250, reason: "Salary repayment integration test", repaymentMethod: "SALARY_PERCENTAGE", salaryPercentage: 10 }
       });
       assert.equal(salaryAdvanceCreated.statusCode, 201, salaryAdvanceCreated.body);
       const salaryAdvanceId = salaryAdvanceCreated.json().data.id as string;
@@ -252,7 +252,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(salaryAdvancePaid.json().data.ledger_entry_id, null, "salary-based advance must not debit production earnings");
       const ledgerAfterSalaryAdvance = await apiPool.query(
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
-        [employeeA.rows[0].id]
+        [employeeB.rows[0].id]
       );
       assert.equal(Number(ledgerAfterSalaryAdvance.rows[0].balance), Number(ledgerBeforeSalaryAdvance.rows[0].balance));
 
