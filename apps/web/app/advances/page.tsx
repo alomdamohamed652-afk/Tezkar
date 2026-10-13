@@ -15,7 +15,7 @@ const repaymentLabels:Record<string,string>={FIXED_INSTALLMENT:"قسط شهري 
 export default function AdvancesPage(){
  const {has,permissions}=usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[method,setMethod]=useState("CUSTOM"),[installment,setInstallment]=useState(""),[salaryPercentage,setSalaryPercentage]=useState(""),[percentage,setPercentage]=useState(""),[productionPeriodDays,setProductionPeriodDays]=useState("15"),[productionMinimumEarning,setProductionMinimumEarning]=useState(""),[productionInstallmentAmount,setProductionInstallmentAmount]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
- const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null);
+ const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleNotes,setSettleNotes]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null);
  async function load(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
@@ -65,9 +65,9 @@ export default function AdvancesPage(){
    const repaymentValue=settleRepaymentAmount.trim()===""?0:Number(normalizeNumber(settleRepaymentAmount));
    const repayments=settleAdvanceId&&repaymentValue>0?[{advanceId:settleAdvanceId,amount:repaymentValue}]:[];
    const r=await api<{data:SettlementResult}>("/api/production/earnings/settlements",{method:"POST",body:JSON.stringify({
-    employeeId:settleEmployeeId,grossAmount:Number(normalizeNumber(settleGrossAmount)),repayments
+    employeeId:settleEmployeeId,grossAmount:Number(normalizeNumber(settleGrossAmount)),notes:settleNotes.trim()||undefined,repayments
    })});
-   setSettlementResult(r.data);setSettleGrossAmount("");setSettleRepaymentAmount("");setSettleAdvanceId("");
+   setSettlementResult(r.data);setSettleGrossAmount("");setSettleRepaymentAmount("");setSettleAdvanceId("");setSettleNotes("");
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر صرف مستحقات العامل")}finally{setSettling(false)}
  }
@@ -97,7 +97,7 @@ export default function AdvancesPage(){
    <label>إجمالي مستحقات الإنتاج المراد تسويتها (ج.م)<input type="text" inputMode="decimal" value={settleGrossAmount} onChange={e=>setSettleGrossAmount(e.target.value)} required placeholder="مثال: ٢٠٠٠"/></label>
    <label>سلفة للخصم اليدوي (اختياري)<select value={settleAdvanceId} onChange={e=>setSettleAdvanceId(e.target.value)}><option value="">الاستقطاع الدوري فقط / بدون سلفة يدوية</option>{settleAdvances.map(a=><option key={a.id} value={a.id}>{a.code} — متبقي {formatMoney(a.remaining_amount)} ج.م</option>)}</select></label>
    <label>مبلغ الخصم اليدوي (ج.م)<input type="text" inputMode="decimal" value={settleRepaymentAmount} onChange={e=>setSettleRepaymentAmount(e.target.value)} placeholder="مثال: ٥٠٠"/></label>
-   <label style={{gridColumn:"1/-1"}}>ملاحظات (اختياري)<input value="" readOnly aria-label="ملاحظات غير متاحة في هذه النسخة"/></label>
+   <label style={{gridColumn:"1/-1"}}>ملاحظات (اختياري)<input value={settleNotes} onChange={e=>setSettleNotes(e.target.value)} placeholder="مثال: صرف إنتاج آخر ١٥ يومًا"/></label>
   </div>
   <div className="form-actions"><button className="primary-button" disabled={settling||!settleEmployeeId||!settleGrossAmount}>{settling?"جارٍ تسجيل التسوية...":"تأكيد الصرف والتسوية"}</button></div>
   {settlementResult&&<div className="alert success" style={{marginTop:12}}>
