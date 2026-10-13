@@ -50,7 +50,7 @@ export default function SettingsPage(){
   }catch(e){toast.error(e instanceof Error?e.message:"تعذر تحميل الإعدادات")}
  }
  useEffect(()=>{void load()},[]);
- useEffect(()=>{api<{data:{enabled:boolean;used:boolean;configured:boolean}}>("/api/system/reset/status").then(r=>{setResetVisible(!r.data.used);setResetEnabled(r.data.enabled);setResetUsed(r.data.used)}).catch(()=>{setResetVisible(false);setResetEnabled(false);setResetUsed(false)})},[]);
+ useEffect(()=>{api<{data:{enabled:boolean;used:boolean;configured:boolean}}>("/api/system/reset/status").then(r=>{setResetVisible(!r.data.used);setResetEnabled(r.data.enabled);setResetUsed(r.data.used)}).catch(e=>{setResetVisible(false);setResetEnabled(false);setResetUsed(false);toast.error(e instanceof Error?e.message:"تعذر تحميل حالة أداة مسح البيانات")})},[]);
  useEffect(()=>{if(!roleId)return;api<{data:{id:string}[]}>("/api/roles/"+roleId+"/permissions").then(x=>setRolePermissionIds(x.data.map(v=>v.id))).catch(()=>setRolePermissionIds([]))},[roleId]);
 
  const groups=useMemo(()=>{const m=new Map<string,Permission[]>();for(const p of permissions){const arr=m.get(p.module)||[];arr.push(p);m.set(p.module,arr)}return Array.from(m.entries())},[permissions]);
