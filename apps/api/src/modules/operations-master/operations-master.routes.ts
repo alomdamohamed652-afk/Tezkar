@@ -16,6 +16,8 @@ export async function operationsMasterRoutes(app:FastifyInstance){
  app.get("/api/rate-groups",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async()=>{const r=await pool.query("SELECT id,code,name,description,is_active FROM rate_groups ORDER BY code");return {data:r.rows};});
  app.post("/api/rate-groups",{preHandler:[authenticateRequest,requirePermission("rates.create")]},async(req,reply)=>{const p=z.object({name,description:z.string().max(500).optional()}).safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مجموعة الأجر غير صحيحة",422);const r=await withTransaction(async c=>{const x=await c.query("INSERT INTO rate_groups(name,description) VALUES($1,$2) RETURNING id,code,name,description,is_active",[p.data.name,p.data.description??null]);await audit(c,req,"create","rate_group",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 
+ app.get("/api/shifts/rate-groups",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{const r=await pool.query("SELECT id,code,name,is_active FROM rate_groups WHERE is_active=TRUE ORDER BY code");return {data:r.rows};});
+
  app.get("/api/shifts",{preHandler:[authenticateRequest,requirePermission("shifts.view")]},async()=>{
   const r=await pool.query(`SELECT s.id,s.code,s.name,s.start_time,s.end_time,s.crosses_midnight,s.rate_group_id,
     g.code AS rate_group_code,g.name AS rate_group_name,s.is_active,
