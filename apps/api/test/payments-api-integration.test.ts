@@ -440,12 +440,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(settledRequest.json().data.payment.advance_repayment_amount),50);
 
       const repaymentRows=await apiPool.query(
-        "SELECT amount,source_worker_payment_id FROM advance_repayments WHERE advance_id=$1",
-        [workerAdvance.id]
+        "SELECT amount,source_worker_payment_id,advance_id FROM advance_repayments WHERE source_worker_payment_id=$1",
+        [settledRequest.json().data.payment.id]
       );
       assert.equal(repaymentRows.rowCount,1);
       assert.equal(Number(repaymentRows.rows[0].amount),50);
       assert.equal(repaymentRows.rows[0].source_worker_payment_id,settledRequest.json().data.payment.id);
+      assert.equal(repaymentRows.rows[0].advance_id,testAdvance.id,"manual repayment applies to the oldest open advance first");
       const workerPaymentLedger=await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[settledRequest.json().data.payment.id]);
       assert.equal(workerPaymentLedger.rowCount,1);
       assert.equal(Number(workerPaymentLedger.rows[0].debit_amount),200,"the employee ledger clears gross earnings, not only the net cash handed over");
@@ -453,7 +454,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
         [workerAdvance.id]
       );
-      assert.equal(Number(advanceRemaining.rows[0].remaining),150);
+      assert.equal(Number(advanceRemaining.rows[0].remaining),200,"the newer advance remains open because the older advance was settled first");
 
       const payoutCustody=await apiPool.query(
         "SELECT direction,amount,source_type FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
@@ -466,7 +467,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
       assert.equal(Number(postSettlementBalance.json().data.balance),-50,"the employee account must reconcile remaining unpaid earnings against the outstanding loan");
-      assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),150);
+      assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),200);
       assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
     }finally{await app.close()}
   }finally{
