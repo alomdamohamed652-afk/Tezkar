@@ -722,6 +722,95 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stockAfterCartonDelivery.rows[0].quantity), 4);
     assert.equal(Number(stockAfterCartonDelivery.rows[0].inventory_value), 122);
 
+    // Continuous-scan regression: legacy cartons are resolved by the delivery API,
+    // drafts survive reload, duplicate scans and wrong locations are rejected,
+    // removal releases the draft line, and final release changes stock exactly once.
+    const scanDraftResponse = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/drafts", headers: { cookie: approver.cookie },
+      payload: { orderId, destination: "Continuous scan integration draft" }
+    });
+    assert.equal(scanDraftResponse.statusCode, 201, scanDraftResponse.body);
+    const scanDraftId = scanDraftResponse.json().data.id as string;
+
+    const wrongScanLocation = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie },
+      payload: {
+        cartonCode: carton.barcode,
+        warehouseId: "00000000-0000-4000-8000-000000000001",
+        locationId: finalSaved.rows[0].location_id
+      }
+    });
+    assert.equal(wrongScanLocation.statusCode, 409, wrongScanLocation.body);
+    assert.equal(wrongScanLocation.json().error.code, "CARTON_LOCATION_MISMATCH");
+
+    const legacyCartonScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: carton.barcode }
+    });
+    assert.equal(legacyCartonScan.statusCode, 201, legacyCartonScan.body);
+    assert.equal(legacyCartonScan.json().data.product_id, finalStage.output_product_id);
+    assert.equal(Number(legacyCartonScan.json().data.quantity), 1);
+    assert.equal(legacyCartonScan.json().data.product_name, (await apiPool.query(
+      "SELECT name FROM products WHERE id=$1", [finalStage.output_product_id]
+    )).rows[0].name);
+
+    const duplicateLegacyScan = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: carton.code }
+    });
+    assert.equal(duplicateLegacyScan.statusCode, 409, duplicateLegacyScan.body);
+    assert.equal(duplicateLegacyScan.json().error.code, "DUPLICATE_CARTON_CODE");
+
+    const restoredDraft = await app.inject({
+      method: "GET", url: "/api/delivery-permissions/drafts/active?orderId=" + orderId,
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(restoredDraft.statusCode, 200, restoredDraft.body);
+    assert.equal(restoredDraft.json().data.id, scanDraftId);
+    assert.equal(restoredDraft.json().data.lines.length, 1);
+
+    const removedDraftLineId = legacyCartonScan.json().data.id as string;
+    const removeDraftLine = await app.inject({
+      method: "DELETE", url: "/api/delivery-permissions/" + scanDraftId + "/scan/" + removedDraftLineId,
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(removeDraftLine.statusCode, 200, removeDraftLine.body);
+    const emptyRestoredDraft = await app.inject({
+      method: "GET", url: "/api/delivery-permissions/drafts/active?orderId=" + orderId,
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(emptyRestoredDraft.statusCode, 200, emptyRestoredDraft.body);
+    assert.equal(emptyRestoredDraft.json().data.lines.length, 0);
+
+    const rescannedLegacyCarton = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/scan",
+      headers: { cookie: approver.cookie }, payload: { cartonCode: carton.barcode }
+    });
+    assert.equal(rescannedLegacyCarton.statusCode, 201, rescannedLegacyCarton.body);
+    const readyScannedDraft = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/ready",
+      headers: { cookie: approver.cookie }
+    });
+    assert.equal(readyScannedDraft.statusCode, 200, readyScannedDraft.body);
+    assert.equal(readyScannedDraft.json().data.status, "READY");
+
+    const scannedDraftRelease = await app.inject({
+      method: "POST", url: "/api/delivery-permissions/" + scanDraftId + "/release",
+      headers: { cookie: approver.cookie }, payload: { scanCode: readyScannedDraft.json().data.code }
+    });
+    assert.equal(scannedDraftRelease.statusCode, 200, scannedDraftRelease.body);
+    assert.equal(scannedDraftRelease.json().data.status, "RELEASED");
+    const afterScannedDraftRelease = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.equal(Number(afterScannedDraftRelease.rows[0].quantity), 3,
+      "continuous-scan release must subtract the scanned carton quantity exactly once");
+    const emptyLegacyCarton = await apiPool.query("SELECT quantity,status FROM cartons WHERE id=$1", [carton.id]);
+    assert.equal(Number(emptyLegacyCarton.rows[0].quantity), 0);
+    assert.equal(emptyLegacyCarton.rows[0].status, "EMPTY");
+
     // Reopen a completed order before posting additional manual finance entries.
     const reopenForFinalCost=await app.inject({
       method:"PATCH",url:"/api/orders/"+orderId,headers:{cookie:approver.cookie},payload:{status:"IN_PROGRESS"}
