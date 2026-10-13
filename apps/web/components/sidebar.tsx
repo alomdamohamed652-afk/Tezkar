@@ -27,7 +27,7 @@ const groups:NavGroup[]=[
  {label:"المالية",items:[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
   {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
-  {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view"]},
+  {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","earnings.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
   {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"],conditional:"custody"},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
@@ -77,7 +77,7 @@ export function Sidebar({active}:{active:string}){
    <div className="sidebar-scroll">
     {visibleGroups.map(group=><div className="nav-group" key={group.label}>
       <div className="nav-title">{group.label}</div>
-      <nav className="nav">{group.items.map(item=><a className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</a>)}</nav>
+      <nav className="nav">{group.items.map(item=><a className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.href==="/payroll"?(permissions.includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</a>)}</nav>
     </div>)}
    </div>
    <div className="sidebar-footer">
