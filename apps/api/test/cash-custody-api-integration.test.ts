@@ -595,6 +595,35 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.ok(Math.abs(Number(recoveredCustody.rows[0].balance))<1e-7,"later custody inflow must settle the negative balance");
 
+
+      const administrativeCustodyExpensePayload={
+        employeeId:employeeA.id,amount:12.34,transactionDate:"2099-01-12",
+        category:"مصاريف إدارية",description:"Administrative expense entered from custody",
+        notes:"One linked custody outflow",idempotencyKey:randomUUID()
+      };
+      const administrativeCustodyExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/administrative-expenses",headers:{cookie:managerCookie},
+        payload:administrativeCustodyExpensePayload
+      });
+      assert.equal(administrativeCustodyExpense.statusCode,201,administrativeCustodyExpense.body);
+      assert.equal(administrativeCustodyExpense.json().data.expense.expense_type,"ADMINISTRATIVE");
+      assert.equal(administrativeCustodyExpense.json().data.expense.order_id,null);
+      assert.equal(administrativeCustodyExpense.json().data.expense.paid_from_employee_id,employeeA.id);
+      assert.ok(administrativeCustodyExpense.json().data.expense.cash_custody_transaction_id);
+      assert.equal(administrativeCustodyExpense.json().data.cashCustody.direction,"OUT");
+      const administrativeCustodyExpenseRetry=await app.inject({
+        method:"POST",url:"/api/cash-custody/administrative-expenses",headers:{cookie:managerCookie},
+        payload:administrativeCustodyExpensePayload
+      });
+      assert.equal(administrativeCustodyExpenseRetry.statusCode,201,administrativeCustodyExpenseRetry.body);
+      assert.equal(administrativeCustodyExpenseRetry.json().data.expense.id,administrativeCustodyExpense.json().data.expense.id);
+      assert.equal(administrativeCustodyExpenseRetry.json().data.cashCustody.id,administrativeCustodyExpense.json().data.cashCustody.id);
+      const administrativeExpenseCounts=await apiPool.query(
+        "SELECT (SELECT COUNT(*) FROM accounting_expenses WHERE idempotency_key=$1)::int AS expense_count,(SELECT COUNT(*) FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$2)::int AS cash_count",
+        [administrativeCustodyExpensePayload.idempotencyKey,administrativeCustodyExpense.json().data.expense.id]
+      );
+      assert.equal(administrativeExpenseCounts.rows[0].expense_count,1);
+      assert.equal(administrativeExpenseCounts.rows[0].cash_count,1);
       const overdrawnTransfer=await app.inject({
         method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
         payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:1,transactionDate:"2099-01-12",description:"Must not transfer without available balance"}
