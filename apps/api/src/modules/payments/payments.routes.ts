@@ -177,8 +177,8 @@ async function executeWorkerPayment(
     `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,created_by,notes)
      VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5)
      ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
-    [input.employeeId,planned.cashPaid,payment.rows[0].id,input.userId,
-      planned.total>0?`صرف صافي طلب قبض ${input.requestCode} بعد خصم السلف ${planned.total.toFixed(2)} ج.م`:`صرف طلب قبض ${input.requestCode}`]);
+    [input.employeeId,input.grossAmount,payment.rows[0].id,input.userId,
+      planned.total>0?`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}؛ سداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي نقد مدفوع ${planned.cashPaid.toFixed(2)} ج.م`:`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}`]);
   await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
 
   let allocationRemaining=input.grossAmount;
