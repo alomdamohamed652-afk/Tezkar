@@ -30,7 +30,7 @@ const revenueSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
   amount:z.number().positive().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   revenueDate:z.string().date().optional(),
-  source:z.string().trim().min(2).max(50).default("MANUAL"),
+  source:z.string().trim().min(2).max(50).default("MANUAL").refine(v=>v.toUpperCase()!=="EXTERNAL_CUSTODY_TOP_UP",{message:"تمويل العهدة لا يُسجَّل كإيراد؛ استخدم إجراء تمويل العهدة"}),
   notes:z.string().trim().max(500).nullable().optional(),
   idempotencyKey:z.string().uuid().optional()
 });
@@ -125,7 +125,7 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
  app.get("/api/accounting/revenues",{preHandler:[authenticateRequest,requirePermission("finance.revenues.view")]},async()=>{
-  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by WHERE r.source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' ORDER BY r.revenue_date DESC,r.created_at DESC");
+  const r=await pool.query("SELECT r.*,o.code AS order_code,o.order_name,u.username AS created_by_username FROM order_revenues r LEFT JOIN production_orders o ON o.id=r.order_id LEFT JOIN users u ON u.id=r.created_by WHERE UPPER(r.source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' ORDER BY r.revenue_date DESC,r.created_at DESC");
   return {data:r.rows};
  });
 
@@ -159,7 +159,7 @@ export async function accountingRoutes(app:FastifyInstance){
      await assertAccountingDateOpen(client,p.data.revenueDate);
      const contractValue=Number(order.rows[0].contract_value||0);
      if(contractValue>0){
-       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1",[p.data.orderId]);
+       const posted=await client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE order_id=$1 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]);
        const collected=Number(posted.rows[0]?.total||0);
        if(collected+p.data.amount>contractValue+1e-7)throw new AppError("CONTRACT_VALUE_EXCEEDED","قيمة الإيرادات المسجلة ستتجاوز قيمة التعاقد؛ سجّل التحصيل من المتبقي المتاح فقط",409);
      }
@@ -190,13 +190,13 @@ export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/summary",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view"),requirePermission("finance.revenues.view")]},async()=>{
   const r=await pool.query(`
     SELECT
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS total_in,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS total_in,
       COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS total_out,
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
-      COALESCE((SELECT COUNT(*) FROM order_revenues WHERE source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
+      COALESCE((SELECT COUNT(*) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
       COALESCE((SELECT COUNT(*) FROM accounting_expenses),0)::int AS expense_count,
       COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id IS NULL),0) AS general_expenses,
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND source IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
   return {data:r.rows[0]};
  });
 
@@ -360,7 +360,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const params=[periodStart,periodEnd,q.data.status??null,q.data.periodId??null];
   const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,o.contract_value,
     COALESCE(o.contract_value,0) AS accrued_revenue,
-    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id AND ($1::date IS NULL OR r.revenue_date BETWEEN $1::date AND $2::date)),0) AS revenue,
+    COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id AND UPPER(r.source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' AND ($1::date IS NULL OR r.revenue_date BETWEEN $1::date AND $2::date)),0) AS revenue,
     COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
     COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED' AND ($4::uuid IS NULL OR a.period_id=$4::uuid)),0) AS administrative_allocation,
     COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY' AND ($1::date IS NULL OR sm.created_at::date BETWEEN $1::date AND $2::date)),0) AS material_cost,
@@ -380,7 +380,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const p=idSchema.safeParse(request.params);if(!p.success)throw new AppError("VALIDATION_ERROR","الطلبية غير صحيحة",422);
   const order=await pool.query("SELECT id,code,order_name,status,customer_name,COALESCE(contract_value,0) AS accrued_revenue FROM production_orders WHERE id=$1",[p.data.orderId]);if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
   const [revenue,expenses,stockOut,labor]=await Promise.all([
-   pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1",[p.data.orderId]),
+   pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]),
    pool.query(`SELECT
      COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1 AND expense_type='DIRECT'),0) AS value,
      COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
