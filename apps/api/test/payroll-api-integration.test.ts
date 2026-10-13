@@ -256,6 +256,28 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(Number(ledgerAfterSalaryAdvance.rows[0].balance), Number(ledgerBeforeSalaryAdvance.rows[0].balance));
 
+      // A paid, still-open advance must not block another advance; payroll can repay both.
+      const secondSalaryAdvanceCreated = await app.inject({
+        method: "POST", url: "/api/advances", headers: { cookie: cookieHeader },
+        payload: { employeeId: employeeB.rows[0].id, amount: 125, reason: "Second salary advance integration test", repaymentMethod: "SALARY_PERCENTAGE", salaryPercentage: 5 }
+      });
+      assert.equal(secondSalaryAdvanceCreated.statusCode, 201, secondSalaryAdvanceCreated.body);
+      const secondSalaryAdvanceId = secondSalaryAdvanceCreated.json().data.id as string;
+      const secondSalaryAdvanceApproved = await app.inject({
+        method: "POST", url: "/api/advances/" + secondSalaryAdvanceId + "/approve", headers: { cookie: secondCookieHeader }
+      });
+      assert.equal(secondSalaryAdvanceApproved.statusCode, 200, secondSalaryAdvanceApproved.body);
+      const secondSalaryAdvancePaid = await app.inject({
+        method: "POST", url: "/api/advances/" + secondSalaryAdvanceId + "/pay", headers: { cookie: secondCookieHeader }
+      });
+      assert.equal(secondSalaryAdvancePaid.statusCode, 200, secondSalaryAdvancePaid.body);
+      assert.equal(secondSalaryAdvancePaid.json().data.ledger_entry_id, null);
+      const openPaidAdvances = await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM advance_requests WHERE employee_id=$1 AND status='PAID' AND repayment_status='OPEN'",
+        [employeeB.rows[0].id]
+      );
+      assert.equal(openPaidAdvances.rows[0].count, 2, "multiple salary advances may remain open for payroll repayment");
+
       // A fixed-installment advance cannot be paid until an effective salary profile exists.
       const employeeWithoutSalary = await apiPool.query(
         "INSERT INTO employees(full_name) VALUES ($1) RETURNING id", ["No Salary Profile Advance Test"]
