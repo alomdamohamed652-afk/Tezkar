@@ -812,14 +812,24 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(emptyLegacyCarton.rows[0].status, "EMPTY");
 
     // Finalization must re-check approved production, not just carton quantity.
+    // Temporarily provide enough stock to create an oversized test carton, then restore
+    // the isolated test balance so the assertion exercises the production guard first.
+    await apiPool.query(
+      "UPDATE stock_balances SET quantity=4 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
     const overProductionCartonResponse = await app.inject({
       method: "POST", url: "/api/warehouse/cartons", headers: { cookie: approver.cookie },
       payload: {
         productId: finalStage.output_product_id, warehouseId: expectedFinished.id,
-        locationId: finalSaved.rows[0].location_id, quantity: 3, weight: 1,
+        locationId: finalSaved.rows[0].location_id, quantity: 4, weight: 1,
         batchCode: "CONTINUOUS-OVER-PRODUCTION", status: "SEALED"
       }
     });
+    await apiPool.query(
+      "UPDATE stock_balances SET quantity=3 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
     assert.equal(overProductionCartonResponse.statusCode, 201, overProductionCartonResponse.body);
     const overProductionDraftResponse = await app.inject({
       method: "POST", url: "/api/delivery-permissions/drafts", headers: { cookie: approver.cookie },
