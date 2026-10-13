@@ -7,6 +7,7 @@ import {SearchableSelect} from "../../components/searchable-select";
 
 type Advance={id:string;code:string;employee_id:string;employee_name:string;amount:number;reason:string;status:string;created_at:string;rejection_reason:string|null;repayment_method:string;installment_amount:number|null;salary_percentage:number|null;production_percentage:number|null;production_period_days?:number;production_minimum_earning?:number|null;production_installment_amount?:number|null;repaid_amount:number;remaining_amount:number;account_balance?:number;repayment_status:string};
 type SettlementResult={employee:{full_name:string};grossAmount:number;cashPaid:number;advanceRepaymentAmount:number;availableBefore:number;repayments:Array<{advanceCode:string;amount:number;remaining:number}>};
+type MyAccount={employee:{full_name:string;code:string};accountBalance:number;advances:Advance[];ledger:Array<{id:string;code:string;entry_type:string;credit_amount:number;debit_amount:number;notes:string|null;created_at:string}>};
 type Employee={id:string;full_name:string;code:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 const labels:Record<string,string>={PENDING:"قيد الاعتماد",APPROVED:"معتمدة",REJECTED:"مرفوضة",PAID:"مصروفة",CANCELLED:"ملغاة"};
@@ -15,7 +16,7 @@ const repaymentLabels:Record<string,string>={FIXED_INSTALLMENT:"قسط شهري 
 export default function AdvancesPage(){
  const {has,permissions}=usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[method,setMethod]=useState("CUSTOM"),[installment,setInstallment]=useState(""),[salaryPercentage,setSalaryPercentage]=useState(""),[percentage,setPercentage]=useState(""),[productionPeriodDays,setProductionPeriodDays]=useState("15"),[productionMinimumEarning,setProductionMinimumEarning]=useState(""),[productionInstallmentAmount,setProductionInstallmentAmount]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
- const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleNotes,setSettleNotes]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null);
+ const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleNotes,setSettleNotes]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null),[myAccount,setMyAccount]=useState<MyAccount|null>(null);
  async function load(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
@@ -33,6 +34,14 @@ export default function AdvancesPage(){
  },[settleEmployeeId]);
  // Load the picker independently from the advances ledger. The session permissions arrive
  // asynchronously, and creating an advance must not depend on permission to view the ledger.
+ useEffect(()=>{
+  if(!permissions?.includes("advances.view_own")&&!permissions?.includes("advances.view"))return;
+  let active=true;
+  api<{data:MyAccount}>("/api/advances/my-account")
+   .then(r=>{if(active)setMyAccount(r.data)})
+   .catch(()=>{if(active)setMyAccount(null)});
+  return()=>{active=false};
+ },[permissions,items]);
  useEffect(()=>{
   if(!permissions?.includes("advances.create"))return;
   let active=true;
@@ -73,6 +82,15 @@ export default function AdvancesPage(){
  }
  return <div className="app-shell"><Sidebar active="/advances"/><main className="main"><header className="topbar"><div><h1 className="page-title">السلف</h1><p className="page-subtitle">سلف الموظفين تُسجّل إداريًا فقط، مع صرف واعتماد وسجل سداد كامل.</p></div></header><section className="content">
  {error&&<div className="alert error">{error}</div>}
+ {myAccount&&<section className="card">
+  <div className="card-header"><div><h2 className="card-title">حسابي ومستحقاتي</h2><div className="form-hint">{myAccount.employee.full_name} — رصيد الحساب يشمل المستحقات المعتمدة والسلف والتسويات.</div></div></div>
+  <div className="stats-grid">
+   <div className="stat-card"><div className="stat-label">صافي رصيد الحساب</div><div className="stat-value" style={{color:Number(myAccount.accountBalance)<0?"#dc2626":"#15803d"}}>{formatMoney(myAccount.accountBalance)} ج.م</div><div className="form-hint">{Number(myAccount.accountBalance)<0?"الرصيد بالسالب يعني عليك مستحقات/سلف لم تتم تسويتها بعد.":"ده صافي رصيد حسابك الحالي."}</div></div>
+   <div className="stat-card"><div className="stat-label">السلف المفتوحة</div><div className="stat-value">{myAccount.advances.length}</div><div className="form-hint">المتبقي الإجمالي: {formatMoney(myAccount.advances.reduce((sum,a)=>sum+Number(a.remaining_amount),0))} ج.م</div></div>
+  </div>
+  {myAccount.advances.length>0&&<div className="table-wrap"><table><thead><tr><th>السلفة</th><th>الأصل</th><th>المسدّد</th><th>الباقي</th><th>طريقة السداد</th></tr></thead><tbody>{myAccount.advances.map(a=><tr key={a.id}><td>{a.code}</td><td className="money">{formatMoney(a.amount)}</td><td className="money">{formatMoney(a.repaid_amount)}</td><td className="money">{formatMoney(a.remaining_amount)}</td><td>{repaymentLabels[a.repayment_method]||a.repayment_method}</td></tr>)}</tbody></table></div>}
+  <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>البيان</th><th>دائن</th><th>مدين</th></tr></thead><tbody>{myAccount.ledger.slice(0,8).map(x=><tr key={x.id}><td>{new Date(x.created_at).toLocaleDateString("ar-EG")}</td><td>{x.notes||x.entry_type}</td><td className="money">{formatMoney(x.credit_amount)}</td><td className="money">{formatMoney(x.debit_amount)}</td></tr>)}{!myAccount.ledger.length&&<tr><td colSpan={4}>لا توجد حركات مسجلة.</td></tr>}</tbody></table></div>
+ </section>}
  {has("advances.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">إضافة سلفة لموظف</h2><div className="form-hint">العامل لا ينشئ السلفة؛ الإدارة/الحسابات تسجلها على حساب الموظف.</div></div></div>
   <div className="form-grid">
    <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.filter(x=>x.id).map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>
