@@ -1,7 +1,9 @@
 import { pool } from "./pool.js";
+import { AppError } from "../http/errors.js";
 
 const alwaysKeep = new Set([
   "schema_migrations",
+  "system_reset_events",
   "departments",
   "job_titles",
   "roles",
@@ -32,6 +34,9 @@ export async function resetTrialData(protectedUserId: string | null = null) {
 const client = await pool.connect();
 try {
   await client.query("BEGIN");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('tezkar-one-time-trial-reset'))");
+  const priorReset = await client.query<{ used: boolean }>("SELECT EXISTS (SELECT 1 FROM public.system_reset_events WHERE operation_key = 'trial-data-reset') AS used");
+  if (priorReset.rows[0]?.used) throw new AppError("RESET_ALREADY_USED", "تم تنفيذ مسح بيانات التجربة بالفعل؛ العملية متاحة مرة واحدة فقط", 409);
   await client.query("SET CONSTRAINTS ALL DEFERRED");
 
   const tableResult = await client.query<{ table_name: string }>(
@@ -200,6 +205,10 @@ try {
     afterCounts[table] = Number(result.rows[0]?.count ?? 0);
   }
 
+  await client.query(
+    "INSERT INTO public.system_reset_events(operation_key, actor_user_id, report) VALUES ('trial-data-reset', $1, $2::jsonb)",
+    [protectedUserId, JSON.stringify({ deletedRows: deleted, preservedTables: [...keep].filter((table) => present.has(table)).sort() })]
+  );
   await client.query("COMMIT");
   return {
     deletedRows: deleted,
