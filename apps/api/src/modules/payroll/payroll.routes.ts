@@ -299,10 +299,16 @@ export async function payrollRoutes(app: FastifyInstance) {
         const repaid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
         const remaining=Number(deduction.advance_amount)-Number(repaid.rows[0].amount);
         if(Number(deduction.amount)>remaining+0.0001)throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد السلفة؛ أعد مراجعة مسير الرواتب قبل الصرف",409);
-        await client.query(
+        const repayment=await client.query(
           `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
-           VALUES($1,$2,$3,$4,$5,$6,$7)`,
+           VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
           [deduction.advance_id,deduction.amount,deduction.repayment_type,parsed.data.paymentDate??new Date().toISOString().slice(0,10),`خصم قسط سلفة ${deduction.advance_code} عند صرف الراتب`,request.user!.userId,id]
+        );
+        await client.query(
+          `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
+           VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+           ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING`,
+          [item.rows[0].employee_id,deduction.amount,repayment.rows[0].id,request.user!.userId,`سداد قسط سلفة ${deduction.advance_code} من مستحقات الراتب`]
         );
         const next=remaining-Number(deduction.amount);
         await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",[next<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
