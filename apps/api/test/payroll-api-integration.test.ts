@@ -115,6 +115,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       await apiPool.query(
         "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING"
       );
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',10000,'test opening custody for payroll payments',$2)",
+        [employeeA.rows[0].id,userId]
+      );
 
       await apiPool.query(
         "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code=$2 ON CONFLICT DO NOTHING",
