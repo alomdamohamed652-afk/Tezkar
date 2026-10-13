@@ -315,7 +315,18 @@ export async function paymentsRoutes(app:FastifyInstance){
        LEFT JOIN worker_payments wp ON wp.id=pr.paid_payment_id
        ${where.length?"WHERE "+where.join(" AND "):""}
        ORDER BY pr.requested_at DESC LIMIT 200`,params);
-    return {data:r.rows};
+    const paymentDate=new Date().toISOString().slice(0,10);
+    const dueByEmployee=new Map<string,number>();
+    const client=await pool.connect();
+    try{
+      for(const row of r.rows){
+        if(row.status!=="PENDING"&&row.status!=="APPROVED")continue;
+        if(dueByEmployee.has(row.employee_id))continue;
+        const due=await getDueProductionAdvanceRepayment(client,row.employee_id,paymentDate);
+        dueByEmployee.set(row.employee_id,due.total);
+      }
+    }finally{client.release();}
+    return {data:r.rows.map(row=>({...row,due_advance_repayment_amount:dueByEmployee.get(row.employee_id)??0}))};
   });
 
   app.get("/api/payments/my-balance",{
@@ -324,11 +335,16 @@ export async function paymentsRoutes(app:FastifyInstance){
     const user=await isWorker(request.user!.userId);
     if(!user?.employee_id) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
     const client=await pool.connect();
-    try{return {data:{
-      balance:await getBalance(client,user.employee_id),
-      availableEarnings:await getAvailableEarnings(client,user.employee_id),
-      outstandingAdvanceAmount:await getOutstandingAdvanceAmount(client,user.employee_id)
-    }}}finally{client.release();}
+    try{
+      const due=await getDueProductionAdvanceRepayment(client,user.employee_id,new Date().toISOString().slice(0,10));
+      return {data:{
+        balance:await getBalance(client,user.employee_id),
+        availableEarnings:await getAvailableEarnings(client,user.employee_id),
+        outstandingAdvanceAmount:await getOutstandingAdvanceAmount(client,user.employee_id),
+        dueAdvanceRepaymentAmount:due.total,
+        dueAdvanceRepayments:due.items
+      }};
+    }finally{client.release();}
   });
 
   app.post("/api/payment-requests",{
