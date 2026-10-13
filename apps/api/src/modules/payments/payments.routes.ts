@@ -106,14 +106,16 @@ async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:s
     const startValue=advance.last_repayment_date??advance.paid_at;
     const startDate=startValue instanceof Date?startValue.toISOString().slice(0,10):String(startValue).slice(0,10);
     const elapsed=Math.floor((Date.parse(paymentDate+"T00:00:00Z")-Date.parse(startDate+"T00:00:00Z"))/86400000);
-    if(elapsed<Number(advance.production_period_days??15))continue;
+    const periodDays=Number(advance.production_period_days??15);
+    if(elapsed<periodDays)continue;
+    const duePeriods=Math.max(1,Math.floor(elapsed/periodDays));
     const production=await client.query(
       "SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS amount FROM production_entries WHERE employee_id=$1 AND status='APPROVED' AND work_date>$2::date AND work_date<=$3::date",
       [employeeId,startDate,paymentDate]
     );
     const periodEarning=Number(production.rows[0].amount);
     if(advance.production_minimum_earning!==null&&advance.production_minimum_earning!==undefined&&periodEarning<Number(advance.production_minimum_earning))continue;
-    const scheduled=advance.production_installment_amount!==null?Number(advance.production_installment_amount):periodEarning*Number(advance.production_percentage??0)/100;
+    const scheduled=advance.production_installment_amount!==null?Number(advance.production_installment_amount)*duePeriods:periodEarning*Number(advance.production_percentage??0)/100;
     const amount=Math.round(Math.min(Number(advance.outstanding),scheduled,Math.max(0,remainingGross-0.01))*100)/100;
     if(amount<=0)continue;
     plan.push({advance,amount,repaymentType:"PRODUCTION_PERCENTAGE"});
