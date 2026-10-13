@@ -7,6 +7,11 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 
 const enabled = () => process.env.TEZKAR_ENABLE_ONE_TIME_RESET === "true";
 
+async function resetUsed() {
+  const result = await pool.query("SELECT EXISTS (SELECT 1 FROM public.system_reset_events WHERE operation_key = 'trial-data-reset') AS used");
+  return Boolean(result.rows[0]?.used);
+}
+
 async function assertSystemManager(userId: string) {
   const result = await pool.query(
     `SELECT EXISTS (
@@ -25,7 +30,8 @@ async function assertSystemManager(userId: string) {
 export async function systemResetRoutes(app: FastifyInstance) {
   app.get("/api/system/reset/status", { preHandler: [authenticateRequest] }, async request => {
     await assertSystemManager(request.user!.userId);
-    return { data: { enabled: enabled() } };
+    const used = await resetUsed();
+    return { data: { enabled: enabled() && !used, configured: enabled(), used } };
   });
 
   app.post("/api/system/reset/execute", { preHandler: [authenticateRequest] }, async request => {
@@ -39,12 +45,6 @@ export async function systemResetRoutes(app: FastifyInstance) {
     }
 
     const report = await resetTrialData(request.user!.userId);
-    // Keep a single auditable record after clearing the previous trial history.
-    await pool.query(
-      `INSERT INTO public.audit_log(actor_user_id, action, module, entity_type, metadata)
-       VALUES ($1, 'reset', 'system', 'trial_data_reset', $2::jsonb)`,
-      [request.user!.userId, JSON.stringify({ deletedRows: report.deletedRows, preservedTables: report.preservedTables })]
-    );
     return { data: { deletedRows: report.deletedRows, preservedTables: report.preservedTables } };
   });
 }
