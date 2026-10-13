@@ -213,11 +213,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [userId]
       );
       const profileA = await apiPool.query(
-        "INSERT INTO employee_salary_profiles(employee_id,monthly_salary,effective_from,created_by) VALUES ($1,1000,'2098-01-01',$2) RETURNING id",
+        "INSERT INTO employee_salary_profiles(employee_id,monthly_salary,effective_from,created_by) VALUES ($1,1000,'2020-01-01',$2) RETURNING id",
         [employeeA.rows[0].id, userId]
       );
       const profileB = await apiPool.query(
-        "INSERT INTO employee_salary_profiles(employee_id,monthly_salary,effective_from,created_by) VALUES ($1,1000,'2098-01-01',$2) RETURNING id",
+        "INSERT INTO employee_salary_profiles(employee_id,monthly_salary,effective_from,created_by) VALUES ($1,1000,'2020-01-01',$2) RETURNING id",
         [employeeB.rows[0].id, userId]
       );
       const salaryHistory = await app.inject({
