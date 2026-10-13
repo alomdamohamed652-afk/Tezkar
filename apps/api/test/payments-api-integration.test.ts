@@ -430,16 +430,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       // A gross 200 EGP payout with a 50 EGP advance recovery must keep production
       // earnings gross, record custody OUT 200 + IN 50, and reduce the loan by 50.
-      const advance=(await apiPool.query(
-        `INSERT INTO advance_requests(employee_id,amount,reason,requested_by,status,paid_by,paid_at,repayment_method,repayment_status)
-         VALUES($1,100,'payment offset integration advance',$2,'PAID',$2,now(),'CUSTOM','OPEN') RETURNING id,code`,
-        [workerEmployee.id,manager.id])).rows[0];
-      await apiPool.query(
-        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,$3)",
-        [workerEmployee.id,manager.id,"صرف سلفة "+advance.code]);
-      await apiPool.query(
-        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by,source_type,source_id) VALUES($1,'OUT',100,$2,$3,'ADVANCE_PAYOUT',$4)",
-        [managerEmployee.id,"صرف سلفة اختبار العامل "+advance.code,manager.id,advance.id]);
+      const advance=workerAdvance;
 
       const offsetRequest=await app.inject({
         method:"POST",url:"/api/payment-requests",headers:{cookie:workerCookie},
@@ -468,7 +459,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT repayment_status,amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
         [advance.id]);
       assert.equal(remainingAdvance.rows[0].repayment_status,"OPEN");
-      assert.equal(Number(remainingAdvance.rows[0].remaining),50);
+      assert.equal(Number(remainingAdvance.rows[0].remaining),150);
       const offsetCustody=await apiPool.query(
         "SELECT direction,amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
         [offsetPayment.json().data.payment.id]);
