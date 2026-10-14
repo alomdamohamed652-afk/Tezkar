@@ -192,7 +192,7 @@ try {
   const allTables = tableResult.rows.map((row) => row.table_name);
   const present = new Set(allTables);
 
-  // Preserve only platform/reference configuration. Every other public table is treated as manually entered or operational data and is cleared, including audit/activity logs, notifications, report records, preferences, warehouses, and warehouse locations.
+  // Preserve platform/reference configuration, the standard and scrap warehouses, and their locations. Other public tables are treated as operational data and cleared, including audit/activity logs, notifications, report records, and preferences; non-default warehouses and locations are removed.
   const keep = new Set(alwaysKeep);
   for (const name of allTables) {
     if (/settings/i.test(name) || /^(company_profile|company_profiles|factory|factories)$/i.test(name)) {
