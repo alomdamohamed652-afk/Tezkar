@@ -1,5 +1,6 @@
 ALTER TABLE worker_payments
-  ADD COLUMN IF NOT EXISTS idempotency_key UUID;
+  ADD COLUMN IF NOT EXISTS idempotency_key UUID,
+  ADD COLUMN IF NOT EXISTS idempotency_fingerprint TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_worker_payments_idempotency_key
   ON worker_payments(idempotency_key)
