@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { consumeInventoryLots, adjustStockValueAfterLotConsumption, createInventoryLot } from "./inventory-lots.service.js";
 
 const warehouseSchema = z.object({
@@ -23,6 +24,15 @@ const movementSchema = z.object({
   notes: z.string().trim().max(500).nullable().optional(), adjustmentDirection: z.enum(["IN","OUT"]).default("IN"), unitCost: z.number().nonnegative().nullable().optional(), orderId: z.string().uuid().nullable().optional(), orderStageId: z.string().uuid().nullable().optional(), targetWarehouseId: z.string().uuid().optional(),
   targetLocationId: z.string().uuid().optional(), scrapOriginType: z.enum(["ORDER","ADJUSTMENT","STOCKTAKE","TRANSFER","PRODUCTION","OTHER"]).nullable().optional(), scrapOriginReference: z.string().trim().max(160).nullable().optional()
 });
+
+async function canViewWarehouseCosts(userId: string): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    return await hasPermission(client, userId, "warehouse.dashboard");
+  } finally {
+    client.release();
+  }
+}
 
 async function resolveLocation(client: import("pg").PoolClient, warehouseId: string, locationId?: string | null) {
   if(locationId){
@@ -171,7 +181,9 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("b.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("b.product_id=$"+params.length);}
     const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,w.warehouse_type,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
-    return {data:result.rows};
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const data=canViewCosts?result.rows:result.rows.map(({avg_unit_cost,inventory_value,...row})=>row);
+    return {data};
   });
 
   app.get("/api/warehouse/lots",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
@@ -185,7 +197,9 @@ export async function warehouseRoutes(app: FastifyInstance) {
       FROM inventory_lots l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id
       JOIN warehouse_locations loc ON loc.id=l.location_id JOIN units u ON u.id=p.unit_id
       WHERE ${where.join(" AND ")} ORDER BY p.name,l.created_at,l.id`,params);
-    return {data:r.rows};
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const data=canViewCosts?r.rows:r.rows.map(({unit_cost,...row})=>row);
+    return {data};
   });
 
   app.get("/api/warehouse/movements",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
@@ -198,9 +212,15 @@ export async function warehouseRoutes(app: FastifyInstance) {
     params.push(parsed.data.limit+1);
     const limitParam=params.length;
     params.push(parsed.data.offset);
-    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,COALESCE(po.code,o.code) AS order_code,COALESCE(po.order_name,o.order_name) AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN orders o ON o.id=m.order_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC,m.id DESC LIMIT $"+limitParam+" OFFSET $"+(limitParam+1),params);
+    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,po.code AS order_code,po.order_name AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC,m.id DESC LIMIT $"+limitParam+" OFFSET $"+(limitParam+1),params);
     const hasMore=result.rows.length>parsed.data.limit;
-    return {data:hasMore?result.rows.slice(0,parsed.data.limit):result.rows,pagination:{limit:parsed.data.limit,offset:parsed.data.offset,hasMore}};
+    const rows=hasMore?result.rows.slice(0,parsed.data.limit):result.rows;
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const data=canViewCosts?rows:rows.map(({unit_cost,total_cost,order_id,order_stage_id,order_code,order_name,stage_name,scrap_origin_reference,...row})=>({
+      ...row,
+      ...(row.scrap_origin_type==="ORDER"?{scrap_origin_reference:undefined}:{scrap_origin_reference})
+    }));
+    return {data,pagination:{limit:parsed.data.limit,offset:parsed.data.offset,hasMore}};
   });
 
   app.get("/api/warehouse/dashboard",{preHandler:[authenticateRequest,requirePermission("warehouse.dashboard")]},async(request)=>{
