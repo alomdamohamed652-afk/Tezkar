@@ -370,8 +370,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(ledger.rows[0].payment_entries),1);
 
       // An advance is immediately a debit on the employee account. At payout,
-      // the gross production entitlement clears the account, only net cash leaves
-      // custody, and the advance offset returns to company cash in the same transaction.
+      // the gross production entitlement clears the account and only the net cash
+      // actually handed to the worker leaves cash custody. The offset is payroll settlement.
       const workerAdvance=(await apiPool.query(
         `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status)
          VALUES($1,200,'payment integration advance','PAID',$2,$3,now(),'CUSTOM','OPEN') RETURNING id,code`,
@@ -458,9 +458,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT direction,amount,source_type FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
         [settledRequest.json().data.payment.id]
       );
-      assert.equal(payoutCustody.rowCount,2);
-      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT")?.amount),200,"custody OUT is gross entitlement");
-      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT_ADVANCE_REPAYMENT")?.amount),50,"custody IN recovers the advance offset");
+      assert.equal(payoutCustody.rowCount,1,"only the real cash movement should be recorded in custody");
+      assert.equal(payoutCustody.rows[0].direction,"OUT");
+      assert.equal(payoutCustody.rows[0].source_type,"WORKER_PAYMENT");
+      assert.equal(Number(payoutCustody.rows[0].amount),150,"custody OUT must equal the net cash actually paid");
+      const repaymentCustodyRows=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT_ADVANCE_REPAYMENT' AND source_id=$1",
+        [settledRequest.json().data.payment.id]
+      );
+      assert.equal(Number(repaymentCustodyRows.rows[0].count),0,"advance repayment is a payroll offset, not cash received by the custodian");
 
       const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
