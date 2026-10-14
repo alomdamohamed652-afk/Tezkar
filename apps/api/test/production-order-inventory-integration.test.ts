@@ -49,12 +49,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     process.env.NODE_ENV = "test";
 
     const [
-      { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
+      { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes }, { productionScrapRoutes },
       { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
+      import("../src/modules/production/production.routes.js"), import("../src/modules/production/production-scrap.routes.js"), import("../src/modules/orders/orders.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/coding/coding.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
       import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
@@ -67,6 +67,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     await app.register(authRoutes);
     await app.register(productionRoutes);
+    await app.register(productionScrapRoutes);
     await app.register(orderRoutes);
     await app.register(warehouseRoutes);
     await app.register(cartonDeliveryRoutes);
@@ -285,6 +286,21 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(firstEntry.statusCode, 201, firstEntry.body);
     const firstId = firstEntry.json().data.id as string;
+    const validScrap = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: { productionEntryId: firstId, scrapType: "WORKER_SCRAP", quantity: 1, notes: "Active stage scrap integration" }
+    });
+    assert.equal(validScrap.statusCode, 201, validScrap.body);
+    assert.equal(Number(validScrap.json().data.quantity), 1);
+    const scrapMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE id=$1",
+      [validScrap.json().data.stock_movement_id]
+    );
+    assert.equal(scrapMovement.rows[0].movement_type, "IN");
+    assert.equal(Number(scrapMovement.rows[0].quantity), 1);
+    assert.equal(Number(scrapMovement.rows[0].total_cost), 0);
+    assert.equal(scrapMovement.rows[0].reference_type, "PRODUCTION_SCRAP");
+    assert.equal(scrapMovement.rows[0].reference_id, validScrap.json().data.id);
     const firstDestination = await apiPool.query("SELECT warehouse_id,location_id,earning_amount,total_earning_amount FROM production_entries WHERE id=$1", [firstId]);
     assert.equal(firstDestination.rows[0].warehouse_id, expectedWip.id, "intermediate production must ignore the client-supplied raw material warehouse");
     assert.notEqual(firstDestination.rows[0].warehouse_id, wrongWarehouse.rows[0].id);
@@ -496,6 +512,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stageState.rows[0].completed_quantity), 10);
     assert.equal(stageState.rows[0].status, "COMPLETED");
     assert.equal(stageState.rows[0].order_status, "COMPLETED");
+    const scrapOnCompletedOrder = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: { productionEntryId: finalId, scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Must reject completed order" }
+    });
+    assert.equal(scrapOnCompletedOrder.statusCode, 409, scrapOnCompletedOrder.body);
+    assert.equal(scrapOnCompletedOrder.json().error.code, "ORDER_NOT_ACTIVE");
+    const completedOrderScrapCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM production_scrap_records WHERE production_entry_id=$1",
+      [finalId]
+    );
+    assert.equal(completedOrderScrapCount.rows[0].count, 0, "failed scrap must not create a record or stock movement");
 
     const addOutputToCompletedOrder = await app.inject({
       method: "POST", url: "/api/stages/" + finalStage.id + "/outputs", headers: { cookie: submitter.cookie },
