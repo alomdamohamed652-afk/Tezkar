@@ -13,7 +13,7 @@ type ShiftLeader={id:string;shift_id:string;shift_name:string;employee_id:string
 type Order={id:string;code:string;order_name:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null;production_type_id:string|null};
 type ProductionType=Item & {calculation_method:string};
-type Entry={id:string;code:string;work_date:string;employee_id:string;shift_id:string;shift_leader_employee_id:string|null;order_stage_id:string|null;product_id:string;stage_id:string;production_type_id:string|null;base_amount:number|null;hours_worked:number|null;shift_leader_name:string|null;quantity:number;rate_snapshot:number;earning_amount:number;bonus_amount:number;deduction_amount:number;total_earning_amount:number;status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
+type Entry={id:string;code:string;work_date:string;employee_id:string;shift_id:string;shift_leader_employee_id:string|null;order_stage_id:string|null;product_id:string;stage_id:string;production_type_id:string|null;base_amount:number|null;hours_worked:number|null;shift_leader_name:string|null;quantity:number;rate_snapshot:number;earning_amount:number;bonus_amount:number;deduction_amount:number;bonus_reason:string|null;deduction_reason:string|null;total_earning_amount:number;status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;shift_name:string|null;production_code:string|null};
 
 const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد",REJECTED:"مرفوض",CANCELLED:"ملغي"};
@@ -142,12 +142,7 @@ export default function ProductionPage(){
  }
  async function editEntry(x:Entry){
   setEditTarget(x);
-  setEditValues({employeeId:x.employee_id,orderStageId:x.order_stage_id||"",productId:x.product_id,stageId:x.stage_id,productionTypeId:x.production_type_id||"",shiftId:x.shift_id,shiftLeaderEmployeeId:x.shift_leader_employee_id||"",workDate:String(x.work_date).slice(0,10),quantity:String(x.quantity),baseAmount:x.base_amount==null?"":String(x.base_amount),hoursWorked:x.hours_worked==null?"":String(x.hours_worked),rateOverride:String(x.rate_snapshot),bonusAmount:String(x.bonus_amount||0),bonusReason:"",deductionAmount:String(x.deduction_amount||0),deductionReason:""});
-  try{
-    const a=await api<{data:Adjustment[]}>(`/api/production/adjustments?productionEntryId=${encodeURIComponent(x.id)}`);
-    const bonus=a.data.find(v=>v.adjustment_type==="BONUS"),deduction=a.data.find(v=>v.adjustment_type==="DEDUCTION");
-    setEditValues(v=>({...v,bonusReason:bonus?.reason||"",deductionReason:deduction?.reason||""}));
-  }catch{}
+  setEditValues({employeeId:x.employee_id,orderStageId:x.order_stage_id||"",productId:x.product_id,stageId:x.stage_id,productionTypeId:x.production_type_id||"",shiftId:x.shift_id,shiftLeaderEmployeeId:x.shift_leader_employee_id||"",workDate:String(x.work_date).slice(0,10),quantity:String(x.quantity),baseAmount:x.base_amount==null?"":String(x.base_amount),hoursWorked:x.hours_worked==null?"":String(x.hours_worked),rateOverride:String(x.rate_snapshot),bonusAmount:String(x.bonus_amount||0),bonusReason:x.bonus_reason||"",deductionAmount:String(x.deduction_amount||0),deductionReason:x.deduction_reason||""});
  }
  async function saveProductionEdit(){
   if(!editTarget)return;
