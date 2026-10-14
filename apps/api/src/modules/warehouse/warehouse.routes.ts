@@ -21,7 +21,7 @@ const movementSchema = z.object({
   quantity: z.number().positive(), cartonCode: z.string().trim().max(100).nullable().optional(),
   batchCode: z.string().trim().max(100).nullable().optional(), weight: z.number().nonnegative().nullable().optional(),
   notes: z.string().trim().max(500).nullable().optional(), adjustmentDirection: z.enum(["IN","OUT"]).default("IN"), unitCost: z.number().nonnegative().nullable().optional(), orderId: z.string().uuid().nullable().optional(), orderStageId: z.string().uuid().nullable().optional(), targetWarehouseId: z.string().uuid().optional(),
-  targetLocationId: z.string().uuid().optional()
+  targetLocationId: z.string().uuid().optional(), scrapOriginType: z.enum(["ORDER","ADJUSTMENT","STOCKTAKE","TRANSFER","PRODUCTION","OTHER"]).nullable().optional(), scrapOriginReference: z.string().trim().max(160).nullable().optional()
 });
 
 async function resolveLocation(client: import("pg").PoolClient, warehouseId: string, locationId?: string | null) {
@@ -195,7 +195,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("m.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("m.product_id=$"+params.length);}
     params.push(parsed.data.limit);
-    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC LIMIT $"+params.length,params);
+    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,o.code AS order_code,o.order_name,st.name AS stage_name,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN orders o ON o.id=m.order_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC LIMIT $"+params.length,params);
     return {data:result.rows};
   });
 
@@ -264,7 +264,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
       const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
       const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,delta,effectiveUnitCost);
       const adjustmentReferenceType=parsed.data.movementType==="ADJUSTMENT"?"ADJUSTMENT_"+parsed.data.adjustmentDirection:null;
-      const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id,reference_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null,adjustmentReferenceType]);
+      const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id,reference_type,scrap_origin_type,scrap_origin_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null,adjustmentReferenceType,parsed.data.scrapOriginType??null,parsed.data.scrapOriginReference??null]);
       let finalSourceCost=sourceCost;
       if(delta<0){
         const consumed=await consumeInventoryLots(client,{movementId:source.rows[0].id,productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity});
