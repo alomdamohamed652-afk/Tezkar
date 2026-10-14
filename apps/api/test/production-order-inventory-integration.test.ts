@@ -405,6 +405,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(postApprovalOrder.statusCode, 201, postApprovalOrder.body);
     const postApprovalOrderId = postApprovalOrder.json().data.id as string;
+    const activatePostApprovalOrder = await app.inject({
+      method: "PATCH", url: "/api/orders/" + postApprovalOrderId, headers: { cookie: submitter.cookie },
+      payload: { status: "IN_PROGRESS" }
+    });
+    assert.equal(activatePostApprovalOrder.statusCode, 200, activatePostApprovalOrder.body);
     const postApprovalOrderDetail = await app.inject({
       method: "GET", url: "/api/orders/" + postApprovalOrderId, headers: { cookie: submitter.cookie }
     });
