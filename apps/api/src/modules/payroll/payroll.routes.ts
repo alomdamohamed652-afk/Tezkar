@@ -316,6 +316,15 @@ export async function payrollRoutes(app: FastifyInstance) {
       // Advance deductions remain reserved on the approved payroll item until the
       // salary is actually paid. The payment endpoint commits them exactly once.
       const updated = await client.query("UPDATE payroll_periods SET status='APPROVED',approved_by=$1,approved_at=now() WHERE id=$2 RETURNING *", [request.user!.userId,id]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         SELECT DISTINCT u.id,'PAYROLL_APPROVED','تم اعتماد مسير المرتبات',
+           'تم اعتماد مسير المرتبات لشهر ' || $2::text || '. راجع حسابك لمتابعة مستحقاتك.',
+           'payroll_period',$1::uuid
+         FROM payroll_items i JOIN users u ON u.employee_id=i.employee_id
+         WHERE i.period_id=$1 AND u.is_active=TRUE`,
+        [id,monthLabel]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"payroll",entityType:"payroll_period",entityId:id,beforeData:period.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
@@ -393,6 +402,13 @@ export async function payrollRoutes(app: FastifyInstance) {
           committedAdvanceRepayment>0?`تسوية إجمالي راتب بعد خصم السلف - دفعة ${payment.rows[0].id}`:`صرف راتب - دفعة ${payment.rows[0].id}`,payment.rows[0].id]
       );
       await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2", [status,id]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         SELECT u.id,'PAYROLL_PAYMENT_RECORDED',$2,$3,'payroll_item',$4::uuid
+           FROM users u WHERE u.employee_id=$1 AND u.is_active=TRUE`,
+        [item.rows[0].employee_id,status==="PAID"?"تم صرف راتبك بالكامل":"تم تسجيل دفعة من راتبك",
+          status==="PAID"?"تم تسجيل صرف مستحقات راتبك بالكامل.":"تم تسجيل دفعة راتب جديدة بمبلغ "+parsed.data.amount.toFixed(2)+" ج.م.",id]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,cashCustodyOutId:custodyOut.rows[0].id,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status };
     });
