@@ -360,7 +360,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
          SELECT DISTINCT u.id,'PAYMENT_REQUEST_CREATED','طلب قبض جديد للمراجعة',
            'تم تقديم طلب قبض جديد بقيمة ' || $2::text || ' ج.م. راجع الطلب لاتخاذ الإجراء المناسب.',
-           'payment_request',$1
+           'payment_request',$1::uuid
          FROM users u
          JOIN user_roles ur ON ur.user_id=u.id
          JOIN role_permissions rp ON rp.role_id=ur.role_id
