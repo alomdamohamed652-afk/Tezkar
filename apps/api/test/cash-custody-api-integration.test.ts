@@ -202,6 +202,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       });
       assert.equal(crossEmployeeCollection.statusCode,403,crossEmployeeCollection.body);
       assert.equal(crossEmployeeCollection.json().error.code,"OWN_SCOPE_ONLY");
+      const ownScopeExpenseTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:ownScopeEmployee.id,amount:5,transactionDate:"2099-04-01",description:"Fund own-scope expense test"}
+      });
+      assert.equal(ownScopeExpenseTopUp.statusCode,201,ownScopeExpenseTopUp.body);
       const ownExpenseOrder=(await apiPool.query(
         "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
         ["Own-scope expense integration order",manager.id]
