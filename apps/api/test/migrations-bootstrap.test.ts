@@ -35,8 +35,9 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
       const requiredPermissions = [
         "employees.lookup", "orders.view", "products.view", "shifts.view", "rates.view",
         "machines.view", "machine_production.view", "machine_production.create",
-        "production.view", "production.create", "warehouse.view", "warehouse.move",
-        "deliveries.view", "deliveries.create", "cartons.view", "cartons.manage"
+        "production.view", "production.create", "warehouse.view",
+        "warehouse.receipt.create", "warehouse.shift_withdrawal.create",
+        "deliveries.view", "deliveries.create", "cartons.view", "cartons.create"
       ];
       const missing = await verification.query(
         `SELECT code FROM permissions p
