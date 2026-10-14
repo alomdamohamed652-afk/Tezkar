@@ -127,6 +127,35 @@ export async function userRoutes(app: FastifyInstance){
   return {data:row};
  });
 
+ app.delete("/api/users/:id/permanent",{preHandler:[authenticateRequest,requirePermission("users.delete")]},async(request)=>{
+  await assertSystemPermissionAdmin(request.user!.userId);
+  const id=(request.params as {id:string}).id;
+  const parsed=z.object({confirmUsername:z.string().trim().min(3).max(100)}).safeParse(request.body);
+  if(!parsed.success)throw new AppError("CONFIRMATION_REQUIRED","اكتب اسم المستخدم بالكامل لتأكيد الحذف النهائي",422);
+  if(id===request.user!.userId)throw new AppError("SELF_DELETE","لا يمكنك حذف حسابك الذي تستخدمه حاليًا",409);
+  const result=await withTransaction(async client=>{
+    const target=await client.query("SELECT id,code,username,employee_id,is_active,is_bootstrap FROM users WHERE id=$1 FOR UPDATE",[id]);
+    if(!target.rowCount)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",404);
+    const user=target.rows[0];
+    if(user.is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","لا يمكن حذف حساب النظام الأساسي نهائيًا",409);
+    if(user.username!==parsed.data.confirmUsername)throw new AppError("USERNAME_CONFIRMATION_MISMATCH","اسم المستخدم المكتوب لا يطابق الحساب المحدد",422);
+    // Remove only authentication-owned children. Historical business/audit references
+    // intentionally block the hard delete so accounting and audit trails remain intact.
+    await client.query("DELETE FROM user_sessions WHERE user_id=$1",[id]);
+    await client.query("DELETE FROM user_notifications WHERE user_id=$1",[id]);
+    await client.query("DELETE FROM user_preferences WHERE user_id=$1",[id]);
+    await client.query("DELETE FROM user_roles WHERE user_id=$1",[id]);
+    try {
+      await client.query("DELETE FROM users WHERE id=$1",[id]);
+    } catch(error) {
+      if((error as {code?:string}).code==="23503")throw new AppError("ACCOUNT_HAS_HISTORY","هذا الحساب مرتبط بسجلات تشغيل أو مالية أو سجل مراجعة؛ لا يمكن حذفه نهائيًا دون الإضرار بتاريخ النظام. عطّله بدلًا من ذلك.",409);
+      throw error;
+    }
+    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"permanent_delete",module:"iam",entityType:"user",entityId:id,beforeData:user,metadata:{deletedUsername:user.username,employeeId:user.employee_id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    return {id,username:user.username,deleted:true};
+  });
+  return {data:result};
+ });
  app.patch("/api/users/:id",{preHandler:[authenticateRequest,requirePermission("users.edit")]},async(request)=>{
   const id=(request.params as {id:string}).id;
   const parsed=editUserSchema.safeParse(request.body);
