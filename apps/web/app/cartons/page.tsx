@@ -44,7 +44,7 @@ export default function CartonsPage(){
    <header className="topbar"><div><h1 className="page-title">الكرتونات</h1><p className="page-subtitle">تعبئة وتتبع الكرتونات وأكوادها وحالتها</p></div></header>
    <section className="content">
     {error&&<div className="alert error">{error}</div>}
-    {has("cartons.manage")&&<form className="card form-card" onSubmit={create}>
+    {(has("cartons.manage")||has("cartons.create"))&&<form className="card form-card" onSubmit={create}>
      <div className="card-header"><h2 className="card-title">تعبئة كرتونة</h2><span className="form-hint">الكمية يجب أن تكون متاحة في رصيد المكان</span></div>
      <div className="form-grid">
       <label>المنتج<select value={productId} onChange={e=>setProductId(e.target.value)} required><option value="">اختر المنتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.name} — {x.code}</option>)}</select></label>
