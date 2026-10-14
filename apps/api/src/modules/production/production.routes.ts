@@ -837,10 +837,11 @@ export async function productionRoutes(app: FastifyInstance) {
 
     return { data: row };
   });  app.get("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.view")]},async(request)=>{
-    const q=z.object({employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
+    const q=z.object({employeeId:z.string().uuid().optional(),productionEntryId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر البونص والخصم غير صحيحة",422);
     const params:unknown[]=[];const where:string[]=["(a.production_entry_id IS NULL OR p.status <> 'CANCELLED')"];
     if(q.data.employeeId){params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);}
+    if(q.data.productionEntryId){params.push(q.data.productionEntryId);where.push("a.production_entry_id=$"+params.length);}
     if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}
     const r=await pool.query(`
