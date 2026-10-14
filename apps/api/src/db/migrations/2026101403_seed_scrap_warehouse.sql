@@ -14,4 +14,6 @@ FROM scrap_warehouses sw
 WHERE NOT EXISTS (
   SELECT 1 FROM warehouse_locations l
   WHERE l.warehouse_id=sw.id AND l.is_active=TRUE
-);
+)
+ON CONFLICT (warehouse_id, code) DO UPDATE
+SET name=EXCLUDED.name, is_active=TRUE;
