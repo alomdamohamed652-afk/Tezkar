@@ -596,12 +596,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "INSERT INTO stages(name) VALUES($1) RETURNING id",
         ["Test bonus production stage "+randomBytes(4).toString("hex")]
       )).rows[0];
+      const bonusRateGroup=(await apiPool.query(
+        "INSERT INTO rate_groups(name) VALUES($1) RETURNING id",
+        ["Test bonus rate group "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const bonusShift=(await apiPool.query(
+        "INSERT INTO shifts(name,start_time,end_time,rate_group_id) VALUES($1,'08:00','16:00',$2) RETURNING id",
+        ["Test bonus shift "+randomBytes(4).toString("hex"),bonusRateGroup.id]
+      )).rows[0];
       const perPieceWageType=(await apiPool.query("SELECT id FROM wage_types WHERE code='PER_PIECE' LIMIT 1")).rows[0];
       const bonusRate=(await apiPool.query(
         `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
          VALUES($1,$2,$3,$4,$5,100,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
          RETURNING id,stage_id`,
-        [hamzaProducts.rows[0].product_id,bonusStage.id,shift.rows[0].rate_group_id,perPieceWageType.id,bonusProduct.unit_id,manager.id]
+        [hamzaProducts.rows[0].product_id,bonusStage.id,bonusRateGroup.id,perPieceWageType.id,bonusProduct.unit_id,manager.id]
       )).rows[0];
       const bonusProduction=(await apiPool.query(
         `INSERT INTO production_entries(
@@ -611,7 +619,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,50,20,'APPROVED',$8,$8,now())
          RETURNING id,total_earning_amount`,
-        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,shift.rows[0].id,
+        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
