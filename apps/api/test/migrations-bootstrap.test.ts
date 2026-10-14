@@ -26,6 +26,45 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
     const first = run();
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /applied:/);
+
+    const verification = new pg.Client({ connectionString: target.toString() });
+    await verification.connect();
+    try {
+      const leader = await verification.query("SELECT id FROM roles WHERE code='shift_leader' AND is_active=TRUE");
+      assert.equal(leader.rowCount, 1, "migration must seed the SHIFT_LEADER role");
+      const requiredPermissions = [
+        "employees.lookup", "orders.view", "products.view", "shifts.view", "rates.view",
+        "machines.view", "machine_production.view", "machine_production.create",
+        "production.view", "production.create", "warehouse.view", "warehouse.move",
+        "deliveries.view", "deliveries.create", "cartons.view", "cartons.manage"
+      ];
+      const missing = await verification.query(
+        `SELECT code FROM permissions p
+          WHERE code=ANY($1::text[])
+            AND NOT EXISTS (
+              SELECT 1 FROM role_permissions rp
+               WHERE rp.role_id=$2 AND rp.permission_id=p.id
+            )`,
+        [requiredPermissions, leader.rows[0].id]
+      );
+      assert.deepEqual(missing.rows, [], "shift leader must receive all requested operational permissions");
+      const missingWorkerPermissions = await verification.query(
+        `SELECT p.code
+           FROM roles worker
+           JOIN role_permissions rp ON rp.role_id=worker.id
+           JOIN permissions p ON p.id=rp.permission_id
+          WHERE worker.code='worker'
+            AND NOT EXISTS (
+              SELECT 1 FROM role_permissions leader_rp
+              WHERE leader_rp.role_id=$1 AND leader_rp.permission_id=p.id
+            )`,
+        [leader.rows[0].id]
+      );
+      assert.deepEqual(missingWorkerPermissions.rows, [], "shift leader must inherit every existing worker permission");
+    } finally {
+      await verification.end();
+    }
+
     const second = run();
     assert.equal(second.status, 0, second.stderr);
     assert.doesNotMatch(second.stdout, /^applied:/m);
