@@ -35,4 +35,20 @@ export async function authenticateRequest(
     });
     return;
   }
+
+  if (request.user.mustChangePassword) {
+    const allowed = new Set([
+      "POST /api/account/change-password",
+      "GET /api/account/profile",
+      "GET /api/auth/me",
+      "POST /api/auth/logout"
+    ]);
+    const path = request.url.split("?")[0];
+    if (!allowed.has(`${request.method} ${path}`)) {
+      reply.code(403).send({
+        error: { code: "PASSWORD_CHANGE_REQUIRED", message: "يجب تغيير كلمة المرور المؤقتة قبل استخدام النظام" }
+      });
+      return;
+    }
+  }
 }
