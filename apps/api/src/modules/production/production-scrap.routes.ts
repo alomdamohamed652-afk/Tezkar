@@ -80,6 +80,13 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       if (entry.rows[0].status === "CANCELLED" || entry.rows[0].status === "REJECTED") {
         throw new AppError("PRODUCTION_NOT_ACTIVE", "لا يمكن تسجيل هالك على إنتاج ملغي أو مرفوض", 409);
       }
+      const existingScrap = await client.query(
+        "SELECT COALESCE(SUM(quantity),0) AS quantity FROM production_scrap_records WHERE production_entry_id=$1",
+        [input.productionEntryId]
+      );
+      if (Number(existingScrap.rows[0].quantity) + input.quantity > Number(entry.rows[0].quantity) + 1e-9) {
+        throw new AppError("SCRAP_EXCEEDS_PRODUCTION", "إجمالي الهالك لا يمكن أن يتجاوز كمية الإنتاج المسجلة", 422);
+      }
       const result = await client.query(
         `INSERT INTO production_scrap_records
           (production_entry_id, scrap_type, quantity, notes, recorded_by_user_id)
