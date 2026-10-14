@@ -458,7 +458,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const postApprovalEntry = await app.inject({
       method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
       payload: {
-        employeeId: submitterEmployee, orderStageId: postApprovalStage.id,
+        employeeId: approver.employeeId, orderStageId: postApprovalStage.id,
         productId: postApprovalStage.output_product_id, stageId: postApprovalStage.stage_id,
         shiftId: shift.rows[0].id, workDate: "2099-01-02", quantity: 3,
         responsibleName: "Post approval scrap test"
