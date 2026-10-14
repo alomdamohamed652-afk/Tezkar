@@ -86,8 +86,15 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
   // Serialize auto-creation by the same normalized business name. This treats
   // whitespace, case and Arabic tashkeel as presentation differences.
   await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
+  // Check the database's exact uniqueness key before broader Arabic normalization.
+  // JS NFKD can strip hamza marks, while ux_products_active_normalized_name uses lower(btrim(name)).
+  const exact=await client.query(
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(btrim(name))=lower(btrim($1)) ORDER BY created_at LIMIT 1",
+    [name]
+  );
+  if(exact.rowCount)return exact.rows[0];
   const existing=await client.query(
-    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
