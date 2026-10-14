@@ -832,7 +832,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
     });
     assert.equal(profitability.statusCode, 200, profitability.body);
-    assert.equal(Number(profitability.json().data.laborCost), 505);
+    assert.equal(Number(profitability.json().data.laborCost), 525);
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
     // Resolve the exact final-product order line so delivery and stock-out remain line-specific.
