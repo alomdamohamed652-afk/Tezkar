@@ -189,14 +189,18 @@ export async function warehouseRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/warehouse/movements",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
-    const parsed=z.object({warehouseId:z.string().uuid().optional(),productId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(300).default(100)}).safeParse(request.query);
+    const parsed=z.object({warehouseId:z.string().uuid().optional(),productId:z.string().uuid().optional(),warehouseType:z.enum(["GENERAL","RAW_MATERIAL","WIP","FINISHED_GOODS","SCRAP"]).optional(),limit:z.coerce.number().int().min(1).max(300).default(100),offset:z.coerce.number().int().min(0).max(10000000).default(0)}).safeParse(request.query);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","فلاتر الحركات غير صحيحة",422);
     const params:unknown[]=[]; const where:string[]=[];
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("m.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("m.product_id=$"+params.length);}
-    params.push(parsed.data.limit);
-    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,COALESCE(po.code,o.code) AS order_code,COALESCE(po.order_name,o.order_name) AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN orders o ON o.id=m.order_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC LIMIT $"+params.length,params);
-    return {data:result.rows};
+    if(parsed.data.warehouseType){params.push(parsed.data.warehouseType);where.push("w.warehouse_type=$"+params.length);}
+    params.push(parsed.data.limit+1);
+    const limitParam=params.length;
+    params.push(parsed.data.offset);
+    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,COALESCE(po.code,o.code) AS order_code,COALESCE(po.order_name,o.order_name) AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN orders o ON o.id=m.order_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC,m.id DESC LIMIT $"+limitParam+" OFFSET $"+(limitParam+1),params);
+    const hasMore=result.rows.length>parsed.data.limit;
+    return {data:hasMore?result.rows.slice(0,parsed.data.limit):result.rows,pagination:{limit:parsed.data.limit,offset:parsed.data.offset,hasMore}};
   });
 
   app.get("/api/warehouse/dashboard",{preHandler:[authenticateRequest,requirePermission("warehouse.dashboard")]},async(request)=>{
