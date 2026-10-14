@@ -83,14 +83,22 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
   }
   const name=input.productName!.trim();
   const normalized=normalizeBusinessName(name);
-  // Serialize auto-creation by the same normalized business name. This treats
-  // whitespace, case and Arabic tashkeel as presentation differences.
   await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
+
+  // Match the database unique-index semantics before attempting an insert.
+  const exact=await client.query(
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(btrim(name))=lower(btrim($1)) ORDER BY created_at LIMIT 1",
+    [name]
+  );
+  if(exact.rowCount)return exact.rows[0];
+
+  // Normalize Arabic alef/hamza variants consistently with JS NFKD normalization.
   const existing=await client.query(
-    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), 'أإآٱ', 'اااا'), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
+
   const unit=await client.query("SELECT id FROM units WHERE code='PCS' AND is_active=TRUE LIMIT 1");
   if(!unit.rowCount)throw new AppError("DEFAULT_UNIT_MISSING","وحدة القطعة الافتراضية غير موجودة",500);
   const created=await client.query("INSERT INTO products(name,product_type,unit_id,minimum_stock,track_inventory) VALUES($1,'FINISHED_GOOD',$2,0,TRUE) RETURNING id,unit_id,name",[name,unit.rows[0].id]);
