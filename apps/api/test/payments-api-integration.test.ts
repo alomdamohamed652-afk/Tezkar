@@ -585,6 +585,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const replayedDirect=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:successfulDirectPayload});
       assert.equal(replayedDirect.statusCode,200,replayedDirect.body,"retrying the same direct payout key must return the original payout");
       assert.equal(replayedDirect.json().data.payment.id,directPaymentId,"a retry must not create another payout");
+      const reusedDirectKey=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{...successfulDirectPayload,amount:successfulDirectPayload.amount+1}
+      });
+      assert.equal(reusedDirectKey.statusCode,409,reusedDirectKey.body,
+        "reusing a direct payout key with a different amount must be rejected");
+      assert.equal(reusedDirectKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[successfulDirectPayload.idempotencyKey])).rows[0].count),1);
       const directCustody=await apiPool.query(
         "SELECT direction,amount,source_type,source_id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
