@@ -55,6 +55,13 @@ test("trial reset removes manual operational/catalog data and preserves manager 
         "INSERT INTO public.warehouse_locations(warehouse_id, code, name) VALUES ($1, 'TEST', 'موقع تجريبي')",
         [customWarehouse.rows[0].id]
       );
+      const customScrapWarehouse = await db.query<{ id: string }>(
+        "INSERT INTO public.warehouses(name, warehouse_type) VALUES ('مخزن هالك تجريبي', 'SCRAP') RETURNING id"
+      );
+      await db.query(
+        "INSERT INTO public.warehouse_locations(warehouse_id, code, name) VALUES ($1, 'SCRAP-TEST', 'مكان هالك تجريبي')",
+        [customScrapWarehouse.rows[0].id]
+      );
       const customRole = await db.query<{ id: string }>(
         "INSERT INTO public.roles(code, name, is_system) VALUES ('test_custom_role', 'دور تجريبي', FALSE) RETURNING id"
       );
@@ -121,6 +128,9 @@ test("trial reset removes manual operational/catalog data and preserves manager 
       assert.equal(await count("SELECT count(*)::text AS count FROM public.coding_templates WHERE name IN ('قالب الكيس','قالب الكرتونة','قالب الشيكارة','قالب عام')"), 4);
       assert.equal(await count("SELECT count(*)::text AS count FROM public.coding_templates WHERE name = 'قالب الكرتونة' AND is_default = TRUE AND width_mm = 80 AND height_mm = 50"), 1);
       assert.equal(await count("SELECT count(*)::text AS count FROM public.warehouses WHERE warehouse_type IN ('RAW_MATERIAL','WIP','FINISHED_GOODS')"), 3);
+      assert.equal(await count("SELECT count(*)::text AS count FROM public.warehouses WHERE warehouse_type = 'SCRAP'"), 2, "system and custom scrap warehouses must survive trial reset");
+      assert.equal(await count("SELECT count(*)::text AS count FROM public.warehouse_locations WHERE code = 'SCRAP-TEST'"), 1, "custom scrap warehouse locations must survive trial reset");
+      assert.equal(await count("SELECT count(*)::text AS count FROM public.warehouse_locations WHERE code = 'SCRAP-MAIN'"), 1, "default scrap warehouse location must survive trial reset");
       assert.equal(await count("SELECT count(*)::text AS count FROM public.system_reset_events WHERE operation_key = 'trial-data-reset'"), 1);
     } finally {
       await verify.end();
