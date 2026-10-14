@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { verifyPassword } from "../auth/auth.service.js";
 
 const orderLineSchema = z.object({
@@ -179,6 +180,16 @@ const machineProductionSchema = z.object({
   notes: z.string().trim().max(500).optional()
 });
 
+async function canViewOrderFinancials(userId: string): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    return (await hasPermission(client, userId, "finance.profitability.view"))
+      || (await hasPermission(client, userId, "orders.dashboard"));
+  } finally {
+    client.release();
+  }
+}
+
 export async function orderRoutes(app: FastifyInstance) {
   app.get("/api/orders", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const q = z.object({ status: z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional() }).parse(request.query);
@@ -194,7 +205,9 @@ export async function orderRoutes(app: FastifyInstance) {
          ${where}
         ORDER BY o.created_at DESC
         LIMIT 300`, params);
-    return { data: r.rows };
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    const data=canViewFinancials?r.rows:r.rows.map(({contract_value,...row})=>row);
+    return { data };
   });
 
   app.get("/api/order-stages", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
@@ -219,6 +232,8 @@ export async function orderRoutes(app: FastifyInstance) {
         WHERE o.id=$1
         GROUP BY o.id`, [id]);
     if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    if(!canViewFinancials){const {contract_value,...safeOrder}=order.rows[0];return {data:safeOrder};}
     return { data: order.rows[0] };
   });
 

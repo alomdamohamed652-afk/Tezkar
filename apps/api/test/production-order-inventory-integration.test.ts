@@ -1391,6 +1391,33 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const visibleOrders = await app.inject({ method: "GET", url: "/api/orders", headers: { cookie: submitter.cookie } });
     assert.ok(!visibleOrders.json().data.some((x: {id:string}) => x.id === deletableOrderId), "cancelled orders must be hidden from the default list");
 
+    const orderValueTest = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: { orderName: "Shift leader value visibility test", contractValue: 12345, orderDate: "2099-01-08", stages: [{ stageName: "Value visibility stage", sequenceNo: 1, outputProductName: "Value visibility product", plannedQuantity: 1, stageRate: 1, stageRateMethod: "PER_PIECE" }] }
+    });
+    assert.equal(orderValueTest.statusCode, 201, orderValueTest.body);
+    const orderValueTestId = orderValueTest.json().data.id as string;
+    const leader = await makeUser("shift-leader-value-visibility", true);
+    await apiPool.query("DELETE FROM user_roles WHERE user_id=$1", [leader.userId]);
+    await apiPool.query(
+      "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='shift_leader' ON CONFLICT DO NOTHING",
+      [leader.userId]
+    );
+    const leaderOrders = await app.inject({
+      method: "GET", url: "/api/orders", headers: { cookie: leader.cookie }
+    });
+    assert.equal(leaderOrders.statusCode, 200, leaderOrders.body);
+    const leaderOrderRow = leaderOrders.json().data.find((x: {id:string}) => x.id === orderValueTestId);
+    assert.ok(leaderOrderRow, "shift leaders can still see operational order details");
+    assert.equal(Object.hasOwn(leaderOrderRow, "contract_value"), false,
+      "shift leaders must not receive order contract values");
+    const leaderOrderDetail = await app.inject({
+      method: "GET", url: "/api/orders/" + orderValueTestId, headers: { cookie: leader.cookie }
+    });
+    assert.equal(leaderOrderDetail.statusCode, 200, leaderOrderDetail.body);
+    assert.equal(Object.hasOwn(leaderOrderDetail.json().data, "contract_value"), false,
+      "shift leaders must not receive contract value from order detail API either");
+
     // A pending production row can be cancelled only after password confirmation.
     const pendingOrder = await app.inject({
       method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
