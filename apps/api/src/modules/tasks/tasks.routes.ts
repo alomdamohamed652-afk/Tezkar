@@ -71,6 +71,12 @@ export async function taskRoutes(app: FastifyInstance) {
         [parsed.data.title, parsed.data.description ?? null, parsed.data.priority, parsed.data.dueDate ?? null, request.user!.userId]);
       const task = inserted.rows[0];
       for (const employeeId of [...new Set(parsed.data.assigneeEmployeeIds)]) {
+        await client.query(
+          `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+           SELECT u.id,'TASK_ASSIGNED','مهمة جديدة مسندة إليك','تم إسناد المهمة "' || $2 || '" إليك. راجع التفاصيل والموعد المحدد.','task',$3
+           FROM users u WHERE u.employee_id=$1 AND u.is_active=TRUE AND u.id<>$4`,
+          [employeeId, task.title, task.id, request.user!.userId]
+        );
         await client.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)", [task.id, employeeId, request.user!.userId]);
       }
       await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "create", module: "tasks", entityType: "task", entityId: task.id, afterData: task, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
