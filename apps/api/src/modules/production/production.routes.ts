@@ -490,19 +490,87 @@ export async function productionRoutes(app: FastifyInstance) {
 
   app.patch("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({quantity:z.number().positive(),workDate:z.string().date().optional()}).safeParse(request.body);
+    const parsed=z.object({
+      employeeId:z.string().uuid().optional(),
+      shiftId:z.string().uuid().optional(),
+      shiftLeaderEmployeeId:z.string().uuid().nullable().optional(),
+      workDate:z.string().date().optional(),
+      quantity:z.number().positive().optional(),
+      baseAmount:z.number().nonnegative().nullable().optional(),
+      hoursWorked:z.number().positive().nullable().optional(),
+      bonusAmount:z.number().nonnegative().optional(),
+      bonusReason:z.string().trim().max(500).nullable().optional(),
+      deductionAmount:z.number().nonnegative().optional(),
+      deductionReason:z.string().trim().max(500).nullable().optional()
+    }).refine(v=>Object.keys(v).length>0).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل الإنتاج غير صحيحة",422);
     const row=await withTransaction(async client=>{
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
-      if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه",409);
-      const method=current.wage_type_method_snapshot as string;
+      if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه. استخدم إجراء العكس المعتمد بدل تعديل سجل مرحّل.",409);
+      const data=parsed.data;
+      const employeeId=data.employeeId??current.employee_id;
+      const shiftId=data.shiftId??current.shift_id;
+      const workDate=data.workDate??String(current.work_date).slice(0,10);
+      const quantity=data.quantity??Number(current.quantity);
+      const baseAmount=data.baseAmount===undefined?(current.base_amount==null?null:Number(current.base_amount)):data.baseAmount;
+      const hoursWorked=data.hoursWorked===undefined?(current.hours_worked==null?null:Number(current.hours_worked)):data.hoursWorked;
+      const bonusAmount=data.bonusAmount??Number(current.bonus_amount??0);
+      const deductionAmount=data.deductionAmount??Number(current.deduction_amount??0);
+      const bonusReason=data.bonusReason===undefined?null:data.bonusReason?.trim()||null;
+      const deductionReason=data.deductionReason===undefined?null:data.deductionReason?.trim()||null;
+      if(bonusAmount>0&&!bonusReason&&!data.bonusReason===false) {
+        const existing=await client.query("SELECT reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND adjustment_type='BONUS' ORDER BY created_at DESC LIMIT 1",[id]);
+        if(!existing.rowCount)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
+      }
+      if(bonusAmount>0&&data.bonusReason!==undefined&&!bonusReason)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
+      if(deductionAmount>0&&data.deductionReason!==undefined&&!deductionReason)throw new AppError("DEDUCTION_REASON_REQUIRED","بيان الخصم مطلوب",422);
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);
+      if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
+      if(data.shiftLeaderEmployeeId){const leader=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[data.shiftLeaderEmployeeId]);if(!leader.rowCount)throw new AppError("SHIFT_LEADER_NOT_FOUND","مسؤول الوردية غير موجود أو غير نشط",422);}
+      const method=String(current.wage_type_method_snapshot??"");
       let earning=Number(current.earning_amount);
-      if(method==="PER_PIECE")earning=parsed.data.quantity*Number(current.rate_snapshot);
-      else if(method==="PER_1000")earning=parsed.data.quantity/1000*Number(current.rate_snapshot);
-      const r=await client.query("UPDATE production_entries SET quantity=$1,work_date=COALESCE($2,work_date),earning_amount=$3,updated_at=now() WHERE id=$4 RETURNING id,code,quantity,work_date,earning_amount,status",[parsed.data.quantity,parsed.data.workDate??null,earning,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:{quantity:current.quantity,work_date:current.work_date,earning_amount:current.earning_amount},afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return r.rows[0];
+      const rate=Number(current.rate_snapshot);
+      if(method==="PER_PIECE")earning=quantity*rate;
+      else if(method==="PER_1000")earning=quantity/1000*rate;
+      else if(method==="PER_DAY")earning=rate;
+      else if(method==="PER_HOUR"){
+        if(!hoursWorked||hoursWorked<=0)throw new AppError("HOURS_WORKED_REQUIRED","أدخل عدد ساعات صحيحًا لهذا النوع من الأجر",422);
+        earning=hoursWorked*rate;
+      } else if(method==="PERCENTAGE"){
+        if(baseAmount===null||baseAmount===undefined)throw new AppError("BASE_AMOUNT_REQUIRED","أدخل قيمة الأساس لحساب أجر النسبة",422);
+        earning=baseAmount*rate/100;
+      }
+      await client.query(
+        `UPDATE production_entries SET employee_id=$1,shift_id=$2,shift_leader_employee_id=$3,work_date=$4,
+          quantity=$5,base_amount=$6,hours_worked=$7,earning_amount=$8,bonus_amount=$9,deduction_amount=$10,updated_at=now()
+          WHERE id=$11`,
+        [employeeId,shiftId,data.shiftLeaderEmployeeId===undefined?current.shift_leader_employee_id:data.shiftLeaderEmployeeId,workDate,quantity,baseAmount,hoursWorked,earning,bonusAmount,deductionAmount,id]
+      );
+      // Pending entries have not posted earnings to the ledger; replace their unposted
+      // adjustment rows atomically so amounts/reasons stay in sync with the production entry.
+      await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
+      if(bonusAmount>0){
+        const reason=bonusReason??(await client.query("SELECT reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND adjustment_type='BONUS' ORDER BY created_at DESC LIMIT 1",[id])).rows[0]?.reason??"بونص إنتاج";
+        await client.query(
+          `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
+           VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
+          [employeeId,shiftId,id,bonusAmount,reason,workDate,request.user!.userId]
+        );
+      }
+      if(deductionAmount>0){
+        const reason=deductionReason??"خصم إنتاج";
+        await client.query(
+          `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
+           VALUES($1,$2,$3,'DEDUCTION',$4,$5,$6,$7)`,
+          [employeeId,shiftId,id,deductionAmount,reason,workDate,request.user!.userId]
+        );
+      }
+      const updated=await getEntry(client,id);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated,metadata:{editedFields:Object.keys(data)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated;
     });
     return {data:row};
   });
