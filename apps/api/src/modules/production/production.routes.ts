@@ -133,7 +133,7 @@ export async function productionRoutes(app: FastifyInstance) {
     params.push(query.data.limit);
 
     const result = await pool.query(
-      `SELECT p.id,p.code,p.work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,
+      `SELECT p.id,p.code,p.work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,
               e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.code AS stage_code,st.name AS stage_name,
@@ -615,7 +615,7 @@ export async function productionRoutes(app: FastifyInstance) {
       const rate=rateResult.rows[0];
       const method=String(rate.method);
       const canUseOverride=!stagePrice&&data.rateOverride!=null;
-      if(canUseOverride&&Number(data.rateOverride)!==Number(rate.rate)&&!(await hasPermission(client,request.user!.userId,"production.rate_override")))
+      if(canUseOverride&&Number(data.rateOverride)!==Number(rate.rate)&&Number(data.rateOverride)!==Number(current.rate_snapshot)&&!(await hasPermission(client,request.user!.userId,"production.rate_override")) )
         throw new AppError("FORBIDDEN","ليس لديك صلاحية تعديل سعر الإنتاج",403);
       const effectiveRate=stagePrice?Number(rate.rate):(canUseOverride?Number(data.rateOverride):Number(rate.rate));
       let earning=Number(current.earning_amount);
