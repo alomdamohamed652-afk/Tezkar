@@ -477,6 +477,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(sourceAfterScrap.rows[0].quantity), Number(sourceBeforeScrap.rows[0].quantity) - 1);
     assert.equal(Number(scrapBalanceAfter.rows[0]?.quantity ?? 0), Number(scrapBalanceBefore.rows[0]?.quantity ?? 0) + 1,
       "approved scrap must move quantity between warehouses, not create additional total stock");
+    const adjustedScrapStage = await apiPool.query(
+      "SELECT completed_quantity,status FROM order_stages WHERE id=$1", [postApprovalStage.id]
+    );
+    assert.equal(Number(adjustedScrapStage.rows[0].completed_quantity), 2,
+      "scrap discovered after approval must reduce good-output progress");
     const reverseScrappedProduction = await app.inject({
       method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
       headers: { cookie: submitter.cookie },
