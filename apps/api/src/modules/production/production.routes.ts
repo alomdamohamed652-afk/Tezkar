@@ -536,7 +536,15 @@ export async function productionRoutes(app: FastifyInstance) {
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);
       if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
-      if(data.shiftLeaderEmployeeId){const leader=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[data.shiftLeaderEmployeeId]);if(!leader.rowCount)throw new AppError("SHIFT_LEADER_NOT_FOUND","مسؤول الوردية غير موجود أو غير نشط",422);}
+      if(data.shiftLeaderEmployeeId){
+        const leader=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[data.shiftLeaderEmployeeId]);
+        if(!leader.rowCount)throw new AppError("SHIFT_LEADER_NOT_FOUND","مسؤول الوردية غير موجود أو غير نشط",422);
+        const assignment=await client.query(
+          "SELECT 1 FROM shift_leaders WHERE employee_id=$1 AND shift_id=$2 AND is_active=TRUE AND (starts_on IS NULL OR starts_on<=$3::date) AND (ends_on IS NULL OR ends_on>=$3::date) LIMIT 1",
+          [data.shiftLeaderEmployeeId,shiftId,workDate]
+        );
+        if(!assignment.rowCount)throw new AppError("SHIFT_LEADER_NOT_ASSIGNED","مسؤول الوردية غير مكلف بهذه الوردية في تاريخ الإنتاج",422);
+      }
       const method=String(current.wage_type_method_snapshot??"");
       let earning=Number(current.earning_amount);
       const rate=Number(current.rate_snapshot);
