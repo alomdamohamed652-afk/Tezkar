@@ -393,9 +393,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
         orderName: "Post approval scrap order " + randomBytes(4).toString("hex"),
         orderDate: "2099-01-02",
         stages: [{
-          stageName: "Post approval scrap stage " + randomBytes(4).toString("hex"),
+          stageName: "Integration WIP stage",
           sequenceNo: 1,
-          outputProductName: "Post approval scrap product " + randomBytes(4).toString("hex"),
+          outputProductName: "Integration component",
           plannedQuantity: 100,
           stageRate: 20,
           stageRateMethod: "PER_PIECE",
