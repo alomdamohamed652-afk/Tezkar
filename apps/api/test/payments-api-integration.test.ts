@@ -59,6 +59,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
       const emptyCustodianEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Empty Cash Custodian') RETURNING id")).rows[0];
+      const bonusWorkerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Bonus Deduction Worker') RETURNING id")).rows[0];
       const managerUsername="paymgr-"+randomBytes(4).toString("hex");
       const workerUsername="paywrk-"+randomBytes(4).toString("hex");
       const manager=(await apiPool.query(
@@ -588,6 +589,39 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
+      // Direct payouts must use the same net production entitlement as allocation:
+      // base 100 + bonus 50 - deduction 20 = 130, not the base amount alone.
+      const earningSetup=(await apiPool.query(
+        "SELECT r.id AS rate_id,r.stage_id,p.unit_id FROM rates r CROSS JOIN products p WHERE p.id=$1 ORDER BY r.created_at LIMIT 1",
+        [hamzaProducts.rows[0].product_id]
+      )).rows[0];
+      assert.ok(earningSetup,"test migrations must seed a production rate");
+      const perPieceWageType=(await apiPool.query("SELECT id FROM wage_types WHERE code='PER_PIECE' LIMIT 1")).rows[0];
+      const bonusProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,50,20,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,earningSetup.stage_id,shift.rows[0].id,
+         earningSetup.unit_id,earningSetup.rate_id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(bonusProduction.total_earning_amount),130);
+      const bonusAwarePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(bonusAwarePayout.statusCode,201,bonusAwarePayout.body,
+        "available payout balance must include approved production bonuses and deductions");
+      assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),130);
+      const bonusAllocation=await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+        [bonusAwarePayout.json().data.payment.id]
+      );
+      assert.equal(Number(bonusAllocation.rows[0].amount),130);
+
       const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
       const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
       const concurrentDirect=await Promise.all([
