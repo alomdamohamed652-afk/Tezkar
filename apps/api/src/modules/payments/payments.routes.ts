@@ -186,13 +186,11 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
   if(existing.rowCount)return existing.rows[0];
   const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=CURRENT_DATE",[custodyEmployeeId]);
   if(netAmount>Number(balance.rows[0]?.balance??0)+1e-9)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة النقدية لا يكفي لصافي المبلغ المدفوع للعامل. تم إيقاف العملية دون ترحيل أي جزء منها.",409);
+  // Custody movements must reflect physical cash only: the custodian pays the net amount.
+  // Advance repayment is an internal payroll offset, not cash received back into the custody.
   const row=await client.query(
     "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT',$5,$6) RETURNING *",
-    [custodyEmployeeId,grossAmount,"صرف طلب القبض "+requestCode+" (تسوية إجمالي المستحق)",repaymentAmount>0?`إجمالي المستحق ${grossAmount.toFixed(2)} ج.م؛ صافي النقد المدفوع ${netAmount.toFixed(2)} ج.م؛ استرداد سلف ${repaymentAmount.toFixed(2)} ج.م`:"صرف طلب القبض بالقيمة كاملة. رقم السند: "+paymentId,paymentId,userId]
-  );
-  if(repaymentAmount>0)await client.query(
-    "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,CURRENT_DATE,$3,$4,'WORKER_PAYMENT_ADVANCE_REPAYMENT',$5,$6)",
-    [custodyEmployeeId,repaymentAmount,"استرداد سلفة من مستحقات العامل","مقاصة من طلب القبض "+requestCode+"؛ رقم سند الصرف "+paymentId,paymentId,userId]
+    [custodyEmployeeId,netAmount,"صرف مستحقات العامل "+requestCode,repaymentAmount>0?`إجمالي المستحق ${grossAmount.toFixed(2)} ج.م؛ صافي النقد المصروف ${netAmount.toFixed(2)} ج.م؛ تسوية سلف ${repaymentAmount.toFixed(2)} ج.م`:"صرف مستحقات العامل بالقيمة كاملة. رقم السند: "+paymentId,paymentId,userId]
   );
   return row.rows[0];
 }
