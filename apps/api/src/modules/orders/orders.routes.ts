@@ -77,7 +77,15 @@ function calculateStageEarning(method:string,rate:number,entry:{quantity:string|
 
 async function ensureProduct(client:any, input:{productId?:string|undefined;productName?:string|undefined}) {
   if(input.productId){
-    // Match the database unique-index semantics before attempting an insert.
+    const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
+    if(!existing.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+    return existing.rows[0];
+  }
+  const name=input.productName!.trim();
+  const normalized=normalizeBusinessName(name);
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
+
+  // Match the database unique-index semantics before attempting an insert.
   const exact=await client.query(
     "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(btrim(name))=lower(btrim($1)) ORDER BY created_at LIMIT 1",
     [name]
@@ -90,6 +98,7 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
+
   const unit=await client.query("SELECT id FROM units WHERE code='PCS' AND is_active=TRUE LIMIT 1");
   if(!unit.rowCount)throw new AppError("DEFAULT_UNIT_MISSING","وحدة القطعة الافتراضية غير موجودة",500);
   const created=await client.query("INSERT INTO products(name,product_type,unit_id,minimum_stock,track_inventory) VALUES($1,'FINISHED_GOOD',$2,0,TRUE) RETURNING id,unit_id,name",[name,unit.rows[0].id]);
