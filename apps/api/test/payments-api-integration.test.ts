@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -494,10 +494,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
-      const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH"};
+      const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
+      const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
       const concurrentDirect=await Promise.all([
         app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload}),
-        app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload})
+        app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:otherDirectPayload})
       ]);
       assert.equal(concurrentDirect.filter(response=>response.statusCode===201).length,1,
         "only one concurrent direct payout may consume the remaining employee entitlement");
@@ -505,6 +506,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "the second concurrent direct payout must be rejected once the remaining entitlement is insufficient");
       const directSuccess=concurrentDirect.find(response=>response.statusCode===201)!;
       const directPaymentId=directSuccess.json().data.payment.id;
+      const replayedDirect=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload});
+      assert.equal(replayedDirect.statusCode,200,replayedDirect.body,"retrying the same direct payout key must return the original payout");
+      assert.equal(replayedDirect.json().data.payment.id,directPaymentId,"a retry must not create another payout");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[directPayload.idempotencyKey])).rows[0].count),1);
       const directCustody=await apiPool.query(
         "SELECT direction,amount,source_type,source_id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [directPaymentId]
@@ -520,7 +525,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       const directRemainder=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{...directPayload,amount:50,notes:"Direct payout remainder test"}
+        payload:{...directPayload,idempotencyKey:randomUUID(),amount:50,notes:"Direct payout remainder test"}
       });
       assert.equal(directRemainder.statusCode,201,directRemainder.body);
       assert.equal(Number(directRemainder.json().data.payment.amount),50);
