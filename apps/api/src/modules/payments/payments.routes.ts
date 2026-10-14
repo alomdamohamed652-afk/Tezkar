@@ -199,7 +199,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
@@ -475,4 +475,61 @@ export async function paymentsRoutes(app:FastifyInstance){
     });
     return {data:row};
   });
+  // Finance may settle an employee's available production earnings directly without a prior payment request.
+  app.post("/api/worker-payments/direct", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request, reply) => {
+    const parsed = z.object({
+      employeeId: z.string().uuid(),
+      cashCustodyEmployeeId: z.string().uuid(),
+      amount: z.number().positive().max(100000000),
+      method: z.string().trim().min(1).max(50).default("CASH"),
+      transferReference: z.string().trim().max(120).nullable().optional(),
+      advanceRepaymentAmount: z.number().nonnegative().default(0),
+      notes: z.string().trim().max(500).nullable().optional()
+    }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "راجع بيانات صرف مستحقات العامل", 422);
+    if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(parsed.data.method) && !parsed.data.transferReference?.trim()) {
+      throw new AppError("TRANSFER_REFERENCE_REQUIRED", "رقم التحويل مطلوب لطريقة الدفع المختارة", 422);
+    }
+    const result = await withTransaction(async client => {
+      await lockEmployee(client, parsed.data.employeeId);
+      const available = await getAvailableEarnings(client, parsed.data.employeeId);
+      if (parsed.data.amount > available + 0.009) {
+        throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
+      }
+      const settlement = await executeWorkerPayment(client, {
+        userId: request.user!.userId,
+        actorEmployeeId: request.user!.employeeId,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"] ?? null,
+        custodyEmployeeId: parsed.data.cashCustodyEmployeeId,
+        employeeId: parsed.data.employeeId,
+        requestId: null,
+        requestCode: "صرف مباشر بدون طلب قبض",
+        grossAmount: parsed.data.amount,
+        method: parsed.data.method,
+        transferReference: parsed.data.transferReference ?? null,
+        manualRepaymentAmount: parsed.data.advanceRepaymentAmount
+      });
+      if (parsed.data.notes?.trim()) {
+        await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
+      }
+      await writeAudit(client, {
+        actorUserId: request.user!.userId,
+        actorEmployeeId: request.user!.employeeId,
+        action: "direct_worker_payment",
+        module: "payments",
+        entityType: "worker_payment",
+        entityId: settlement.payment.id,
+        afterData: settlement.payment,
+        metadata: { employeeId: parsed.data.employeeId, requestId: null, grossAmount: settlement.grossAmount, cashPaid: settlement.cashPaid, advanceRepaymentAmount: settlement.advanceRepaymentAmount },
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      });
+      return settlement;
+    });
+    return reply.code(201).send({ data: result });
+  });
+
 }
