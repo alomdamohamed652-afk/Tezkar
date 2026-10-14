@@ -596,6 +596,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.ok(Math.abs(Number(recoveredCustody.rows[0].balance))<1e-7,"later custody inflow must settle the negative balance");
 
 
+      const administrativeCustodyTopUp=await app.inject({
+        method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,amount:100,transactionDate:"2099-01-12",description:"Fund custody before administrative expense"}
+      });
+      assert.equal(administrativeCustodyTopUp.statusCode,201,administrativeCustodyTopUp.body);
       const administrativeCustodyExpensePayload={
         employeeId:employeeA.id,amount:12.34,transactionDate:"2099-01-12",
         category:"مصاريف إدارية",description:"Administrative expense entered from custody",
@@ -624,6 +629,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.equal(administrativeExpenseCounts.rows[0].expense_count,1);
       assert.equal(administrativeExpenseCounts.rows[0].cash_count,1);
+      const overdrawnAdministrativeExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/administrative-expenses",headers:{cookie:managerCookie},
+        payload:{...administrativeCustodyExpensePayload,amount:100,idempotencyKey:randomUUID(),description:"Must reject administrative expense above custody balance"}
+      });
+      assert.equal(overdrawnAdministrativeExpense.statusCode,409,overdrawnAdministrativeExpense.body);
+      assert.equal(overdrawnAdministrativeExpense.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
       const overdrawnTransfer=await app.inject({
         method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
         payload:{fromEmployeeId:employeeB.id,toEmployeeId:employeeA.id,amount:1,transactionDate:"2099-01-12",description:"Must not transfer without available balance"}
@@ -720,7 +731,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
         ["Idempotent custody expense order",manager.id]
       )).rows[0];
-      const expensePayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:500,transactionDate:"2099-03-10",category:"مصروفات تشغيل",description:"Expense idempotency integration",notes:"retry safely",idempotencyKey:randomUUID()};
+      const overdrawnOrderExpense=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+        payload:{orderId:expenseOrder.id,employeeId:employeeA.id,amount:1000,transactionDate:"2099-03-10",category:"مصروفات تشغيل",description:"Must reject expense above custody balance",idempotencyKey:randomUUID()}
+      });
+      assert.equal(overdrawnOrderExpense.statusCode,409,overdrawnOrderExpense.body);
+      assert.equal(overdrawnOrderExpense.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      const expensePayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:200,transactionDate:"2099-03-10",category:"مصروفات تشغيل",description:"Expense idempotency integration",notes:"retry safely",idempotencyKey:randomUUID()};
       const expenseFirst=await app.inject({method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},payload:expensePayload});
       assert.equal(expenseFirst.statusCode,201,expenseFirst.body);
       assert.ok(expenseFirst.json().data.expense.cash_custody_transaction_id);
@@ -744,6 +761,15 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(concurrentOrderExpenses[0].json().data.expense.id,concurrentOrderExpenses[1].json().data.expense.id);
       const concurrentOrderExpenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[concurrentOrderExpensePayload.idempotencyKey]);
       assert.equal(concurrentOrderExpenseCount.rows[0].count,1,"concurrent custody expense retries must create exactly one expense");
+      const concurrentOverspendPayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:100,transactionDate:"2099-03-13",category:"مصروفات تشغيل",description:"Concurrent custody balance protection",idempotencyKey:randomUUID()};
+      const concurrentOverspends=await Promise.all([1,2].map(()=>app.inject({
+        method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
+        payload:{...concurrentOverspendPayload,idempotencyKey:randomUUID()}
+      })));
+      assert.equal(concurrentOverspends.filter(x=>x.statusCode===201).length,1,
+        concurrentOverspends.map(x=>`${x.statusCode}: ${x.body}`).join("\\n"));
+      assert.equal(concurrentOverspends.filter(x=>x.statusCode===409&&x.json().error.code==="INSUFFICIENT_CASH_CUSTODY_BALANCE").length,1,
+        "concurrent custody expenses must not overdraw the same employee balance");
 
       const genericExpensePayload={orderId:expenseOrder.id,amount:22.50,expenseDate:"2099-03-11",category:"نقل",description:"Accounting expense idempotency integration",expenseType:"DIRECT",paidFromEmployeeId:employeeB.id,idempotencyKey:randomUUID()};
       const genericExpenseFirst=await app.inject({method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},payload:genericExpensePayload});
