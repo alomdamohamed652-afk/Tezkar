@@ -197,6 +197,75 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     );
     assert.equal(movementCount.rows[0].count, 7,
       "receipts and transfers should create complete source/destination movement records");
+
+    const managerMovements = await app.inject({
+      method: "GET",
+      url: "/api/warehouse/movements",
+      headers: { cookie: cookieHeader }
+    });
+    assert.equal(managerMovements.statusCode, 200, managerMovements.body);
+    assert.ok(Array.isArray(managerMovements.json().data),
+      "movement history must load without joining the removed legacy orders table");
+    assert.equal(Object.hasOwn(managerMovements.json().data[0] ?? {}, "unit_cost"), true,
+      "warehouse cost viewers retain movement cost details");
+
+    const leaderEmployee = await apiPool.query(
+      "INSERT INTO employees(full_name) VALUES ('Warehouse shift leader test') RETURNING id"
+    );
+    const leaderUsername = "warehouse-leader-" + randomBytes(5).toString("hex");
+    const leaderUser = await apiPool.query(
+      "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES ($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+      [leaderUsername, hashPassword(password), leaderEmployee.rows[0].id]
+    );
+    await apiPool.query(
+      "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='shift_leader' ON CONFLICT DO NOTHING",
+      [leaderUser.rows[0].id]
+    );
+    const leaderLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: leaderUsername, password }
+    });
+    assert.equal(leaderLogin.statusCode, 200, leaderLogin.body);
+    const leaderSetCookie = leaderLogin.headers["set-cookie"];
+    assert.ok(leaderSetCookie, "shift leader login must issue a session cookie");
+    const leaderCookie = (Array.isArray(leaderSetCookie) ? leaderSetCookie[0] : leaderSetCookie).split(";")[0];
+
+    const leaderStock = await app.inject({
+      method: "GET", url: "/api/warehouse/stock", headers: { cookie: leaderCookie }
+    });
+    assert.equal(leaderStock.statusCode, 200, leaderStock.body);
+    assert.ok(leaderStock.json().data.length > 0);
+    for (const row of leaderStock.json().data) {
+      assert.equal(Object.hasOwn(row, "avg_unit_cost"), false, "shift leaders must not receive average cost");
+      assert.equal(Object.hasOwn(row, "inventory_value"), false, "shift leaders must not receive inventory value");
+    }
+
+    const leaderLots = await app.inject({
+      method: "GET", url: "/api/warehouse/lots", headers: { cookie: leaderCookie }
+    });
+    assert.equal(leaderLots.statusCode, 200, leaderLots.body);
+    for (const row of leaderLots.json().data) {
+      assert.equal(Object.hasOwn(row, "unit_cost"), false, "shift leaders must not receive lot unit cost");
+    }
+
+    const leaderMovements = await app.inject({
+      method: "GET", url: "/api/warehouse/movements", headers: { cookie: leaderCookie }
+    });
+    assert.equal(leaderMovements.statusCode, 200, leaderMovements.body);
+    assert.ok(leaderMovements.json().data.length > 0);
+    for (const row of leaderMovements.json().data) {
+      assert.equal(Object.hasOwn(row, "unit_cost"), false, "shift leaders must not receive movement unit cost");
+      assert.equal(Object.hasOwn(row, "total_cost"), false, "shift leaders must not receive movement total cost");
+      assert.equal(Object.hasOwn(row, "order_id"), false, "shift leaders must not receive linked order IDs");
+      assert.equal(Object.hasOwn(row, "order_code"), false, "shift leaders must not receive linked order codes");
+      assert.equal(Object.hasOwn(row, "order_name"), false, "shift leaders must not receive linked order names");
+    }
+
+    const leaderDashboard = await app.inject({
+      method: "GET", url: "/api/warehouse/dashboard", headers: { cookie: leaderCookie }
+    });
+    assert.equal(leaderDashboard.statusCode, 403, "shift leaders must not access the warehouse cost dashboard");
   } finally {
     if (app) await app.close();
     if (apiPool) await apiPool.end();
