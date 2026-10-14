@@ -841,6 +841,10 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   }
   .sidebar-footer .nav-item .nav-icon{width:22px;height:22px;flex-basis:22px;font-size:15px}
   .sidebar-footer .nav-label{display:block!important;overflow:visible;text-overflow:clip;white-space:normal;text-align:center;line-height:1.35}
+  .sidebar-footer .nav-item span:not(.nav-icon){display:block!important}
+  .sidebar-footer .nav-item{display:flex!important;visibility:visible;opacity:1;align-items:center;flex-direction:column;overflow:visible}
+  .sidebar-footer .nav-label{display:block!important;max-width:100%;font-size:12px;font-weight:800;color:#e2e8f0}
+  .sidebar-footer .nav-item:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
   .sidebar-footer .logout-item{color:#fecaca;border-color:rgb(248 113 113 / 28%);background:rgb(127 29 29 / 18%)}
   .sidebar-footer .logout-item .nav-icon{color:#fca5a5;background:rgb(248 113 113 / 12%)}
   .sidebar-footer .nav-item:hover{background:rgb(255 255 255 / 10%)}
