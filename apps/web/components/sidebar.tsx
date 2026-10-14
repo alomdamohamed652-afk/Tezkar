@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 
-type Session={permissions:string[];username?:string;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
+type Session={permissions:string[];username?:string;fullName?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 type NavGroup={label:string;items:NavItem[]};
 
@@ -70,8 +70,8 @@ export function Sidebar({active}:{active:string}){
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
    </div>
    <div className="sidebar-user">
-    <div className="sidebar-avatar">{(session?.username||"م").slice(0,1).toUpperCase()}</div>
-    <div className="sidebar-user-copy"><strong>{session?.username||"حساب المستخدم"}</strong><span>نظام تذكار</span></div>
+    <div className="sidebar-avatar">{(session?.fullName||session?.username||"م").trim().slice(0,1).toUpperCase()}</div>
+    <div className="sidebar-user-copy"><strong>{session?.fullName||session?.username||"حساب المستخدم"}</strong><span>{session?.fullName&&session?.username?("@"+session.username):"نظام تذكار"}</span></div>
     <span className="sidebar-online" title="متصل"></span>
    </div>
    <div className="sidebar-scroll">
