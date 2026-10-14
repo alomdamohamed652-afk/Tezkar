@@ -519,12 +519,16 @@ export async function productionRoutes(app: FastifyInstance) {
       const deductionAmount=data.deductionAmount??Number(current.deduction_amount??0);
       const bonusReason=data.bonusReason===undefined?null:data.bonusReason?.trim()||null;
       const deductionReason=data.deductionReason===undefined?null:data.deductionReason?.trim()||null;
-      if(bonusAmount>0&&!bonusReason&&!data.bonusReason===false) {
-        const existing=await client.query("SELECT reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND adjustment_type='BONUS' ORDER BY created_at DESC LIMIT 1",[id]);
-        if(!existing.rowCount)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
-      }
-      if(bonusAmount>0&&data.bonusReason!==undefined&&!bonusReason)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
-      if(deductionAmount>0&&data.deductionReason!==undefined&&!deductionReason)throw new AppError("DEDUCTION_REASON_REQUIRED","بيان الخصم مطلوب",422);
+      const oldAdjustments=await client.query(
+        "SELECT adjustment_type,reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL ORDER BY created_at DESC",
+        [id]
+      );
+      const oldBonusReason=oldAdjustments.rows.find((a:any)=>a.adjustment_type==="BONUS")?.reason as string|undefined;
+      const oldDeductionReason=oldAdjustments.rows.find((a:any)=>a.adjustment_type==="DEDUCTION")?.reason as string|undefined;
+      const finalBonusReason=data.bonusReason===undefined?oldBonusReason:(bonusReason??undefined);
+      const finalDeductionReason=data.deductionReason===undefined?oldDeductionReason:(deductionReason??undefined);
+      if(bonusAmount>0&&!finalBonusReason)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
+      if(deductionAmount>0&&!finalDeductionReason)throw new AppError("DEDUCTION_REASON_REQUIRED","بيان الخصم مطلوب",422);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);
@@ -553,7 +557,7 @@ export async function productionRoutes(app: FastifyInstance) {
       // adjustment rows atomically so amounts/reasons stay in sync with the production entry.
       await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
       if(bonusAmount>0){
-        const reason=bonusReason??(await client.query("SELECT reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND adjustment_type='BONUS' ORDER BY created_at DESC LIMIT 1",[id])).rows[0]?.reason??"بونص إنتاج";
+        const reason=finalBonusReason!;
         await client.query(
           `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
            VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
@@ -561,7 +565,7 @@ export async function productionRoutes(app: FastifyInstance) {
         );
       }
       if(deductionAmount>0){
-        const reason=deductionReason??"خصم إنتاج";
+        const reason=finalDeductionReason!;
         await client.query(
           `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
            VALUES($1,$2,$3,'DEDUCTION',$4,$5,$6,$7)`,
