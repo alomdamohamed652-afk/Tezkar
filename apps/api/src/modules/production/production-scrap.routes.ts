@@ -258,6 +258,28 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         sourceType: "PRODUCTION_SCRAP",
         sourceId: movement.rows[0].id
       });
+      if (isApprovedProduction && entry.rows[0].order_stage_id) {
+        const stageUpdate = await client.query(
+          `UPDATE order_stages
+              SET completed_quantity=GREATEST(0,completed_quantity-$1),
+                  status=CASE
+                    WHEN planned_quantity IS NOT NULL AND GREATEST(0,completed_quantity-$1)>=planned_quantity THEN 'COMPLETED'
+                    WHEN GREATEST(0,completed_quantity-$1)=0 THEN 'PENDING'
+                    ELSE 'IN_PROGRESS'
+                  END,
+                  completed_at=CASE
+                    WHEN planned_quantity IS NOT NULL AND GREATEST(0,completed_quantity-$1)>=planned_quantity THEN completed_at
+                    WHEN GREATEST(0,completed_quantity-$1)=0 THEN NULL
+                    ELSE completed_at
+                  END
+            WHERE id=$2
+            RETURNING id,order_id,completed_quantity,status`,
+          [input.quantity, entry.rows[0].order_stage_id]
+        );
+        if (!stageUpdate.rowCount) {
+          throw new AppError("ORDER_STAGE_NOT_FOUND", "مرحلة الطلب المرتبطة بالإنتاج غير موجودة", 409);
+        }
+      }
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId ?? null,
