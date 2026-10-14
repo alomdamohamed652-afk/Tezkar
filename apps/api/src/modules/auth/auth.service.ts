@@ -34,6 +34,7 @@ export async function authenticate(client: pg.PoolClient, username: string, pass
     username: user.username,
     roleCodes: user.role_codes ?? [],
     isBootstrap: user.is_bootstrap,
-    mustCompleteSetup: user.must_complete_setup
+    mustCompleteSetup: user.must_complete_setup,
+    mustChangePassword: user.must_change_password
   };
 }
