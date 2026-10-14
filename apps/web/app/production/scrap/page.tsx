@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../../lib/api";
 import { Sidebar, usePermissions } from "../../../components/sidebar";
 import { formatQuantity } from "../../../lib/format";
@@ -18,6 +18,7 @@ export default function ProductionScrapPage(){
  const [quantity,setQuantity]=useState("");
  const [notes,setNotes]=useState("");
  const [busy,setBusy]=useState(false);
+ const idempotencyRef=useRef<{fingerprint:string;key:string}|null>(null);
  const [loading,setLoading]=useState(true);
  const [error,setError]=useState("");
  const [success,setSuccess]=useState("");
@@ -50,10 +51,17 @@ export default function ProductionScrapPage(){
   const q=Number(quantity);
   if(!entryId)return setError("اختار سجل الإنتاج المرتبط بالهالك.");
   if(!Number.isFinite(q)||q<=0)return setError("أدخل كمية هالك أكبر من صفر.");
+  const payload={productionEntryId:entryId,scrapType,quantity:q,notes:notes.trim()||null};
+  const fingerprint=JSON.stringify(payload);
+  if(!idempotencyRef.current||idempotencyRef.current.fingerprint!==fingerprint){
+   idempotencyRef.current={fingerprint,key:crypto.randomUUID()};
+  }
+  const idempotencyKey=idempotencyRef.current.key;
   setBusy(true);
   try{
-   await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:entryId,scrapType,quantity:q,notes:notes.trim()||null})});
-   setQuantity("");setNotes("");setSuccess("تم تسجيل الهالك وربطه بسجل الإنتاج وإضافته إلى رصيد مخزن الهالك بقيمة مخزنية صفرية.");
+   await api("/api/production/scrap",{method:"POST",body:JSON.stringify({...payload,idempotencyKey})});
+   idempotencyRef.current=null;
+   setQuantity("");setNotes("");setSuccess("تم تسجيل الهالك وربطه بحركة المخزون دون مضاعفة الكمية، بقيمة مخزنية صفرية.");
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الهالك")}
   finally{setBusy(false)}
