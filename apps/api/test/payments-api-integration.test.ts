@@ -555,6 +555,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),200);
       assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
 
+      const payoutPreview=await app.inject({
+        method:"GET",
+        url:`/api/worker-payments/preview?employeeId=${workerEmployee.id}&cashCustodyEmployeeId=${managerEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(payoutPreview.statusCode,200,payoutPreview.body);
+      assert.equal(Number(payoutPreview.json().data.availableEarnings),150);
+      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),550);
+      assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
+        "payout preview must show the lower of available earnings and cash custody before confirmation");
+
       
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
