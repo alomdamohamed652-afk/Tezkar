@@ -114,7 +114,7 @@ export async function previewTrialDataReset(protectedUserId: string) {
            WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
              OR (warehouse_type = 'WIP' AND name = $2)
              OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
-             OR (warehouse_type = 'SCRAP' AND name = $4))`,
+             OR warehouse_type = 'SCRAP')`,
           [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
@@ -129,7 +129,7 @@ export async function previewTrialDataReset(protectedUserId: string) {
                ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
                 OR (w.warehouse_type = 'WIP' AND w.name = $2)
                 OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
-                OR (w.warehouse_type = 'SCRAP' AND w.name = $4))
+                OR w.warehouse_type = 'SCRAP')
            ))`,
           [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
         );
@@ -350,12 +350,15 @@ try {
   if (present.has("warehouse_locations")) {
     const result = await client.query(
       `DELETE FROM public.warehouse_locations wl
-       WHERE NOT (wl.code = 'MAIN' AND EXISTS (
+       WHERE NOT ((wl.code = 'MAIN' AND EXISTS (
          SELECT 1 FROM public.warehouses w
          WHERE w.id = wl.warehouse_id AND
            ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
             OR (w.warehouse_type = 'WIP' AND w.name = $2)
             OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
+       )) OR EXISTS (
+         SELECT 1 FROM public.warehouses w
+         WHERE w.id = wl.warehouse_id AND w.warehouse_type = 'SCRAP'
        ))`,
       [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
     );
@@ -366,7 +369,8 @@ try {
       `DELETE FROM public.warehouses
        WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
          OR (warehouse_type = 'WIP' AND name = $2)
-         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
+         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
+         OR warehouse_type = 'SCRAP')`,
       [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
     );
     deleted.warehouses = result.rowCount ?? 0;
@@ -378,14 +382,15 @@ try {
        FROM (VALUES
          ($1::text, 'RAW_MATERIAL'::text),
          ($2::text, 'WIP'::text),
-         ($3::text, 'FINISHED_GOODS'::text)
+         ($3::text, 'FINISHED_GOODS'::text),
+         ($4::text, 'SCRAP'::text)
        ) AS defaults(name, warehouse_type)
        WHERE NOT EXISTS (
          SELECT 1 FROM public.warehouses w
          WHERE w.warehouse_type = defaults.warehouse_type
            AND w.name = defaults.name
        )`,
-      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
     );
 
     await client.query(
@@ -395,8 +400,9 @@ try {
        WHERE (w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
           OR (w.warehouse_type = 'WIP' AND w.name = $2)
           OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
+          OR (w.warehouse_type = 'SCRAP' AND w.name = $4)
        ON CONFLICT (warehouse_id, code) DO NOTHING`,
-      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
     );
   }
 
