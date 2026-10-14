@@ -326,7 +326,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       payload: {
         employeeId: submitterEmployee, orderStageId: wipStage.id, stageId: wipStage.stage_id,
         productId: wipStage.output_product_id, shiftId: shift.rows[0].id, workDate: "2099-01-02",
-        quantity: 10, warehouseId: wrongWarehouse.rows[0].id,
+        quantity: 11, warehouseId: wrongWarehouse.rows[0].id,
         responsibleName: "Integration responsible"
       }
     });
@@ -384,6 +384,68 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(lot.rows[0].original_quantity), 10);
     assert.equal(Number(lot.rows[0].remaining_quantity), 10);
     assert.equal(Number(lot.rows[0].unit_cost), 20);
+
+    // Scrap recorded before approval is excluded from good stock. Scrap recorded
+    // after approval must transfer quantity out of good stock, not duplicate it.
+    const postApprovalEntry = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: {
+        employeeId: submitterEmployee, productId: wipStage.output_product_id, stageId: wipStage.stage_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-02", quantity: 3,
+        warehouseId: expectedWip.id, responsibleName: "Post approval scrap test"
+      }
+    });
+    assert.equal(postApprovalEntry.statusCode, 201, postApprovalEntry.body);
+    const postApprovalEntryId = postApprovalEntry.json().data.id as string;
+    const approvePostApprovalEntry = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/approve", headers: { cookie: approver.cookie }
+    });
+    assert.equal(approvePostApprovalEntry.statusCode, 200, approvePostApprovalEntry.body);
+    const postApprovalSource = await apiPool.query(
+      "SELECT warehouse_id,location_id FROM production_entries WHERE id=$1", [postApprovalEntryId]
+    );
+    const sourceWarehouseId = postApprovalSource.rows[0].warehouse_id as string;
+    const sourceLocationId = postApprovalSource.rows[0].location_id as string;
+    const sourceBeforeScrap = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [wipStage.output_product_id, sourceWarehouseId, sourceLocationId]
+    );
+    const scrapLocation = await apiPool.query(
+      "SELECT warehouse_id,location_id FROM stock_movements WHERE id=$1", [validScrap.json().data.stock_movement_id]
+    );
+    const scrapBalanceBefore = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [wipStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
+    );
+    const approvedScrap = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: { productionEntryId: postApprovalEntryId, scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Approved stock transfer test" }
+    });
+    assert.equal(approvedScrap.statusCode, 201, approvedScrap.body);
+    const approvedScrapMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE id=$1",
+      [approvedScrap.json().data.stock_movement_id]
+    );
+    assert.equal(approvedScrapMovement.rows[0].movement_type, "TRANSFER_IN");
+    assert.equal(Number(approvedScrapMovement.rows[0].total_cost), 0);
+    const linkedSourceMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE reference_type='TRANSFER' AND reference_id=$1",
+      [approvedScrap.json().data.stock_movement_id]
+    );
+    assert.equal(linkedSourceMovement.rowCount, 1);
+    assert.equal(linkedSourceMovement.rows[0].movement_type, "TRANSFER_OUT");
+    assert.equal(Number(linkedSourceMovement.rows[0].quantity), 1);
+    const sourceAfterScrap = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [wipStage.output_product_id, sourceWarehouseId, sourceLocationId]
+    );
+    const scrapBalanceAfter = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [wipStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
+    );
+    assert.equal(Number(sourceAfterScrap.rows[0].quantity), Number(sourceBeforeScrap.rows[0].quantity) - 1);
+    assert.equal(Number(scrapBalanceAfter.rows[0].quantity), Number(scrapBalanceBefore.rows[0].quantity) + 1,
+      "approved scrap must move quantity between warehouses, not create additional total stock");
 
     // Consume an intermediate-stage product as an input to the final stage.
     // This intentionally differs from the final stage's output product.
