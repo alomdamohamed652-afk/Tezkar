@@ -173,7 +173,7 @@ export async function codingRoutes(app: FastifyInstance) {
     return {data:r.rows.map(x=>({...x,remaining_quantity:Number(x.quantity)-Number(x.coded_quantity)}))};
   });
 
-  app.post("/api/coding/units",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])],async(request,reply)=>{
+  app.post("/api/coding/units",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])]},async(request,reply)=>{
     const parsed=createSchema.safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات التكويد غير صحيحة",422);
 
