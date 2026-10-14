@@ -20,7 +20,7 @@ export async function accountRoutes(app: FastifyInstance) {
     await withTransaction(async client=>{
       const user=await authenticate(client, request.user!.username, parsed.data.currentPassword);
       if(user.userId!==request.user!.userId) throw new AppError("PASSWORD_INVALID","كلمة المرور الحالية غير صحيحة",401);
-      await client.query("UPDATE users SET password_hash=$1,updated_at=now() WHERE id=$2",[hashPassword(parsed.data.newPassword),request.user!.userId]);
+      await client.query("UPDATE users SET password_hash=$1,must_change_password=FALSE,updated_at=now() WHERE id=$2",[hashPassword(parsed.data.newPassword),request.user!.userId]);
       await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"change_password",module:"auth",entityType:"user",entityId:request.user!.userId,ipAddress:request.ip,userAgent:request.headers["user-agent"] ?? null});
     });
