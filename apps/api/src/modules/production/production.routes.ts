@@ -882,6 +882,8 @@ export async function productionRoutes(app: FastifyInstance) {
       if(current.status!=="APPROVED")throw new AppError("REVERSAL_REQUIRES_APPROVED","التراجع العكسي متاح لسجل إنتاج معتمد فقط؛ السجلات المعلقة يمكن إلغاؤها مباشرة",409);
       const paid=await client.query("SELECT 1 FROM worker_payment_allocations WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
       if(paid.rowCount)throw new AppError("PRODUCTION_ALREADY_PAID","لا يمكن عكس إنتاج تم تخصيص دفعة مالية له. عالج دفعة العامل أولًا حتى لا يتغير رصيد المستحقات بأثر رجعي.",409);
+      const scrap=await client.query("SELECT 1 FROM production_scrap_records WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
+      if(scrap.rowCount)throw new AppError("PRODUCTION_HAS_SCRAP","لا يمكن عكس إنتاج مسجل عليه هالك؛ عالج حركات الهالك والمخزون أولًا.",409);
       const lot=await client.query("SELECT * FROM inventory_lots WHERE source_type='PRODUCTION' AND source_id=$1 FOR UPDATE",[id]);
       if(!lot.rowCount)throw new AppError("PRODUCTION_LOT_MISSING","تعذر العثور على دفعة المخزون الناتجة عن هذا الإنتاج؛ لم يتم التراجع",409);
       const sourceLot=lot.rows[0];
