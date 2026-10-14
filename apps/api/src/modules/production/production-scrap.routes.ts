@@ -47,7 +47,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          LEFT JOIN order_stages os ON os.id=p.order_stage_id
-         LEFT JOIN orders o ON o.id=os.order_id
+         LEFT JOIN production_orders o ON o.id=os.order_id
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
         ORDER BY s.created_at DESC LIMIT 500`,
       values
