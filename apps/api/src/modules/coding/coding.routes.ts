@@ -266,7 +266,7 @@ export async function codingRoutes(app: FastifyInstance) {
     return reply.code(201).send({data:created});
   });
 
-  app.post("/api/coding/units/:id/print",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])],async(request)=>{
+  app.post("/api/coding/units/:id/print",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])]},async(request)=>{
     const id=String((request.params as {id:string}).id);
     const r=await withTransaction(async(client)=>{
       const unit=await client.query("SELECT * FROM coding_units WHERE id=$1 FOR UPDATE",[id]);
