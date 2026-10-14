@@ -75,14 +75,14 @@ export default function LoginPage() {
 
           <form className="auth-form" onSubmit={submit}>
             <label className="auth-field">
-              <span>اسم المستخدم</span>
+              <span>اسم المستخدم أو رقم الموبايل</span>
               <div className="auth-input-wrap">
                 <span className="auth-input-icon" aria-hidden="true">⌁</span>
                 <input
                   value={username}
                   onChange={e=>setUsername(e.target.value)}
                   autoComplete="username"
-                  placeholder="اكتب اسم المستخدم"
+                  placeholder="اسم المستخدم أو رقم الموبايل المسجل"
                   autoFocus
                   required
                 />

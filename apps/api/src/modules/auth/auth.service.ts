@@ -32,6 +32,7 @@ export async function authenticate(client: pg.PoolClient, username: string, pass
     userId: user.id,
     employeeId: user.employee_id,
     username: user.username,
+    fullName: user.full_name ?? null,
     roleCodes: user.role_codes ?? [],
     isBootstrap: user.is_bootstrap,
     mustCompleteSetup: user.must_complete_setup,

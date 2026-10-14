@@ -27,6 +27,7 @@ export default function ProductionPage(){
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
  const [bonusAmount,setBonusAmount]=useState(""),[bonusReason,setBonusReason]=useState(""),[deductionAmount,setDeductionAmount]=useState(""),[deductionReason,setDeductionReason]=useState("");
  const [deleteTarget,setDeleteTarget]=useState<Entry|null>(null),[deletePassword,setDeletePassword]=useState(""),[deleting,setDeleting]=useState(false),[reverseTarget,setReverseTarget]=useState<Entry|null>(null),[reversePassword,setReversePassword]=useState(""),[reverseReason,setReverseReason]=useState(""),[reversing,setReversing]=useState(false);
+ useEffect(()=>{if(!error)return;const timer=window.setTimeout(()=>setError(""),6500);return()=>window.clearTimeout(timer)},[error]);
 
  async function load(){
   setLoading(true);setError("");
