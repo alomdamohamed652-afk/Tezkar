@@ -49,6 +49,15 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
         [requiredPermissions, leader.rows[0].id]
       );
       assert.deepEqual(missing.rows, [], "shift leader must receive all requested operational permissions");
+      const excessivePermissions = await verification.query(
+        `SELECT p.code FROM role_permissions rp
+           JOIN permissions p ON p.id=rp.permission_id
+          WHERE rp.role_id=$1
+            AND p.code=ANY($2::text[])
+          ORDER BY p.code`,
+        [leader.rows[0].id, ["employees.view", "machines.create", "warehouse.move", "cartons.manage", "production.approve", "production.edit", "deliveries.release"]]
+      );
+      assert.deepEqual(excessivePermissions.rows, [], "shift leader must not receive unrelated administrative or approval permissions");
       const missingWorkerPermissions = await verification.query(
         `SELECT p.code
            FROM roles worker
