@@ -118,6 +118,8 @@ test("trial reset removes manual operational/catalog data and preserves manager 
       assert.equal(await count("SELECT count(*)::text AS count FROM public.units WHERE code = 'PCS'"), 1);
       assert.equal(await count("SELECT count(*)::text AS count FROM public.production_types WHERE code = 'PRINTING'"), 1);
       assert.equal(await count("SELECT count(*)::text AS count FROM public.coding_packaging_types WHERE code = 'BAG'"), 1);
+      assert.equal(await count("SELECT count(*)::text AS count FROM public.coding_templates WHERE name IN ('قالب الكيس','قالب الكرتونة','قالب الشيكارة','قالب عام')"), 4);
+      assert.equal(await count("SELECT count(*)::text AS count FROM public.coding_templates WHERE name = 'قالب الكرتونة' AND is_default = TRUE AND width_mm = 80 AND height_mm = 50"), 1);
       assert.equal(await count("SELECT count(*)::text AS count FROM public.warehouses WHERE warehouse_type IN ('RAW_MATERIAL','WIP','FINISHED_GOODS')"), 3);
       assert.equal(await count("SELECT count(*)::text AS count FROM public.system_reset_events WHERE operation_key = 'trial-data-reset'"), 1);
     } finally {
