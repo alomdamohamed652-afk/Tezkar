@@ -60,7 +60,7 @@ export default function ProductionScrapPage(){
  }
  if(!has("production.view"))return <div className="app-shell"><Sidebar active="/production"/><main className="main"><section className="content"><div className="alert error">ليس لديك صلاحية عرض إنتاج العمال والهالك.</div></section></main></div>;
  return <div className="app-shell"><Sidebar active="/production"/><main className="main">
-  <header className="topbar"><div><h1 className="page-title">الهالك من الإنتاج</h1><p className="page-subtitle">تسجيل الهالك على سجل الإنتاج وتحليل الكميات حسب العامل والصنف والطلبية.</p></div><a className="secondary-button" href="/production">العودة لإنتاج العمال</a></header>
+  <header className="topbar"><div><h1 className="page-title">الهالك من الإنتاج</h1><p className="page-subtitle">تسجيل الهالك على سجل الإنتاج وتحليل الكميات حسب العامل والصنف والطلبية.</p></div><a className="secondary-btn" href="/production">العودة لإنتاج العمال</a></header>
   <section className="content">
    {error&&<div role="alert" className="alert error">{error}</div>}{success&&<div role="status" className="alert success">{success}</div>}
    <div className="stats">
