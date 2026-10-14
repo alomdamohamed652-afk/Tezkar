@@ -771,7 +771,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(concurrentOrderExpenses[0].json().data.expense.id,concurrentOrderExpenses[1].json().data.expense.id);
       const concurrentOrderExpenseCount=await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[concurrentOrderExpensePayload.idempotencyKey]);
       assert.equal(concurrentOrderExpenseCount.rows[0].count,1,"concurrent custody expense retries must create exactly one expense");
-      const concurrentOverspendPayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:100,transactionDate:"2099-03-13",category:"مصروفات تشغيل",description:"Concurrent custody balance protection",idempotencyKey:randomUUID()};
+      const custodyBalanceBeforeConcurrentOverspend=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
+        [employeeA.id,"2099-03-13"]
+      );
+      const concurrentOverspendAmount=Math.floor(Number(custodyBalanceBeforeConcurrentOverspend.rows[0].balance)/2)+1;
+      const concurrentOverspendPayload={orderId:expenseOrder.id,employeeId:employeeA.id,amount:concurrentOverspendAmount,transactionDate:"2099-03-13",category:"مصروفات تشغيل",description:"Concurrent custody balance protection",idempotencyKey:randomUUID()};
       const concurrentOverspends=await Promise.all([1,2].map(()=>app.inject({
         method:"POST",url:"/api/cash-custody/order-expenses",headers:{cookie:managerCookie},
         payload:{...concurrentOverspendPayload,idempotencyKey:randomUUID()}
