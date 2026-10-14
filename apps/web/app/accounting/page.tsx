@@ -199,6 +199,13 @@ export default function AccountingPage() {
   const totalOut=useMemo(()=>dashboardExpenses.reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
   const directExpenseTotal=useMemo(()=>dashboardExpenses.filter(x=>x.expense_type!=="ADMINISTRATIVE").reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
   const administrativeExpenseTotal=useMemo(()=>dashboardExpenses.filter(x=>x.expense_type==="ADMINISTRATIVE").reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const custodyTotals=useMemo(()=>{
+    const incoming=cashTransactions.filter(tx=>tx.direction==="IN").reduce((sum,tx)=>sum+Number(tx.amount||0),0);
+    const outgoing=cashTransactions.filter(tx=>tx.direction==="OUT").reduce((sum,tx)=>sum+Number(tx.amount||0),0);
+    const latest=new Map<string,number>();
+    for(const tx of cashTransactions){const key=tx.employee_id||tx.employee_name;if(!latest.has(key))latest.set(key,Number(tx.balance||0));}
+    return {incoming,outgoing,available:[...latest.values()].reduce((sum,balance)=>sum+balance,0)};
+  },[cashTransactions]);
   const latestCashBalances=useMemo(()=>{
     const latest=new Map<string,number>();
     for(const tx of cashTransactions){
@@ -241,7 +248,11 @@ export default function AccountingPage() {
        <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{dashboardExpenses.length} حركة خلال الفترة المحددة</div></article>
        <article className="card stat"><div className="stat-label">الصافي</div><div className="stat-value">{n(net)}</div><div className="stat-note">الداخل − الخارج</div></article>
        <article className="card stat neutral"><div className="stat-label">الطلبات</div><div className="stat-value">{orders.length}</div><div className="stat-note">متاحة للتحليل المالي</div></article>
-       { (has("cash_custody.view")||has("cash_custody.view_own"))&&<article className="card stat accent"><div className="stat-label">الرصيد الحالي للعهد النقدية</div><div className="stat-value">{n(latestCashBalances)}</div><div className="stat-note">آخر رصيد ظاهر لكل موظف ضمن صلاحياتك</div></article>}
+       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<>
+        <article className="card stat accent"><div className="stat-label">إجمالي العهد الداخل</div><div className="stat-value">{n(custodyTotals.incoming)}</div><div className="stat-note">إجمالي حركات التمويل والتحصيل والتحويلات الواردة الظاهرة</div></article>
+        <article className="card stat warning"><div className="stat-label">إجمالي العهد الخارج</div><div className="stat-value">{n(custodyTotals.outgoing)}</div><div className="stat-note">إجمالي الصرف والمصروفات والتحويلات الصادرة الظاهرة</div></article>
+        <article className="card stat"><div className="stat-label">المتاح في العهد</div><div className="stat-value">{n(custodyTotals.available)}</div><div className="stat-note">مجموع آخر رصيد لكل موظف ضمن صلاحياتك</div></article>
+       </>}
        <article className="card stat"><div className="stat-label">المصروفات المباشرة</div><div className="stat-value">{n(directExpenseTotal)}</div><div className="stat-note">مصروفات مرتبطة بتشغيل أو طلبية</div></article>
        <article className="card stat warning"><div className="stat-label">المصروفات الإدارية</div><div className="stat-value">{n(administrativeExpenseTotal)}</div><div className="stat-note">قبل توزيعها في التصفية المالية</div></article>
       </div>

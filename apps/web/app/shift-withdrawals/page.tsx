@@ -1,7 +1,7 @@
 "use client";
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {api} from "../../lib/api";
-import {Sidebar} from "../../components/sidebar";
+import {Sidebar,usePermissions} from "../../components/sidebar";
 import {formatQuantity} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 
@@ -16,6 +16,7 @@ type Line={productId:string;warehouseId:string;quantity:string;notes:string};
 type Row={id:string;code:string;withdrawal_date:string;created_at?:string;shift_code:string;shift_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;line_count:number;total_quantity:number;product_names?:string;line_descriptions?:string;notes?:string|null};
 
 export default function ShiftWithdrawalsPage(){
+ const {has}=usePermissions();
  const [shifts,setShifts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[assignedEmployees,setAssignedEmployees]=useState<Employee[]>([]),[products,setProducts]=useState<Product[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[stock,setStock]=useState<Stock[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[rows,setRows]=useState<Row[]>([]),[totalRows,setTotalRows]=useState(0),[loadingMore,setLoadingMore]=useState(false);
  const [shiftId,setShiftId]=useState(""),[employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[notes,setNotes]=useState("");
  const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);
@@ -102,7 +103,7 @@ export default function ShiftWithdrawalsPage(){
  return <div className="app-shell"><Sidebar active="/shift-withdrawals"/><main className="main">
   <header className="topbar"><div><h1 className="page-title">مسحوبات الوردية</h1><p className="page-subtitle">الصرف يخرج من المخزون باسم الموظف المسؤول والوردية والطلبية، وتُحمل تكلفة المسحوب على الطلبية تلقائيًا.</p></div></header>
   <section className="content">{error&&<div className="alert error">{error}</div>}
-   <form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">مسحوب وردية جديد</h2><div className="form-hint">المكان غير مطلوب للمستخدم؛ تذكار يسحب من أقدم دفعات التكلفة المتاحة داخل المخزن.</div></div></div>
+   {(has("warehouse.move")||has("warehouse.shift_withdrawal.create"))&&<form className="card form-card" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">مسحوب وردية جديد</h2><div className="form-hint">المكان غير مطلوب للمستخدم؛ تذكار يسحب من أقدم دفعات التكلفة المتاحة داخل المخزن.</div></div></div>
     <div className="form-grid">
      <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shifts.map(x=>({value:x.id,label:x.name,meta:x.code}))} placeholder="اختر الوردية"/></label>
      <label>الموظف المسؤول<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder={loadingEmployees?"جارٍ تحميل موظفي الوردية":"اختر الموظف المسؤول"} searchPlaceholder="ابحث باسم الموظف"/></label>
@@ -119,7 +120,7 @@ export default function ShiftWithdrawalsPage(){
       <button type="button" className="danger-button" onClick={()=>remove(i)} disabled={lines.length===1}>حذف</button>
     </div>)}</div>
     <div className="form-actions"><button type="button" className="secondary-btn" onClick={add}>إضافة صنف</button><button className="primary-button" disabled={saving||!shiftId||!employeeId||!orderId||lines.some(x=>!x.productId||!x.warehouseId||!x.quantity||Number(x.quantity)>stockQuantity(x))}>{saving?"جارٍ الحفظ...":"تسجيل المسحوبات"}</button></div>
-   </form>
+   </form>}
 
    <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{filteredRows.length} / {rows.length}</span></div>
     <div className="card-body">

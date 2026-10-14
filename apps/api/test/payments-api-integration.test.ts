@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -59,6 +59,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
       const emptyCustodianEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Empty Cash Custodian') RETURNING id")).rows[0];
+      const bonusWorkerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Bonus Deduction Worker') RETURNING id")).rows[0];
       const managerUsername="paymgr-"+randomBytes(4).toString("hex");
       const workerUsername="paywrk-"+randomBytes(4).toString("hex");
       const manager=(await apiPool.query(
@@ -84,6 +85,107 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
       const productSuffix=randomBytes(4).toString("hex");
+      // Product names that differ only by Arabic hamza should resolve to the same active catalog product.
+      const hamzaName="مقلمه مطبوعه (أنا لها) "+productSuffix;
+      const plainAlefName="مقلمه مطبوعه (انا لها) "+productSuffix;
+      const hamzaOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Arabic hamza product test A "+productSuffix,finalProductName:hamzaName,finalQuantity:5}
+      });
+      assert.equal(hamzaOrder.statusCode,201,hamzaOrder.body);
+      const plainAlefOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Arabic hamza product test B "+productSuffix,finalProductName:plainAlefName,finalQuantity:3}
+      });
+      assert.equal(plainAlefOrder.statusCode,201,plainAlefOrder.body,"Arabic hamza spelling must not trigger a duplicate-product 500");
+      const hamzaProducts=await apiPool.query(
+        "SELECT DISTINCT product_id FROM production_order_lines WHERE order_id=ANY($1::uuid[])",
+        [[hamzaOrder.json().data.id,plainAlefOrder.json().data.id]]
+      );
+      assert.equal(hamzaProducts.rowCount,1,"both Arabic spellings should reuse the same product record");
+
+      
+      // Concurrent order creation with Arabic spellings that normalize to the same catalog name.
+      const parallelNameA="مقلمه مطبوعه (أنا لها) concurrent "+productSuffix;
+      const parallelNameB="مقلمه مطبوعه (انا لها) concurrent "+productSuffix;
+      const parallelOrders=await Promise.all(Array.from({length:4},(_,index)=>app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{
+          orderName:"Concurrent normalized product order "+index+" "+productSuffix,
+          finalProductName:index%2===0?parallelNameA:parallelNameB,
+          finalQuantity:index+1
+        }
+      })));
+      assert.ok(parallelOrders.every(response=>response.statusCode===201),
+        "parallel order requests must reuse the normalized product rather than return a duplicate-key 500: "+parallelOrders.map(x=>x.body).join(" | "));
+      const parallelOrderIds=parallelOrders.map(response=>response.json().data.id);
+      const parallelProductIds=await apiPool.query(
+        "SELECT DISTINCT product_id FROM production_order_lines WHERE order_id=ANY($1::uuid[])",
+        [parallelOrderIds]
+      );
+      assert.equal(parallelProductIds.rowCount,1,"parallel requests with equivalent Arabic product names must resolve to one product");
+
+      
+      const variantOrders=await Promise.all([
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Case whitespace variant A "+productSuffix,
+          finalProductName:"  Mixed   CASE Product "+productSuffix,finalQuantity:2
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Case whitespace variant B "+productSuffix,
+          finalProductName:"mixed case product "+productSuffix,finalQuantity:3
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic tashkeel variant A "+productSuffix,
+          finalProductName:"مُقَلَّمَة مطبوعة "+productSuffix,finalQuantity:4
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic tashkeel variant B "+productSuffix,
+          finalProductName:"مقلمة مطبوعة "+productSuffix,finalQuantity:5
+        }})
+      ]);
+      assert.ok(variantOrders.every(response=>response.statusCode===201),
+        "case, whitespace and Arabic tashkeel variants must not cause order creation failures: "+variantOrders.map(x=>x.body).join(" | "));
+      const variantIds=variantOrders.map(response=>response.json().data.id);
+      const variantProducts=await apiPool.query(
+        "SELECT pol.order_id,pol.product_id FROM production_order_lines pol WHERE pol.order_id=ANY($1::uuid[])",
+        [variantIds]
+      );
+      const productForOrder=new Map(variantProducts.rows.map(row=>[row.order_id,row.product_id]));
+      assert.equal(productForOrder.get(variantIds[0]),productForOrder.get(variantIds[1]),
+        "case and repeated whitespace variants must reuse one catalog product");
+      assert.equal(productForOrder.get(variantIds[2]),productForOrder.get(variantIds[3]),
+        "Arabic tashkeel variants must reuse one catalog product");
+
+      const superscriptAlefOrders=await Promise.all([
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic superscript alef variant A "+productSuffix,
+          finalProductName:"هٰذا المنتج "+productSuffix,finalQuantity:2
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic superscript alef variant B "+productSuffix,
+          finalProductName:"هذا المنتج "+productSuffix,finalQuantity:3
+        }})
+      ]);
+      assert.ok(superscriptAlefOrders.every(response=>response.statusCode===201),
+        superscriptAlefOrders.map(x=>x.body).join(" | "));
+      const superscriptAlefIds=superscriptAlefOrders.map(response=>response.json().data.id);
+      const superscriptAlefProducts=await apiPool.query(
+        "SELECT DISTINCT product_id FROM production_order_lines WHERE order_id=ANY($1::uuid[])",
+        [superscriptAlefIds]
+      );
+      assert.equal(superscriptAlefProducts.rowCount,1,
+        "Arabic superscript alef variants must reuse one catalog product");
+
+      // If product resolution fails after the order row is tentatively inserted, the transaction must leave no partial order.
+      const rejectedOrderName="Rollback invalid product order "+productSuffix;
+      const rejectedOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:rejectedOrderName,lines:[{productId:"00000000-0000-4000-8000-000000000001",quantity:2}]}
+      });
+      assert.equal(rejectedOrder.statusCode,422,rejectedOrder.body);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM production_orders WHERE order_name=$1",[rejectedOrderName])).rows[0].count),0,
+        "failed product resolution must roll back the parent order row");
       const multiProductOrder=await app.inject({
         method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
         payload:{
@@ -217,9 +319,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const custodyDebit=await apiPool.query("SELECT direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
       assert.equal(custodyDebit.rowCount,1,"payment must create exactly one linked cash-custody debit");
       assert.equal(custodyDebit.rows[0].direction,"OUT");
-      assert.equal(Number(custodyDebit.rows[0].amount),150);
+      assert.equal(Number(custodyDebit.rows[0].amount),100,"cash custody must record only the net cash actually paid");
       assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
-      assert.match(custodyDebit.rows[0].description,/صرف طلب القبض/);
+      assert.match(custodyDebit.rows[0].description,/صرف مستحقات العامل/);
       assert.equal(Number(approved.json().data.payment.amount),100);
       assert.equal(Number(approved.json().data.grossAmount),150);
       assert.equal(Number(approved.json().data.advanceRepaymentAmount),50);
@@ -228,9 +330,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(repayment.rows[0].amount),50);
       assert.equal(repayment.rows[0].advance_id,testAdvance.id);
       const custodyOffset=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT_ADVANCE_REPAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
-      assert.equal(custodyOffset.rowCount,1);
-      assert.equal(custodyOffset.rows[0].direction,"IN");
-      assert.equal(Number(custodyOffset.rows[0].amount),50);
+      assert.equal(custodyOffset.rowCount,0,"advance offset is a payroll settlement, not cash returned to the custodian");
       const remainingAdvance=(await apiPool.query("SELECT repayment_status,amount-(SELECT COALESCE(SUM(amount),0) FROM advance_repayments WHERE advance_id=$1) AS remaining FROM advance_requests WHERE id=$1",[testAdvance.id])).rows[0];
       assert.equal(remainingAdvance.repayment_status,"OPEN");
       assert.equal(Number(remainingAdvance.remaining),50);
@@ -372,8 +472,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(ledger.rows[0].payment_entries),1);
 
       // An advance is immediately a debit on the employee account. At payout,
-      // the gross production entitlement clears the account, only net cash leaves
-      // custody, and the advance offset returns to company cash in the same transaction.
+      // the gross production entitlement clears the account and only the net cash
+      // actually handed to the worker leaves cash custody. The offset is payroll settlement.
       const workerAdvance=(await apiPool.query(
         `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status)
          VALUES($1,200,'payment integration advance','PAID',$2,$3,now(),'CUSTOM','OPEN') RETURNING id,code`,
@@ -460,15 +560,150 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT direction,amount,source_type FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('WORKER_PAYMENT','WORKER_PAYMENT_ADVANCE_REPAYMENT') ORDER BY direction",
         [settledRequest.json().data.payment.id]
       );
-      assert.equal(payoutCustody.rowCount,2);
-      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT")?.amount),200,"custody OUT is gross entitlement");
-      assert.equal(Number(payoutCustody.rows.find((x:any)=>x.source_type==="WORKER_PAYMENT_ADVANCE_REPAYMENT")?.amount),50,"custody IN recovers the advance offset");
+      assert.equal(payoutCustody.rowCount,1,"only the real cash movement should be recorded in custody");
+      assert.equal(payoutCustody.rows[0].direction,"OUT");
+      assert.equal(payoutCustody.rows[0].source_type,"WORKER_PAYMENT");
+      assert.equal(Number(payoutCustody.rows[0].amount),150,"custody OUT must equal the net cash actually paid");
+      const repaymentCustodyRows=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT_ADVANCE_REPAYMENT' AND source_id=$1",
+        [settledRequest.json().data.payment.id]
+      );
+      assert.equal(Number(repaymentCustodyRows.rows[0].count),0,"advance repayment is a payroll offset, not cash received by the custodian");
 
       const postSettlementBalance=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
       assert.equal(postSettlementBalance.statusCode,200,postSettlementBalance.body);
       assert.equal(Number(postSettlementBalance.json().data.balance),-50,"the employee account must reconcile remaining unpaid earnings against the outstanding loan");
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),200);
       assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
+
+      const payoutPreview=await app.inject({
+        method:"GET",
+        url:`/api/worker-payments/preview?employeeId=${workerEmployee.id}&cashCustodyEmployeeId=${managerEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(payoutPreview.statusCode,200,payoutPreview.body);
+      assert.equal(Number(payoutPreview.json().data.availableEarnings),150);
+      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),550);
+      assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
+        "payout preview must show the lower of available earnings and cash custody before confirmation");
+
+      
+      // Direct payout requires no prior payment request and must serialize concurrent attempts.
+      // Direct payouts must use the same net production entitlement as allocation:
+      // base 100 + bonus 50 - deduction 20 = 130, not the base amount alone.
+      const bonusProduct=(await apiPool.query("SELECT unit_id FROM products WHERE id=$1",[hamzaProducts.rows[0].product_id])).rows[0];
+      const bonusStage=(await apiPool.query(
+        "INSERT INTO stages(name) VALUES($1) RETURNING id",
+        ["Test bonus production stage "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const bonusRateGroup=(await apiPool.query(
+        "INSERT INTO rate_groups(name) VALUES($1) RETURNING id",
+        ["Test bonus rate group "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const bonusShift=(await apiPool.query(
+        "INSERT INTO shifts(name,start_time,end_time,rate_group_id) VALUES($1,'08:00','16:00',$2) RETURNING id",
+        ["Test bonus shift "+randomBytes(4).toString("hex"),bonusRateGroup.id]
+      )).rows[0];
+      const perPieceWageType=(await apiPool.query("SELECT id FROM wage_types WHERE code='PER_PIECE' LIMIT 1")).rows[0];
+      const bonusRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,100,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id,stage_id`,
+        [hamzaProducts.rows[0].product_id,bonusStage.id,bonusRateGroup.id,perPieceWageType.id,bonusProduct.unit_id,manager.id]
+      )).rows[0];
+      const bonusProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,50,20,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(bonusProduction.total_earning_amount),130);
+      const bonusAwarePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(bonusAwarePayout.statusCode,201,bonusAwarePayout.body,
+        "available payout balance must include approved production bonuses and deductions");
+      assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),130);
+      const bonusAllocation=await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+        [bonusAwarePayout.json().data.payment.id]
+      );
+      assert.equal(Number(bonusAllocation.rows[0].amount),130);
+
+      const settlementsBeforeInsufficientCustody=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",
+        [workerEmployee.id]
+      );
+      const insufficientCustodyPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:workerEmployee.id,cashCustodyEmployeeId:workerEmployee.id,amount:10,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(insufficientCustodyPayout.statusCode,409,insufficientCustodyPayout.body);
+      assert.equal(insufficientCustodyPayout.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),0,
+        "an insufficient custody balance must not leave a direct payment");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",[workerEmployee.id])).rows[0].count),Number(settlementsBeforeInsufficientCustody.rows[0].count),
+        "an insufficient custody balance must not leave an additional settlement");
+      const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
+      const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
+      const concurrentDirect=await Promise.all([
+        app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload}),
+        app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:otherDirectPayload})
+      ]);
+      assert.equal(concurrentDirect.filter(response=>response.statusCode===201).length,1,
+        "only one concurrent direct payout may consume the remaining employee entitlement");
+      assert.equal(concurrentDirect.filter(response=>response.statusCode===409).length,1,
+        "the second concurrent direct payout must be rejected once the remaining entitlement is insufficient");
+      const directSuccessIndex=concurrentDirect.findIndex(response=>response.statusCode===201);
+      const directSuccess=concurrentDirect[directSuccessIndex];
+      const successfulDirectPayload=directSuccessIndex===0?directPayload:otherDirectPayload;
+      const directPaymentId=directSuccess.json().data.payment.id;
+      const replayedDirect=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:successfulDirectPayload});
+      assert.equal(replayedDirect.statusCode,200,replayedDirect.body,"retrying the same direct payout key must return the original payout");
+      assert.equal(replayedDirect.json().data.payment.id,directPaymentId,"a retry must not create another payout");
+      const reusedDirectKey=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{...successfulDirectPayload,amount:successfulDirectPayload.amount+1}
+      });
+      assert.equal(reusedDirectKey.statusCode,409,reusedDirectKey.body,
+        "reusing a direct payout key with a different amount must be rejected");
+      assert.equal(reusedDirectKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[successfulDirectPayload.idempotencyKey])).rows[0].count),1);
+      const directCustody=await apiPool.query(
+        "SELECT direction,amount,source_type,source_id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [directPaymentId]
+      );
+      assert.equal(directCustody.rowCount,1,"direct payout must create exactly one custody movement");
+      assert.equal(directCustody.rows[0].direction,"OUT");
+      assert.equal(Number(directCustody.rows[0].amount),100);
+      assert.equal(directCustody.rows[0].source_id,directPaymentId);
+      const noRequestLink=await apiPool.query("SELECT payment_request_id,gross_amount,amount FROM worker_payments WHERE id=$1",[directPaymentId]);
+      assert.equal(noRequestLink.rows[0].payment_request_id,null,"direct payout must not fabricate a payment request");
+      assert.equal(Number(noRequestLink.rows[0].gross_amount),100);
+      assert.equal(Number(noRequestLink.rows[0].amount),100);
+
+      const directRemainder=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{...directPayload,idempotencyKey:randomUUID(),amount:50,notes:"Direct payout remainder test"}
+      });
+      assert.equal(directRemainder.statusCode,201,directRemainder.body);
+      assert.equal(Number(directRemainder.json().data.payment.amount),50);
+      const afterDirectRemainder=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(afterDirectRemainder.statusCode,200,afterDirectRemainder.body);
+      assert.equal(Number(afterDirectRemainder.json().data.availableEarnings),0,
+        "direct partial and final payouts must settle the available entitlement exactly");
+      const directPayments=await apiPool.query(
+        "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS total FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",
+        [workerEmployee.id]
+      );
+      assert.ok(Number(directPayments.rows[0].count)>=2);
+      assert.ok(Number(directPayments.rows[0].total)>=150);
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();

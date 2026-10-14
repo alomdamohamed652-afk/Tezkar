@@ -49,12 +49,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     process.env.NODE_ENV = "test";
 
     const [
-      { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes },
+      { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes }, { productionScrapRoutes },
       { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/production/production.routes.js"), import("../src/modules/orders/orders.routes.js"),
+      import("../src/modules/production/production.routes.js"), import("../src/modules/production/production-scrap.routes.js"), import("../src/modules/orders/orders.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/coding/coding.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
       import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
@@ -67,6 +67,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     await app.register(authRoutes);
     await app.register(productionRoutes);
+    await app.register(productionScrapRoutes);
     await app.register(orderRoutes);
     await app.register(warehouseRoutes);
     await app.register(cartonDeliveryRoutes);
@@ -143,6 +144,52 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(orderResponse.statusCode, 201, orderResponse.body);
+
+    // Arabic hamza, tashkeel, and repeated whitespace must resolve to one existing
+    // product/stage even when two order requests arrive at the same time.
+    const arabicSuffix = randomBytes(4).toString("hex");
+    const arabicRequests = [
+      {
+        orderName: "Arabic normalization A " + arabicSuffix,
+        orderDate: "2099-01-03",
+        stages: [{
+          stageName: "طباعة UV " + arabicSuffix,
+          sequenceNo: 1,
+          outputProductName: "مقلمه مطبوعه (انا لها) " + arabicSuffix,
+          plannedQuantity: 1,
+          stageRate: 1,
+          stageRateMethod: "PER_PIECE",
+          isFinalProduct: true
+        }]
+      },
+      {
+        orderName: "Arabic normalization B " + arabicSuffix,
+        orderDate: "2099-01-03",
+        stages: [{
+          stageName: "طِباعة   UV " + arabicSuffix,
+          sequenceNo: 1,
+          outputProductName: "مقلمه مطبوعه (ا\u0654َنَا لها) " + arabicSuffix,
+          plannedQuantity: 1,
+          stageRate: 1,
+          stageRateMethod: "PER_PIECE",
+          isFinalProduct: true
+        }]
+      }
+    ];
+    const arabicOrderResults = await Promise.all(arabicRequests.map(payload => app!.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie }, payload
+    })));
+    assert.ok(arabicOrderResults.every(result => result.statusCode === 201), arabicOrderResults.map(result => result.body).join("\\n"));
+    const arabicOrderIds = arabicOrderResults.map(result => result.json().data.id as string);
+    const arabicProducts = await apiPool.query(
+      "SELECT order_id,output_product_id,stage_id FROM order_stages WHERE order_id = ANY($1::uuid[]) ORDER BY order_id",
+      [arabicOrderIds]
+    );
+    assert.equal(arabicProducts.rowCount, 2);
+    assert.equal(arabicProducts.rows[0].output_product_id, arabicProducts.rows[1].output_product_id,
+      "Arabic hamza/tashkeel variants must resolve to the same product");
+    assert.equal(arabicProducts.rows[0].stage_id, arabicProducts.rows[1].stage_id,
+      "Arabic tashkeel and repeated spaces must resolve to the same stage");
 
     // One order may contain multiple final products, each designated on its own stage.
     const multiSuffix = randomBytes(4).toString("hex");
@@ -285,6 +332,39 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(firstEntry.statusCode, 201, firstEntry.body);
     const firstId = firstEntry.json().data.id as string;
+    const validScrapKey = randomUUID();
+    const validScrapPayload = {
+      idempotencyKey: validScrapKey, productionEntryId: firstId,
+      scrapType: "WORKER_SCRAP", quantity: 1, notes: "Active stage scrap integration"
+    };
+    const validScrap = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: validScrapPayload
+    });
+    assert.equal(validScrap.statusCode, 201, validScrap.body);
+    assert.equal(Number(validScrap.json().data.quantity), 1);
+    const validScrapReplay = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: validScrapPayload
+    });
+    assert.equal(validScrapReplay.statusCode, 200, validScrapReplay.body);
+    assert.equal(validScrapReplay.json().data.stock_movement_id, validScrap.json().data.stock_movement_id,
+      "a retried scrap submission must return the original stock movement");
+    const reusedScrapKey = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: { ...validScrapPayload, quantity: 2 }
+    });
+    assert.equal(reusedScrapKey.statusCode, 409, reusedScrapKey.body);
+    assert.equal(reusedScrapKey.json().error.code, "IDEMPOTENCY_KEY_REUSED");
+    const scrapMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE id=$1",
+      [validScrap.json().data.stock_movement_id]
+    );
+    assert.equal(scrapMovement.rows[0].movement_type, "IN");
+    assert.equal(Number(scrapMovement.rows[0].quantity), 1);
+    assert.equal(Number(scrapMovement.rows[0].total_cost), 0);
+    assert.equal(scrapMovement.rows[0].reference_type, "PRODUCTION_SCRAP");
+    assert.equal(scrapMovement.rows[0].reference_id, validScrap.json().data.id);
     const firstDestination = await apiPool.query("SELECT warehouse_id,location_id,earning_amount,total_earning_amount FROM production_entries WHERE id=$1", [firstId]);
     assert.equal(firstDestination.rows[0].warehouse_id, expectedWip.id, "intermediate production must ignore the client-supplied raw material warehouse");
     assert.notEqual(firstDestination.rows[0].warehouse_id, wrongWarehouse.rows[0].id);
@@ -299,6 +379,23 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/production/" + firstId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(approveFirst.statusCode, 200, approveFirst.body);
+    // The first 10 processed units include 1 scrap, so produce one additional
+    // good unit to meet the order's planned quantity of 10.
+    const replacementGoodEntry = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: {
+        employeeId: approver.employeeId, orderStageId: wipStage.id,
+        productId: wipStage.output_product_id, stageId: wipStage.stage_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-02", quantity: 1,
+        warehouseId: wrongWarehouse.rows[0].id, responsibleName: "Replacement good unit"
+      }
+    });
+    assert.equal(replacementGoodEntry.statusCode, 201, replacementGoodEntry.body);
+    const replacementGoodId = replacementGoodEntry.json().data.id as string;
+    const approveReplacementGood = await app.inject({
+      method: "POST", url: "/api/production/" + replacementGoodId + "/approve", headers: { cookie: approver.cookie }
+    });
+    assert.equal(approveReplacementGood.statusCode, 200, approveReplacementGood.body);
     const wipBalance = await apiPool.query(
       "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [wipStage.output_product_id, expectedWip.id, firstDestination.rows[0].location_id]
@@ -311,7 +408,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(wipMovements.rowCount, 1);
     assert.equal(wipMovements.rows[0].movement_type, "IN");
-    assert.equal(Number(wipMovements.rows[0].total_cost), 200);
+    assert.equal(Number(wipMovements.rows[0].total_cost), 180);
     assert.equal(wipMovements.rows[0].order_id, orderId);
     assert.equal(wipMovements.rows[0].order_stage_id, wipStage.id);
     const lot = await apiPool.query(
@@ -319,9 +416,132 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [firstId]
     );
     assert.equal(lot.rowCount, 1);
-    assert.equal(Number(lot.rows[0].original_quantity), 10);
-    assert.equal(Number(lot.rows[0].remaining_quantity), 10);
+    assert.equal(Number(lot.rows[0].original_quantity), 9);
+    assert.equal(Number(lot.rows[0].remaining_quantity), 9);
     assert.equal(Number(lot.rows[0].unit_cost), 20);
+
+    // Scrap recorded before approval is excluded from good stock. Scrap recorded
+    // after approval must transfer quantity out of good stock, not duplicate it.
+    const postApprovalOrder = await app.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
+      payload: {
+        orderName: "Post approval scrap order " + randomBytes(4).toString("hex"),
+        orderDate: "2099-01-02",
+        stages: [{
+          stageName: "Integration WIP stage",
+          sequenceNo: 1,
+          outputProductName: "Integration component",
+          plannedQuantity: 100,
+          stageRate: 20,
+          stageRateMethod: "PER_PIECE",
+          isFinalProduct: true
+        }]
+      }
+    });
+    assert.equal(postApprovalOrder.statusCode, 201, postApprovalOrder.body);
+    const postApprovalOrderId = postApprovalOrder.json().data.id as string;
+    const planPostApprovalOrder = await app.inject({
+      method: "PATCH", url: "/api/orders/" + postApprovalOrderId, headers: { cookie: submitter.cookie },
+      payload: { status: "PLANNED" }
+    });
+    assert.equal(planPostApprovalOrder.statusCode, 200, planPostApprovalOrder.body);
+    const activatePostApprovalOrder = await app.inject({
+      method: "PATCH", url: "/api/orders/" + postApprovalOrderId, headers: { cookie: submitter.cookie },
+      payload: { status: "IN_PROGRESS" }
+    });
+    assert.equal(activatePostApprovalOrder.statusCode, 200, activatePostApprovalOrder.body);
+    const postApprovalOrderDetail = await app.inject({
+      method: "GET", url: "/api/orders/" + postApprovalOrderId, headers: { cookie: submitter.cookie }
+    });
+    assert.equal(postApprovalOrderDetail.statusCode, 200, postApprovalOrderDetail.body);
+    const postApprovalStage = postApprovalOrderDetail.json().data.stages[0];
+    const postApprovalEntry = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: {
+        employeeId: approver.employeeId, orderStageId: postApprovalStage.id,
+        productId: postApprovalStage.output_product_id, stageId: postApprovalStage.stage_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-02", quantity: 3,
+        responsibleName: "Post approval scrap test"
+      }
+    });
+    assert.equal(postApprovalEntry.statusCode, 201, postApprovalEntry.body);
+    const postApprovalEntryId = postApprovalEntry.json().data.id as string;
+    const approvePostApprovalEntry = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/approve", headers: { cookie: approver.cookie }
+    });
+    assert.equal(approvePostApprovalEntry.statusCode, 200, approvePostApprovalEntry.body);
+    const postApprovalSource = await apiPool.query(
+      "SELECT warehouse_id,location_id FROM production_entries WHERE id=$1", [postApprovalEntryId]
+    );
+    const sourceWarehouseId = postApprovalSource.rows[0].warehouse_id as string;
+    const sourceLocationId = postApprovalSource.rows[0].location_id as string;
+    const sourceBeforeScrap = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [postApprovalStage.output_product_id, sourceWarehouseId, sourceLocationId]
+    );
+    const scrapLocation = await apiPool.query(
+      `SELECT w.id AS warehouse_id,l.id AS location_id
+         FROM warehouses w JOIN warehouse_locations l ON l.warehouse_id=w.id AND l.is_active=TRUE
+        WHERE w.warehouse_type='SCRAP' AND w.is_active=TRUE ORDER BY w.created_at,w.id,l.code LIMIT 1`
+    );
+    const scrapBalanceBefore = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [postApprovalStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
+    );
+    const approvedScrapKey = randomUUID();
+    const approvedScrapPayload = {
+      idempotencyKey: approvedScrapKey, productionEntryId: postApprovalEntryId,
+      scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Approved stock transfer test"
+    };
+    const approvedScrap = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: approvedScrapPayload
+    });
+    assert.equal(approvedScrap.statusCode, 201, approvedScrap.body);
+    const approvedScrapMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE id=$1",
+      [approvedScrap.json().data.stock_movement_id]
+    );
+    assert.equal(approvedScrapMovement.rows[0].movement_type, "TRANSFER_IN");
+    assert.equal(Number(approvedScrapMovement.rows[0].total_cost), 0);
+    const linkedSourceMovement = await apiPool.query(
+      "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE reference_type='TRANSFER' AND reference_id=$1",
+      [approvedScrap.json().data.stock_movement_id]
+    );
+    assert.equal(linkedSourceMovement.rowCount, 1);
+    assert.equal(linkedSourceMovement.rows[0].movement_type, "TRANSFER_OUT");
+    assert.equal(Number(linkedSourceMovement.rows[0].quantity), 1);
+    const sourceAfterScrap = await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [postApprovalStage.output_product_id, sourceWarehouseId, sourceLocationId]
+    );
+    const scrapBalanceAfter = await apiPool.query(
+      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [postApprovalStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
+    );
+    assert.equal(Number(sourceAfterScrap.rows[0].quantity), Number(sourceBeforeScrap.rows[0].quantity) - 1);
+    assert.equal(Number(scrapBalanceAfter.rows[0]?.quantity ?? 0), Number(scrapBalanceBefore.rows[0]?.quantity ?? 0) + 1,
+      "approved scrap must move quantity between warehouses, not create additional total stock");
+    const adjustedScrapStage = await apiPool.query(
+      "SELECT completed_quantity,status FROM order_stages WHERE id=$1", [postApprovalStage.id]
+    );
+    assert.equal(Number(adjustedScrapStage.rows[0].completed_quantity), 2,
+      "scrap discovered after approval must reduce good-output progress");
+    const approvedScrapReplay = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: approvedScrapPayload
+    });
+    assert.equal(approvedScrapReplay.statusCode, 200, approvedScrapReplay.body);
+    assert.equal(approvedScrapReplay.json().data.stock_movement_id, approvedScrap.json().data.stock_movement_id);
+    assert.equal(approvedScrapReplay.json().data.source_stock_movement_id, approvedScrap.json().data.source_stock_movement_id);
+    const reverseScrappedProduction = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
+      headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!", reason: "Must not reverse scrap-linked stock" }
+    });
+    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
+    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_HAS_SCRAP",
+      "reversal must not silently restore the gross quantity after scrap has been transferred");
 
     // Consume an intermediate-stage product as an input to the final stage.
     // This intentionally differs from the final stage's output product.
@@ -496,6 +716,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(stageState.rows[0].completed_quantity), 10);
     assert.equal(stageState.rows[0].status, "COMPLETED");
     assert.equal(stageState.rows[0].order_status, "COMPLETED");
+    const scrapOnCompletedOrder = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: { idempotencyKey: randomUUID(), productionEntryId: finalId, scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Must reject completed order" }
+    });
+    assert.equal(scrapOnCompletedOrder.statusCode, 409, scrapOnCompletedOrder.body);
+    assert.equal(scrapOnCompletedOrder.json().error.code, "ORDER_NOT_ACTIVE");
+    const completedOrderScrapCount = await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM production_scrap_records WHERE production_entry_id=$1",
+      [finalId]
+    );
+    assert.equal(completedOrderScrapCount.rows[0].count, 0, "failed scrap must not create a record or stock movement");
 
     const addOutputToCompletedOrder = await app.inject({
       method: "POST", url: "/api/stages/" + finalStage.id + "/outputs", headers: { cookie: submitter.cookie },
@@ -591,9 +822,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(dashboard.statusCode, 200, dashboard.body);
     assert.equal(dashboard.json().data.stages.length, 2);
-    assert.equal(dashboard.json().data.production.length, 2);
+    assert.equal(dashboard.json().data.production.length, 3, "dashboard includes the replacement good unit needed after scrap");
     assert.equal(dashboard.json().data.movements.length, 1, "order withdrawals must show only actual OUT movements, not production receipts");
-    assert.equal(Number(dashboard.json().data.totals.production_cost), 505);
+    assert.equal(Number(dashboard.json().data.totals.production_cost), 525);
     assert.equal(dashboard.json().data.totals.stock_in_cost, undefined, "production receipt value must not be presented as an order withdrawal cost");
     assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
@@ -601,7 +832,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
     });
     assert.equal(profitability.statusCode, 200, profitability.body);
-    assert.equal(Number(profitability.json().data.laborCost), 505);
+    assert.equal(Number(profitability.json().data.laborCost), 525);
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
     // Resolve the exact final-product order line so delivery and stock-out remain line-specific.
@@ -1049,10 +1280,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(finalProfitability.json().data.revenue), 1000);
     assert.equal(Number(finalProfitability.json().data.expenses), 50);
     assert.equal(Number(finalProfitability.json().data.materialCost), 100);
-    assert.equal(Number(finalProfitability.json().data.laborCost), 505);
-    assert.equal(Number(finalProfitability.json().data.totalCost), 655);
-    assert.equal(Number(finalProfitability.json().data.profit), 345);
-    assert.equal(Number(finalProfitability.json().data.marginPercent), 34.5);
+    assert.equal(Number(finalProfitability.json().data.laborCost), 525);
+    assert.equal(Number(finalProfitability.json().data.totalCost), 675);
+    assert.equal(Number(finalProfitability.json().data.profit), 325);
+    assert.equal(Number(finalProfitability.json().data.marginPercent), 32.5);
 
     const accountingSummary = await app.inject({
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }

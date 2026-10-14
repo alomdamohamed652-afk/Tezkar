@@ -3,7 +3,7 @@ import { z } from "zod";
 import { withTransaction, pool } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const line=z.object({
@@ -145,7 +145,7 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
   return {data:{withdrawal:header.rows[0],lines:lines.rows}};
  });
 
- app.post("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.move")]},async(request,reply)=>{
+ app.post("/api/shift-withdrawals",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.move","all"],["warehouse.shift_withdrawal.create","all"])]},async(request,reply)=>{
   const p=schema.safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مسحوبات الوردية غير صحيحة",422);
   const result=await withTransaction(async client=>{

@@ -43,7 +43,7 @@ const seededReferenceCodes: Record<string, string[]> = {
 };
 
 const seededCodingTemplateNames = ["قالب الكيس", "قالب الكرتونة", "قالب الشيكارة", "قالب عام"];
-const seededWarehouseNames = { RAW_MATERIAL: "المخزن الرئيسي للخامات", WIP: "مخزن تحت التشغيل", FINISHED_GOODS: "مخزن المنتجات الجاهزة" };
+const seededWarehouseNames = { RAW_MATERIAL: "المخزن الرئيسي للخامات", WIP: "مخزن تحت التشغيل", FINISHED_GOODS: "مخزن المنتجات الجاهزة", SCRAP: "مخزن الهالك" };
 
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
 const qualified = (table: string) => '"public".' + quoteIdentifier(table);
@@ -113,7 +113,8 @@ export async function previewTrialDataReset(protectedUserId: string) {
           `SELECT count(*)::text AS count FROM public.warehouses
            WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
              OR (warehouse_type = 'WIP' AND name = $2)
-             OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
+             OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
+             OR warehouse_type = 'SCRAP')`,
           [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
@@ -122,13 +123,19 @@ export async function previewTrialDataReset(protectedUserId: string) {
       if (table === "warehouse_locations") {
         const result = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM public.warehouse_locations wl
-           WHERE NOT (wl.code = 'MAIN' AND EXISTS (
-             SELECT 1 FROM public.warehouses w
-             WHERE w.id = wl.warehouse_id AND
-               ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
-                OR (w.warehouse_type = 'WIP' AND w.name = $2)
-                OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
-           ))`,
+           WHERE NOT (
+             (wl.code = 'MAIN' AND EXISTS (
+               SELECT 1 FROM public.warehouses w
+               WHERE w.id = wl.warehouse_id AND
+                 ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
+                  OR (w.warehouse_type = 'WIP' AND w.name = $2)
+                  OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
+             ))
+             OR EXISTS (
+               SELECT 1 FROM public.warehouses w
+               WHERE w.id = wl.warehouse_id AND w.warehouse_type = 'SCRAP'
+             )
+           )`,
           [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
@@ -185,7 +192,7 @@ try {
   const allTables = tableResult.rows.map((row) => row.table_name);
   const present = new Set(allTables);
 
-  // Preserve only platform/reference configuration. Every other public table is treated as manually entered or operational data and is cleared, including audit/activity logs, notifications, report records, preferences, warehouses, and warehouse locations.
+  // Preserve platform/reference configuration, the standard and scrap warehouses, and their locations. Other public tables are treated as operational data and cleared, including audit/activity logs, notifications, report records, and preferences; non-default warehouses and locations are removed.
   const keep = new Set(alwaysKeep);
   for (const name of allTables) {
     if (/settings/i.test(name) || /^(company_profile|company_profiles|factory|factories)$/i.test(name)) {
@@ -348,12 +355,15 @@ try {
   if (present.has("warehouse_locations")) {
     const result = await client.query(
       `DELETE FROM public.warehouse_locations wl
-       WHERE NOT (wl.code = 'MAIN' AND EXISTS (
+       WHERE NOT ((wl.code = 'MAIN' AND EXISTS (
          SELECT 1 FROM public.warehouses w
          WHERE w.id = wl.warehouse_id AND
            ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
             OR (w.warehouse_type = 'WIP' AND w.name = $2)
             OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
+       )) OR EXISTS (
+         SELECT 1 FROM public.warehouses w
+         WHERE w.id = wl.warehouse_id AND w.warehouse_type = 'SCRAP'
        ))`,
       [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
     );
@@ -364,7 +374,8 @@ try {
       `DELETE FROM public.warehouses
        WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
          OR (warehouse_type = 'WIP' AND name = $2)
-         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
+         OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
+         OR warehouse_type = 'SCRAP')`,
       [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
     );
     deleted.warehouses = result.rowCount ?? 0;
@@ -376,25 +387,30 @@ try {
        FROM (VALUES
          ($1::text, 'RAW_MATERIAL'::text),
          ($2::text, 'WIP'::text),
-         ($3::text, 'FINISHED_GOODS'::text)
+         ($3::text, 'FINISHED_GOODS'::text),
+         ($4::text, 'SCRAP'::text)
        ) AS defaults(name, warehouse_type)
        WHERE NOT EXISTS (
          SELECT 1 FROM public.warehouses w
          WHERE w.warehouse_type = defaults.warehouse_type
            AND w.name = defaults.name
        )`,
-      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
     );
 
     await client.query(
       `INSERT INTO public.warehouse_locations(warehouse_id, code, name, is_active)
-       SELECT w.id, 'MAIN', 'الرئيسي', TRUE
+       SELECT w.id,
+              CASE WHEN w.warehouse_type = 'SCRAP' THEN 'SCRAP-MAIN' ELSE 'MAIN' END,
+              CASE WHEN w.warehouse_type = 'SCRAP' THEN 'المكان الرئيسي' ELSE 'الرئيسي' END,
+              TRUE
        FROM public.warehouses w
        WHERE (w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
           OR (w.warehouse_type = 'WIP' AND w.name = $2)
           OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
+          OR (w.warehouse_type = 'SCRAP' AND w.name = $4)
        ON CONFLICT (warehouse_id, code) DO NOTHING`,
-      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+      [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
     );
   }
 
