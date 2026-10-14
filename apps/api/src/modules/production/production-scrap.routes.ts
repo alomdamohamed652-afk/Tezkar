@@ -5,7 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
+import { createInventoryLot, consumeInventoryLots, adjustStockValueAfterLotConsumption } from "../warehouse/inventory-lots.service.js";
 
 const createSchema = z.object({
   productionEntryId: z.string().uuid(),
@@ -68,7 +68,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
     const created = await withTransaction(async (client) => {
       const entry = await client.query(
         `SELECT p.id, p.code, p.employee_id, p.product_id, p.stage_id, p.order_stage_id, p.shift_id,
-                p.unit_id, p.quantity, p.status, e.full_name AS employee_name, pr.name AS product_name,
+                p.unit_id, p.quantity, p.status, p.warehouse_id, p.location_id, e.full_name AS employee_name, pr.name AS product_name,
                 os.order_id
            FROM production_entries p
            JOIN employees e ON e.id=p.employee_id
@@ -78,8 +78,15 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         [input.productionEntryId]
       );
       if (!entry.rowCount) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
-      if (entry.rows[0].status === "CANCELLED" || entry.rows[0].status === "REJECTED") {
-        throw new AppError("PRODUCTION_NOT_ACTIVE", "لا يمكن تسجيل هالك على إنتاج ملغي أو مرفوض", 409);
+      if (!["PENDING", "APPROVED"].includes(entry.rows[0].status)) {
+        throw new AppError("PRODUCTION_NOT_ACTIVE", "لا يمكن تسجيل هالك إلا على إنتاج قيد الاعتماد أو معتمد", 409);
+      }
+      const stockProduct = await client.query(
+        "SELECT id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",
+        [entry.rows[0].product_id]
+      );
+      if (!stockProduct.rowCount) {
+        throw new AppError("PRODUCT_NOT_INVENTORIED", "منتج الإنتاج غير موجود أو غير متابع مخزنيًا", 409);
       }
       if (entry.rows[0].order_stage_id) {
         const parent = await client.query(
@@ -113,8 +120,6 @@ export async function productionScrapRoutes(app: FastifyInstance) {
          RETURNING id, production_entry_id, scrap_type, quantity, notes, created_at`,
         [input.productionEntryId, input.scrapType, input.quantity, input.notes ?? null, request.user!.userId]
       );
-      // Keep the scrap record and its physical warehouse receipt atomic.
-      // Scrap is tracked at zero inventory value so it does not inflate financial stock valuation.
       const scrapDestination = await client.query(
         `SELECT w.id AS warehouse_id, l.id AS location_id
            FROM warehouses w
@@ -129,6 +134,73 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       }
       const warehouseId = scrapDestination.rows[0].warehouse_id as string;
       const locationId = scrapDestination.rows[0].location_id as string;
+      const isApprovedProduction = entry.rows[0].status === "APPROVED";
+      let sourceMovementId: string | null = null;
+      if (isApprovedProduction) {
+        const sourceWarehouseId = entry.rows[0].warehouse_id as string | null;
+        const sourceLocationId = entry.rows[0].location_id as string | null;
+        if (!sourceWarehouseId || !sourceLocationId) {
+          throw new AppError("SCRAP_SOURCE_LOCATION_MISSING", "سجل الإنتاج المعتمد لا يحتوي على مخزن ومكان مصدر صالحين", 409);
+        }
+        if (sourceWarehouseId === warehouseId && sourceLocationId === locationId) {
+          throw new AppError("SCRAP_SOURCE_EQUALS_DESTINATION", "لا يمكن تحويل الهالك من مخزن الهالك نفسه", 409);
+        }
+        const sourceBalance = await client.query(
+          `SELECT quantity, inventory_value FROM stock_balances
+            WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3
+            FOR UPDATE`,
+          [entry.rows[0].product_id, sourceWarehouseId, sourceLocationId]
+        );
+        const availableSourceQuantity = Number(sourceBalance.rows[0]?.quantity ?? 0);
+        if (!sourceBalance.rowCount || availableSourceQuantity + 1e-9 < input.quantity) {
+          throw new AppError("SCRAP_SOURCE_STOCK_INSUFFICIENT", "الرصيد المتاح في مخزن الإنتاج لا يكفي لتحويل كمية الهالك. قد تكون الكمية استُهلكت في مرحلة لاحقة.", 409);
+        }
+        const sourceLots = await client.query(
+          `SELECT COALESCE(SUM(remaining_quantity),0) AS quantity
+             FROM inventory_lots
+            WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0`,
+          [entry.rows[0].product_id, sourceWarehouseId, sourceLocationId]
+        );
+        if (Math.abs(Number(sourceLots.rows[0]?.quantity ?? 0) - availableSourceQuantity) > 1e-7) {
+          throw new AppError("INVENTORY_INTEGRITY_MISMATCH", "رصيد مخزن الإنتاج لا يطابق مجموع دفعات التكلفة؛ تم إيقاف تسجيل الهالك لحماية المخزون", 409);
+        }
+        const sourceMovement = await client.query(
+          `INSERT INTO stock_movements(
+             movement_type, product_id, warehouse_id, location_id, quantity, unit_id,
+             unit_cost, total_cost, order_id, order_stage_id, notes, created_by,
+             reference_type, scrap_origin_type, scrap_origin_reference
+           )
+           VALUES('TRANSFER_OUT',$1,$2,$3,$4,$5,0,0,$6,$7,$8,$9,'TRANSFER','PRODUCTION',$10)
+           RETURNING id`,
+          [
+            entry.rows[0].product_id, sourceWarehouseId, sourceLocationId, input.quantity, entry.rows[0].unit_id,
+            entry.rows[0].order_id ?? null, entry.rows[0].order_stage_id ?? null,
+            "تحويل هالك من إنتاج " + entry.rows[0].code, request.user!.userId,
+            `${entry.rows[0].code} | ${entry.rows[0].employee_name} | ${entry.rows[0].product_name}`
+          ]
+        );
+        sourceMovementId = sourceMovement.rows[0].id as string;
+        const consumed = await consumeInventoryLots(client, {
+          movementId: sourceMovementId,
+          productId: entry.rows[0].product_id,
+          warehouseId: sourceWarehouseId,
+          locationId: sourceLocationId,
+          quantity: input.quantity
+        });
+        await client.query(
+          "UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",
+          [consumed.unitCost, consumed.totalCost, sourceMovementId]
+        );
+        await client.query(
+          `UPDATE stock_balances SET quantity=quantity-$1,updated_at=now()
+            WHERE product_id=$2 AND warehouse_id=$3 AND location_id=$4`,
+          [input.quantity, entry.rows[0].product_id, sourceWarehouseId, sourceLocationId]
+        );
+        await adjustStockValueAfterLotConsumption(
+          client, entry.rows[0].product_id, sourceWarehouseId, sourceLocationId, consumed.totalCost
+        );
+      }
+
       const existingBalance = await client.query(
         `SELECT quantity, inventory_value
            FROM stock_balances
@@ -153,15 +225,19 @@ export async function productionScrapRoutes(app: FastifyInstance) {
           [entry.rows[0].product_id, warehouseId, locationId, input.quantity]
         );
       }
+      // Before approval, the physical scrap is recorded separately and the approval
+      // workflow excludes it from good output. After approval, scrap is a real transfer
+      // out of the good-stock balance, never an additional quantity on top of it.
       const movement = await client.query(
         `INSERT INTO stock_movements(
            movement_type, product_id, warehouse_id, location_id, quantity, unit_id,
            unit_cost, total_cost, order_id, order_stage_id, notes, created_by,
            reference_type, reference_id, scrap_origin_type, scrap_origin_reference
          )
-         VALUES('IN',$1,$2,$3,$4,$5,0,0,$6,$7,$8,$9,'PRODUCTION_SCRAP',$10,'PRODUCTION',$11)
+         VALUES($1,$2,$3,$4,$5,$6,0,0,$7,$8,$9,$10,'PRODUCTION_SCRAP',$11,'PRODUCTION',$12)
          RETURNING id`,
         [
+          isApprovedProduction ? "TRANSFER_IN" : "IN",
           entry.rows[0].product_id, warehouseId, locationId, input.quantity, entry.rows[0].unit_id,
           entry.rows[0].order_id ?? null, entry.rows[0].order_stage_id ?? null,
           input.notes ?? `هالك مسجل على إنتاج ${entry.rows[0].code}`, request.user!.userId,
@@ -169,6 +245,9 @@ export async function productionScrapRoutes(app: FastifyInstance) {
           `${entry.rows[0].code} | ${entry.rows[0].employee_name} | ${entry.rows[0].product_name}`
         ]
       );
+      if (sourceMovementId) {
+        await client.query("UPDATE stock_movements SET reference_id=$1 WHERE id=$2", [movement.rows[0].id, sourceMovementId]);
+      }
       await createInventoryLot(client, {
         productId: entry.rows[0].product_id,
         warehouseId,
