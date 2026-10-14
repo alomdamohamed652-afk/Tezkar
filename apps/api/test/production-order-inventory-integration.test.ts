@@ -366,7 +366,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const replacementGoodEntry = await app.inject({
       method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
       payload: {
-        employeeId: approverEmployee, orderStageId: wipStage.id,
+        employeeId: approver.employeeId, orderStageId: wipStage.id,
         productId: wipStage.output_product_id, stageId: wipStage.stage_id,
         shiftId: shift.rows[0].id, workDate: "2099-01-02", quantity: 1,
         warehouseId: wrongWarehouse.rows[0].id, responsibleName: "Replacement good unit"
