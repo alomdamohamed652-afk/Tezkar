@@ -326,7 +326,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       payload: {
         employeeId: submitterEmployee, orderStageId: wipStage.id, stageId: wipStage.stage_id,
         productId: wipStage.output_product_id, shiftId: shift.rows[0].id, workDate: "2099-01-02",
-        quantity: 11, warehouseId: wrongWarehouse.rows[0].id,
+        quantity: 10, warehouseId: wrongWarehouse.rows[0].id,
         responsibleName: "Integration responsible"
       }
     });
@@ -361,6 +361,23 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/production/" + firstId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(approveFirst.statusCode, 200, approveFirst.body);
+    // The first 10 processed units include 1 scrap, so produce one additional
+    // good unit to meet the order's planned quantity of 10.
+    const replacementGoodEntry = await app.inject({
+      method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
+      payload: {
+        employeeId: approverEmployee, orderStageId: wipStage.id,
+        productId: wipStage.output_product_id, stageId: wipStage.stage_id,
+        shiftId: shift.rows[0].id, workDate: "2099-01-02", quantity: 1,
+        warehouseId: wrongWarehouse.rows[0].id, responsibleName: "Replacement good unit"
+      }
+    });
+    assert.equal(replacementGoodEntry.statusCode, 201, replacementGoodEntry.body);
+    const replacementGoodId = replacementGoodEntry.json().data.id as string;
+    const approveReplacementGood = await app.inject({
+      method: "POST", url: "/api/production/" + replacementGoodId + "/approve", headers: { cookie: approver.cookie }
+    });
+    assert.equal(approveReplacementGood.statusCode, 200, approveReplacementGood.body);
     const wipBalance = await apiPool.query(
       "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [wipStage.output_product_id, expectedWip.id, firstDestination.rows[0].location_id]
@@ -373,7 +390,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(wipMovements.rowCount, 1);
     assert.equal(wipMovements.rows[0].movement_type, "IN");
-    assert.equal(Number(wipMovements.rows[0].total_cost), 200);
+    assert.equal(Number(wipMovements.rows[0].total_cost), 180);
     assert.equal(wipMovements.rows[0].order_id, orderId);
     assert.equal(wipMovements.rows[0].order_stage_id, wipStage.id);
     const lot = await apiPool.query(
@@ -381,8 +398,8 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [firstId]
     );
     assert.equal(lot.rowCount, 1);
-    assert.equal(Number(lot.rows[0].original_quantity), 10);
-    assert.equal(Number(lot.rows[0].remaining_quantity), 10);
+    assert.equal(Number(lot.rows[0].original_quantity), 9);
+    assert.equal(Number(lot.rows[0].remaining_quantity), 9);
     assert.equal(Number(lot.rows[0].unit_cost), 20);
 
     // Scrap recorded before approval is excluded from good stock. Scrap recorded
