@@ -133,7 +133,10 @@ export async function productionRoutes(app: FastifyInstance) {
     params.push(query.data.limit);
 
     const result = await pool.query(
-      `SELECT p.id,p.code,p.work_date,p.responsible_name,sle.full_name AS shift_leader_name,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,
+      `SELECT p.id,p.code,p.work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,
+              (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='BONUS' ORDER BY a.created_at DESC LIMIT 1) AS bonus_reason,
+              (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
+              p.total_earning_amount,p.status,
               e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.code AS stage_code,st.name AS stage_name,
@@ -406,6 +409,9 @@ export async function productionRoutes(app: FastifyInstance) {
       if (!Number.isFinite(earning) || earning < 0) {
         throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج بشكل صحيح", 422);
       }
+      if (earning + Number(parsed.data.bonusAmount ?? 0) < Number(parsed.data.deductionAmount ?? 0)) {
+        throw new AppError("DEDUCTION_EXCEEDS_EARNING", "الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب", 422);
+      }
 
       const unitId = rate.unit_id ?? product.rows[0].unit_id;
 
@@ -490,19 +496,180 @@ export async function productionRoutes(app: FastifyInstance) {
 
   app.patch("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({quantity:z.number().positive(),workDate:z.string().date().optional()}).safeParse(request.body);
+    const parsed=z.object({
+      employeeId:z.string().uuid().optional(),
+      orderStageId:z.string().uuid().nullable().optional(),
+      productionTypeId:z.string().uuid().nullable().optional(),
+      productId:z.string().uuid().optional(),
+      stageId:z.string().uuid().optional(),
+      shiftId:z.string().uuid().optional(),
+      shiftLeaderEmployeeId:z.string().uuid().nullable().optional(),
+      workDate:z.string().date().optional(),
+      quantity:z.number().positive().optional(),
+      baseAmount:z.number().nonnegative().nullable().optional(),
+      hoursWorked:z.number().positive().nullable().optional(),
+      rateOverride:z.number().nonnegative().nullable().optional(),
+      bonusAmount:z.number().nonnegative().optional(),
+      bonusReason:z.string().trim().max(500).nullable().optional(),
+      deductionAmount:z.number().nonnegative().optional(),
+      deductionReason:z.string().trim().max(500).nullable().optional()
+    }).refine(v=>Object.keys(v).length>0).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل الإنتاج غير صحيحة",422);
     const row=await withTransaction(async client=>{
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
-      if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه",409);
-      const method=current.wage_type_method_snapshot as string;
+      if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه. استخدم إجراء العكس المعتمد بدل تعديل سجل مرحّل.",409);
+      const data=parsed.data;
+      const employeeId=data.employeeId??current.employee_id;
+      const shiftId=data.shiftId??current.shift_id;
+      const workDate=data.workDate??String(current.work_date).slice(0,10);
+      const quantity=data.quantity??Number(current.quantity);
+      const baseAmount=data.baseAmount===undefined?(current.base_amount==null?null:Number(current.base_amount)):data.baseAmount;
+      const hoursWorked=data.hoursWorked===undefined?(current.hours_worked==null?null:Number(current.hours_worked)):data.hoursWorked;
+      const bonusAmount=data.bonusAmount??Number(current.bonus_amount??0);
+      const deductionAmount=data.deductionAmount??Number(current.deduction_amount??0);
+      const orderStageId=data.orderStageId===undefined?current.order_stage_id:data.orderStageId;
+      let productId=data.productId??current.product_id;
+      let stageId=data.stageId??current.stage_id;
+      let productionTypeId=data.productionTypeId===undefined?current.production_type_id:data.productionTypeId;
+      const bonusReason=data.bonusReason?.trim()||null;
+      const deductionReason=data.deductionReason?.trim()||null;
+      const oldAdjustments=await client.query("SELECT adjustment_type,reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL ORDER BY created_at DESC",[id]);
+      const oldBonusReason=oldAdjustments.rows.find((a:any)=>a.adjustment_type==="BONUS")?.reason as string|undefined;
+      const oldDeductionReason=oldAdjustments.rows.find((a:any)=>a.adjustment_type==="DEDUCTION")?.reason as string|undefined;
+      const finalBonusReason=data.bonusReason===undefined?oldBonusReason:bonusReason??undefined;
+      const finalDeductionReason=data.deductionReason===undefined?oldDeductionReason:deductionReason??undefined;
+      if(bonusAmount>0&&!finalBonusReason)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
+      if(deductionAmount>0&&!finalDeductionReason)throw new AppError("DEDUCTION_REASON_REQUIRED","بيان الخصم مطلوب",422);
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      const shift=await client.query("SELECT id,rate_group_id FROM shifts WHERE id=$1 AND is_active=TRUE",[shiftId]);
+      if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
+      if(data.shiftLeaderEmployeeId){
+        const leader=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[data.shiftLeaderEmployeeId]);
+        if(!leader.rowCount)throw new AppError("SHIFT_LEADER_NOT_FOUND","مسؤول الوردية غير موجود أو غير نشط",422);
+        const assignment=await client.query("SELECT 1 FROM shift_leaders WHERE employee_id=$1 AND shift_id=$2 AND is_active=TRUE AND (starts_on IS NULL OR starts_on<=$3::date) AND (ends_on IS NULL OR ends_on>=$3::date) LIMIT 1",[data.shiftLeaderEmployeeId,shiftId,workDate]);
+        if(!assignment.rowCount)throw new AppError("SHIFT_LEADER_NOT_ASSIGNED","مسؤول الوردية غير مكلف بهذه الوردية في تاريخ الإنتاج",422);
+      }
+      let warehouseId=current.warehouse_id;
+      let locationId=current.location_id;
+      let orderStage:any=null;
+      if(orderStageId){
+        // Keep the same parent-order -> stage lock order used by production creation
+        // and order maintenance to avoid lock inversion under concurrent edits.
+        const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[orderStageId]);
+        if(!stageRef.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const parentOrder=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+        if(!parentOrder.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+        const os=await client.query(
+          `SELECT os.id,os.order_id,os.stage_id,os.output_product_id,os.sequence_no,os.is_final_product,os.status AS stage_status,
+                  os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id,os.production_type_id AS stage_production_type_id,
+                  po.status AS order_status
+             FROM order_stages os JOIN production_orders po ON po.id=os.order_id
+            WHERE os.id=$1 FOR UPDATE OF os`,
+          [orderStageId]
+        );
+        if(!os.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        orderStage=os.rows[0];
+        if(["CANCELLED","DRAFT","COMPLETED"].includes(orderStage.order_status)||["CANCELLED","COMPLETED"].includes(orderStage.stage_status))
+          throw new AppError("ORDER_STAGE_LOCKED","لا يمكن ربط الإنتاج بطلبية أو مرحلة غير نشطة",409);
+        if(!orderStage.output_product_id)throw new AppError("ORDER_STAGE_PRODUCT_REQUIRED","المرحلة لا تحتوي على منتج ناتج محدد",422);
+        productId=orderStage.output_product_id;
+        stageId=orderStage.stage_id;
+        productionTypeId=orderStage.stage_production_type_id??productionTypeId;
+        const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status<>'CANCELLED'",[orderStage.order_id]);
+        const warehouseType=Boolean(orderStage.is_final_product)||(!Boolean(finalStage.rows[0]?.has_explicit_final)&&Number(orderStage.sequence_no)===Number(finalStage.rows[0]?.max_sequence))?"FINISHED_GOODS":"WIP";
+        const wh=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
+        if(!wh.rowCount)throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
+        warehouseId=wh.rows[0].id;
+      }
+      const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[productId]);
+      if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+      const stage=await client.query("SELECT id FROM stages WHERE id=$1 AND is_active=TRUE",[stageId]);
+      if(!stage.rowCount)throw new AppError("STAGE_NOT_FOUND","المرحلة غير موجودة أو غير نشطة",422);
+      if(warehouseId){
+        const loc=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[locationId,warehouseId]);
+        if(!loc.rowCount){
+          const first=await client.query("SELECT id FROM warehouse_locations WHERE warehouse_id=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseId]);
+          if(!first.rowCount)throw new AppError("DESTINATION_NOT_FOUND","لا توجد وجهة تخزين نشطة للمخزن المحدد",422);
+          locationId=first.rows[0].id;
+        }
+      }
+      const stagePrice=orderStage&&orderStage.stage_rate!=null?orderStage:null;
+      const rateResult=stagePrice?await client.query(
+        `SELECT NULL::uuid AS id,wt.id AS wage_type_id,$1::numeric AS rate,
+                COALESCE($2::uuid,pr.unit_id) AS unit_id,$3::uuid AS production_type_id,
+                wt.code AS wage_type_code,wt.method,wt.percentage_base
+           FROM wage_types wt CROSS JOIN products pr
+          WHERE pr.id=$4 AND wt.method=$5 AND wt.is_active=TRUE
+          ORDER BY CASE WHEN wt.percentage_base='ORDER_VALUE' THEN 0 ELSE 1 END,wt.created_at,wt.id LIMIT 1`,
+        [Number(stagePrice.stage_rate),stagePrice.stage_rate_unit_id??null,productionTypeId??null,productId,stagePrice.stage_rate_method]
+      ):await client.query(
+        `SELECT r.id,r.rate,r.wage_type_id,r.unit_id,r.production_type_id,wt.code AS wage_type_code,
+                wt.method,wt.percentage_base
+           FROM rates r JOIN wage_types wt ON wt.id=r.wage_type_id
+          WHERE r.is_active=TRUE AND r.stage_id=$2 AND (r.rate_group_id=$3 OR r.rate_group_id IS NULL)
+            AND (r.product_id=$1 OR r.product_id IS NULL)
+            AND ($5::uuid IS NULL OR r.production_type_id=$5 OR r.production_type_id IS NULL)
+            AND $4::date <@ r.effective_range
+          ORDER BY CASE WHEN $5::uuid IS NOT NULL AND r.production_type_id=$5 THEN 0 WHEN r.production_type_id IS NULL THEN 1 ELSE 2 END,
+            CASE WHEN r.product_id=$1 AND r.stage_id=$2 AND r.rate_group_id=$3 THEN 1
+                 WHEN r.product_id IS NULL AND r.stage_id=$2 AND r.rate_group_id=$3 THEN 2
+                 WHEN r.product_id=$1 AND r.stage_id=$2 THEN 3
+                 WHEN r.product_id IS NULL AND r.stage_id=$2 THEN 4 ELSE 99 END,
+            r.created_at DESC LIMIT 1`,
+        [productId,stageId,shift.rows[0].rate_group_id,workDate,productionTypeId??null]
+      );
+      if(!rateResult.rowCount)throw new AppError("RATE_NOT_FOUND","لا يوجد سعر مطابق للمنتج والمرحلة والوردية والتاريخ",422);
+      const rate=rateResult.rows[0];
+      const method=String(rate.method);
+      const rateContextChanged=productId!==current.product_id||stageId!==current.stage_id||shiftId!==current.shift_id||
+        workDate!==String(current.work_date).slice(0,10)||productionTypeId!==current.production_type_id||orderStageId!==current.order_stage_id;
+      const canUseOverride=!stagePrice&&data.rateOverride!=null;
+      const submittedRate=Number(data.rateOverride);
+      const preservesExistingRate=canUseOverride&&!rateContextChanged&&submittedRate===Number(current.rate_snapshot);
+      const hasOverridePermission=await hasPermission(client,request.user!.userId,"production.rate_override");
+      if(canUseOverride&&submittedRate!==Number(rate.rate)&&!preservesExistingRate&&!hasOverridePermission)
+        throw new AppError("FORBIDDEN","ليس لديك صلاحية تعديل سعر الإنتاج",403);
+      const effectiveRate=stagePrice?Number(rate.rate):(canUseOverride&&(hasOverridePermission||preservesExistingRate)?submittedRate:Number(rate.rate));
       let earning=Number(current.earning_amount);
-      if(method==="PER_PIECE")earning=parsed.data.quantity*Number(current.rate_snapshot);
-      else if(method==="PER_1000")earning=parsed.data.quantity/1000*Number(current.rate_snapshot);
-      const r=await client.query("UPDATE production_entries SET quantity=$1,work_date=COALESCE($2,work_date),earning_amount=$3,updated_at=now() WHERE id=$4 RETURNING id,code,quantity,work_date,earning_amount,status",[parsed.data.quantity,parsed.data.workDate??null,earning,id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:{quantity:current.quantity,work_date:current.work_date,earning_amount:current.earning_amount},afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return r.rows[0];
+      if(method==="PER_PIECE")earning=quantity*effectiveRate;
+      else if(method==="PER_1000")earning=quantity/1000*effectiveRate;
+      else if(method==="PER_DAY")earning=effectiveRate;
+      else if(method==="PER_HOUR"){
+        if(!hoursWorked||hoursWorked<=0)throw new AppError("HOURS_WORKED_REQUIRED","أدخل عدد ساعات صحيحًا لهذا النوع من الأجر",422);
+        earning=hoursWorked*effectiveRate;
+      }else if(method==="PERCENTAGE"){
+        if(baseAmount===null||baseAmount===undefined)throw new AppError("BASE_AMOUNT_REQUIRED","أدخل قيمة الأساس لحساب أجر النسبة",422);
+        earning=baseAmount*Number(rate.rate)/100;
+      }else throw new AppError("WAGE_METHOD_UNSUPPORTED","طريقة حساب الأجر غير مدعومة",422);
+      if(!Number.isFinite(earning)||earning<0)throw new AppError("EARNING_CALCULATION_ERROR","تعذر حساب مستحق الإنتاج بشكل صحيح",422);
+      if(earning+bonusAmount<deductionAmount)throw new AppError("DEDUCTION_EXCEEDS_EARNING","الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب",422);
+      const unitId=rate.unit_id??product.rows[0].unit_id;
+      await client.query(
+        `UPDATE production_entries SET employee_id=$1,order_stage_id=$2,production_type_id=$3,product_id=$4,stage_id=$5,shift_id=$6,
+          work_date=$7,quantity=$8,unit_id=$9,hours_worked=$10,warehouse_id=$11,location_id=$12,shift_leader_employee_id=$13,
+          rate_id=$14,rate_snapshot=$15,wage_type_id=$16,wage_type_code_snapshot=$17,wage_type_method_snapshot=$18,
+          percentage_base_snapshot=$19,base_amount=$20,earning_amount=$21,bonus_amount=$22,deduction_amount=$23,updated_at=now()
+          WHERE id=$24`,
+        [employeeId,orderStageId??null,productionTypeId??null,productId,stageId,shiftId,workDate,quantity,unitId,hoursWorked,warehouseId,locationId,
+         data.shiftLeaderEmployeeId===undefined?current.shift_leader_employee_id:data.shiftLeaderEmployeeId,
+         rate.id??null,effectiveRate,rate.wage_type_id,rate.wage_type_code,method,rate.percentage_base??null,baseAmount,earning,bonusAmount,deductionAmount,id]
+      );
+      await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
+      if(bonusAmount>0)await client.query(
+        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
+         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
+        [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId]
+      );
+      if(deductionAmount>0)await client.query(
+        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
+         VALUES($1,$2,$3,'DEDUCTION',$4,$5,$6,$7)`,
+        [employeeId,shiftId,id,deductionAmount,finalDeductionReason!,workDate,request.user!.userId]
+      );
+      const updated=await getEntry(client,id);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated,metadata:{editedFields:Object.keys(data)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated;
     });
     return {data:row};
   });
@@ -686,6 +853,91 @@ export async function productionRoutes(app: FastifyInstance) {
     return { data: row };
   });
 
+  app.post("/api/production/:id/reverse",{
+    preHandler:[authenticateRequest,requirePermission("production.cancel")]
+  },async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({password:z.string().min(1).max(200),reason:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","أدخل كلمة المرور وسبب التراجع (٣ أحرف على الأقل)",422);
+    const result=await withTransaction(async client=>{
+      const actor=await client.query("SELECT password_hash FROM users WHERE id=$1 AND is_active=TRUE",[request.user!.userId]);
+      if(!actor.rowCount||!verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم التراجع",401);
+      const current=await getEntry(client,id,true);
+      if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(current.status!=="APPROVED")throw new AppError("REVERSAL_REQUIRES_APPROVED","التراجع العكسي متاح لسجل إنتاج معتمد فقط؛ السجلات المعلقة يمكن إلغاؤها مباشرة",409);
+      const paid=await client.query("SELECT 1 FROM worker_payment_allocations WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
+      if(paid.rowCount)throw new AppError("PRODUCTION_ALREADY_PAID","لا يمكن عكس إنتاج تم تخصيص دفعة مالية له. عالج دفعة العامل أولًا حتى لا يتغير رصيد المستحقات بأثر رجعي.",409);
+      const lot=await client.query("SELECT * FROM inventory_lots WHERE source_type='PRODUCTION' AND source_id=$1 FOR UPDATE",[id]);
+      if(!lot.rowCount)throw new AppError("PRODUCTION_LOT_MISSING","تعذر العثور على دفعة المخزون الناتجة عن هذا الإنتاج؛ لم يتم التراجع",409);
+      const sourceLot=lot.rows[0];
+      const originalQty=Number(sourceLot.original_quantity);
+      const remainingQty=Number(sourceLot.remaining_quantity);
+      if(Math.abs(remainingQty-originalQty)>0.0005)throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من إنتاج العملية تم صرفه أو استهلاكه من المخزن. عالج الحركات التابعة أولًا.",409);
+      const balance=await client.query("SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[current.product_id,current.warehouse_id,current.location_id]);
+      if(!balance.rowCount||Number(balance.rows[0].quantity)+0.0005<Number(current.quantity))throw new AppError("PRODUCTION_STOCK_BALANCE_CHANGED","رصيد المخزون الحالي لا يسمح بعكس الكمية كاملة",409);
+      const nextQty=Number(balance.rows[0].quantity)-Number(current.quantity);
+      const removedValue=Number(sourceLot.unit_cost)*Number(current.quantity);
+      const nextValue=Math.max(0,Number(balance.rows[0].inventory_value)-removedValue);
+      const nextAvg=nextQty>0?nextValue/nextQty:0;
+      await client.query("UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[nextQty,nextValue,nextAvg,current.product_id,current.warehouse_id,current.location_id]);
+      const movement=await client.query(
+        `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
+         VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION_REVERSAL',$12) RETURNING id`,
+        [current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,sourceLot.unit_cost,removedValue,current.order_id??null,current.order_stage_id??null,"عكس إنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId,id]
+      );
+      await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[movement.rows[0].id,sourceLot.id,current.quantity,sourceLot.unit_cost,removedValue]);
+      await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[sourceLot.id]);
+      const originalEarning=await client.query("SELECT employee_id,credit_amount FROM employee_earnings_ledger WHERE production_entry_id=$1 AND entry_type='PRODUCTION_APPROVAL' FOR UPDATE",[id]);
+      if(!originalEarning.rowCount)throw new AppError("PRODUCTION_EARNING_MISSING","لا يوجد قيد مستحقات أصلي يمكن عكسه بأمان",409);
+      if(Number(originalEarning.rows[0].credit_amount)>0){
+        await client.query(
+          "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,notes,created_by) VALUES($1,'ADJUSTMENT',0,$2,$3,$4)",
+          [current.employee_id,Number(originalEarning.rows[0].credit_amount),"عكس مستحق الإنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId]
+        );
+      }
+      const adjustments=await client.query("SELECT adjustment_type,amount,reason FROM employee_earnings_adjustments WHERE production_entry_id=$1",[id]);
+      for(const a of adjustments.rows){
+        const amount=Number(a.amount);
+        const credit=a.adjustment_type==="DEDUCTION"?amount:0;
+        const debit=a.adjustment_type==="BONUS"?amount:0;
+        if(amount>0)await client.query(
+          "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,notes,created_by) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)",
+          [current.employee_id,credit,debit,"عكس "+(a.adjustment_type==="BONUS"?"بونص":"خصم")+" إنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId]
+        );
+      }
+      if(current.order_stage_id){
+        await client.query(
+          `UPDATE order_stages SET completed_quantity=GREATEST(0,completed_quantity-$1),
+             status=CASE
+               WHEN planned_quantity IS NOT NULL AND GREATEST(0,completed_quantity-$1)>=planned_quantity THEN 'COMPLETED'
+               WHEN GREATEST(0,completed_quantity-$1)=0 THEN 'PENDING'
+               ELSE 'IN_PROGRESS'
+             END,
+             completed_at=CASE
+               WHEN planned_quantity IS NOT NULL AND GREATEST(0,completed_quantity-$1)>=planned_quantity THEN completed_at
+               WHEN GREATEST(0,completed_quantity-$1)=0 THEN NULL
+               ELSE completed_at
+             END
+           WHERE id=$2`,
+          [current.quantity,current.order_stage_id]
+        );
+        if(current.order_id){
+          const stageState=await client.query(
+            `SELECT COUNT(*)::int AS total,COUNT(*) FILTER(WHERE status='COMPLETED')::int AS completed
+               FROM order_stages WHERE order_id=$1 AND status<>'CANCELLED'`,
+            [current.order_id]
+          );
+          const nextOrderStatus=Number(stageState.rows[0]?.total||0)>0&&Number(stageState.rows[0]?.total)===Number(stageState.rows[0]?.completed)?"COMPLETED":"IN_PROGRESS";
+          await client.query("UPDATE production_orders SET status=$1,updated_at=now() WHERE id=$2 AND status NOT IN ('CANCELLED','DRAFT')",[nextOrderStatus,current.order_id]);
+        }
+      }
+      const updated=await client.query("UPDATE production_entries SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now() WHERE id=$2 RETURNING id,code,status,employee_id,quantity,work_date",[request.user!.userId,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:parsed.data.reason,stockMovementId:movement.rows[0].id,inventoryLotId:sourceLot.id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return {data:result};
+  });
+
   app.post("/api/production/:id/cancel", {
     preHandler: [authenticateRequest, requirePermission("production.cancel")]
   }, async (request) => {
@@ -765,10 +1017,11 @@ export async function productionRoutes(app: FastifyInstance) {
 
     return { data: row };
   });  app.get("/api/production/adjustments",{preHandler:[authenticateRequest,requirePermission("production.adjustments.view")]},async(request)=>{
-    const q=z.object({employeeId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
+    const q=z.object({employeeId:z.string().uuid().optional(),productionEntryId:z.string().uuid().optional(),from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر البونص والخصم غير صحيحة",422);
     const params:unknown[]=[];const where:string[]=["(a.production_entry_id IS NULL OR p.status <> 'CANCELLED')"];
     if(q.data.employeeId){params.push(q.data.employeeId);where.push("a.employee_id=$"+params.length);}
+    if(q.data.productionEntryId){params.push(q.data.productionEntryId);where.push("a.production_entry_id=$"+params.length);}
     if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}
     const r=await pool.query(`

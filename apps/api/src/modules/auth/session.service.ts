@@ -22,14 +22,14 @@ export async function createSession(client: pg.PoolClient, user: SessionUser) {
 export async function getSessionUser(client: pg.PoolClient, token: string): Promise<SessionUser | null> {
   const tokenHash = hashToken(token);
   const result = await client.query(
-    `SELECT u.id AS user_id, u.employee_id, u.username, u.is_bootstrap, u.must_complete_setup,
+    `SELECT u.id AS user_id, u.employee_id, u.username, u.is_bootstrap, u.must_complete_setup, u.must_change_password,
             COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL), '{}') AS role_codes
      FROM user_sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      LEFT JOIN roles r ON r.id = ur.role_id
      WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active = TRUE
-     GROUP BY u.id, u.employee_id, u.username, u.is_bootstrap, u.must_complete_setup`,
+     GROUP BY u.id, u.employee_id, u.username, u.is_bootstrap, u.must_complete_setup, u.must_change_password`,
     [tokenHash]
   );
   const row = result.rows[0];
@@ -41,7 +41,8 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
     username: row.username,
     roleCodes: row.role_codes ?? [],
     isBootstrap: row.is_bootstrap,
-    mustCompleteSetup: row.must_complete_setup
+    mustCompleteSetup: row.must_complete_setup,
+    mustChangePassword: row.must_change_password
   };
 }
 

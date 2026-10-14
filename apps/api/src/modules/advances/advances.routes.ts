@@ -105,6 +105,19 @@ export async function advanceRoutes(app:FastifyInstance){
         "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,repayment_method,installment_amount,salary_percentage,production_percentage,production_period_days,production_minimum_earning,production_installment_amount) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
         [p.data.employeeId,p.data.amount,p.data.reason,request.user!.userId,p.data.repaymentMethod,p.data.installmentAmount??null,p.data.salaryPercentage??null,p.data.productionPercentage??null,p.data.productionPeriodDays,p.data.productionMinimumEarning??null,p.data.productionInstallmentAmount??null]
       );
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         SELECT DISTINCT u.id,'ADVANCE_REQUEST_CREATED','طلب سلفة جديد للمراجعة',
+           'تم تقديم طلب سلفة بقيمة ' || $2::text || ' ج.م. راجع الطلب لاتخاذ الإجراء المناسب.',
+           'advance_request',$1::uuid
+         FROM users u
+         JOIN user_roles ur ON ur.user_id=u.id
+         JOIN role_permissions rp ON rp.role_id=ur.role_id
+         JOIN permissions p ON p.id=rp.permission_id AND p.code='advances.approve'
+         JOIN roles r ON r.id=ur.role_id AND r.is_active=TRUE
+         WHERE u.is_active=TRUE AND u.id<>$3`,
+        [x.rows[0].id, x.rows[0].amount, request.user!.userId]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"advances",entityType:"advance_request",entityId:x.rows[0].id,afterData:x.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return x.rows[0];
     });
@@ -119,6 +132,11 @@ export async function advanceRoutes(app:FastifyInstance){
       if(current.rows[0].status!=="PENDING")throw new AppError("INVALID_STATUS","حالة السلفة لا تسمح بالاعتماد",409);
       if(current.rows[0].requested_by===request.user!.userId)throw new AppError("SELF_APPROVAL","لا يمكنك اعتماد سلفة أنشأتها بنفسك",409);
       const updated=await client.query("UPDATE advance_requests SET status='APPROVED',reviewed_by=$1,reviewed_at=now(),updated_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,id]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         VALUES($1,'ADVANCE_REQUEST_APPROVED','تمت الموافقة على طلب السلفة','تمت الموافقة على طلب السلفة الخاص بك.','advance_request',$2)`,
+        [current.rows[0].requested_by, id]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"advances",entityType:"advance_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
@@ -132,6 +150,11 @@ export async function advanceRoutes(app:FastifyInstance){
       if(!current.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
       if(current.rows[0].status!=="PENDING")throw new AppError("INVALID_STATUS","حالة السلفة لا تسمح بالرفض",409);
       const updated=await client.query("UPDATE advance_requests SET status='REJECTED',rejection_reason=$1,reviewed_by=$2,reviewed_at=now(),updated_at=now() WHERE id=$3 RETURNING *",[p.data.reason,request.user!.userId,id]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         VALUES($1,'ADVANCE_REQUEST_REJECTED','تم رفض طلب السلفة','سبب الرفض: ' || $2,'advance_request',$3)`,
+        [current.rows[0].requested_by, p.data.reason, id]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reject",module:"advances",entityType:"advance_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{reason:p.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });

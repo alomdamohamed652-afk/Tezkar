@@ -27,7 +27,7 @@ export default function LoginPage() {
       });
       const body=await res.json().catch(()=>null);
       if(!res.ok) throw new Error(body?.error?.message ?? "تعذر تسجيل الدخول");
-      router.replace(body?.requiresSetup ? "/setup" : "/");
+      router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : "/");
     } catch(err) {
       setError(err instanceof Error ? err.message : "تعذر تسجيل الدخول");
     } finally {

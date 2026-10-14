@@ -5,4 +5,5 @@ export type SessionUser = {
   roleCodes: string[];
   isBootstrap: boolean;
   mustCompleteSetup: boolean;
+  mustChangePassword: boolean;
 };
