@@ -327,6 +327,38 @@ try {
     deleted.coding_templates = result.rowCount ?? 0;
   }
 
+  // Restore the four shipped label templates, including their settings and package links.
+  if (present.has("coding_templates") && present.has("coding_packaging_types")) {
+    const defaults = [
+      ["قالب الكيس", "BAG", 60, 40, false],
+      ["قالب الكرتونة", "CARTON", 80, 50, true],
+      ["قالب الشيكارة", "SACK", 100, 60, false],
+      ["قالب عام", "OTHER", 80, 50, false]
+    ] as const;
+    for (const [name, packageCode, width, height, isDefault] of defaults) {
+      await client.query(
+        `UPDATE public.coding_templates t
+         SET packaging_type_id = p.id, width_mm = $3, height_mm = $4,
+             orientation = 'LANDSCAPE',
+             config = '{"showLogo":true,"showCompanyName":true,"showProduct":true,"showBatch":true,"showQuantity":true,"showWeight":true,"showCode":true,"showBarcode":true,"showPackedDate":true,"showCodedTime":true,"showAddress":true}'::jsonb,
+             is_default = $5, is_active = TRUE
+         FROM public.coding_packaging_types p
+         WHERE t.name = $1 AND p.code = $2`,
+        [name, packageCode, width, height, isDefault]
+      );
+      await client.query(
+        `INSERT INTO public.coding_templates(name, packaging_type_id, width_mm, height_mm, orientation, config, is_default, is_active)
+         SELECT $1, p.id, $3, $4, 'LANDSCAPE',
+           '{"showLogo":true,"showCompanyName":true,"showProduct":true,"showBatch":true,"showQuantity":true,"showWeight":true,"showCode":true,"showBarcode":true,"showPackedDate":true,"showCodedTime":true,"showAddress":true}'::jsonb,
+           $5, TRUE
+         FROM public.coding_packaging_types p
+         WHERE p.code = $2
+           AND NOT EXISTS (SELECT 1 FROM public.coding_templates t WHERE t.name = $1)`,
+        [name, packageCode, width, height, isDefault]
+      );
+    }
+  }
+
   // Remove user-created rows from reference catalogs while retaining migration defaults.
   for (const table of ["units", "wage_types", "production_types", "coding_packaging_types"]) {
     if (!present.has(table)) continue;
