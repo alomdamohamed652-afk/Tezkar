@@ -1393,7 +1393,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const orderValueTest = await app.inject({
       method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
-      payload: { orderName: "Shift leader value visibility test", contractValue: 12345, orderDate: "2099-01-08" }
+      payload: { orderName: "Shift leader value visibility test", contractValue: 12345, orderDate: "2099-01-08", stages: [{ stageName: "Value visibility stage", sequenceNo: 1, outputProductName: "Value visibility product", plannedQuantity: 1, stageRate: 1, stageRateMethod: "PER_PIECE" }] }
     });
     assert.equal(orderValueTest.statusCode, 201, orderValueTest.body);
     const orderValueTestId = orderValueTest.json().data.id as string;
