@@ -86,6 +86,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       );
       await writeAudit(client, {
         actorUserId: request.user!.userId,
+        actorEmployeeId: request.user!.employeeId ?? null,
         action: "CREATE",
         module: "production",
         entityType: "production_scrap_record",
