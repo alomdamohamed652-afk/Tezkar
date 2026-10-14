@@ -98,7 +98,11 @@ export async function previewTrialDataReset(protectedUserId: string) {
       }
       if (table === "coding_templates") {
         const result = await client.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM public.coding_templates WHERE name <> ALL($1::text[])`,
+          `SELECT count(*)::text AS count FROM (
+             SELECT name, row_number() OVER (PARTITION BY name ORDER BY created_at, id) AS position
+             FROM public.coding_templates
+           ) templates
+           WHERE name <> ALL($1::text[]) OR position > 1`,
           [seededCodingTemplateNames]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
@@ -321,7 +325,16 @@ try {
   // Keep only seeded names in the coding-template catalog.
   if (present.has("coding_templates")) {
     const result = await client.query(
-      `DELETE FROM public.coding_templates WHERE name <> ALL($1::text[])`,
+      `DELETE FROM public.coding_templates t
+       WHERE t.name <> ALL($1::text[])
+          OR t.id IN (
+            SELECT id FROM (
+              SELECT id, row_number() OVER (PARTITION BY name ORDER BY created_at, id) AS position
+              FROM public.coding_templates
+              WHERE name = ANY($1::text[])
+            ) templates
+            WHERE position > 1
+          )`,
       [seededCodingTemplateNames]
     );
     deleted.coding_templates = result.rowCount ?? 0;
