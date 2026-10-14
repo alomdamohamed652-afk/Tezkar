@@ -61,7 +61,7 @@ export async function receiptRoutes(app:FastifyInstance){
   return {data:{receipt:receipt.rows[0],lines:lines.rows}};
  });
 
- app.post("/api/warehouse/receipts",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.move","all"],["warehouse.receipt.create","all"])],async(request,reply)=>{
+ app.post("/api/warehouse/receipts",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.move","all"],["warehouse.receipt.create","all"])]},async(request,reply)=>{
   const p=schema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الاستلام غير صحيحة",422);
   const row=await withTransaction(async client=>{
    const r=await client.query("INSERT INTO warehouse_receipts(receipt_date,source,notes,created_by) VALUES($1,$2,$3,$4) RETURNING *",[p.data.receiptDate??new Date().toISOString().slice(0,10),p.data.source,p.data.notes??null,request.user!.userId]);
