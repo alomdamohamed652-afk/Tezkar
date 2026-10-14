@@ -400,7 +400,10 @@ try {
 
     await client.query(
       `INSERT INTO public.warehouse_locations(warehouse_id, code, name, is_active)
-       SELECT w.id, 'MAIN', 'الرئيسي', TRUE
+       SELECT w.id,
+              CASE WHEN w.warehouse_type = 'SCRAP' THEN 'SCRAP-MAIN' ELSE 'MAIN' END,
+              CASE WHEN w.warehouse_type = 'SCRAP' THEN 'المكان الرئيسي' ELSE 'الرئيسي' END,
+              TRUE
        FROM public.warehouses w
        WHERE (w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
           OR (w.warehouse_type = 'WIP' AND w.name = $2)
