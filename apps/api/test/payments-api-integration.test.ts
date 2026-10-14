@@ -156,6 +156,26 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(productForOrder.get(variantIds[2]),productForOrder.get(variantIds[3]),
         "Arabic tashkeel variants must reuse one catalog product");
 
+      const superscriptAlefOrders=await Promise.all([
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic superscript alef variant A "+productSuffix,
+          finalProductName:"هٰذا المنتج "+productSuffix,finalQuantity:2
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic superscript alef variant B "+productSuffix,
+          finalProductName:"هذا المنتج "+productSuffix,finalQuantity:3
+        }})
+      ]);
+      assert.ok(superscriptAlefOrders.every(response=>response.statusCode===201),
+        superscriptAlefOrders.map(x=>x.body).join(" | "));
+      const superscriptAlefIds=superscriptAlefOrders.map(response=>response.json().data.id);
+      const superscriptAlefProducts=await apiPool.query(
+        "SELECT DISTINCT product_id FROM production_order_lines WHERE order_id=ANY($1::uuid[])",
+        [superscriptAlefIds]
+      );
+      assert.equal(superscriptAlefProducts.rowCount,1,
+        "Arabic superscript alef variants must reuse one catalog product");
+
       // If product resolution fails after the order row is tentatively inserted, the transaction must leave no partial order.
       const rejectedOrderName="Rollback invalid product order "+productSuffix;
       const rejectedOrder=await app.inject({
