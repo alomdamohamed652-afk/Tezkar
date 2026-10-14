@@ -130,7 +130,7 @@ export async function previewTrialDataReset(protectedUserId: string) {
                 OR (w.warehouse_type = 'WIP' AND w.name = $2)
                 OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
                 OR (w.warehouse_type = 'SCRAP' AND w.name = $4))
-           )))`,
+           ))`,
           [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
