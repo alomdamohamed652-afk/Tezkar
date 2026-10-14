@@ -446,6 +446,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(sourceAfterScrap.rows[0].quantity), Number(sourceBeforeScrap.rows[0].quantity) - 1);
     assert.equal(Number(scrapBalanceAfter.rows[0].quantity), Number(scrapBalanceBefore.rows[0].quantity) + 1,
       "approved scrap must move quantity between warehouses, not create additional total stock");
+    const reverseScrappedProduction = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
+      headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!", reason: "Must not reverse scrap-linked stock" }
+    });
+    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
+    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_HAS_SCRAP",
+      "reversal must not silently restore the gross quantity after scrap has been transferred");
 
     // Consume an intermediate-stage product as an input to the final stage.
     // This intentionally differs from the final stage's output product.
