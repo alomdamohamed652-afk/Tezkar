@@ -84,6 +84,24 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
       const productSuffix=randomBytes(4).toString("hex");
+      // Product names that differ only by Arabic hamza should resolve to the same active catalog product.
+      const hamzaName="مقلمه مطبوعه (أنا لها) "+productSuffix;
+      const plainAlefName="مقلمه مطبوعه (انا لها) "+productSuffix;
+      const hamzaOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Arabic hamza product test A "+productSuffix,finalProductName:hamzaName,finalQuantity:5}
+      });
+      assert.equal(hamzaOrder.statusCode,201,hamzaOrder.body);
+      const plainAlefOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Arabic hamza product test B "+productSuffix,finalProductName:plainAlefName,finalQuantity:3}
+      });
+      assert.equal(plainAlefOrder.statusCode,201,plainAlefOrder.body,"Arabic hamza spelling must not trigger a duplicate-product 500");
+      const hamzaProducts=await apiPool.query(
+        "SELECT DISTINCT product_id FROM production_order_lines WHERE order_id=ANY($1::uuid[])",
+        [[hamzaOrder.json().data.id,plainAlefOrder.json().data.id]]
+      );
+      assert.equal(hamzaProducts.rowCount,1,"both Arabic spellings should reuse the same product record");
       const multiProductOrder=await app.inject({
         method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
         payload:{
