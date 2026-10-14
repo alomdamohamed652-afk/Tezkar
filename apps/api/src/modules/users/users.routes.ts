@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -94,6 +95,23 @@ export async function userRoutes(app: FastifyInstance){
    }catch(error){if((error as {code?:string}).code==="23505")throw new AppError("USERNAME_EXISTS","اسم المستخدم مستخدم بالفعل",409);throw error;}
   });
   return reply.code(201).send({data:row});
+ });
+ app.post("/api/users/:id/reset-password",{preHandler:[authenticateRequest,requirePermission("users.edit")]},async(request)=>{
+  await assertSystemPermissionAdmin(request.user!.userId);
+  const id=(request.params as {id:string}).id;
+  const result=await withTransaction(async client=>{
+   const target=await client.query("SELECT id,username,employee_id,is_active,is_bootstrap FROM users WHERE id=$1 FOR UPDATE",[id]);
+   if(!target.rowCount)throw new AppError("USER_NOT_FOUND","حساب المستخدم غير موجود",404);
+   if(target.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","لا يمكن إعادة تعيين كلمة مرور حساب الإعداد الأساسي من هنا",409);
+   if(!target.rows[0].is_active)throw new AppError("USER_INACTIVE","فعّل الحساب قبل إعادة تعيين كلمة المرور",409);
+   const temporaryPassword="Tz!"+randomBytes(15).toString("base64url");
+   await client.query("UPDATE users SET password_hash=$1,updated_at=now() WHERE id=$2",[hashPassword(temporaryPassword),id]);
+   await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
+   await client.query("INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id) VALUES($1,'PASSWORD_RESET','تمت إعادة تعيين كلمة مرور حسابك','قام مدير النظام بإعادة تعيين كلمة المرور. استخدم كلمة المرور المؤقتة التي سلّمها لك المدير، ثم غيّرها من صفحة حسابي.','user',$2)",[id,id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reset_password",module:"iam",entityType:"user",entityId:id,metadata:{targetUsername:target.rows[0].username,sessionsRevoked:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {username:target.rows[0].username,temporaryPassword};
+  });
+  return {data:result};
  });
  app.delete("/api/users/:id",{preHandler:[authenticateRequest,requirePermission("users.delete")]},async(request)=>{
   const id=(request.params as {id:string}).id;
