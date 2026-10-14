@@ -710,6 +710,20 @@ export async function productionRoutes(app: FastifyInstance) {
         throw new AppError("PRODUCT_NOT_INVENTORIED", "المنتج غير موجود أو غير متابع مخزنيًا", 409);
       }
 
+      const scrapResult = await client.query(
+        "SELECT COALESCE(SUM(quantity),0) AS quantity FROM production_scrap_records WHERE production_entry_id=$1",
+        [id]
+      );
+      const recordedScrapQuantity = Number(scrapResult.rows[0]?.quantity ?? 0);
+      if (recordedScrapQuantity > Number(current.quantity) + 1e-9) {
+        throw new AppError("SCRAP_EXCEEDS_PRODUCTION", "إجمالي الهالك المسجل يتجاوز كمية الإنتاج", 409);
+      }
+      // Production quantity is the gross processed amount. Only good units enter
+      // the regular warehouse; pre-approval scrap was already received separately.
+      const goodQuantity = Math.max(0, Number(current.quantity) - recordedScrapQuantity);
+      const totalLaborCost = Number(current.total_earning_amount ?? current.earning_amount);
+      const productionUnitCost = Number(current.quantity) > 0 ? totalLaborCost / Number(current.quantity) : 0;
+      const goodInventoryValue = goodQuantity * productionUnitCost;
       const lockedBalance = await client.query(
         "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
         [current.product_id, current.warehouse_id, current.location_id]
@@ -717,36 +731,35 @@ export async function productionRoutes(app: FastifyInstance) {
       const currentBalance = Number(lockedBalance.rows[0]?.quantity ?? 0);
       const currentValue = Number(lockedBalance.rows[0]?.inventory_value ?? 0);
       const currentAvg = Number(lockedBalance.rows[0]?.avg_unit_cost ?? 0);
-      const totalLaborCost = Number(current.total_earning_amount ?? current.earning_amount);
-      const productionUnitCost = Number(current.quantity) > 0 ? totalLaborCost / Number(current.quantity) : 0;
-      const nextBalance = currentBalance + Number(current.quantity);
-      const nextValue = currentValue + Number(current.quantity) * productionUnitCost;
-      const nextAvg = nextBalance > 0 ? nextValue / nextBalance : currentAvg;
-      if (lockedBalance.rowCount) {
+      if (goodQuantity > 0) {
+        const nextBalance = currentBalance + goodQuantity;
+        const nextValue = currentValue + goodInventoryValue;
+        const nextAvg = nextBalance > 0 ? nextValue / nextBalance : currentAvg;
+        if (lockedBalance.rowCount) {
+          await client.query(
+            "UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
+            [nextBalance,nextAvg,nextValue,current.product_id,current.warehouse_id,current.location_id]
+          );
+        } else {
+          await client.query(
+            "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,avg_unit_cost,inventory_value) VALUES($1,$2,$3,$4,$5,$6)",
+            [current.product_id,current.warehouse_id,current.location_id,goodQuantity,productionUnitCost,goodInventoryValue]
+          );
+        }
         await client.query(
-          "UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
-          [nextBalance,nextAvg,nextValue,current.product_id,current.warehouse_id,current.location_id]
-        );
-      } else {
-        await client.query(
-          "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,avg_unit_cost,inventory_value) VALUES($1,$2,$3,$4,$5,$6)",
-          [current.product_id,current.warehouse_id,current.location_id,current.quantity,productionUnitCost,totalLaborCost]
+          `INSERT INTO stock_movements(
+             movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,
+             notes,created_by,reference_type,reference_id
+           )
+           VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION',$12)
+           ON CONFLICT DO NOTHING`,
+          [
+            current.product_id,current.warehouse_id,current.location_id,goodQuantity,current.unit_id,
+            productionUnitCost,goodInventoryValue,current.order_id??null,current.order_stage_id??null,
+            "إدخال الإنتاج الصالح بعد استبعاد الهالك "+current.code,request.user!.userId,id
+          ]
         );
       }
-
-      await client.query(
-        `INSERT INTO stock_movements(
-           movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,
-           notes,created_by,reference_type,reference_id
-         )
-         VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION',$12)
-         ON CONFLICT DO NOTHING`,
-        [
-          current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,
-          productionUnitCost,totalLaborCost,current.order_id??null,current.order_stage_id??null,
-          "إدخال إنتاج معتمد "+current.code,request.user!.userId,id
-        ]
-      );
 
       const updated = await client.query(
         `UPDATE production_entries
@@ -771,7 +784,7 @@ export async function productionRoutes(app: FastifyInstance) {
                   END
             WHERE id=$2
             RETURNING id,order_id,completed_quantity,status`,
-          [current.quantity,current.order_stage_id]
+          [goodQuantity,current.order_stage_id]
         );
         if(!stageUpdate.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب المرتبطة بالإنتاج غير موجودة",409);
         const orderCompletion=await client.query(
@@ -790,16 +803,18 @@ export async function productionRoutes(app: FastifyInstance) {
         }
       }
 
-      await createInventoryLot(client,{
-        productId:current.product_id,
-        warehouseId:current.warehouse_id,
-        locationId:current.location_id,
-        quantity:Number(current.quantity),
-        unitCost:productionUnitCost,
-        batchCode:current.code,
-        sourceType:"PRODUCTION",
-        sourceId:id
-      });
+      if (goodQuantity > 0) {
+        await createInventoryLot(client,{
+          productId:current.product_id,
+          warehouseId:current.warehouse_id,
+          locationId:current.location_id,
+          quantity:goodQuantity,
+          unitCost:productionUnitCost,
+          batchCode:current.code,
+          sourceType:"PRODUCTION",
+          sourceId:id
+        });
+      }
 
       await client.query(
         `INSERT INTO employee_earnings_ledger(
