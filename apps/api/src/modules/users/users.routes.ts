@@ -145,6 +145,12 @@ export async function userRoutes(app: FastifyInstance){
     await client.query("DELETE FROM user_notifications WHERE user_id=$1",[id]);
     await client.query("DELETE FROM user_preferences WHERE user_id=$1",[id]);
     await client.query("DELETE FROM user_roles WHERE user_id=$1",[id]);
+    // Preserve the audit trail while removing the direct FK to the deleted login.
+    // The historic username remains in metadata so past actions are still attributable.
+    await client.query(
+      "UPDATE audit_log SET actor_user_id=NULL,metadata=metadata || jsonb_build_object('deleted_actor_username',$2::text) WHERE actor_user_id=$1",
+      [id,user.username]
+    );
     try {
       await client.query("DELETE FROM users WHERE id=$1",[id]);
     } catch(error) {
