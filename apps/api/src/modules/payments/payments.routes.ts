@@ -473,6 +473,34 @@ export async function paymentsRoutes(app:FastifyInstance){
     });
     return {data:row};
   });
+  app.get("/api/worker-payments/preview", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed = z.object({
+      employeeId: z.string().uuid(),
+      cashCustodyEmployeeId: z.string().uuid()
+    }).safeParse(request.query);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اختيار العامل أو العهدة غير صحيح", 422);
+    const client = await pool.connect();
+    try {
+      const availableEarnings = await getAvailableEarnings(client, parsed.data.employeeId);
+      const custody = await client.query(
+        `SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance
+           FROM cash_custody_transactions
+          WHERE employee_id=$1 AND transaction_date<=CURRENT_DATE`,
+        [parsed.data.cashCustodyEmployeeId]
+      );
+      const cashCustodyBalance = Math.round(Number(custody.rows[0]?.balance ?? 0) * 100) / 100;
+      return { data: {
+        availableEarnings,
+        cashCustodyBalance,
+        maxGrossPayoutWithoutManualOffset: Math.min(availableEarnings, cashCustodyBalance)
+      }};
+    } finally {
+      client.release();
+    }
+  });
+
   // Finance may settle an employee's available production earnings directly without a prior payment request.
   app.post("/api/worker-payments/direct", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
