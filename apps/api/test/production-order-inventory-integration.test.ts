@@ -168,7 +168,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
         stages: [{
           stageName: "طِباعة   UV " + arabicSuffix,
           sequenceNo: 1,
-          outputProductName: "مقلمه مطبوعه (أَنَا لها) " + arabicSuffix,
+          outputProductName: "مقلمه مطبوعه (ا\u0654َنَا لها) " + arabicSuffix,
           plannedQuantity: 1,
           stageRate: 1,
           stageRateMethod: "PER_PIECE",
