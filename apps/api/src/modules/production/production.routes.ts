@@ -817,12 +817,28 @@ export async function productionRoutes(app: FastifyInstance) {
       if(current.order_stage_id){
         await client.query(
           `UPDATE order_stages SET completed_quantity=GREATEST(0,completed_quantity-$1),
-             status=CASE WHEN GREATEST(0,completed_quantity-$1)=0 THEN 'PENDING' ELSE 'IN_PROGRESS' END,
-             completed_at=CASE WHEN GREATEST(0,completed_quantity-$1)=0 THEN NULL ELSE completed_at END
+             status=CASE
+               WHEN planned_quantity IS NOT NULL AND GREATEST(0,completed_quantity-$1)>=planned_quantity THEN 'COMPLETED'
+               WHEN GREATEST(0,completed_quantity-$1)=0 THEN 'PENDING'
+               ELSE 'IN_PROGRESS'
+             END,
+             completed_at=CASE
+               WHEN planned_quantity IS NOT NULL AND GREATEST(0,completed_quantity-$1)>=planned_quantity THEN completed_at
+               WHEN GREATEST(0,completed_quantity-$1)=0 THEN NULL
+               ELSE completed_at
+             END
            WHERE id=$2`,
           [current.quantity,current.order_stage_id]
         );
-        if(current.order_id)await client.query("UPDATE production_orders SET status='IN_PROGRESS',updated_at=now() WHERE id=$1 AND status='COMPLETED'",[current.order_id]);
+        if(current.order_id){
+          const stageState=await client.query(
+            `SELECT COUNT(*)::int AS total,COUNT(*) FILTER(WHERE status='COMPLETED')::int AS completed
+               FROM order_stages WHERE order_id=$1 AND status<>'CANCELLED'`,
+            [current.order_id]
+          );
+          const nextOrderStatus=Number(stageState.rows[0]?.total||0)>0&&Number(stageState.rows[0]?.total)===Number(stageState.rows[0]?.completed)?"COMPLETED":"IN_PROGRESS";
+          await client.query("UPDATE production_orders SET status=$1,updated_at=now() WHERE id=$2 AND status NOT IN ('CANCELLED','DRAFT')",[nextOrderStatus,current.order_id]);
+        }
       }
       const updated=await client.query("UPDATE production_entries SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now() WHERE id=$2 RETURNING id,code,status,employee_id,quantity,work_date",[request.user!.userId,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:parsed.data.reason,stockMovementId:movement.rows[0].id,inventoryLotId:sourceLot.id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
