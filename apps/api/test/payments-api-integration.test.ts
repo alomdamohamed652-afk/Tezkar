@@ -102,6 +102,37 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [[hamzaOrder.json().data.id,plainAlefOrder.json().data.id]]
       );
       assert.equal(hamzaProducts.rowCount,1,"both Arabic spellings should reuse the same product record");
+
+      
+      // Concurrent order creation with Arabic spellings that normalize to the same catalog name.
+      const parallelNameA="مقلمه مطبوعه (أنا لها) concurrent "+productSuffix;
+      const parallelNameB="مقلمه مطبوعه (انا لها) concurrent "+productSuffix;
+      const parallelOrders=await Promise.all(Array.from({length:4},(_,index)=>app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{
+          orderName:"Concurrent normalized product order "+index+" "+productSuffix,
+          finalProductName:index%2===0?parallelNameA:parallelNameB,
+          finalQuantity:index+1
+        }
+      })));
+      assert.ok(parallelOrders.every(response=>response.statusCode===201),
+        "parallel order requests must reuse the normalized product rather than return a duplicate-key 500: "+parallelOrders.map(x=>x.body).join(" | "));
+      const parallelOrderIds=parallelOrders.map(response=>response.json().data.id);
+      const parallelProductIds=await apiPool.query(
+        "SELECT DISTINCT product_id FROM production_order_lines WHERE order_id=ANY($1::uuid[])",
+        [parallelOrderIds]
+      );
+      assert.equal(parallelProductIds.rowCount,1,"parallel requests with equivalent Arabic product names must resolve to one product");
+
+      // If product resolution fails after the order row is tentatively inserted, the transaction must leave no partial order.
+      const rejectedOrderName="Rollback invalid product order "+productSuffix;
+      const rejectedOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:rejectedOrderName,lines:[{productId:"00000000-0000-4000-8000-000000000001",quantity:2}]}
+      });
+      assert.equal(rejectedOrder.statusCode,422,rejectedOrder.body);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM production_orders WHERE order_name=$1",[rejectedOrderName])).rows[0].count),0,
+        "failed product resolution must roll back the parent order row");
       const multiProductOrder=await app.inject({
         method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
         payload:{
