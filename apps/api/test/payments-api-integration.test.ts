@@ -636,6 +636,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.equal(Number(bonusAllocation.rows[0].amount),130);
 
+      const insufficientCustodyPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:workerEmployee.id,cashCustodyEmployeeId:workerEmployee.id,amount:10,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(insufficientCustodyPayout.statusCode,409,insufficientCustodyPayout.body);
+      assert.equal(insufficientCustodyPayout.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),0,
+        "an insufficient custody balance must not leave a direct payment");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",[workerEmployee.id])).rows[0].count),0,
+        "an insufficient custody balance must not leave a settlement");
       const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
       const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
       const concurrentDirect=await Promise.all([
