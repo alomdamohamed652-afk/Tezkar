@@ -634,9 +634,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       );
       assert.equal(administrativeExpenseCounts.rows[0].expense_count,1);
       assert.equal(administrativeExpenseCounts.rows[0].cash_count,1);
+      const administrativeBalanceBeforeOverdraw=await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
+        [employeeA.id,"2099-01-12"]
+      );
+      const overdrawAmount=Number(administrativeBalanceBeforeOverdraw.rows[0].balance)+1;
       const overdrawnAdministrativeExpense=await app.inject({
         method:"POST",url:"/api/cash-custody/administrative-expenses",headers:{cookie:managerCookie},
-        payload:{...administrativeCustodyExpensePayload,amount:100,idempotencyKey:randomUUID(),description:"Must reject administrative expense above custody balance"}
+        payload:{...administrativeCustodyExpensePayload,amount:overdrawAmount,idempotencyKey:randomUUID(),description:"Must reject administrative expense above custody balance"}
       });
       assert.equal(overdrawnAdministrativeExpense.statusCode,409,overdrawnAdministrativeExpense.body);
       assert.equal(overdrawnAdministrativeExpense.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
