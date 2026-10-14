@@ -145,6 +145,52 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(orderResponse.statusCode, 201, orderResponse.body);
 
+    // Arabic hamza, tashkeel, and repeated whitespace must resolve to one existing
+    // product/stage even when two order requests arrive at the same time.
+    const arabicSuffix = randomBytes(4).toString("hex");
+    const arabicRequests = [
+      {
+        orderName: "Arabic normalization A " + arabicSuffix,
+        orderDate: "2099-01-03",
+        stages: [{
+          stageName: "طباعة UV " + arabicSuffix,
+          sequenceNo: 1,
+          outputProductName: "مقلمه مطبوعه (انا لها) " + arabicSuffix,
+          plannedQuantity: 1,
+          stageRate: 1,
+          stageRateMethod: "PER_PIECE",
+          isFinalProduct: true
+        }]
+      },
+      {
+        orderName: "Arabic normalization B " + arabicSuffix,
+        orderDate: "2099-01-03",
+        stages: [{
+          stageName: "طِباعة   UV " + arabicSuffix,
+          sequenceNo: 1,
+          outputProductName: "مقلمه مطبوعه (أَنَا لها) " + arabicSuffix,
+          plannedQuantity: 1,
+          stageRate: 1,
+          stageRateMethod: "PER_PIECE",
+          isFinalProduct: true
+        }]
+      }
+    ];
+    const arabicOrderResults = await Promise.all(arabicRequests.map(payload => app!.inject({
+      method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie }, payload
+    })));
+    assert.ok(arabicOrderResults.every(result => result.statusCode === 201), arabicOrderResults.map(result => result.body).join("\\n"));
+    const arabicOrderIds = arabicOrderResults.map(result => result.json().data.id as string);
+    const arabicProducts = await apiPool.query(
+      "SELECT order_id,output_product_id,stage_id FROM order_stages WHERE order_id = ANY($1::uuid[]) ORDER BY order_id",
+      [arabicOrderIds]
+    );
+    assert.equal(arabicProducts.rowCount, 2);
+    assert.equal(arabicProducts.rows[0].output_product_id, arabicProducts.rows[1].output_product_id,
+      "Arabic hamza/tashkeel variants must resolve to the same product");
+    assert.equal(arabicProducts.rows[0].stage_id, arabicProducts.rows[1].stage_id,
+      "Arabic tashkeel and repeated spaces must resolve to the same stage");
+
     // One order may contain multiple final products, each designated on its own stage.
     const multiSuffix = randomBytes(4).toString("hex");
     const multiFinalOrder = await app.inject({
