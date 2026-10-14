@@ -4,11 +4,10 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticate, hashPassword } from "../auth/auth.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 export async function accountRoutes(app: FastifyInstance) {
-  app.post("/api/account/change-password", { preHandler: [authenticateRequest, requirePermission("account.change_password")] }, async (request) => {
+  app.post("/api/account/change-password", { preHandler: [authenticateRequest] }, async (request) => {
     const parsed=z.object({
       currentPassword:z.string().min(1).max(200),
       newPassword:z.string().min(12).max(200),
@@ -29,7 +28,7 @@ export async function accountRoutes(app: FastifyInstance) {
 
   app.get("/api/account/profile", { preHandler: [authenticateRequest] }, async (request) => {
     const r=await pool.query(
-      `SELECT u.username,u.code,e.full_name,e.code AS employee_code,
+      `SELECT u.username,u.code,u.must_change_password,e.full_name,e.code AS employee_code,
               COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL),'{}') AS roles
          FROM users u
          LEFT JOIN employees e ON e.id=u.employee_id
