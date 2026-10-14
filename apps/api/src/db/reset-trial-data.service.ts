@@ -221,53 +221,15 @@ try {
 
   // Delete every non-core table child-first. Employees and non-admin users are handled after dependent records are removed.
   const targets = allTables.filter((table) => !keep.has(table) && table !== "employees");
-  const targetSet = new Set(targets);
-  const dependencies = await client.query<{ child: string; parent: string }>(
-    `SELECT child.relname AS child, parent.relname AS parent
-     FROM pg_constraint c
-     JOIN pg_class child ON child.oid = c.conrelid
-     JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
-     JOIN pg_class parent ON parent.oid = c.confrelid
-     JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
-     WHERE c.contype = 'f'
-       AND child_ns.nspname = 'public'
-       AND parent_ns.nspname = 'public'`
-  );
-
-  const outgoing = new Map<string, Set<string>>();
-  const indegree = new Map<string, number>(targets.map((table) => [table, 0]));
-  for (const table of targets) outgoing.set(table, new Set());
-
-  for (const { child, parent } of dependencies.rows) {
-    if (!targetSet.has(child) || !targetSet.has(parent) || child === parent) continue;
-    const edges = outgoing.get(child)!;
-    if (!edges.has(parent)) {
-      edges.add(parent);
-      indegree.set(parent, (indegree.get(parent) ?? 0) + 1);
-    }
-  }
-
-  const ready = targets.filter((table) => indegree.get(table) === 0);
-  const ordered: string[] = [];
-  while (ready.length > 0) {
-    const table = ready.shift()!;
-    ordered.push(table);
-    for (const parent of outgoing.get(table) ?? []) {
-      const next = (indegree.get(parent) ?? 0) - 1;
-      indegree.set(parent, next);
-      if (next === 0) ready.push(parent);
-    }
-  }
-  if (ordered.length !== targets.length) {
-    const cyclic = targets.filter((table) => !ordered.includes(table));
-    throw new Error(`Foreign-key cycle detected; no data was changed. Tables: ${cyclic.join(", ")}`);
-  }
-
+  // Truncate all operational targets together. A single statement safely handles
+  // foreign-key cycles between operational tables without cascading into preserved
+  // system/reference tables. No CASCADE is used: an unexpected outside dependency
+  // aborts the transaction instead of deleting protected data.
   const deleted: Record<string, number> = {};
-  for (const table of ordered) {
-    const result = await client.query(`DELETE FROM ${qualified(table)}`);
-    deleted[table] = result.rowCount ?? 0;
+  if (targets.length > 0) {
+    await client.query(`TRUNCATE TABLE ${targets.map(qualified).join(", ")} RESTART IDENTITY`);
   }
+  for (const table of targets) deleted[table] = beforeCounts[table] ?? 0;
 
   // Now all rows referencing trial users/employees have been cleared.
   if (present.has("user_roles")) {
