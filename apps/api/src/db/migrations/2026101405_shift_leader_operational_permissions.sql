@@ -18,7 +18,11 @@ ON CONFLICT DO NOTHING;
 -- Employee names/codes are needed in production forms. This lookup permission
 -- does not grant access to the full employee directory or employee maintenance.
 INSERT INTO permissions(code,module,entity,action,scope)
-VALUES ('employees.lookup','hr','employee','lookup','all')
+VALUES
+  ('employees.lookup','hr','employee','lookup','all'),
+  ('warehouse.receipt.create','warehouse','receipt','receive','all'),
+  ('warehouse.shift_withdrawal.create','warehouse','shift_withdrawal','create','all'),
+  ('cartons.create','warehouse','carton','create','all')
 ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
@@ -36,11 +40,12 @@ JOIN permissions p ON p.code IN (
   'production.view',
   'production.create',
   'warehouse.view',
-  'warehouse.move',
+  'warehouse.receipt.create',
+  'warehouse.shift_withdrawal.create',
   'deliveries.view',
   'deliveries.create',
   'cartons.view',
-  'cartons.manage'
+  'cartons.create'
 )
 WHERE r.code='shift_leader'
 ON CONFLICT DO NOTHING;
