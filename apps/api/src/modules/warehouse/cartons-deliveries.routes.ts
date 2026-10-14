@@ -29,7 +29,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
 
- app.post("/api/warehouse/cartons",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])],async(request,reply)=>{
+ app.post("/api/warehouse/cartons",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])]},async(request,reply)=>{
   const parsed=cartonSchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الكرتونة غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
    const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود",422);
