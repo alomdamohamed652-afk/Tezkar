@@ -35,7 +35,8 @@ export async function productionScrapRoutes(app: FastifyInstance) {
     if (q.data.scrapType) { values.push(q.data.scrapType); where.push(`s.scrap_type = $${values.length}`); }
     const result = await pool.query(
       `SELECT s.id, s.production_entry_id, s.scrap_type, s.quantity, s.notes, s.created_at,
-              p.code AS production_code, p.work_date, p.quantity AS production_quantity,\n              (SELECT COALESCE(SUM(sr.quantity),0) FROM production_scrap_records sr WHERE sr.production_entry_id=s.production_entry_id) AS scrap_total_for_entry, p.status,
+              p.code AS production_code, p.work_date, p.quantity AS production_quantity,
+              (SELECT COALESCE(SUM(sr.quantity),0) FROM production_scrap_records sr WHERE sr.production_entry_id=s.production_entry_id) AS scrap_total_for_entry, p.status,
               e.id AS employee_id, e.full_name AS employee_name,
               pr.name AS product_name, st.name AS stage_name, sh.name AS shift_name,
               o.code AS order_code, o.order_name
