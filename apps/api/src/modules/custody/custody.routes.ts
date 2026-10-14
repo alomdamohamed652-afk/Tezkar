@@ -42,6 +42,17 @@ const settleSchema=z.object({
   if(v.returnedQuantity+v.lostQuantity<=0)ctx.addIssue({code:"custom",path:["returnedQuantity"],message:"يجب تسجيل كمية مرتجعة أو مفقودة"});
 });
 
+async function assertCashCustodyBalance(client: import("pg").PoolClient, employeeId: string, amount: number, date: string) {
+  const balance = await client.query(
+    "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
+    [employeeId, date]
+  );
+  const available = Number(balance.rows[0]?.balance ?? 0);
+  if (amount > available + 1e-9) {
+    throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE", `رصيد العهدة المتاح ${available.toFixed(2)} ج.م لا يكفي للمصروف المطلوب`, 409);
+  }
+}
+
 async function workerInfo(userId:string){
   const r=await pool.query("SELECT u.employee_id,EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1 AND r.code='worker' AND r.is_active=TRUE) AS is_worker FROM users u WHERE u.id=$1",[userId]);
   return r.rows[0]??null;
@@ -422,6 +433,7 @@ export async function custodyRoutes(app:FastifyInstance){
       if(["DRAFT","COMPLETED"].includes(order.rows[0].status))throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف تشغيلي على طلبية مسودة أو مكتملة",409);
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      await assertCashCustodyBalance(client, employeeId, p.data.amount, date);
       if(p.data.orderStageId){const stage=await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE",[p.data.orderStageId]);if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الإنتاج غير موجودة",404);if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);}
       await assertPostingDateOpen(client,date);
       const expense=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,'DIRECT',$8,$9,$10) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",[p.data.orderId,p.data.orderStageId??null,p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId,p.data.idempotencyKey,payloadHash]);
@@ -470,6 +482,7 @@ export async function custodyRoutes(app:FastifyInstance){
       if(prior)return prior;
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
+      await assertCashCustodyBalance(client, employeeId, p.data.amount, date);
       await assertPostingDateOpen(client,date);
       const inserted=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES(NULL,NULL,$1,$2,$3,$4,$5,'ADMINISTRATIVE',$6,$7,$8) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",[p.data.category,p.data.description,p.data.amount,date,request.user!.userId,employeeId,p.data.idempotencyKey,payloadHash]);
       if(!inserted.rowCount){
