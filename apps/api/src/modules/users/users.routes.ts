@@ -105,7 +105,7 @@ export async function userRoutes(app: FastifyInstance){
    if(target.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","لا يمكن إعادة تعيين كلمة مرور حساب الإعداد الأساسي من هنا",409);
    if(!target.rows[0].is_active)throw new AppError("USER_INACTIVE","فعّل الحساب قبل إعادة تعيين كلمة المرور",409);
    const temporaryPassword="Tz!"+randomBytes(15).toString("base64url");
-   await client.query("UPDATE users SET password_hash=$1,updated_at=now() WHERE id=$2",[hashPassword(temporaryPassword),id]);
+   await client.query("UPDATE users SET password_hash=$1,must_change_password=TRUE,updated_at=now() WHERE id=$2",[hashPassword(temporaryPassword),id]);
    await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
    await client.query("INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id) VALUES($1,'PASSWORD_RESET','تمت إعادة تعيين كلمة مرور حسابك','قام مدير النظام بإعادة تعيين كلمة المرور. استخدم كلمة المرور المؤقتة التي سلّمها لك المدير، ثم غيّرها من صفحة حسابي.','user',$2)",[id,id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reset_password",module:"iam",entityType:"user",entityId:id,metadata:{targetUsername:target.rows[0].username,sessionsRevoked:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
