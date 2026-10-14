@@ -265,9 +265,9 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         module: "production",
         entityType: "production_scrap_record",
         entityId: result.rows[0].id,
-        afterData: { ...result.rows[0], stockMovementId: movement.rows[0].id, scrapWarehouseId: warehouseId }
+        afterData: { ...result.rows[0], stockMovementId: movement.rows[0].id, sourceStockMovementId: sourceMovementId, scrapWarehouseId: warehouseId }
       });
-      return { ...result.rows[0], stock_movement_id: movement.rows[0].id, employee_name: entry.rows[0].employee_name, product_name: entry.rows[0].product_name };
+      return { ...result.rows[0], stock_movement_id: movement.rows[0].id, source_stock_movement_id: sourceMovementId, employee_name: entry.rows[0].employee_name, product_name: entry.rows[0].product_name };
     });
     return reply.code(201).send({ data: created });
   });
