@@ -552,6 +552,12 @@ export async function productionRoutes(app: FastifyInstance) {
       let locationId=current.location_id;
       let orderStage:any=null;
       if(orderStageId){
+        // Keep the same parent-order -> stage lock order used by production creation
+        // and order maintenance to avoid lock inversion under concurrent edits.
+        const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[orderStageId]);
+        if(!stageRef.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const parentOrder=await client.query("SELECT id FROM production_orders WHERE id=$1 FOR UPDATE",[stageRef.rows[0].order_id]);
+        if(!parentOrder.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
         const os=await client.query(
           `SELECT os.id,os.order_id,os.stage_id,os.output_product_id,os.sequence_no,os.is_final_product,os.status AS stage_status,
                   os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id,os.production_type_id AS stage_production_type_id,
