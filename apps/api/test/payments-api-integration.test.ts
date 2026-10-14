@@ -124,6 +124,38 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.equal(parallelProductIds.rowCount,1,"parallel requests with equivalent Arabic product names must resolve to one product");
 
+      
+      const variantOrders=await Promise.all([
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Case whitespace variant A "+productSuffix,
+          finalProductName:"  Mixed   CASE Product "+productSuffix,finalQuantity:2
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Case whitespace variant B "+productSuffix,
+          finalProductName:"mixed case product "+productSuffix,finalQuantity:3
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic tashkeel variant A "+productSuffix,
+          finalProductName:"مُقَلَّمَة مطبوعة "+productSuffix,finalQuantity:4
+        }}),
+        app.inject({method:"POST",url:"/api/orders",headers:{cookie:managerCookie},payload:{
+          orderName:"Arabic tashkeel variant B "+productSuffix,
+          finalProductName:"مقلمة مطبوعة "+productSuffix,finalQuantity:5
+        }})
+      ]);
+      assert.ok(variantOrders.every(response=>response.statusCode===201),
+        "case, whitespace and Arabic tashkeel variants must not cause order creation failures: "+variantOrders.map(x=>x.body).join(" | "));
+      const variantIds=variantOrders.map(response=>response.json().data.id);
+      const variantProducts=await apiPool.query(
+        "SELECT pol.order_id,pol.product_id FROM production_order_lines pol WHERE pol.order_id=ANY($1::uuid[])",
+        [variantIds]
+      );
+      const productForOrder=new Map(variantProducts.rows.map(row=>[row.order_id,row.product_id]));
+      assert.equal(productForOrder.get(variantIds[0]),productForOrder.get(variantIds[1]),
+        "case and repeated whitespace variants must reuse one catalog product");
+      assert.equal(productForOrder.get(variantIds[2]),productForOrder.get(variantIds[3]),
+        "Arabic tashkeel variants must reuse one catalog product");
+
       // If product resolution fails after the order row is tentatively inserted, the transaction must leave no partial order.
       const rejectedOrderName="Rollback invalid product order "+productSuffix;
       const rejectedOrder=await app.inject({
