@@ -406,6 +406,9 @@ export async function productionRoutes(app: FastifyInstance) {
       if (!Number.isFinite(earning) || earning < 0) {
         throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج بشكل صحيح", 422);
       }
+      if (earning + Number(parsed.data.bonusAmount ?? 0) < Number(parsed.data.deductionAmount ?? 0)) {
+        throw new AppError("DEDUCTION_EXCEEDS_EARNING", "الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب", 422);
+      }
 
       const unitId = rate.unit_id ?? product.rows[0].unit_id;
 
@@ -547,6 +550,7 @@ export async function productionRoutes(app: FastifyInstance) {
         if(baseAmount===null||baseAmount===undefined)throw new AppError("BASE_AMOUNT_REQUIRED","أدخل قيمة الأساس لحساب أجر النسبة",422);
         earning=baseAmount*rate/100;
       }
+      if(earning+bonusAmount<deductionAmount)throw new AppError("DEDUCTION_EXCEEDS_EARNING","الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب",422);
       await client.query(
         `UPDATE production_entries SET employee_id=$1,shift_id=$2,shift_leader_employee_id=$3,work_date=$4,
           quantity=$5,base_amount=$6,hours_worked=$7,earning_amount=$8,bonus_amount=$9,deduction_amount=$10,updated_at=now()
@@ -792,7 +796,14 @@ export async function productionRoutes(app: FastifyInstance) {
       );
       await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[movement.rows[0].id,sourceLot.id,current.quantity,sourceLot.unit_cost,removedValue]);
       await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[sourceLot.id]);
-      await client.query("UPDATE employee_earnings_ledger SET debit_amount=credit_amount,credit_amount=0,notes=$1 WHERE production_entry_id=$2 AND entry_type='PRODUCTION_APPROVAL'",["عكس استحقاق الإنتاج "+current.code+" — "+parsed.data.reason,id]);
+      const originalEarning=await client.query("SELECT employee_id,credit_amount FROM employee_earnings_ledger WHERE production_entry_id=$1 AND entry_type='PRODUCTION_APPROVAL' FOR UPDATE",[id]);
+      if(!originalEarning.rowCount)throw new AppError("PRODUCTION_EARNING_MISSING","لا يوجد قيد مستحقات أصلي يمكن عكسه بأمان",409);
+      if(Number(originalEarning.rows[0].credit_amount)>0){
+        await client.query(
+          "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,notes,created_by) VALUES($1,'ADJUSTMENT',0,$2,$3,$4)",
+          [current.employee_id,Number(originalEarning.rows[0].credit_amount),"عكس مستحق الإنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId]
+        );
+      }
       const adjustments=await client.query("SELECT adjustment_type,amount,reason FROM employee_earnings_adjustments WHERE production_entry_id=$1",[id]);
       for(const a of adjustments.rows){
         const amount=Number(a.amount);
