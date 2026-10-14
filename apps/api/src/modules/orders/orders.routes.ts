@@ -77,17 +77,16 @@ function calculateStageEarning(method:string,rate:number,entry:{quantity:string|
 
 async function ensureProduct(client:any, input:{productId?:string|undefined;productName?:string|undefined}) {
   if(input.productId){
-    const existing=await client.query("SELECT id,unit_id,name FROM products WHERE id=$1 AND is_active=TRUE",[input.productId]);
-    if(!existing.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
-    return existing.rows[0];
-  }
-  const name=input.productName!.trim();
-  const normalized=normalizeBusinessName(name);
-  // Serialize auto-creation by the same normalized business name. This treats
-  // whitespace, case and Arabic tashkeel as presentation differences.
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('product:' || $1))",[normalized]);
+    // Match the database unique-index semantics before attempting an insert.
+  const exact=await client.query(
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND lower(btrim(name))=lower(btrim($1)) ORDER BY created_at LIMIT 1",
+    [name]
+  );
+  if(exact.rowCount)return exact.rows[0];
+
+  // Normalize Arabic alef/hamza variants consistently with JS NFKD normalization.
   const existing=await client.query(
-    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), 'أإآٱ', 'اااا'), '\\\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
