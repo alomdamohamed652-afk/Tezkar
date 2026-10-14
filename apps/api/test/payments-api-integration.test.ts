@@ -491,6 +491,49 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(postSettlementBalance.json().data.balance),-50,"the employee account must reconcile remaining unpaid earnings against the outstanding loan");
       assert.equal(Number(postSettlementBalance.json().data.outstandingAdvanceAmount),200);
       assert.equal(Number(postSettlementBalance.json().data.availableEarnings),150,"only genuinely unpaid earnings remain available");
+
+      
+      // Direct payout requires no prior payment request and must serialize concurrent attempts.
+      const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH"};
+      const concurrentDirect=await Promise.all([
+        app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload}),
+        app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload})
+      ]);
+      assert.equal(concurrentDirect.filter(response=>response.statusCode===201).length,1,
+        "only one concurrent direct payout may consume the remaining employee entitlement");
+      assert.equal(concurrentDirect.filter(response=>response.statusCode===409).length,1,
+        "the second concurrent direct payout must be rejected once the remaining entitlement is insufficient");
+      const directSuccess=concurrentDirect.find(response=>response.statusCode===201)!;
+      const directPaymentId=directSuccess.json().data.payment.id;
+      const directCustody=await apiPool.query(
+        "SELECT direction,amount,source_type,source_id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [directPaymentId]
+      );
+      assert.equal(directCustody.rowCount,1,"direct payout must create exactly one custody movement");
+      assert.equal(directCustody.rows[0].direction,"OUT");
+      assert.equal(Number(directCustody.rows[0].amount),100);
+      assert.equal(directCustody.rows[0].source_id,directPaymentId);
+      const noRequestLink=await apiPool.query("SELECT payment_request_id,gross_amount,amount FROM worker_payments WHERE id=$1",[directPaymentId]);
+      assert.equal(noRequestLink.rows[0].payment_request_id,null,"direct payout must not fabricate a payment request");
+      assert.equal(Number(noRequestLink.rows[0].gross_amount),100);
+      assert.equal(Number(noRequestLink.rows[0].amount),100);
+
+      const directRemainder=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{...directPayload,amount:50,notes:"Direct payout remainder test"}
+      });
+      assert.equal(directRemainder.statusCode,201,directRemainder.body);
+      assert.equal(Number(directRemainder.json().data.payment.amount),50);
+      const afterDirectRemainder=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:workerCookie}});
+      assert.equal(afterDirectRemainder.statusCode,200,afterDirectRemainder.body);
+      assert.equal(Number(afterDirectRemainder.json().data.availableEarnings),0,
+        "direct partial and final payouts must settle the available entitlement exactly");
+      const directPayments=await apiPool.query(
+        "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS total FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",
+        [workerEmployee.id]
+      );
+      assert.ok(Number(directPayments.rows[0].count)>=2);
+      assert.ok(Number(directPayments.rows[0].total)>=150);
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
