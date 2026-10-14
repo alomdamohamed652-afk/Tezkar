@@ -94,7 +94,7 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
   );
   if(exact.rowCount)return exact.rows[0];
   const existing=await client.query(
-    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), '\\s+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
