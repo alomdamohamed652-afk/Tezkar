@@ -558,7 +558,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyFingerprint: fingerprint
       });
       if (parsed.data.notes?.trim()) {
-        await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
+        await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
       }
       await writeAudit(client, {
         actorUserId: request.user!.userId,
