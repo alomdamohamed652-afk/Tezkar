@@ -53,7 +53,7 @@ export default function ProductionScrapPage(){
   setBusy(true);
   try{
    await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:entryId,scrapType,quantity:q,notes:notes.trim()||null})});
-   setQuantity("");setNotes("");setSuccess("تم تسجيل الهالك وربطه بسجل الإنتاج. لم يتم خصم المخزون مرة أخرى.");
+   setQuantity("");setNotes("");setSuccess("تم تسجيل الهالك وربطه بسجل الإنتاج وإضافته إلى رصيد مخزن الهالك بقيمة مخزنية صفرية.");
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الهالك")}
   finally{setBusy(false)}
@@ -80,7 +80,7 @@ export default function ProductionScrapPage(){
     <div className="form-actions"><button className="primary-button" disabled={busy||!has("production.create")}>{busy?"جارٍ الحفظ…":"تسجيل الهالك"}</button></div>
    </form>}
    <section className="card">
-    <div className="card-header"><div><h2 className="card-title">سجل الهالك</h2><span className="form-hint">نسبة السجل = كمية الهالك ÷ كمية الإنتاج المسجلة. التسجيل تحليلي ولا يخصم المخزن مرة ثانية.</span></div></div>
+    <div className="card-header"><div><h2 className="card-title">سجل الهالك</h2><span className="form-hint">نسبة السجل = كمية الهالك ÷ كمية الإنتاج المسجلة. كل تسجيل ينشئ حركة وارد إلى مخزن الهالك مع مرجع الإنتاج.</span></div></div>
     <div className="filters">
      <label>بحث<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="العامل، الصنف، الطلبية…"/></label>
      <label>من تاريخ<input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></label>
