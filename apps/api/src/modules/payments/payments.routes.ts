@@ -197,18 +197,18 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
   const payment=await client.query(
-    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,payment_request_id,paid_by,notes,transfer_reference,idempotency_key)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,payment_request_id,paid_by,notes,transfer_reference,idempotency_key,idempotency_fingerprint)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
     [input.employeeId,planned.cashPaid,input.grossAmount,planned.total,input.method,input.requestId,input.userId,
       planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
-      input.transferReference,input.idempotencyKey??null]);
+      input.transferReference,input.idempotencyKey??null,input.idempotencyFingerprint??null]);
   const settlement=await client.query(
     `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -506,11 +506,18 @@ export async function paymentsRoutes(app:FastifyInstance){
       );
       if (prior.rowCount) {
         const payment = prior.rows[0];
+        const fingerprint = JSON.stringify({
+          employeeId: parsed.data.employeeId,
+          cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId,
+          amount: parsed.data.amount,
+          method: parsed.data.method,
+          transferReference: parsed.data.transferReference ?? null,
+          advanceRepaymentAmount: parsed.data.advanceRepaymentAmount,
+          notes: parsed.data.notes ?? null
+        });
         const sameRequest = payment.employee_id === parsed.data.employeeId
           && payment.custody_employee_id === parsed.data.cashCustodyEmployeeId
-          && Number(payment.gross_amount) === parsed.data.amount
-          && payment.method === parsed.data.method
-          && (payment.transfer_reference ?? null) === (parsed.data.transferReference ?? null);
+          && payment.idempotency_fingerprint === fingerprint;
         if (!sameRequest) throw new AppError("IDEMPOTENCY_KEY_REUSED", "مفتاح العملية مستخدم مع بيانات صرف مختلفة", 409);
         return {
           payment,
@@ -521,6 +528,15 @@ export async function paymentsRoutes(app:FastifyInstance){
           replayed: true
         };
       }
+      const fingerprint = JSON.stringify({
+        employeeId: parsed.data.employeeId,
+        cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId,
+        amount: parsed.data.amount,
+        method: parsed.data.method,
+        transferReference: parsed.data.transferReference ?? null,
+        advanceRepaymentAmount: parsed.data.advanceRepaymentAmount,
+        notes: parsed.data.notes ?? null
+      });
       const available = await getAvailableEarnings(client, parsed.data.employeeId);
       if (parsed.data.amount > available + 0.009) {
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
@@ -538,7 +554,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         method: parsed.data.method,
         transferReference: parsed.data.transferReference ?? null,
         manualRepaymentAmount: parsed.data.advanceRepaymentAmount,
-        idempotencyKey: parsed.data.idempotencyKey
+        idempotencyKey: parsed.data.idempotencyKey,
+        idempotencyFingerprint: fingerprint
       });
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
