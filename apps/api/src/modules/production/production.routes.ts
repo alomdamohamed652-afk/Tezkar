@@ -620,10 +620,15 @@ export async function productionRoutes(app: FastifyInstance) {
       if(!rateResult.rowCount)throw new AppError("RATE_NOT_FOUND","لا يوجد سعر مطابق للمنتج والمرحلة والوردية والتاريخ",422);
       const rate=rateResult.rows[0];
       const method=String(rate.method);
+      const rateContextChanged=productId!==current.product_id||stageId!==current.stage_id||shiftId!==current.shift_id||
+        workDate!==String(current.work_date).slice(0,10)||productionTypeId!==current.production_type_id||orderStageId!==current.order_stage_id;
       const canUseOverride=!stagePrice&&data.rateOverride!=null;
-      if(canUseOverride&&Number(data.rateOverride)!==Number(rate.rate)&&Number(data.rateOverride)!==Number(current.rate_snapshot)&&!(await hasPermission(client,request.user!.userId,"production.rate_override")) )
+      const submittedRate=Number(data.rateOverride);
+      const preservesExistingRate=canUseOverride&&!rateContextChanged&&submittedRate===Number(current.rate_snapshot);
+      const hasOverridePermission=await hasPermission(client,request.user!.userId,"production.rate_override");
+      if(canUseOverride&&submittedRate!==Number(rate.rate)&&!preservesExistingRate&&!hasOverridePermission)
         throw new AppError("FORBIDDEN","ليس لديك صلاحية تعديل سعر الإنتاج",403);
-      const effectiveRate=stagePrice?Number(rate.rate):(canUseOverride?Number(data.rateOverride):Number(rate.rate));
+      const effectiveRate=stagePrice?Number(rate.rate):(canUseOverride&&(hasOverridePermission||preservesExistingRate)?submittedRate:Number(rate.rate));
       let earning=Number(current.earning_amount);
       if(method==="PER_PIECE")earning=quantity*effectiveRate;
       else if(method==="PER_1000")earning=quantity/1000*effectiveRate;
