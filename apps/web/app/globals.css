@@ -815,7 +815,35 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   .nav{display:flex;overflow-x:auto;gap:4px}
   .nav-item{width:auto;flex:0 0 auto;justify-content:flex-start;padding:9px 11px}
   .nav-item span:not(.nav-icon){display:block}
-  .sidebar-footer{display:none}
+  .sidebar-footer{
+    display:grid;
+    position:sticky;
+    bottom:0;
+    z-index:35;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:6px;
+    margin-top:10px;
+    padding:9px 0 max(8px,env(safe-area-inset-bottom));
+    border-top:1px solid rgb(148 163 184 / 20%);
+    background:linear-gradient(180deg,#0f172a,#0b1220);
+  }
+  .sidebar-footer .nav-item{
+    min-width:0;
+    min-height:44px;
+    justify-content:center;
+    gap:6px;
+    padding:8px 5px;
+    border:1px solid rgb(148 163 184 / 15%);
+    border-radius:10px;
+    background:rgb(255 255 255 / 5%);
+    font-size:11px;
+    white-space:normal;
+  }
+  .sidebar-footer .nav-item .nav-icon{width:22px;height:22px;flex-basis:22px;font-size:15px}
+  .sidebar-footer .nav-label{display:block!important;overflow:visible;text-overflow:clip;white-space:normal;text-align:center;line-height:1.35}
+  .sidebar-footer .logout-item{color:#fecaca;border-color:rgb(248 113 113 / 28%);background:rgb(127 29 29 / 18%)}
+  .sidebar-footer .logout-item .nav-icon{color:#fca5a5;background:rgb(248 113 113 / 12%)}
+  .sidebar-footer .nav-item:hover{background:rgb(255 255 255 / 10%)}
   .main{padding:15px 12px 28px}
   .topbar{align-items:flex-start;margin-bottom:15px}
   .user-chip{display:none}
