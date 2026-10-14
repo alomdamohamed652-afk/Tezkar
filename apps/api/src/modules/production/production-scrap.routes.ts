@@ -8,6 +8,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { createInventoryLot, consumeInventoryLots, adjustStockValueAfterLotConsumption } from "../warehouse/inventory-lots.service.js";
 
 const createSchema = z.object({
+  idempotencyKey: z.string().uuid(),
   productionEntryId: z.string().uuid(),
   scrapType: z.enum(["WORKER_SCRAP", "MANUFACTURING_DEFECT"]),
   quantity: z.number().positive().max(100000000),
@@ -78,6 +79,39 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         [input.productionEntryId]
       );
       if (!entry.rowCount) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
+      const idempotencyFingerprint = JSON.stringify({
+        productionEntryId: input.productionEntryId,
+        scrapType: input.scrapType,
+        quantity: input.quantity,
+        notes: input.notes ?? null
+      });
+      const lookupPriorScrap = () => client.query(
+        `SELECT s.id, s.idempotency_fingerprint, s.production_entry_id, s.scrap_type, s.quantity, s.notes, s.created_at,
+                p.code AS production_code, e.full_name AS employee_name, pr.name AS product_name,
+                sm.id AS stock_movement_id, sm.warehouse_id AS scrap_warehouse_id,
+                (SELECT sm2.id FROM stock_movements sm2 WHERE sm2.reference_type='TRANSFER' AND sm2.reference_id=sm.id LIMIT 1) AS source_stock_movement_id
+           FROM production_scrap_records s
+           JOIN production_entries p ON p.id=s.production_entry_id
+           JOIN employees e ON e.id=p.employee_id
+           JOIN products pr ON pr.id=p.product_id
+           LEFT JOIN stock_movements sm ON sm.reference_type='PRODUCTION_SCRAP' AND sm.reference_id=s.id
+          WHERE s.idempotency_key=$1`,
+        [input.idempotencyKey]
+      );
+      const replayPriorScrap = (row: Record<string, unknown>) => {
+        if (row.idempotency_fingerprint !== idempotencyFingerprint) {
+          throw new AppError("IDEMPOTENCY_KEY_REUSED", "مفتاح الطلب استُخدم سابقًا لبيانات هالك مختلفة", 409);
+        }
+        return {
+          id: row.id, production_entry_id: row.production_entry_id, scrap_type: row.scrap_type,
+          quantity: row.quantity, notes: row.notes, created_at: row.created_at,
+          stock_movement_id: row.stock_movement_id, source_stock_movement_id: row.source_stock_movement_id,
+          scrap_warehouse_id: row.scrap_warehouse_id, production_code: row.production_code,
+          employee_name: row.employee_name, product_name: row.product_name, idempotentReplay: true
+        };
+      };
+      const priorScrap = await lookupPriorScrap();
+      if (priorScrap.rowCount) return replayPriorScrap(priorScrap.rows[0] as Record<string, unknown>);
       if (!["PENDING", "APPROVED"].includes(entry.rows[0].status)) {
         throw new AppError("PRODUCTION_NOT_ACTIVE", "لا يمكن تسجيل هالك إلا على إنتاج قيد الاعتماد أو معتمد", 409);
       }
@@ -115,11 +149,22 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       }
       const result = await client.query(
         `INSERT INTO production_scrap_records
-          (production_entry_id, scrap_type, quantity, notes, recorded_by_user_id)
-         VALUES ($1,$2,$3,$4,$5)
+          (production_entry_id, scrap_type, quantity, notes, recorded_by_user_id, idempotency_key, idempotency_fingerprint)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING id, production_entry_id, scrap_type, quantity, notes, created_at`,
-        [input.productionEntryId, input.scrapType, input.quantity, input.notes ?? null, request.user!.userId]
+        [
+          input.productionEntryId, input.scrapType, input.quantity, input.notes ?? null, request.user!.userId,
+          input.idempotencyKey, idempotencyFingerprint
+        ]
       );
+      if (!result.rowCount) {
+        const racedPriorScrap = await lookupPriorScrap();
+        if (!racedPriorScrap.rowCount) {
+          throw new AppError("IDEMPOTENCY_CONFLICT", "تعذر التحقق من نتيجة الطلب المكرر؛ أعد المحاولة بنفس المفتاح", 409);
+        }
+        return replayPriorScrap(racedPriorScrap.rows[0] as Record<string, unknown>);
+      }
       const scrapDestination = await client.query(
         `SELECT w.id AS warehouse_id, l.id AS location_id
            FROM warehouses w
@@ -289,8 +334,8 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         entityId: result.rows[0].id,
         afterData: { ...result.rows[0], stockMovementId: movement.rows[0].id, sourceStockMovementId: sourceMovementId, scrapWarehouseId: warehouseId }
       });
-      return { ...result.rows[0], stock_movement_id: movement.rows[0].id, source_stock_movement_id: sourceMovementId, employee_name: entry.rows[0].employee_name, product_name: entry.rows[0].product_name };
+      return { ...result.rows[0], stock_movement_id: movement.rows[0].id, source_stock_movement_id: sourceMovementId, employee_name: entry.rows[0].employee_name, product_name: entry.rows[0].product_name, idempotentReplay: false };
     });
-    return reply.code(201).send({ data: created });
+    return reply.code(created.idempotentReplay ? 200 : 201).send({ data: created });
   });
 }
