@@ -535,12 +535,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "only one concurrent direct payout may consume the remaining employee entitlement");
       assert.equal(concurrentDirect.filter(response=>response.statusCode===409).length,1,
         "the second concurrent direct payout must be rejected once the remaining entitlement is insufficient");
-      const directSuccess=concurrentDirect.find(response=>response.statusCode===201)!;
+      const directSuccessIndex=concurrentDirect.findIndex(response=>response.statusCode===201);
+      const directSuccess=concurrentDirect[directSuccessIndex];
+      const successfulDirectPayload=directSuccessIndex===0?directPayload:otherDirectPayload;
       const directPaymentId=directSuccess.json().data.payment.id;
-      const replayedDirect=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:directPayload});
+      const replayedDirect=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:successfulDirectPayload});
       assert.equal(replayedDirect.statusCode,200,replayedDirect.body,"retrying the same direct payout key must return the original payout");
       assert.equal(replayedDirect.json().data.payment.id,directPaymentId,"a retry must not create another payout");
-      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[directPayload.idempotencyKey])).rows[0].count),1);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[successfulDirectPayload.idempotencyKey])).rows[0].count),1);
       const directCustody=await apiPool.query(
         "SELECT direction,amount,source_type,source_id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [directPaymentId]
