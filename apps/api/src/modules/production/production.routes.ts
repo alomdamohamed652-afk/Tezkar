@@ -758,6 +758,68 @@ export async function productionRoutes(app: FastifyInstance) {
     return { data: row };
   });
 
+  app.post("/api/production/:id/reverse",{
+    preHandler:[authenticateRequest,requirePermission("production.cancel")]
+  },async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({password:z.string().min(1).max(200),reason:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","أدخل كلمة المرور وسبب التراجع (٣ أحرف على الأقل)",422);
+    const result=await withTransaction(async client=>{
+      const actor=await client.query("SELECT password_hash FROM users WHERE id=$1 AND is_active=TRUE",[request.user!.userId]);
+      if(!actor.rowCount||!verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم التراجع",401);
+      const current=await getEntry(client,id,true);
+      if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(current.status!=="APPROVED")throw new AppError("REVERSAL_REQUIRES_APPROVED","التراجع العكسي متاح لسجل إنتاج معتمد فقط؛ السجلات المعلقة يمكن إلغاؤها مباشرة",409);
+      const paid=await client.query("SELECT 1 FROM worker_payment_allocations WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
+      if(paid.rowCount)throw new AppError("PRODUCTION_ALREADY_PAID","لا يمكن عكس إنتاج تم تخصيص دفعة مالية له. عالج دفعة العامل أولًا حتى لا يتغير رصيد المستحقات بأثر رجعي.",409);
+      const lot=await client.query("SELECT * FROM inventory_lots WHERE source_type='PRODUCTION' AND source_id=$1 FOR UPDATE",[id]);
+      if(!lot.rowCount)throw new AppError("PRODUCTION_LOT_MISSING","تعذر العثور على دفعة المخزون الناتجة عن هذا الإنتاج؛ لم يتم التراجع",409);
+      const sourceLot=lot.rows[0];
+      const originalQty=Number(sourceLot.original_quantity);
+      const remainingQty=Number(sourceLot.remaining_quantity);
+      if(Math.abs(remainingQty-originalQty)>0.0005)throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من إنتاج العملية تم صرفه أو استهلاكه من المخزن. عالج الحركات التابعة أولًا.",409);
+      const balance=await client.query("SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[current.product_id,current.warehouse_id,current.location_id]);
+      if(!balance.rowCount||Number(balance.rows[0].quantity)+0.0005<Number(current.quantity))throw new AppError("PRODUCTION_STOCK_BALANCE_CHANGED","رصيد المخزون الحالي لا يسمح بعكس الكمية كاملة",409);
+      const nextQty=Number(balance.rows[0].quantity)-Number(current.quantity);
+      const removedValue=Number(sourceLot.unit_cost)*Number(current.quantity);
+      const nextValue=Math.max(0,Number(balance.rows[0].inventory_value)-removedValue);
+      const nextAvg=nextQty>0?nextValue/nextQty:0;
+      await client.query("UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[nextQty,nextValue,nextAvg,current.product_id,current.warehouse_id,current.location_id]);
+      const movement=await client.query(
+        `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
+         VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION_REVERSAL',$12) RETURNING id`,
+        [current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,sourceLot.unit_cost,removedValue,current.order_id??null,current.order_stage_id??null,"عكس إنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId,id]
+      );
+      await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[movement.rows[0].id,sourceLot.id,current.quantity,sourceLot.unit_cost,removedValue]);
+      await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[sourceLot.id]);
+      await client.query("UPDATE employee_earnings_ledger SET debit_amount=credit_amount,credit_amount=0,notes=$1 WHERE production_entry_id=$2 AND entry_type='PRODUCTION_APPROVAL'",["عكس استحقاق الإنتاج "+current.code+" — "+parsed.data.reason,id]);
+      const adjustments=await client.query("SELECT adjustment_type,amount,reason FROM employee_earnings_adjustments WHERE production_entry_id=$1",[id]);
+      for(const a of adjustments.rows){
+        const amount=Number(a.amount);
+        const credit=a.adjustment_type==="DEDUCTION"?amount:0;
+        const debit=a.adjustment_type==="BONUS"?amount:0;
+        if(amount>0)await client.query(
+          "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,notes,created_by) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)",
+          [current.employee_id,credit,debit,"عكس "+(a.adjustment_type==="BONUS"?"بونص":"خصم")+" إنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId]
+        );
+      }
+      if(current.order_stage_id){
+        await client.query(
+          `UPDATE order_stages SET completed_quantity=GREATEST(0,completed_quantity-$1),
+             status=CASE WHEN GREATEST(0,completed_quantity-$1)=0 THEN 'PENDING' ELSE 'IN_PROGRESS' END,
+             completed_at=CASE WHEN GREATEST(0,completed_quantity-$1)=0 THEN NULL ELSE completed_at END
+           WHERE id=$2`,
+          [current.quantity,current.order_stage_id]
+        );
+        if(current.order_id)await client.query("UPDATE production_orders SET status='IN_PROGRESS',updated_at=now() WHERE id=$1 AND status='COMPLETED'",[current.order_id]);
+      }
+      const updated=await client.query("UPDATE production_entries SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now() WHERE id=$2 RETURNING id,code,status,employee_id,quantity,work_date",[request.user!.userId,id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:parsed.data.reason,stockMovementId:movement.rows[0].id,inventoryLotId:sourceLot.id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return updated.rows[0];
+    });
+    return {data:result};
+  });
+
   app.post("/api/production/:id/cancel", {
     preHandler: [authenticateRequest, requirePermission("production.cancel")]
   }, async (request) => {
