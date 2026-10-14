@@ -332,12 +332,30 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(firstEntry.statusCode, 201, firstEntry.body);
     const firstId = firstEntry.json().data.id as string;
+    const validScrapKey = randomUUID();
+    const validScrapPayload = {
+      idempotencyKey: validScrapKey, productionEntryId: firstId,
+      scrapType: "WORKER_SCRAP", quantity: 1, notes: "Active stage scrap integration"
+    };
     const validScrap = await app.inject({
       method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
-      payload: { productionEntryId: firstId, scrapType: "WORKER_SCRAP", quantity: 1, notes: "Active stage scrap integration" }
+      payload: validScrapPayload
     });
     assert.equal(validScrap.statusCode, 201, validScrap.body);
     assert.equal(Number(validScrap.json().data.quantity), 1);
+    const validScrapReplay = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: validScrapPayload
+    });
+    assert.equal(validScrapReplay.statusCode, 200, validScrapReplay.body);
+    assert.equal(validScrapReplay.json().data.stock_movement_id, validScrap.json().data.stock_movement_id,
+      "a retried scrap submission must return the original stock movement");
+    const reusedScrapKey = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: { ...validScrapPayload, quantity: 2 }
+    });
+    assert.equal(reusedScrapKey.statusCode, 409, reusedScrapKey.body);
+    assert.equal(reusedScrapKey.json().error.code, "IDEMPOTENCY_KEY_REUSED");
     const scrapMovement = await apiPool.query(
       "SELECT movement_type,quantity,total_cost,reference_type,reference_id FROM stock_movements WHERE id=$1",
       [validScrap.json().data.stock_movement_id]
@@ -470,9 +488,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [postApprovalStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
     );
+    const approvedScrapKey = randomUUID();
+    const approvedScrapPayload = {
+      idempotencyKey: approvedScrapKey, productionEntryId: postApprovalEntryId,
+      scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Approved stock transfer test"
+    };
     const approvedScrap = await app.inject({
       method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
-      payload: { productionEntryId: postApprovalEntryId, scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Approved stock transfer test" }
+      payload: approvedScrapPayload
     });
     assert.equal(approvedScrap.statusCode, 201, approvedScrap.body);
     const approvedScrapMovement = await apiPool.query(
@@ -504,6 +527,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(Number(adjustedScrapStage.rows[0].completed_quantity), 2,
       "scrap discovered after approval must reduce good-output progress");
+    const approvedScrapReplay = await app.inject({
+      method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
+      payload: approvedScrapPayload
+    });
+    assert.equal(approvedScrapReplay.statusCode, 200, approvedScrapReplay.body);
+    assert.equal(approvedScrapReplay.json().data.stock_movement_id, approvedScrap.json().data.stock_movement_id);
+    assert.equal(approvedScrapReplay.json().data.source_stock_movement_id, approvedScrap.json().data.source_stock_movement_id);
     const reverseScrappedProduction = await app.inject({
       method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
       headers: { cookie: submitter.cookie },
@@ -688,7 +718,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(stageState.rows[0].order_status, "COMPLETED");
     const scrapOnCompletedOrder = await app.inject({
       method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
-      payload: { productionEntryId: finalId, scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Must reject completed order" }
+      payload: { idempotencyKey: randomUUID(), productionEntryId: finalId, scrapType: "MANUFACTURING_DEFECT", quantity: 1, notes: "Must reject completed order" }
     });
     assert.equal(scrapOnCompletedOrder.statusCode, 409, scrapOnCompletedOrder.body);
     assert.equal(scrapOnCompletedOrder.json().error.code, "ORDER_NOT_ACTIVE");
