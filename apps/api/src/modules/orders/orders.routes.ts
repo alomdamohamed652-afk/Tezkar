@@ -97,7 +97,7 @@ async function ensureProduct(client:any, input:{productId?:string|undefined;prod
   if(exact.rowCount)return exact.rows[0];
 
   const existing=await client.query(
-    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), 'أإآٱ', 'اااا'), '[[:space:]]+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,unit_id,name FROM products WHERE is_active=TRUE AND regexp_replace(translate(translate(lower(trim(name)), 'ًٌٍَُِّْـٰ', ''), 'أإآٱ', 'اااا'), '[[:space:]]+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
@@ -117,7 +117,7 @@ async function ensureStage(client:any, input:{stageId?:string|undefined;stageNam
   const normalized=normalizeBusinessName(name);
   await client.query("SELECT pg_advisory_xact_lock(hashtext('stage:' || $1))",[normalized]);
   const existing=await client.query(
-    "SELECT id,name FROM stages WHERE is_active=TRUE AND regexp_replace(translate(translate(lower(trim(name)), 'ًٌٍَُِّْـ', ''), 'أإآٱ', 'اااا'), '[[:space:]]+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
+    "SELECT id,name FROM stages WHERE is_active=TRUE AND regexp_replace(translate(translate(lower(trim(name)), 'ًٌٍَُِّْـٰ', ''), 'أإآٱ', 'اااا'), '[[:space:]]+', ' ', 'g')=$1 ORDER BY created_at LIMIT 1",
     [normalized]
   );
   if(existing.rowCount)return existing.rows[0];
