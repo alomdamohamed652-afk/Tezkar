@@ -43,7 +43,7 @@ const seededReferenceCodes: Record<string, string[]> = {
 };
 
 const seededCodingTemplateNames = ["قالب الكيس", "قالب الكرتونة", "قالب الشيكارة", "قالب عام"];
-const seededWarehouseNames = { RAW_MATERIAL: "المخزن الرئيسي للخامات", WIP: "مخزن تحت التشغيل", FINISHED_GOODS: "مخزن المنتجات الجاهزة" };
+const seededWarehouseNames = { RAW_MATERIAL: "المخزن الرئيسي للخامات", WIP: "مخزن تحت التشغيل", FINISHED_GOODS: "مخزن المنتجات الجاهزة", SCRAP: "مخزن الهالك" };
 
 const quoteIdentifier = (identifier: string) => '"' + identifier.replaceAll('"', '""') + '"';
 const qualified = (table: string) => '"public".' + quoteIdentifier(table);
@@ -113,8 +113,9 @@ export async function previewTrialDataReset(protectedUserId: string) {
           `SELECT count(*)::text AS count FROM public.warehouses
            WHERE NOT ((warehouse_type = 'RAW_MATERIAL' AND name = $1)
              OR (warehouse_type = 'WIP' AND name = $2)
-             OR (warehouse_type = 'FINISHED_GOODS' AND name = $3))`,
-          [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+             OR (warehouse_type = 'FINISHED_GOODS' AND name = $3)
+             OR (warehouse_type = 'SCRAP' AND name = $4))`,
+          [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
         continue;
@@ -122,14 +123,15 @@ export async function previewTrialDataReset(protectedUserId: string) {
       if (table === "warehouse_locations") {
         const result = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM public.warehouse_locations wl
-           WHERE NOT (wl.code = 'MAIN' AND EXISTS (
+           WHERE NOT ((wl.code = 'MAIN' OR wl.code = 'SCRAP-MAIN') AND EXISTS (
              SELECT 1 FROM public.warehouses w
              WHERE w.id = wl.warehouse_id AND
                ((w.warehouse_type = 'RAW_MATERIAL' AND w.name = $1)
                 OR (w.warehouse_type = 'WIP' AND w.name = $2)
-                OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3))
-           ))`,
-          [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS]
+                OR (w.warehouse_type = 'FINISHED_GOODS' AND w.name = $3)
+                OR (w.warehouse_type = 'SCRAP' AND w.name = $4))
+           )))`,
+          [seededWarehouseNames.RAW_MATERIAL, seededWarehouseNames.WIP, seededWarehouseNames.FINISHED_GOODS, seededWarehouseNames.SCRAP]
         );
         deletedRows[table] = Number(result.rows[0]?.count ?? 0);
         continue;
