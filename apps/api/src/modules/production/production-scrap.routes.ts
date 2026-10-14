@@ -259,7 +259,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       if (existingBalance.rowCount) {
         await client.query(
           `UPDATE stock_balances
-              SET quantity=$1, inventory_value=$2, avg_unit_cost=CASE WHEN $1>0 THEN $2/$1 ELSE 0 END, updated_at=now()
+              SET quantity=$1, inventory_value=$2, avg_unit_cost=CASE WHEN $1::numeric>0 THEN $2/$1::numeric ELSE 0 END, updated_at=now()
             WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5`,
           [nextQuantity, oldValue, entry.rows[0].product_id, warehouseId, locationId]
         );
