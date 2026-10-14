@@ -356,6 +356,19 @@ export async function paymentsRoutes(app:FastifyInstance){
         `INSERT INTO payment_requests(employee_id,amount,method,transfer_reference,requested_by)
          VALUES($1,$2,$3,$4,$5) RETURNING *`,
         [user.employee_id,parsed.data.amount,parsed.data.method,parsed.data.transferReference?.trim() || null,request.user!.userId]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         SELECT DISTINCT u.id,'PAYMENT_REQUEST_CREATED','طلب قبض جديد للمراجعة',
+           'تم تقديم طلب قبض جديد بقيمة ' || $2::text || ' ج.م. راجع الطلب لاتخاذ الإجراء المناسب.',
+           'payment_request',$1
+         FROM users u
+         JOIN user_roles ur ON ur.user_id=u.id
+         JOIN role_permissions rp ON rp.role_id=ur.role_id
+         JOIN permissions p ON p.id=rp.permission_id AND p.code='payment_requests.approve'
+         JOIN roles r ON r.id=ur.role_id AND r.is_active=TRUE
+         WHERE u.is_active=TRUE AND u.id<>$3`,
+        [inserted.rows[0].id, inserted.rows[0].amount, request.user!.userId]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:user.employee_id,action:"create",module:"payments",entityType:"payment_request",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return inserted.rows[0];
       });
@@ -395,6 +408,11 @@ export async function paymentsRoutes(app:FastifyInstance){
         `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
           WHERE id=$3 RETURNING *`,
         [request.user!.userId,settlement.payment.id,id]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         VALUES($1,'PAYMENT_REQUEST_PAID','تم صرف طلب القبض','تم صرف طلب القبض الخاص بك.','payment_request',$2)`,
+        [current.rows[0].requested_by,id]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve_and_pay",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{worker_payment_id:settlement.payment.id,gross_amount:settlement.grossAmount,net_amount:settlement.cashPaid,advance_repayment_amount:settlement.advanceRepaymentAmount,repayments:settlement.repayments},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {request:updated.rows[0],...settlement};
     });
@@ -414,6 +432,11 @@ export async function paymentsRoutes(app:FastifyInstance){
       const updated=await client.query(
         `UPDATE payment_requests SET status='REJECTED',rejection_reason=$1,reviewed_by=$2,reviewed_at=now(),updated_at=now() WHERE id=$3 RETURNING *`,
         [parsed.data.reason,request.user!.userId,id]);
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         VALUES($1,'PAYMENT_REQUEST_REJECTED','تم رفض طلب القبض','سبب الرفض: ' || $2,'payment_request',$3)`,
+        [current.rows[0].requested_by, parsed.data.reason, id]
+      );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reject",module:"payments",entityType:"payment_request",entityId:id,beforeData:current.rows[0],afterData:updated.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
