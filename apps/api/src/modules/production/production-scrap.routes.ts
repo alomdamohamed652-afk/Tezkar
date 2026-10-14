@@ -69,12 +69,11 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       const entry = await client.query(
         `SELECT p.id, p.code, p.employee_id, p.product_id, p.stage_id, p.order_stage_id, p.shift_id,
                 p.unit_id, p.quantity, p.status, e.full_name AS employee_name, pr.name AS product_name,
-                os.order_id, os.status AS order_stage_status, po.status AS order_status
+                os.order_id
            FROM production_entries p
            JOIN employees e ON e.id=p.employee_id
            JOIN products pr ON pr.id=p.product_id
            LEFT JOIN order_stages os ON os.id=p.order_stage_id
-           LEFT JOIN production_orders po ON po.id=os.order_id
           WHERE p.id=$1 FOR UPDATE OF p`,
         [input.productionEntryId]
       );
@@ -82,11 +81,23 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       if (entry.rows[0].status === "CANCELLED" || entry.rows[0].status === "REJECTED") {
         throw new AppError("PRODUCTION_NOT_ACTIVE", "لا يمكن تسجيل هالك على إنتاج ملغي أو مرفوض", 409);
       }
-      if (entry.rows[0].order_id && ["DRAFT", "COMPLETED", "CANCELLED"].includes(entry.rows[0].order_status)) {
-        throw new AppError("ORDER_NOT_ACTIVE", "لا يمكن تسجيل هالك على طلبية مسودة أو مكتملة أو ملغاة", 409);
-      }
-      if (entry.rows[0].order_stage_id && ["COMPLETED", "CANCELLED"].includes(entry.rows[0].order_stage_status)) {
-        throw new AppError("ORDER_STAGE_LOCKED", "لا يمكن تسجيل هالك على مرحلة مكتملة أو ملغاة", 409);
+      if (entry.rows[0].order_stage_id) {
+        const parent = await client.query(
+          `SELECT os.status AS order_stage_status, po.status AS order_status
+             FROM production_orders po
+             JOIN order_stages os ON os.order_id=po.id
+            WHERE os.id=$1
+            ORDER BY po.id, os.id
+            FOR UPDATE OF po, os`,
+          [entry.rows[0].order_stage_id]
+        );
+        if (!parent.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND", "مرحلة الطلب غير موجودة", 404);
+        if (["DRAFT", "COMPLETED", "CANCELLED"].includes(parent.rows[0].order_status)) {
+          throw new AppError("ORDER_NOT_ACTIVE", "لا يمكن تسجيل هالك على طلبية مسودة أو مكتملة أو ملغاة", 409);
+        }
+        if (["COMPLETED", "CANCELLED"].includes(parent.rows[0].order_stage_status)) {
+          throw new AppError("ORDER_STAGE_LOCKED", "لا يمكن تسجيل هالك على مرحلة مكتملة أو ملغاة", 409);
+        }
       }
       const existingScrap = await client.query(
         "SELECT COALESCE(SUM(quantity),0) AS quantity FROM production_scrap_records WHERE production_entry_id=$1",
