@@ -591,12 +591,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
       // base 100 + bonus 50 - deduction 20 = 130, not the base amount alone.
-      const earningSetup=(await apiPool.query(
-        "SELECT r.id AS rate_id,r.stage_id,p.unit_id FROM rates r CROSS JOIN products p WHERE p.id=$1 ORDER BY r.created_at LIMIT 1",
-        [hamzaProducts.rows[0].product_id]
+      const bonusProduct=(await apiPool.query("SELECT unit_id FROM products WHERE id=$1",[hamzaProducts.rows[0].product_id])).rows[0];
+      const bonusStage=(await apiPool.query(
+        "INSERT INTO stages(name) VALUES($1) RETURNING id",
+        ["Test bonus production stage "+randomBytes(4).toString("hex")]
       )).rows[0];
-      assert.ok(earningSetup,"test migrations must seed a production rate");
       const perPieceWageType=(await apiPool.query("SELECT id FROM wage_types WHERE code='PER_PIECE' LIMIT 1")).rows[0];
+      const bonusRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,100,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id,stage_id`,
+        [hamzaProducts.rows[0].product_id,bonusStage.id,shift.rows[0].rate_group_id,perPieceWageType.id,bonusProduct.unit_id,manager.id]
+      )).rows[0];
       const bonusProduction=(await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
@@ -605,8 +611,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,50,20,'APPROVED',$8,$8,now())
          RETURNING id,total_earning_amount`,
-        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,earningSetup.stage_id,shift.rows[0].id,
-         earningSetup.unit_id,earningSetup.rate_id,perPieceWageType.id,manager.id]
+        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,shift.rows[0].id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
       const bonusAwarePayout=await app.inject({
