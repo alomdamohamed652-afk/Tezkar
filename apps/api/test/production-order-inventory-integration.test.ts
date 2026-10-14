@@ -822,9 +822,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(dashboard.statusCode, 200, dashboard.body);
     assert.equal(dashboard.json().data.stages.length, 2);
-    assert.equal(dashboard.json().data.production.length, 2);
+    assert.equal(dashboard.json().data.production.length, 3, "dashboard includes the replacement good unit needed after scrap");
     assert.equal(dashboard.json().data.movements.length, 1, "order withdrawals must show only actual OUT movements, not production receipts");
-    assert.equal(Number(dashboard.json().data.totals.production_cost), 505);
+    assert.equal(Number(dashboard.json().data.totals.production_cost), 525);
     assert.equal(dashboard.json().data.totals.stock_in_cost, undefined, "production receipt value must not be presented as an order withdrawal cost");
     assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
