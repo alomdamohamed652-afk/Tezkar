@@ -281,9 +281,6 @@ export async function warehouseRoutes(app: FastifyInstance) {
         if(!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",422);
         if(order.rows[0].status==="CANCELLED") throw new AppError("ORDER_CANCELLED","لا يمكن ربط حركة مخزن بطلبية ملغاة",409);
       }
-      if(["IN","ADJUSTMENT"].includes(parsed.data.movementType) && parsed.data.adjustmentDirection==="IN" && parsed.data.unitCost==null){
-        throw new AppError("UNIT_COST_REQUIRED","يجب تحديد تكلفة الوحدة عند إدخال رصيد للمخزن",422);
-      }
       const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT"||(parsed.data.movementType==="ADJUSTMENT"&&parsed.data.adjustmentDirection==="OUT"))?-parsed.data.quantity:parsed.data.quantity;
       const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
       const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,delta,effectiveUnitCost);
