@@ -89,12 +89,14 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         `SELECT s.id, s.idempotency_fingerprint, s.production_entry_id, s.scrap_type, s.quantity, s.notes, s.created_at,
                 p.code AS production_code, e.full_name AS employee_name, pr.name AS product_name,
                 sm.id AS stock_movement_id, sm.warehouse_id AS scrap_warehouse_id,
+                sm.product_id AS scrap_product_id, sp.name AS scrap_product_name,
                 (SELECT sm2.id FROM stock_movements sm2 WHERE sm2.reference_type='TRANSFER' AND sm2.reference_id=sm.id LIMIT 1) AS source_stock_movement_id
            FROM production_scrap_records s
            JOIN production_entries p ON p.id=s.production_entry_id
            JOIN employees e ON e.id=p.employee_id
            JOIN products pr ON pr.id=p.product_id
            LEFT JOIN stock_movements sm ON sm.reference_type='PRODUCTION_SCRAP' AND sm.reference_id=s.id
+           LEFT JOIN products sp ON sp.id=sm.product_id
           WHERE s.idempotency_key=$1`,
         [input.idempotencyKey]
       );
@@ -106,7 +108,8 @@ export async function productionScrapRoutes(app: FastifyInstance) {
           id: row.id, production_entry_id: row.production_entry_id, scrap_type: row.scrap_type,
           quantity: row.quantity, notes: row.notes, created_at: row.created_at,
           stock_movement_id: row.stock_movement_id, source_stock_movement_id: row.source_stock_movement_id,
-          scrap_warehouse_id: row.scrap_warehouse_id, production_code: row.production_code,
+          scrap_warehouse_id: row.scrap_warehouse_id, scrap_product_id: row.scrap_product_id,
+          scrap_product_name: row.scrap_product_name, production_code: row.production_code,
           employee_name: row.employee_name, product_name: row.product_name, idempotentReplay: true
         };
       };
@@ -122,6 +125,27 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       if (!stockProduct.rowCount) {
         throw new AppError("PRODUCT_NOT_INVENTORIED", "منتج الإنتاج غير موجود أو غير متابع مخزنيًا", 409);
       }
+
+      // Each source product has one dedicated inventory-tracked scrap product.
+      // This keeps different materials/products from being mixed in the scrap warehouse.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('scrap-product:' || $1))", [entry.rows[0].product_id]);
+      let scrapProduct = await client.query(
+        "SELECT id, name, unit_id FROM products WHERE product_type='SCRAP' AND scrap_source_product_id=$1 AND is_active=TRUE FOR UPDATE",
+        [entry.rows[0].product_id]
+      );
+      if (!scrapProduct.rowCount) {
+        const scrapProductName = `هالك - ${entry.rows[0].product_name} (${String(entry.rows[0].product_id).slice(0, 8)})`;
+        scrapProduct = await client.query(
+          `INSERT INTO products(name, description, product_type, scrap_source_product_id, unit_id, minimum_stock, track_inventory)
+           VALUES($1,$2,'SCRAP',$3,$4,0,TRUE)
+           ON CONFLICT (scrap_source_product_id) WHERE product_type='SCRAP' AND scrap_source_product_id IS NOT NULL
+           DO UPDATE SET is_active=TRUE, updated_at=now()
+           RETURNING id, name, unit_id`,
+          [scrapProductName, `صنف هالك ناتج تلقائيًا من الصنف ${entry.rows[0].product_name}`, entry.rows[0].product_id, entry.rows[0].unit_id]
+        );
+      }
+      const scrapProductId = scrapProduct.rows[0].id as string;
+      const scrapProductName = scrapProduct.rows[0].name as string;
       if (entry.rows[0].order_stage_id) {
         const parent = await client.query(
           `SELECT os.status AS order_stage_status, po.status AS order_status
@@ -251,7 +275,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
            FROM stock_balances
           WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3
           FOR UPDATE`,
-        [entry.rows[0].product_id, warehouseId, locationId]
+        [scrapProductId, warehouseId, locationId]
       );
       const oldQuantity = Number(existingBalance.rows[0]?.quantity ?? 0);
       const oldValue = Number(existingBalance.rows[0]?.inventory_value ?? 0);
@@ -261,13 +285,13 @@ export async function productionScrapRoutes(app: FastifyInstance) {
           `UPDATE stock_balances
               SET quantity=$1, inventory_value=$2, avg_unit_cost=CASE WHEN $1::numeric>0 THEN $2/$1::numeric ELSE 0 END, updated_at=now()
             WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5`,
-          [nextQuantity, oldValue, entry.rows[0].product_id, warehouseId, locationId]
+          [nextQuantity, oldValue, scrapProductId, warehouseId, locationId]
         );
       } else {
         await client.query(
           `INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,avg_unit_cost,inventory_value)
            VALUES($1,$2,$3,$4,0,0)`,
-          [entry.rows[0].product_id, warehouseId, locationId, input.quantity]
+          [scrapProductId, warehouseId, locationId, input.quantity]
         );
       }
       // Before approval, the physical scrap is recorded separately and the approval
@@ -283,7 +307,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
          RETURNING id`,
         [
           isApprovedProduction ? "TRANSFER_IN" : "IN",
-          entry.rows[0].product_id, warehouseId, locationId, input.quantity, entry.rows[0].unit_id,
+          scrapProductId, warehouseId, locationId, input.quantity, scrapProduct.rows[0].unit_id,
           entry.rows[0].order_id ?? null, entry.rows[0].order_stage_id ?? null,
           input.notes ?? `هالك مسجل على إنتاج ${entry.rows[0].code}`, request.user!.userId,
           result.rows[0].id,
@@ -294,7 +318,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         await client.query("UPDATE stock_movements SET reference_id=$1 WHERE id=$2", [movement.rows[0].id, sourceMovementId]);
       }
       await createInventoryLot(client, {
-        productId: entry.rows[0].product_id,
+        productId: scrapProductId,
         warehouseId,
         locationId,
         quantity: input.quantity,
@@ -334,7 +358,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         entityId: result.rows[0].id,
         afterData: { ...result.rows[0], stockMovementId: movement.rows[0].id, sourceStockMovementId: sourceMovementId, scrapWarehouseId: warehouseId }
       });
-      return { ...result.rows[0], stock_movement_id: movement.rows[0].id, source_stock_movement_id: sourceMovementId, employee_name: entry.rows[0].employee_name, product_name: entry.rows[0].product_name, idempotentReplay: false };
+      return { ...result.rows[0], stock_movement_id: movement.rows[0].id, source_stock_movement_id: sourceMovementId, scrap_product_id: scrapProductId, scrap_product_name: scrapProductName, employee_name: entry.rows[0].employee_name, product_name: entry.rows[0].product_name, idempotentReplay: false };
     });
     return reply.code(created.idempotentReplay ? 200 : 201).send({ data: created });
   });

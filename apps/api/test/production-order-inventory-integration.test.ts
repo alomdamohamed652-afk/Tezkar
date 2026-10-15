@@ -343,6 +343,23 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(validScrap.statusCode, 201, validScrap.body);
     assert.equal(Number(validScrap.json().data.quantity), 1);
+    assert.ok(validScrap.json().data.scrap_product_id, "recording scrap creates or reuses a dedicated scrap product");
+    const createdScrapProduct = await apiPool.query(
+      "SELECT product_type,scrap_source_product_id,unit_id,track_inventory FROM products WHERE id=$1",
+      [validScrap.json().data.scrap_product_id]
+    );
+    assert.equal(createdScrapProduct.rows[0].product_type, "SCRAP");
+    assert.equal(createdScrapProduct.rows[0].scrap_source_product_id, wipStage.output_product_id);
+    const sourceProductUnit = await apiPool.query("SELECT unit_id FROM products WHERE id=$1", [wipStage.output_product_id]);
+    assert.equal(createdScrapProduct.rows[0].unit_id, sourceProductUnit.rows[0].unit_id);
+    assert.equal(createdScrapProduct.rows[0].track_inventory, true);
+    const validScrapWarehouseBalance = await apiPool.query(
+      `SELECT COALESCE(SUM(quantity),0)::text AS quantity FROM stock_balances
+        WHERE product_id=$1 AND warehouse_id IN (SELECT id FROM warehouses WHERE warehouse_type='SCRAP' AND is_active=TRUE)`,
+      [validScrap.json().data.scrap_product_id]
+    );
+    assert.equal(Number(validScrapWarehouseBalance.rows[0]?.quantity ?? 0), 1,
+      "scrap quantity must be stocked under the dedicated scrap product");
     const validScrapReplay = await app.inject({
       method: "POST", url: "/api/production/scrap", headers: { cookie: submitter.cookie },
       payload: validScrapPayload
@@ -485,7 +502,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
         WHERE w.warehouse_type='SCRAP' AND w.is_active=TRUE ORDER BY w.created_at,w.id,l.code LIMIT 1`
     );
     const scrapBalanceBefore = await apiPool.query(
-      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      `SELECT COALESCE((
+         SELECT sb.quantity FROM products sp
+         JOIN stock_balances sb ON sb.product_id=sp.id
+        WHERE sp.product_type='SCRAP' AND sp.scrap_source_product_id=$1
+          AND sb.warehouse_id=$2 AND sb.location_id=$3
+       ),0)::text AS quantity`,
       [postApprovalStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
     );
     const approvedScrapKey = randomUUID();
@@ -515,9 +537,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [postApprovalStage.output_product_id, sourceWarehouseId, sourceLocationId]
     );
+    assert.ok(approvedScrap.json().data.scrap_product_id, "approved production scrap uses a dedicated scrap product");
     const scrapBalanceAfter = await apiPool.query(
       "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
-      [postApprovalStage.output_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
+      [approvedScrap.json().data.scrap_product_id, scrapLocation.rows[0].warehouse_id, scrapLocation.rows[0].location_id]
     );
     assert.equal(Number(sourceAfterScrap.rows[0].quantity), Number(sourceBeforeScrap.rows[0].quantity) - 1);
     assert.equal(Number(scrapBalanceAfter.rows[0]?.quantity ?? 0), Number(scrapBalanceBefore.rows[0]?.quantity ?? 0) + 1,
