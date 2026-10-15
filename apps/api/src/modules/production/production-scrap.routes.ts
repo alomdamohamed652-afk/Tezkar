@@ -89,12 +89,14 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         `SELECT s.id, s.idempotency_fingerprint, s.production_entry_id, s.scrap_type, s.quantity, s.notes, s.created_at,
                 p.code AS production_code, e.full_name AS employee_name, pr.name AS product_name,
                 sm.id AS stock_movement_id, sm.warehouse_id AS scrap_warehouse_id,
+                sm.product_id AS scrap_product_id, sp.name AS scrap_product_name,
                 (SELECT sm2.id FROM stock_movements sm2 WHERE sm2.reference_type='TRANSFER' AND sm2.reference_id=sm.id LIMIT 1) AS source_stock_movement_id
            FROM production_scrap_records s
            JOIN production_entries p ON p.id=s.production_entry_id
            JOIN employees e ON e.id=p.employee_id
            JOIN products pr ON pr.id=p.product_id
            LEFT JOIN stock_movements sm ON sm.reference_type='PRODUCTION_SCRAP' AND sm.reference_id=s.id
+           LEFT JOIN products sp ON sp.id=sm.product_id
           WHERE s.idempotency_key=$1`,
         [input.idempotencyKey]
       );
@@ -106,7 +108,8 @@ export async function productionScrapRoutes(app: FastifyInstance) {
           id: row.id, production_entry_id: row.production_entry_id, scrap_type: row.scrap_type,
           quantity: row.quantity, notes: row.notes, created_at: row.created_at,
           stock_movement_id: row.stock_movement_id, source_stock_movement_id: row.source_stock_movement_id,
-          scrap_warehouse_id: row.scrap_warehouse_id, production_code: row.production_code,
+          scrap_warehouse_id: row.scrap_warehouse_id, scrap_product_id: row.scrap_product_id,
+          scrap_product_name: row.scrap_product_name, production_code: row.production_code,
           employee_name: row.employee_name, product_name: row.product_name, idempotentReplay: true
         };
       };
