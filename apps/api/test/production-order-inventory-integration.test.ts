@@ -350,10 +350,12 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     );
     assert.equal(createdScrapProduct.rows[0].product_type, "SCRAP");
     assert.equal(createdScrapProduct.rows[0].scrap_source_product_id, wipStage.output_product_id);
-    assert.equal(createdScrapProduct.rows[0].unit_id, wipStage.unit_id ?? createdScrapProduct.rows[0].unit_id);
+    const sourceProductUnit = await apiPool.query("SELECT unit_id FROM products WHERE id=$1", [wipStage.output_product_id]);
+    assert.equal(createdScrapProduct.rows[0].unit_id, sourceProductUnit.rows[0].unit_id);
     assert.equal(createdScrapProduct.rows[0].track_inventory, true);
     const validScrapWarehouseBalance = await apiPool.query(
-      "SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=(SELECT id FROM warehouses WHERE warehouse_type='SCRAP' AND is_active=TRUE ORDER BY created_at,id LIMIT 1)",
+      `SELECT COALESCE(SUM(quantity),0)::text AS quantity FROM stock_balances
+        WHERE product_id=$1 AND warehouse_id IN (SELECT id FROM warehouses WHERE warehouse_type='SCRAP' AND is_active=TRUE)`,
       [validScrap.json().data.scrap_product_id]
     );
     assert.equal(Number(validScrapWarehouseBalance.rows[0]?.quantity ?? 0), 1,
