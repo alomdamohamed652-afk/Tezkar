@@ -130,6 +130,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "INSERT INTO shift_employees(shift_id,employee_id,starts_on,is_active) VALUES($1,$2,'2099-01-01',TRUE) ON CONFLICT(shift_id,employee_id) DO UPDATE SET starts_on=EXCLUDED.starts_on,ends_on=NULL,is_active=TRUE",
       [shift.rows[0].id, submitter.employeeId]
     );
+    await apiPool.query(
+      "INSERT INTO shift_leaders(shift_id,employee_id,assignment_type,starts_on,assigned_by) VALUES($1,$2,'primary','2099-01-01',$3)",
+      [shift.rows[0].id, approver.employeeId, approver.userId]
+    );
 
     const orderResponse = await app.inject({
       method: "POST", url: "/api/orders", headers: { cookie: submitter.cookie },
@@ -325,13 +329,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/production", headers: { cookie: submitter.cookie },
       payload: {
         employeeId: submitterEmployee, orderStageId: wipStage.id, stageId: wipStage.stage_id,
-        productId: wipStage.output_product_id, shiftId: shift.rows[0].id, workDate: "2099-01-02",
+        productId: wipStage.output_product_id, shiftId: shift.rows[0].id, shiftLeaderEmployeeId: approver.employeeId, workDate: "2099-01-02",
         quantity: 10, warehouseId: wrongWarehouse.rows[0].id,
         responsibleName: "Integration responsible"
       }
     });
     assert.equal(firstEntry.statusCode, 201, firstEntry.body);
     const firstId = firstEntry.json().data.id as string;
+    const listedProduction = await app.inject({ method: "GET", url: "/api/production", headers: { cookie: submitter.cookie } });
+    assert.equal(listedProduction.statusCode, 200, listedProduction.body);
+    const listedEntry = listedProduction.json().data.find((entry: { id: string }) => entry.id === firstId);
+    assert.ok(listedEntry, "new production entry should be present in the production log");
+    const expectedShiftLeader = await apiPool.query("SELECT full_name FROM employees WHERE id=$1", [approver.employeeId]);
+    assert.equal(listedEntry.shift_leader_name, expectedShiftLeader.rows[0].full_name,
+      "production logs should include the assigned shift leader's name");
     const validScrapKey = randomUUID();
     const validScrapPayload = {
       idempotencyKey: validScrapKey, productionEntryId: firstId,

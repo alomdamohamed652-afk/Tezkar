@@ -60,6 +60,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
   const result = await client.query(
     `SELECT p.*,
             e.code AS employee_code, e.full_name AS employee_name,
+            sle.full_name AS shift_leader_name,
             pr.code AS product_code, pr.name AS product_name,
             st.code AS stage_code, st.name AS stage_name,
             os.order_id AS order_id,
@@ -67,6 +68,7 @@ async function getEntry(client: import("pg").PoolClient, id: string, lock = fals
             u.code AS unit_code, u.name AS unit_name
        FROM production_entries p
        JOIN employees e ON e.id=p.employee_id
+       LEFT JOIN employees sle ON sle.id=p.shift_leader_employee_id
        JOIN products pr ON pr.id=p.product_id
        JOIN stages st ON st.id=p.stage_id
        LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -138,6 +140,7 @@ export async function productionRoutes(app: FastifyInstance) {
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
               p.total_earning_amount,p.status,
               e.code AS employee_code,e.full_name AS employee_name,
+              sle.full_name AS shift_leader_name,
               pr.code AS product_code,pr.name AS product_name,
               st.code AS stage_code,st.name AS stage_name,
               pt.name AS production_type_name,
