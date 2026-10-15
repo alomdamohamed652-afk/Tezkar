@@ -69,7 +69,7 @@ export default function DeliveriesPage(){
    }else{
     setDestination(draft.destination||destination);
     setNotes(draft.notes||"");setDetails(draft.details||"");
-    setTotalWeight(draft.total_weight==null?"":String(draft.total_weight));setPieceCount(draft.piece_count==null?"":String(draft.piece_count));setSampleQuantity(draft.sample_quantity==null?"":String(draft.sample_quantity));
+    setDeliveryValue(draft.delivery_value==null?"":String(draft.delivery_value));setTotalWeight(draft.total_weight==null?"":String(draft.total_weight));setPieceCount(draft.piece_count==null?"":String(draft.piece_count));setSampleQuantity(draft.sample_quantity==null?"":String(draft.sample_quantity));
    }
    setDraftId(draft.id);
    if(Array.isArray(draft.lines)&&draft.lines.length){
