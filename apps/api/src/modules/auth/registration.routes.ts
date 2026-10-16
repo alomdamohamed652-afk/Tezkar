@@ -110,12 +110,16 @@ export async function registrationRoutes(app: FastifyInstance) {
     const parsed = z.object({
       roleCode: z.string().trim().min(2).max(60),
       accountType: z.enum(["employee", "standalone"]),
-      employeeId: z.string().uuid().nullable().optional()
+      employeeId: z.string().uuid().nullable().optional(),
+      createEmployee: z.boolean().optional().default(false)
     }).superRefine((data, ctx) => {
-      if (data.accountType === "employee" && !data.employeeId) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employeeId"], message: "اختار الموظف المرتبط بالحساب" });
+      if (data.accountType === "employee" && !data.employeeId && !data.createEmployee) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employeeId"], message: "اختار موظفًا موجودًا أو أنشئ ملف موظف جديد" });
       }
-      if (data.accountType === "standalone" && data.employeeId) {
+      if (data.accountType === "employee" && data.employeeId && data.createEmployee) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["createEmployee"], message: "اختار الربط بموظف موجود أو إنشاء موظف جديد" });
+      }
+      if (data.accountType === "standalone" && (data.employeeId || data.createEmployee)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employeeId"], message: "المستخدم المستقل لا يرتبط بموظف" });
       }
     }).safeParse(request.body);
@@ -135,10 +139,18 @@ export async function registrationRoutes(app: FastifyInstance) {
       if (role.rows[0].code === "manager") throw new AppError("MANAGER_ROLE_RESTRICTED", "لا يمكن منح دور مدير النظام من خلال طلب التسجيل؛ عيّنه يدويًا من إدارة الحسابات بعد المراجعة.", 403);
 
       let linkedUserId: string | null = null;
+      let employeeId = parsed.data.employeeId ?? null;
+      if (parsed.data.accountType === "employee" && parsed.data.createEmployee) {
+        const createdEmployee = await client.query(
+          "INSERT INTO employees(full_name,phone) VALUES($1,$2) RETURNING id,code",
+          [reg.full_name, reg.phone.trim()]
+        );
+        employeeId = createdEmployee.rows[0].id;
+      }
       if (parsed.data.accountType === "employee") {
-        const employee = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE", [parsed.data.employeeId]);
+        const employee = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE", [employeeId]);
         if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
-        const linked = await client.query("SELECT id FROM users WHERE employee_id=$1 ORDER BY is_active DESC,created_at ASC LIMIT 1 FOR UPDATE", [parsed.data.employeeId]);
+        const linked = await client.query("SELECT id FROM users WHERE employee_id=$1 ORDER BY is_active DESC,created_at ASC LIMIT 1 FOR UPDATE", [employeeId]);
         linkedUserId = linked.rows[0]?.id ?? null;
       }
 
@@ -170,7 +182,7 @@ export async function registrationRoutes(app: FastifyInstance) {
         const userResult = await client.query(
           `INSERT INTO users(username,full_name,phone,password_hash,employee_id,is_active)
            VALUES($1,$2,$3,$4,$5,TRUE) RETURNING id,code,username,phone,employee_id,is_active`,
-          [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, parsed.data.accountType === "employee" ? parsed.data.employeeId : null]
+          [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, parsed.data.accountType === "employee" ? employeeId : null]
         );
         user = userResult.rows[0];
       }
@@ -194,11 +206,11 @@ export async function registrationRoutes(app: FastifyInstance) {
         module: "iam",
         entityType: "user",
         entityId: user.id,
-        afterData: { username: user.username, roleCode: role.rows[0].code, employeeId: user.employee_id, accountType: parsed.data.accountType, registrationRequestId: id },
+        afterData: { username: user.username, roleCode: role.rows[0].code, employeeId: user.employee_id, createdEmployee: parsed.data.accountType === "employee" && parsed.data.createEmployee, accountType: parsed.data.accountType, registrationRequestId: id },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
-      return { id: user.id, username: user.username, phone: user.phone, employeeId: user.employee_id, accountType: parsed.data.accountType, roleCode: role.rows[0].code };
+      return { id: user.id, username: user.username, phone: user.phone, employeeId: user.employee_id, createdEmployee: parsed.data.accountType === "employee" && parsed.data.createEmployee, accountType: parsed.data.accountType, roleCode: role.rows[0].code };
     });
     return reply.code(201).send({ data: created });
   });
