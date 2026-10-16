@@ -25,7 +25,8 @@ const movementSchema = z.object({
   targetLocationId: z.string().uuid().optional(), scrapOriginType: z.enum(["ORDER","ADJUSTMENT","STOCKTAKE","TRANSFER","PRODUCTION","OTHER"]).nullable().optional(), scrapOriginReference: z.string().trim().max(160).nullable().optional()
 });
 
-async function canViewWarehouseCosts(userId: string): Promise<boolean> {
+async function canViewWarehouseCosts(userId: string, roleCodes: string[] = []): Promise<boolean> {
+  if (roleCodes.some(code => code.toLowerCase() === "shift_leader")) return false;
   const client = await pool.connect();
   try {
     return await hasPermission(client, userId, "warehouse.dashboard");
@@ -181,7 +182,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("b.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("b.product_id=$"+params.length);}
     const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,w.warehouse_type,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
-    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
     const data=canViewCosts?result.rows:result.rows.map(({avg_unit_cost,inventory_value,...row})=>row);
     return {data};
   });
@@ -307,5 +308,28 @@ export async function warehouseRoutes(app: FastifyInstance) {
       return {source:source.rows[0],destination};
     });
     return reply.code(201).send({data:row});
+  });
+
+  app.patch("/api/warehouse/stock/cost",{preHandler:[authenticateRequest,requirePermission("warehouse.dashboard")]},async(request)=>{
+    if(request.user!.roleCodes.some(code=>code.toLowerCase()==="shift_leader"))throw new AppError("FORBIDDEN","تعديل التكلفة غير متاح لرئيس الوردية",403);
+    const parsed=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),averageUnitCost:z.number().finite().nonnegative(),notes:z.string().trim().max(500).optional()}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل التكلفة غير صحيحة",422);
+    return withTransaction(async client=>{
+      const product=await client.query("SELECT id,name,unit_id FROM products WHERE id=$1 AND track_inventory=TRUE FOR UPDATE",[parsed.data.productId]);
+      if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",404);
+      const balance=await client.query("SELECT b.*,w.name AS warehouse_name,l.name AS location_name FROM stock_balances b JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE b.product_id=$1 AND b.warehouse_id=$2 AND b.location_id=$3 FOR UPDATE OF b",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+      if(!balance.rowCount)throw new AppError("STOCK_BALANCE_NOT_FOUND","رصيد الصنف في هذا المكان غير موجود",404);
+      const before=balance.rows[0];
+      const quantity=Number(before.quantity);
+      if(quantity<=0)throw new AppError("EMPTY_STOCK","لا يمكن تعديل تكلفة رصيد كميته صفر",409);
+      const lots=await client.query("SELECT id,remaining_quantity,unit_cost FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+      const lotsQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
+      if(Math.abs(lotsQuantity-quantity)>1e-7)throw new AppError("INVENTORY_INTEGRITY_MISMATCH","مجموع دفعات التكلفة لا يطابق رصيد المخزن؛ تم إيقاف التعديل لحماية التكلفة",409);
+      const nextValue=quantity*parsed.data.averageUnitCost;
+      await client.query("UPDATE inventory_lots SET unit_cost=$1,updated_at=now() WHERE product_id=$2 AND warehouse_id=$3 AND location_id=$4 AND remaining_quantity>0",[parsed.data.averageUnitCost,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+      const updated=await client.query("UPDATE stock_balances SET avg_unit_cost=$1,inventory_value=$2,updated_at=now() WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5 RETURNING *",[parsed.data.averageUnitCost,nextValue,parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"revalue",module:"warehouse",entityType:"stock_balance",entityId:before.id,beforeData:{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:parsed.data.locationId,quantity,avg_unit_cost:Number(before.avg_unit_cost),inventory_value:Number(before.inventory_value)},afterData:{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:parsed.data.locationId,quantity,avg_unit_cost:parsed.data.averageUnitCost,inventory_value:nextValue},metadata:{notes:parsed.data.notes??null,unitCostChanged:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {data:updated.rows[0]};
+    });
   });
 }
