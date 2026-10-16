@@ -118,9 +118,9 @@ export async function registrationRoutes(app: FastifyInstance) {
       if (duplicate.rowCount) throw new AppError("USERNAME_EXISTS", "اسم المستخدم أصبح مستخدمًا بالفعل", 409);
 
       const userResult = await client.query(
-        `INSERT INTO users(username,password_hash,employee_id,is_active)
-         VALUES($1,$2,$3,TRUE) RETURNING id,code,username,employee_id,is_active`,
-        [reg.username, reg.password_hash, parsed.data.employeeId ?? null]
+        `INSERT INTO users(username,full_name,password_hash,employee_id,is_active)
+         VALUES($1,$2,$3,$4,TRUE) RETURNING id,code,username,employee_id,is_active`,
+        [reg.username, reg.full_name, reg.password_hash, parsed.data.employeeId ?? null]
       );
       const user = userResult.rows[0];
       await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)", [user.id, role.rows[0].id]);
