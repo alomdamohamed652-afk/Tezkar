@@ -25,12 +25,10 @@ const movementSchema = z.object({
   targetLocationId: z.string().uuid().optional(), scrapOriginType: z.enum(["ORDER","ADJUSTMENT","STOCKTAKE","TRANSFER","PRODUCTION","OTHER"]).nullable().optional(), scrapOriginReference: z.string().trim().max(160).nullable().optional()
 });
 
-async function canViewWarehouseCosts(userId: string): Promise<boolean> {
+async function canViewWarehouseCosts(userId: string, roleCodes: string[] = []): Promise<boolean> {
+  if (roleCodes.some(code => code.toLowerCase() === "shift_leader")) return false;
   const client = await pool.connect();
   try {
-    const role = await client.query("SELECT role_codes FROM users WHERE id=$1",[userId]);
-    const roleCodes = Array.isArray(role.rows[0]?.role_codes) ? role.rows[0].role_codes as string[] : [];
-    if (roleCodes.some(code => code.toLowerCase() === "shift_leader")) return false;
     return await hasPermission(client, userId, "warehouse.dashboard");
   } finally {
     client.release();
@@ -184,7 +182,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("b.warehouse_id=$"+params.length);}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("b.product_id=$"+params.length);}
     const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,w.warehouse_type,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
-    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
     const data=canViewCosts?result.rows:result.rows.map(({avg_unit_cost,inventory_value,...row})=>row);
     return {data};
   });
