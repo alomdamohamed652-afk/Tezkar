@@ -36,6 +36,7 @@ const groups:NavGroup[]=[
   {icon:"⌕",label:"البحث المركزي",href:"/search",permissions:["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view","deliveries.view","payroll.view","advances.view","advances.view_own","tasks.view","tasks.view_own","cartons.view","finance.expenses.view","finance.revenues.view","finance.period_close.view"]},
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
+  {icon:"♙",label:"طلبات الحسابات",href:"/registration-requests",permissions:["users.create"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
   {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]}
  ]}

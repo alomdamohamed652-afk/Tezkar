@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import { API_BASE as API } from "../../lib/api-base";
 
@@ -124,6 +125,8 @@ export default function LoginPage() {
               {!loading && <span className="auth-submit-arrow">←</span>}
             </button>
           </form>
+
+          <p style={{textAlign:"center",marginTop:20}}>محتاج حساب جديد؟ <Link href="/register">قدّم طلب إنشاء حساب</Link></p>
 
           <div className="auth-security">
             <span className="auth-lock">●</span>
