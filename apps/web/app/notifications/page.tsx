@@ -78,6 +78,7 @@ export default function NotificationsPage() {
           <div className="form-actions">
             {!item.read_at && <button className="secondary-btn" disabled={busy} onClick={() => void markRead(item)}>تحديد كمقروء</button>}
             {item.entity_type === "task" && <a className="secondary-btn" href="/tasks">فتح المهام</a>}
+            {item.entity_type === "password_reset_request" && <a className="secondary-btn" href="/password-reset-requests">فتح طلبات إعادة تعيين كلمة المرور</a>}
           </div>
         </article>)}</div>}
     </section>

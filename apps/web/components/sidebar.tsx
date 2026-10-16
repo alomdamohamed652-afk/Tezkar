@@ -37,6 +37,7 @@ const groups:NavGroup[]=[
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
   {icon:"♙",label:"طلبات الحسابات",href:"/registration-requests",permissions:["users.create"]},
+  {icon:"↻",label:"طلبات إعادة تعيين كلمة المرور",href:"/password-reset-requests",permissions:["users.create"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
   {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]}
  ]}
