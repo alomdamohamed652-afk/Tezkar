@@ -1593,6 +1593,25 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(priceHistory.json().data[1].reason, "Integration unpaid price");
     assert.equal(priceHistory.json().data[2].reason, "Integration new-only price");
 
+    // The worker must see the exact production-based advance installment due before requesting payout.
+    await apiPool.query("UPDATE production_entries SET work_date=CURRENT_DATE-INTERVAL '10 days' WHERE id=$1",[finalId]);
+    const dueAdvance=await apiPool.query(
+      `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,production_percentage,production_period_days,repayment_status)
+       VALUES($1,1000,'Due preview integration','PAID',$2,$3,CURRENT_DATE-INTERVAL '20 days','PRODUCTION_PERCENTAGE',20,15,'OPEN')
+       RETURNING id,code`,
+      [submitterEmployee,submitter.userId,approver.userId]
+    );
+    await apiPool.query(
+      "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',1000,$2,$3)",
+      [submitterEmployee,approver.userId,"صرف سلفة "+dueAdvance.rows[0].code]
+    );
+    const duePreview=await app.inject({method:"GET",url:"/api/payments/my-balance",headers:{cookie:submitter.cookie}});
+    assert.equal(duePreview.statusCode,200,duePreview.body);
+    assert.equal(Number(duePreview.json().data.dueAdvanceRepaymentAmount),61,
+      "20% of 305 EGP approved production earnings during the 15-day period should be shown as due");
+    assert.equal(duePreview.json().data.dueAdvanceRepayments.length,1);
+    assert.equal(duePreview.json().data.dueAdvanceRepayments[0].advanceCode,dueAdvance.rows[0].code);
+
   } finally {
     if (app) await app.close();
     if (apiPool) await apiPool.end();
