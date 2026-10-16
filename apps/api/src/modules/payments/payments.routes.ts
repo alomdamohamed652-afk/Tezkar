@@ -486,7 +486,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       );
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "العامل غير موجود أو غير نشط", 404);
       const [production, adjustments, settlements, legacyPayments, advances, ledger] = await Promise.all([
-        client.query(`SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS amount
+        client.query(`SELECT COALESCE(SUM(earning_amount),0) AS amount
           FROM production_entries WHERE employee_id=$1 AND status='APPROVED'`, [parsed.data.employeeId]),
         client.query(`SELECT
           COALESCE(SUM(CASE WHEN adjustment_type='BONUS' THEN amount ELSE 0 END),0) AS bonuses,
