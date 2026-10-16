@@ -84,6 +84,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
+      const settlementSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${workerEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(settlementSummary.statusCode,200,settlementSummary.body);
+      const summaryBody=settlementSummary.json().data;
+      assert.equal(summaryBody.employee.id,workerEmployee.id);
+      assert.equal(Number(summaryBody.availableForSettlement),500);
+      assert.equal(Number(summaryBody.productionEarnings),0);
+      assert.equal(Number(summaryBody.previouslySettled),0);
+      assert.equal(Number(summaryBody.outstandingAdvances),0);
       const productSuffix=randomBytes(4).toString("hex");
       // Product names that differ only by Arabic hamza should resolve to the same active catalog product.
       const hamzaName="مقلمه مطبوعه (أنا لها) "+productSuffix;
