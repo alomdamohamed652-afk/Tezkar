@@ -662,8 +662,8 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(settlementResponse.statusCode,201,settlementResponse.body);
     const settlement=settlementResponse.json().data;
-    assert.equal(Number(settlement.cashPaid),205);
-    assert.equal(Number(settlement.advanceRepaymentAmount),100,"20% of 500 approved production earnings over the 15-day period is recovered at payout");
+    assert.equal(Number(settlement.cashPaid),208);
+    assert.equal(Number(settlement.advanceRepaymentAmount),97,"20% of 485 net approved production earnings (including the final entry's 10 bonus and 5 deduction) is recovered at payout");
     const productionRepayment = await apiPool.query(
       "SELECT amount,repayment_type,source_production_entry_id,settlement_id FROM advance_repayments WHERE advance_id=$1",
       [percentageAdvance.rows[0].id]
