@@ -21,7 +21,7 @@ const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد
 export default function ProductionPage(){
  const {has}=usePermissions();
  const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
- const [employeeId,setEmployeeId]=useState(""),[shiftLeaderEmployeeId,setShiftLeaderEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState("");
+ const [employeeId,setEmployeeId]=useState(""),[shiftLeaderEmployeeId,setShiftLeaderEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[scrapQuantity,setScrapQuantity]=useState("0"),[scrapType,setScrapType]=useState<"WORKER_SCRAP"|"MANUFACTURING_DEFECT">("WORKER_SCRAP"),[scrapNotes,setScrapNotes]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editValues,setEditValues]=useState({employeeId:"",orderStageId:"",productId:"",stageId:"",productionTypeId:"",shiftId:"",shiftLeaderEmployeeId:"",workDate:"",quantity:"",baseAmount:"",hoursWorked:"",rateOverride:"",bonusAmount:"",bonusReason:"",deductionAmount:"",deductionReason:""}),[editSaving,setEditSaving]=useState(false),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
@@ -74,14 +74,14 @@ export default function ProductionPage(){
  const productionToday=useMemo(()=>entries.filter(x=>x.work_date===new Date().toISOString().slice(0,10)),[entries]);
  const approvedCount=useMemo(()=>entries.filter(x=>x.status==="APPROVED").length,[entries]);
  const calculatedBase=useMemo(()=>{
-  const rate=Number(normalizeNumber(rateOverride||"0")),q=Number(normalizeNumber(quantity||"0")),hours=Number(normalizeNumber(hoursWorked||"0")),base=Number(normalizeNumber(baseAmount||"0"));
+  const rate=Number(normalizeNumber(rateOverride||"0")),gross=Number(normalizeNumber(quantity||"0")),scrap=Math.max(0,Number(normalizeNumber(scrapQuantity||"0"))),q=Math.max(0,gross-scrap),hours=Number(normalizeNumber(hoursWorked||"0")),base=Number(normalizeNumber(baseAmount||"0"));
   if(resolvedMethod==="PER_PIECE") return q*rate;
   if(resolvedMethod==="PER_1000") return q/1000*rate;
   if(resolvedMethod==="PER_DAY") return rate;
   if(resolvedMethod==="PER_HOUR") return hours*rate;
   if(resolvedMethod==="PERCENTAGE") return base*rate/100;
   return 0;
- },[resolvedMethod,rateOverride,quantity,hoursWorked,baseAmount]);
+ },[resolvedMethod,rateOverride,quantity,scrapQuantity,hoursWorked,baseAmount]);
  const pendingCount=useMemo(()=>entries.filter(x=>x.status==="PENDING").length,[entries]);
  async function loadAdjustments(){if(!has("production.adjustments.view"))return;try{const x=await api<{data:Adjustment[]}>("/api/production/adjustments");setAdjustments(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البونص والخصومات")}}
  useEffect(()=>{void loadAdjustments()},[has]);
@@ -101,7 +101,9 @@ export default function ProductionPage(){
   if(!productionTypeId) return setError("اختر نوع الإنتاج.");
   if(!shiftId) return setError("اختر الوردية.");
   if(!resolvedMethod||resolvedRate===null) return setError("لم يتم العثور على سعر إنتاج مطابق للطلب والمرحلة والوردية.");
-  if(!isShiftWage && (!Number.isFinite(q)||q<=0)) return setError("أدخل كمية إنتاج صحيحة.");
+  if(!isShiftWage && (!Number.isFinite(q)||q<=0)) return setError("الكمية السليمة لازم تكون أكبر من صفر.");
+  const grossQuantity=Number(normalizeNumber(quantity||"0")),scrap=Number(normalizeNumber(scrapQuantity||"0"));
+  if(!Number.isFinite(scrap)||scrap<0||scrap>=grossQuantity) return setError("كمية الهالك لازم تكون صفر أو أقل من إجمالي الإنتاج.");
   if(resolvedMethod==="PERCENTAGE" && (!baseAmount || Number(normalizeNumber(baseAmount))<0)) return setError("أدخل قيمة أساس صحيحة.");
   if(resolvedMethod==="PER_HOUR" && (!hoursWorked || Number(normalizeNumber(hoursWorked))<=0)) return setError("أدخل عدد ساعات صحيح.");
   if(bonus>0&&!bonusReason.trim()) return setError("اكتب بيان البونص.");
@@ -109,11 +111,12 @@ export default function ProductionPage(){
   if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
   setSaving(true);
   try{
-   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,shiftLeaderEmployeeId:shiftLeaderEmployeeId||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,
+   const created=await api<{data:{id:string}}>("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,shiftLeaderEmployeeId:shiftLeaderEmployeeId||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,
      bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
     })});
+   if(scrap>0){await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:created.data.id,scrapType,quantity:scrap,notes:scrapNotes.trim()||null,idempotencyKey:crypto.randomUUID()})});}
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
-   setQuantity("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
+   setQuantity("");setScrapQuantity("0");setScrapType("WORKER_SCRAP");setScrapNotes("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإنتاج")}finally{setSaving(false)}
  }
  async function confirmReverseProduction(){
@@ -180,7 +183,10 @@ export default function ProductionPage(){
     <label>الوردية<SearchableSelect value={shiftId} onChange={selectShift} options={shiftOptions} placeholder="اختر الوردية"/></label>
     <label>مسؤول الوردية <span className="optional">(اختياري)</span><SearchableSelect value={shiftLeaderEmployeeId} onChange={selectResponsible} options={responsibleOptions} placeholder="اختر رئيس وردية" searchPlaceholder="ابحث عن المسؤول"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
-    {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
+    {!isShiftWage&&<label>إجمالي الإنتاج (شامل الهالك)<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>
+    <label>كمية الهالك الإضافي<input inputMode="decimal" value={scrapQuantity} onChange={e=>setScrapQuantity(e.target.value)} placeholder="٠"/></label>
+    {Number(normalizeNumber(scrapQuantity||"0"))>0&&<><label>نوع الهالك<select value={scrapType} onChange={e=>setScrapType(e.target.value as typeof scrapType)}><option value="WORKER_SCRAP">هالك من العامل</option><option value="MANUFACTURING_DEFECT">هالك عيب صناعة</option></select></label><label>سبب / ملاحظات الهالك<input value={scrapNotes} onChange={e=>setScrapNotes(e.target.value)} maxLength={1000} placeholder="اختياري"/></label></>}
+    <div className="form-hint" style={{gridColumn:"1/-1"}}>الإجمالي: {formatQuantity(Number(normalizeNumber(quantity||"0")),3)} · الهالك: {formatQuantity(Number(normalizeNumber(scrapQuantity||"0")),3)} · المتاح للتسليم: {formatQuantity(Math.max(0,Number(normalizeNumber(quantity||"0"))-Number(normalizeNumber(scrapQuantity||"0"))),3)}. أجر القطعة يُحسب على السليم فقط.</div>}
     {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={!has("production.rate_override") || Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":has("production.rate_override")?"السعر الحالي من التسعير العام ويمكن تعديله بصلاحيتك.":"السعر الحالي من تسعير المرحلة العام؛ تعديل السعر يحتاج صلاحية منفصلة."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
     <div className="form-hint" style={{gridColumn:"1/-1"}}>وجهة التخزين تُحدد تلقائيًا حسب مرحلة الطلب؛ لا يتم اختيار مخزن يدويًا عند تسجيل الإنتاج.</div>
     {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
