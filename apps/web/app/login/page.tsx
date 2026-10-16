@@ -2,8 +2,9 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+import { API_BASE as API } from "../../lib/api-base";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -27,7 +28,7 @@ export default function LoginPage() {
       });
       const body=await res.json().catch(()=>null);
       if(!res.ok) throw new Error(body?.error?.message ?? "تعذر تسجيل الدخول");
-      router.replace(body?.requiresSetup ? "/setup" : "/");
+      router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : "/");
     } catch(err) {
       setError(err instanceof Error ? err.message : "تعذر تسجيل الدخول");
     } finally {
@@ -40,7 +41,7 @@ export default function LoginPage() {
       <div className="auth-shell">
         <section className="auth-showcase" aria-label="نظام تذكار">
           <div className="auth-showcase-top">
-            <div className="auth-logo-mark">ت</div>
+            <div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
             <div>
               <strong>تذكار</strong>
               <span>إدارة المصنع</span>
@@ -63,7 +64,7 @@ export default function LoginPage() {
 
         <section className="auth-card" aria-labelledby="login-title">
           <div className="auth-mobile-brand">
-            <div className="auth-logo-mark">ت</div>
+            <div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
             <div><strong>تذكار</strong><span>إدارة المصنع</span></div>
           </div>
 
@@ -75,14 +76,14 @@ export default function LoginPage() {
 
           <form className="auth-form" onSubmit={submit}>
             <label className="auth-field">
-              <span>اسم المستخدم</span>
+              <span>اسم المستخدم أو رقم الموبايل</span>
               <div className="auth-input-wrap">
                 <span className="auth-input-icon" aria-hidden="true">⌁</span>
                 <input
                   value={username}
                   onChange={e=>setUsername(e.target.value)}
                   autoComplete="username"
-                  placeholder="اكتب اسم المستخدم"
+                  placeholder="اسم المستخدم أو رقم الموبايل المسجل"
                   autoFocus
                   required
                 />
@@ -125,15 +126,13 @@ export default function LoginPage() {
             </button>
           </form>
 
+          <div style={{display:"flex",justifyContent:"center",gap:16,flexWrap:"wrap",marginTop:20}}><Link href="/forgot-password">نسيت كلمة المرور؟</Link><span>محتاج حساب جديد؟ <Link href="/register" style={{fontWeight:800,color:"#16835d"}}>إنشاء حساب جديد</Link></span></div>
+
           <div className="auth-security">
             <span className="auth-lock">●</span>
             <span>اتصال آمن — بيانات حسابك لا تظهر في الصفحة</span>
           </div>
 
-          <div className="auth-note">
-            <b>أول تشغيل؟</b>
-            <span>استخدم حساب المدير المؤقت، وبعد الدخول سيطلب منك النظام إعداد حساب المدير الجديد.</span>
-          </div>
         </section>
       </div>
     </main>
