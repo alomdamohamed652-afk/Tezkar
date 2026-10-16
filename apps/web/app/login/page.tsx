@@ -126,7 +126,7 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <p style={{textAlign:"center",marginTop:20}}>محتاج حساب جديد؟ <Link href="/register">قدّم طلب إنشاء حساب</Link></p>
+          <div style={{display:"flex",justifyContent:"center",gap:16,flexWrap:"wrap",marginTop:20}}><Link href="/forgot-password">نسيت كلمة المرور؟</Link><span>محتاج حساب جديد؟ <Link href="/register" style={{fontWeight:800,color:"#16835d"}}>إنشاء حساب جديد</Link></span></div>
 
           <div className="auth-security">
             <span className="auth-lock">●</span>

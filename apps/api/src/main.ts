@@ -6,6 +6,7 @@ import { healthRoutes } from "./modules/health/health.routes.js";
 import { employeeRoutes } from "./modules/employees/employees.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { registrationRoutes } from "./modules/auth/registration.routes.js";
+import { passwordResetRoutes } from "./modules/auth/password-reset.routes.js";
 import { accountRoutes } from "./modules/auth/account.routes.js";
 import { masterDataRoutes } from "./modules/master-data/master-data.routes.js";
 import { userRoutes } from "./modules/users/users.routes.js";
@@ -62,6 +63,7 @@ app.setErrorHandler((error, _request, reply) => {
 await app.register(healthRoutes);
 await app.register(authRoutes);
 await app.register(registrationRoutes);
+await app.register(passwordResetRoutes);
 await app.register(accountRoutes);
 await app.register(employeeRoutes);
 await app.register(masterDataRoutes);
