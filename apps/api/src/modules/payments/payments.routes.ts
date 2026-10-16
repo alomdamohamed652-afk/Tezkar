@@ -61,7 +61,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
   // Gross approved earnings less unified settlements and legacy payments that predate settlement links.
   const totals=await client.query(`
     SELECT COUNT(*) FILTER(WHERE pe.status='APPROVED')::int AS approved_count,
-      COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FILTER(WHERE pe.status='APPROVED'),0) AS production_earned,
+      COALESCE(SUM(pe.earning_amount) FILTER(WHERE pe.status='APPROVED'),0) AS production_earned,
       COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
         FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
         WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0) AS adjustments,
