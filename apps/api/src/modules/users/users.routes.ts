@@ -34,7 +34,7 @@ async function assertSystemPermissionAdmin(userId: string) {
 
 export async function userRoutes(app: FastifyInstance){
  app.get("/api/users",{preHandler:[authenticateRequest,requirePermission("users.view")]},async()=>{
-  const result=await pool.query("SELECT u.id,u.code,u.username,u.employee_id,e.code AS employee_code,e.full_name, u.is_active,u.is_bootstrap,u.must_complete_setup,u.last_login_at,COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}') AS role_codes FROM users u LEFT JOIN employees e ON e.id=u.employee_id LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles r ON r.id=ur.role_id GROUP BY u.id,e.code,e.full_name ORDER BY u.code");
+  const result=await pool.query("SELECT u.id,u.code,u.username,u.employee_id,e.code AS employee_code,COALESCE(u.full_name,e.full_name) AS full_name, u.is_active,u.is_bootstrap,u.must_complete_setup,u.last_login_at,COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}') AS role_codes FROM users u LEFT JOIN employees e ON e.id=u.employee_id LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles r ON r.id=ur.role_id GROUP BY u.id,e.code,e.full_name ORDER BY u.code");
   return {data:result.rows};
  });
  app.get("/api/roles",{preHandler:[authenticateRequest,requirePermission("users.view")]},async()=>{
