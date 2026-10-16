@@ -126,7 +126,7 @@ export async function registrationRoutes(app: FastifyInstance) {
       await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)", [user.id, role.rows[0].id]);
       await client.query(
         `UPDATE registration_requests SET status='approved',reviewed_by=$1,reviewed_at=now(),
-          created_user_id=$2,updated_at=now() WHERE id=$3`,
+          created_user_id=$2,password_hash='!consumed!',updated_at=now() WHERE id=$3`,
         [request.user!.userId, user.id, id]
       );
       await client.query(
@@ -165,7 +165,7 @@ export async function registrationRoutes(app: FastifyInstance) {
       if (!found.rowCount) throw new AppError("REGISTRATION_NOT_FOUND", "طلب التسجيل غير موجود", 404);
       if (found.rows[0].status !== "pending") throw new AppError("REGISTRATION_ALREADY_REVIEWED", "تمت مراجعة الطلب ده بالفعل", 409);
       await client.query(
-        "UPDATE registration_requests SET status='rejected',reviewed_by=$1,reviewed_at=now(),rejection_reason=$2,updated_at=now() WHERE id=$3",
+        "UPDATE registration_requests SET status='rejected',reviewed_by=$1,reviewed_at=now(),rejection_reason=$2,password_hash='!rejected!',updated_at=now() WHERE id=$3",
         [request.user!.userId, parsed.data.reason || null, id]
       );
       await writeAudit(client, {
