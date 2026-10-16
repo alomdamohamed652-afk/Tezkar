@@ -110,14 +110,21 @@ export default function ProductionPage(){
   if(deduction>0&&!deductionReason.trim()) return setError("اكتب بيان الخصم.");
   if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
   setSaving(true);
+  let createdProductionId:string|null=null;
   try{
    const created=await api<{data:{id:string}}>("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,shiftLeaderEmployeeId:shiftLeaderEmployeeId||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,
      bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
     })});
+   createdProductionId=created.data.id;
    if(scrap>0){await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:created.data.id,scrapType,quantity:scrap,notes:scrapNotes.trim()||null,idempotencyKey:crypto.randomUUID()})});}
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
    setQuantity("");setScrapQuantity("0");setScrapType("WORKER_SCRAP");setScrapNotes("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإنتاج")}finally{setSaving(false)}
+  }catch(e){
+   const message=e instanceof Error?e.message:"تعذر تسجيل الإنتاج";
+   setError(createdProductionId&&scrap>0
+    ? `تم إنشاء سجل الإنتاج بالفعل (رقم داخلي: ${createdProductionId}) لكن تسجيل الهالك لم يكتمل. لا تعِد تسجيل الإنتاج؛ راجع صفحة الهالك وسجّل الكمية الناقصة. السبب: ${message}`
+    : message);
+  }finally{setSaving(false)}
  }
  async function confirmReverseProduction(){
   if(!reverseTarget||!reversePassword||reverseReason.trim().length<3)return;
