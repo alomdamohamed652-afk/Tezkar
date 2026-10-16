@@ -64,7 +64,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
       COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FILTER(WHERE pe.status='APPROVED'),0) AS production_earned,
       COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
         FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
-        WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0) AS adjustments,
+        WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
@@ -473,6 +473,62 @@ export async function paymentsRoutes(app:FastifyInstance){
     });
     return {data:row};
   });
+  app.get("/api/worker-payments/settlement-summary", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed = z.object({ employeeId: z.string().uuid() }).safeParse(request.query);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اختيار العامل غير صحيح", 422);
+    const client = await pool.connect();
+    try {
+      const employee = await client.query(
+        "SELECT id,code,full_name FROM employees WHERE id=$1 AND is_active=TRUE",
+        [parsed.data.employeeId]
+      );
+      if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "العامل غير موجود أو غير نشط", 404);
+      const [production, adjustments, settlements, legacyPayments, advances, ledger] = await Promise.all([
+        client.query(`SELECT COALESCE(SUM(earning_amount),0) AS amount
+          FROM production_entries WHERE employee_id=$1 AND status='APPROVED'`, [parsed.data.employeeId]),
+        client.query(`SELECT
+          COALESCE(SUM(CASE WHEN adjustment_type='BONUS' THEN amount ELSE 0 END),0) AS bonuses,
+          COALESCE(SUM(CASE WHEN adjustment_type='DEDUCTION' THEN amount ELSE 0 END),0) AS deductions
+          FROM employee_earnings_adjustments a
+          LEFT JOIN production_entries p ON p.id=a.production_entry_id
+          WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')`, [parsed.data.employeeId]),
+        client.query(`SELECT COALESCE(SUM(gross_amount),0) AS amount
+          FROM employee_earnings_settlements WHERE employee_id=$1`, [parsed.data.employeeId]),
+        client.query(`SELECT COALESCE(SUM(wp.gross_amount),0) AS amount
+          FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+          WHERE wp.employee_id=$1 AND s.id IS NULL`, [parsed.data.employeeId]),
+        client.query(`SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE(r.paid,0),0)),0) AS amount
+          FROM advance_requests a
+          LEFT JOIN (SELECT advance_id,SUM(amount) AS paid FROM advance_repayments GROUP BY advance_id) r ON r.advance_id=a.id
+          WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'`, [parsed.data.employeeId]),
+        client.query(`SELECT COALESCE(SUM(credit_amount),0) AS credits,
+          COALESCE(SUM(debit_amount),0) AS debits
+          FROM employee_earnings_ledger WHERE employee_id=$1`, [parsed.data.employeeId])
+      ]);
+      const earned = Number(production.rows[0]?.amount ?? 0);
+      const bonus = Number(adjustments.rows[0]?.bonuses ?? 0);
+      const deductions = Number(adjustments.rows[0]?.deductions ?? 0);
+      const settled = Number(settlements.rows[0]?.amount ?? 0);
+      const legacyPaid = Number(legacyPayments.rows[0]?.amount ?? 0);
+      const available = await getAvailableEarnings(client, parsed.data.employeeId);
+      return { data: {
+        employee: employee.rows[0],
+        productionEarnings: earned,
+        bonuses: bonus,
+        deductions,
+        previouslySettled: settled + legacyPaid,
+        outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
+        availableForSettlement: available,
+        ledgerCredits: Number(ledger.rows[0]?.credits ?? 0),
+        ledgerDebits: Number(ledger.rows[0]?.debits ?? 0)
+      }};
+    } finally {
+      client.release();
+    }
+  });
+
   app.get("/api/worker-payments/preview", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
