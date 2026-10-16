@@ -109,6 +109,7 @@ export async function registrationRoutes(app: FastifyInstance) {
         "SELECT id,code FROM roles WHERE code=$1 AND is_active=TRUE", [parsed.data.roleCode]
       );
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "الدور غير موجود أو غير نشط", 422);
+      if (role.rows[0].code === "manager") throw new AppError("MANAGER_ROLE_RESTRICTED", "لا يمكن منح دور مدير النظام من خلال طلب التسجيل؛ عيّنه يدويًا من إدارة الحسابات بعد المراجعة.", 403);
       if (parsed.data.employeeId) {
         const employee = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE", [parsed.data.employeeId]);
         if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
