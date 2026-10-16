@@ -73,8 +73,8 @@ export function Sidebar({active}:{active:string}){
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
    </div>
    <div className="sidebar-user">
-    <div className="sidebar-avatar">{(session?.fullName||session?.username||"م").trim().slice(0,1).toUpperCase()}</div>
-    <div className="sidebar-user-copy"><strong>{session?.fullName||session?.username||"حساب المستخدم"}</strong><span>{session?.fullName&&session?.username?("@"+session.username):"نظام تذكار"}</span></div>
+    <div className="sidebar-avatar">{(session?.fullName||"م").trim().slice(0,1).toUpperCase()}</div>
+    <div className="sidebar-user-copy"><strong>{session?.fullName||((session?.roleCodes||[]).includes("manager")?"مدير النظام":(session?.roleCodes||[]).includes("worker")?"العامل":"مستخدم النظام")}</strong><span>{session?.fullName?"الموظف":"حساب إداري"}</span></div>
     <span className="sidebar-online" title="متصل"></span>
    </div>
    <div className="sidebar-scroll">
