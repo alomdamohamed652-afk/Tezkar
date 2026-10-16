@@ -36,7 +36,7 @@ export default function ReceiptsPage(){
     <div><span className="field-caption">المخزن</span><SearchableSelect value={x.warehouseId} onChange={v=>{update(i,"warehouseId",v);update(i,"locationId","")}} options={warehouseOptions} placeholder="اختر المخزن"/></div>
     <div><span className="field-caption">المكان</span><SearchableSelect value={x.locationId} onChange={v=>update(i,"locationId",v)} options={loc.map(l=>({value:l.id,label:l.name}))} placeholder="اختر المكان"/></div>
     <div><span className="field-caption">الكمية</span><input inputMode="decimal" value={x.quantity} onChange={e=>update(i,"quantity",e.target.value)} required/></div>
-    <div><span className="field-caption">تكلفة الوحدة</span><input inputMode="decimal" value={x.unitCost} onChange={e=>update(i,"unitCost",e.target.value)} required/></div>
+    <div><span className="field-caption">تكلفة الوحدة</span><input inputMode="decimal" value={x.unitCost} onChange={e=>update(i,"unitCost",e.target.value)} placeholder="اختياري — اتركه فارغًا لو التكلفة غير متاحة"/></div>
     <div><span className="field-caption">الباتش / التشغيلة</span><input value={x.batchCode} onChange={e=>update(i,"batchCode",e.target.value)}/></div>
     <button type="button" className="danger-button" onClick={()=>removeLine(i)} disabled={lines.length===1}>حذف</button>
    </div>})}</div>
