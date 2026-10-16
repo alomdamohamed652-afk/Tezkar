@@ -59,9 +59,9 @@ export default function RegistrationRequestsPage(){
     {error&&<div className="alert error" role="alert">{error}</div>}{message&&<div className="alert success" role="status">{message}</div>}
     <section className="card">
       <div className="card-header"><div><h2 className="card-title">طلبات معلّقة</h2><p className="form-hint">لن يحصل أي حساب على صلاحيات قبل موافقتك.</p></div><span>{requests.length} طلب</span></div>
-      {loading?<p className="empty">جاري تحميل الطلبات...</p>:requests.length===0?<p className="empty-state">مفيش طلبات تسجيل معلّقة حاليًا.</p>:<div className="table-scroll"><table><thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>الموبايل</th><th>تاريخ الطلب</th><th>الدور عند التفعيل</th><th>الإجراء</th></tr></thead><tbody>
+      {loading?<p className="empty">جاري تحميل الطلبات...</p>:requests.length===0?<p className="empty">مفيش طلبات تسجيل معلّقة حاليًا.</p>:<div className="table-scroll"><table><thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>الموبايل</th><th>تاريخ الطلب</th><th>الدور عند التفعيل</th><th>الإجراء</th></tr></thead><tbody>
         {requests.map(item=><tr key={item.id}><td>{item.full_name}</td><td dir="ltr">{item.username}</td><td>{item.phone||"—"}</td><td>{new Date(item.created_at).toLocaleString("ar-EG")}</td><td><select value={selected[item.id]??""} onChange={e=>setSelected(s=>({...s,[item.id]:e.target.value}))} aria-label={"دور "+item.username}><option value="">اختار الدور</option>{roles.map(role=><option key={role.id} value={role.code}>{role.name}</option>)}</select></td><td><div className="form-actions"><button className="primary-button" disabled={busy===item.id||!selected[item.id]} onClick={()=>void review(item,"approve")}>{busy===item.id?"جاري التنفيذ...":"موافقة وتفعيل"}</button><button className="danger-button" disabled={busy===item.id} onClick={()=>void review(item,"reject")}>رفض</button></div></td></tr>)}
       </tbody></table></div>}
-    </section>
+    </section></section>
   </main></div>;
 }
