@@ -28,6 +28,9 @@ const movementSchema = z.object({
 async function canViewWarehouseCosts(userId: string): Promise<boolean> {
   const client = await pool.connect();
   try {
+    const role = await client.query("SELECT role_codes FROM users WHERE id=$1",[userId]);
+    const roleCodes = Array.isArray(role.rows[0]?.role_codes) ? role.rows[0].role_codes as string[] : [];
+    if (roleCodes.some(code => code.toLowerCase() === "shift_leader")) return false;
     return await hasPermission(client, userId, "warehouse.dashboard");
   } finally {
     client.release();
@@ -310,6 +313,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
   });
 
   app.patch("/api/warehouse/stock/cost",{preHandler:[authenticateRequest,requirePermission("warehouse.dashboard")]},async(request)=>{
+    if(request.user!.roleCodes.some(code=>code.toLowerCase()==="shift_leader"))throw new AppError("FORBIDDEN","تعديل التكلفة غير متاح لرئيس الوردية",403);
     const parsed=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),averageUnitCost:z.number().finite().nonnegative(),notes:z.string().trim().max(500).optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل التكلفة غير صحيحة",422);
     return withTransaction(async client=>{
