@@ -134,28 +134,46 @@ export async function registrationRoutes(app: FastifyInstance) {
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "الدور غير موجود أو غير نشط", 422);
       if (role.rows[0].code === "manager") throw new AppError("MANAGER_ROLE_RESTRICTED", "لا يمكن منح دور مدير النظام من خلال طلب التسجيل؛ عيّنه يدويًا من إدارة الحسابات بعد المراجعة.", 403);
 
+      let linkedUserId: string | null = null;
       if (parsed.data.accountType === "employee") {
-        const employee = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE", [parsed.data.employeeId]);
+        const employee = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE", [parsed.data.employeeId]);
         if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
-        const linked = await client.query("SELECT 1 FROM users WHERE employee_id=$1 AND is_active=TRUE", [parsed.data.employeeId]);
-        if (linked.rowCount) throw new AppError("EMPLOYEE_ACCOUNT_EXISTS", "الموظف ده مرتبط بالفعل بحساب دخول نشط. اختار موظفًا آخر أو راجع الحسابات.", 409);
+        const linked = await client.query("SELECT id FROM users WHERE employee_id=$1 ORDER BY is_active DESC,created_at ASC LIMIT 1 FOR UPDATE", [parsed.data.employeeId]);
+        linkedUserId = linked.rows[0]?.id ?? null;
       }
 
-      const duplicate = await client.query("SELECT 1 FROM users WHERE lower(username)=lower($1)", [reg.username]);
+      const duplicate = await client.query(
+        "SELECT 1 FROM users WHERE lower(username)=lower($1) AND ($2::uuid IS NULL OR id<>$2)",
+        [reg.username, linkedUserId]
+      );
       if (duplicate.rowCount) throw new AppError("USERNAME_EXISTS", "اسم المستخدم أصبح مستخدمًا بالفعل", 409);
       const normalizedPhone = reg.phone.replace(/\D/g, "").slice(-10);
       const duplicatePhone = await client.query(
-        "SELECT 1 FROM users WHERE length(regexp_replace(COALESCE(phone,''),'[^0-9]','','g')) >= 10 AND RIGHT(regexp_replace(phone,'[^0-9]','','g'),10)=$1",
-        [normalizedPhone]
+        "SELECT 1 FROM users WHERE length(regexp_replace(COALESCE(phone,''),'[^0-9]','','g')) >= 10 AND RIGHT(regexp_replace(phone,'[^0-9]','','g'),10)=$1 AND ($2::uuid IS NULL OR id<>$2)",
+        [normalizedPhone, linkedUserId]
       );
       if (duplicatePhone.rowCount) throw new AppError("PHONE_EXISTS", "رقم الموبايل أصبح مرتبطًا بحساب آخر", 409);
 
-      const userResult = await client.query(
-        `INSERT INTO users(username,full_name,phone,password_hash,employee_id,is_active)
-         VALUES($1,$2,$3,$4,$5,TRUE) RETURNING id,code,username,phone,employee_id,is_active`,
-        [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, parsed.data.accountType === "employee" ? parsed.data.employeeId : null]
-      );
-      const user = userResult.rows[0];
+      let user;
+      if (linkedUserId) {
+        const userResult = await client.query(
+          `UPDATE users SET username=$1,full_name=$2,phone=$3,password_hash=$4,is_active=TRUE,
+             must_change_password=FALSE,updated_at=now()
+           WHERE id=$5
+           RETURNING id,code,username,phone,employee_id,is_active`,
+          [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, linkedUserId]
+        );
+        user = userResult.rows[0];
+        await client.query("DELETE FROM user_roles WHERE user_id=$1", [user.id]);
+        await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [user.id]);
+      } else {
+        const userResult = await client.query(
+          `INSERT INTO users(username,full_name,phone,password_hash,employee_id,is_active)
+           VALUES($1,$2,$3,$4,$5,TRUE) RETURNING id,code,username,phone,employee_id,is_active`,
+          [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, parsed.data.accountType === "employee" ? parsed.data.employeeId : null]
+        );
+        user = userResult.rows[0];
+      }
       await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)", [user.id, role.rows[0].id]);
       await client.query(
         `UPDATE registration_requests SET status='approved',reviewed_by=$1,reviewed_at=now(),
