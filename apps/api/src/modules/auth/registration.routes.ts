@@ -7,10 +7,15 @@ import { hashPassword } from "../auth/auth.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
+const phoneSchema = z.string().trim().min(10).max(30).regex(/^[+()\d\s.-]+$/).refine(
+  value => value.replace(/\D/g, "").length >= 10,
+  "رقم الموبايل لازم يحتوي على 10 أرقام على الأقل"
+);
+
 const publicRequestSchema = z.object({
   fullName: z.string().trim().min(3).max(160),
   username: z.string().trim().min(3).max(100).regex(/^[a-zA-Z0-9._-]+$/),
-  phone: z.string().trim().max(30).optional().default(""),
+  phone: phoneSchema,
   password: z.string().min(12).max(200),
   confirmPassword: z.string().min(12).max(200)
 }).refine((data) => data.password === data.confirmPassword, {
@@ -37,23 +42,34 @@ async function assertManager(userId: string) {
 export async function registrationRoutes(app: FastifyInstance) {
   app.post("/api/auth/register", async (request, reply) => {
     const parsed = publicRequestSchema.safeParse(request.body);
-    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "راجع الاسم واسم المستخدم ورقم الموبايل وكلمة المرور (12 حرفًا على الأقل)", 422);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "راجع الاسم واسم المستخدم ورقم الموبايل الإلزامي وكلمة المرور (12 حرفًا على الأقل)", 422);
 
     const { fullName, username, phone, password } = parsed.data;
+    const normalizedPhone = phone.replace(/\D/g, "").slice(-10);
     const result = await withTransaction(async (client) => {
       const existingUser = await client.query("SELECT 1 FROM users WHERE lower(username)=lower($1)", [username]);
       if (existingUser.rowCount) throw new AppError("USERNAME_EXISTS", "اسم المستخدم مستخدم بالفعل", 409);
+      const phoneUser = await client.query(
+        "SELECT 1 FROM users WHERE length(regexp_replace(COALESCE(phone,''),'[^0-9]','','g')) >= 10 AND RIGHT(regexp_replace(phone,'[^0-9]','','g'),10)=$1",
+        [normalizedPhone]
+      );
+      if (phoneUser.rowCount) throw new AppError("PHONE_EXISTS", "رقم الموبايل مرتبط بحساب مستخدم بالفعل", 409);
       const existingRequest = await client.query(
         "SELECT 1 FROM registration_requests WHERE lower(username)=lower($1) AND status='pending'",
         [username]
       );
       if (existingRequest.rowCount) throw new AppError("REGISTRATION_PENDING", "يوجد طلب تسجيل معلّق باسم المستخدم ده بالفعل", 409);
+      const phoneRequest = await client.query(
+        "SELECT 1 FROM registration_requests WHERE status='pending' AND phone IS NOT NULL AND length(regexp_replace(phone,'[^0-9]','','g')) >= 10 AND RIGHT(regexp_replace(phone,'[^0-9]','','g'),10)=$1",
+        [normalizedPhone]
+      );
+      if (phoneRequest.rowCount) throw new AppError("REGISTRATION_PHONE_PENDING", "رقم الموبايل ده موجود في طلب تسجيل معلّق بالفعل", 409);
 
       const inserted = await client.query(
         `INSERT INTO registration_requests(full_name,username,phone,password_hash,request_ip,user_agent)
          VALUES($1,$2,$3,$4,$5,$6)
-         RETURNING id,full_name,username,created_at`,
-        [fullName, username, phone || null, hashPassword(password), request.ip, request.headers["user-agent"] ?? null]
+         RETURNING id,full_name,username,phone,created_at`,
+        [fullName, username, phone.trim(), hashPassword(password), request.ip, request.headers["user-agent"] ?? null]
       );
       await client.query(
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
@@ -63,13 +79,13 @@ export async function registrationRoutes(app: FastifyInstance) {
          JOIN user_roles ur ON ur.user_id=u.id
          JOIN roles r ON r.id=ur.role_id
          WHERE u.is_active=TRUE AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE`,
-        [`طلب حساب جديد من ${fullName} (اسم المستخدم: ${username}). راجع الطلبات لاختيار الدور وتفعيل الحساب.`, inserted.rows[0].id]
+        [`طلب حساب جديد من ${fullName} (اسم المستخدم: ${username}). راجع الطلبات لاختيار الدور وربط الحساب بالموظف أو إنشائه كمستخدم مستقل.`, inserted.rows[0].id]
       );
       return inserted.rows[0];
     });
     return reply.code(201).send({
       data: { id: result.id, status: "pending" },
-      message: "تم إرسال طلبك للإدارة. تقدر تسجل الدخول بعد موافقة المدير وتفعيل الحساب."
+      message: "تم إرسال طلبك للإدارة. تقدر تسجل الدخول باسم المستخدم أو رقم الموبايل بعد موافقة المدير وتفعيل الحساب."
     });
   });
 
@@ -93,34 +109,51 @@ export async function registrationRoutes(app: FastifyInstance) {
     const id = (request.params as { id: string }).id;
     const parsed = z.object({
       roleCode: z.string().trim().min(2).max(60),
+      accountType: z.enum(["employee", "standalone"]),
       employeeId: z.string().uuid().nullable().optional()
+    }).superRefine((data, ctx) => {
+      if (data.accountType === "employee" && !data.employeeId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employeeId"], message: "اختار الموظف المرتبط بالحساب" });
+      }
+      if (data.accountType === "standalone" && data.employeeId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employeeId"], message: "المستخدم المستقل لا يرتبط بموظف" });
+      }
     }).safeParse(request.body);
-    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اختار الدور المطلوب بشكل صحيح", 422);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اختار نوع الحساب والدور والموظف عند الحاجة بشكل صحيح", 422);
 
     const created = await withTransaction(async (client) => {
-      const requestResult = await client.query(
-        "SELECT * FROM registration_requests WHERE id=$1 FOR UPDATE", [id]
-      );
+      const requestResult = await client.query("SELECT * FROM registration_requests WHERE id=$1 FOR UPDATE", [id]);
       if (!requestResult.rowCount) throw new AppError("REGISTRATION_NOT_FOUND", "طلب التسجيل غير موجود", 404);
       const reg = requestResult.rows[0];
       if (reg.status !== "pending") throw new AppError("REGISTRATION_ALREADY_REVIEWED", "تمت مراجعة الطلب ده بالفعل", 409);
+      if (!reg.phone || reg.phone.replace(/\D/g, "").length < 10) {
+        throw new AppError("PHONE_REQUIRED", "طلب التسجيل ده قديم ولا يحتوي على رقم موبايل صالح؛ ارفضه واطلب من صاحبه إعادة التسجيل", 422);
+      }
 
-      const role = await client.query(
-        "SELECT id,code FROM roles WHERE code=$1 AND is_active=TRUE", [parsed.data.roleCode]
-      );
+      const role = await client.query("SELECT id,code FROM roles WHERE code=$1 AND is_active=TRUE", [parsed.data.roleCode]);
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "الدور غير موجود أو غير نشط", 422);
       if (role.rows[0].code === "manager") throw new AppError("MANAGER_ROLE_RESTRICTED", "لا يمكن منح دور مدير النظام من خلال طلب التسجيل؛ عيّنه يدويًا من إدارة الحسابات بعد المراجعة.", 403);
-      if (parsed.data.employeeId) {
+
+      if (parsed.data.accountType === "employee") {
         const employee = await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE", [parsed.data.employeeId]);
         if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 422);
+        const linked = await client.query("SELECT 1 FROM users WHERE employee_id=$1 AND is_active=TRUE", [parsed.data.employeeId]);
+        if (linked.rowCount) throw new AppError("EMPLOYEE_ACCOUNT_EXISTS", "الموظف ده مرتبط بالفعل بحساب دخول نشط. اختار موظفًا آخر أو راجع الحسابات.", 409);
       }
+
       const duplicate = await client.query("SELECT 1 FROM users WHERE lower(username)=lower($1)", [reg.username]);
       if (duplicate.rowCount) throw new AppError("USERNAME_EXISTS", "اسم المستخدم أصبح مستخدمًا بالفعل", 409);
+      const normalizedPhone = reg.phone.replace(/\D/g, "").slice(-10);
+      const duplicatePhone = await client.query(
+        "SELECT 1 FROM users WHERE length(regexp_replace(COALESCE(phone,''),'[^0-9]','','g')) >= 10 AND RIGHT(regexp_replace(phone,'[^0-9]','','g'),10)=$1",
+        [normalizedPhone]
+      );
+      if (duplicatePhone.rowCount) throw new AppError("PHONE_EXISTS", "رقم الموبايل أصبح مرتبطًا بحساب آخر", 409);
 
       const userResult = await client.query(
-        `INSERT INTO users(username,full_name,password_hash,employee_id,is_active)
-         VALUES($1,$2,$3,$4,TRUE) RETURNING id,code,username,employee_id,is_active`,
-        [reg.username, reg.full_name, reg.password_hash, parsed.data.employeeId ?? null]
+        `INSERT INTO users(username,full_name,phone,password_hash,employee_id,is_active)
+         VALUES($1,$2,$3,$4,$5,TRUE) RETURNING id,code,username,phone,employee_id,is_active`,
+        [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, parsed.data.accountType === "employee" ? parsed.data.employeeId : null]
       );
       const user = userResult.rows[0];
       await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)", [user.id, role.rows[0].id]);
@@ -132,7 +165,7 @@ export async function registrationRoutes(app: FastifyInstance) {
       await client.query(
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
          VALUES($1,'REGISTRATION_APPROVED','تم تفعيل حسابك',
-           'وافق مدير النظام على طلب التسجيل. تقدر تسجل الدخول باستخدام اسم المستخدم وكلمة المرور اللي أنشأتها.',
+           'وافق مدير النظام على طلب التسجيل. تقدر تسجل الدخول باسم المستخدم أو رقم الموبايل المسجل وكلمة المرور التي أنشأتها.',
            'user',$1)`,
         [user.id]
       );
@@ -143,11 +176,11 @@ export async function registrationRoutes(app: FastifyInstance) {
         module: "iam",
         entityType: "user",
         entityId: user.id,
-        afterData: { username: user.username, roleCode: role.rows[0].code, registrationRequestId: id },
+        afterData: { username: user.username, roleCode: role.rows[0].code, employeeId: user.employee_id, accountType: parsed.data.accountType, registrationRequestId: id },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
-      return { id: user.id, username: user.username, roleCode: role.rows[0].code };
+      return { id: user.id, username: user.username, phone: user.phone, employeeId: user.employee_id, accountType: parsed.data.accountType, roleCode: role.rows[0].code };
     });
     return reply.code(201).send({ data: created });
   });
