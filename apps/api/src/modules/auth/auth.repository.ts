@@ -12,6 +12,12 @@ export async function findUserForLogin(client: pg.PoolClient, username: string) 
      LEFT JOIN roles r ON r.id = ur.role_id
      WHERE u.username = $1
         OR (
+          length(regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g')) >= 10
+          AND RIGHT(regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g'), 10)
+              = RIGHT(regexp_replace($1, '[^0-9]', '', 'g'), 10)
+          AND length(regexp_replace($1, '[^0-9]', '', 'g')) >= 10
+        )
+        OR (
           length(regexp_replace(COALESCE(e.phone, ''), '[^0-9]', '', 'g')) >= 10
           AND RIGHT(regexp_replace(COALESCE(e.phone, ''), '[^0-9]', '', 'g'), 10)
               = RIGHT(regexp_replace($1, '[^0-9]', '', 'g'), 10)
