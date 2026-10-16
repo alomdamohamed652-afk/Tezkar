@@ -5,7 +5,8 @@ import {Sidebar,usePermissions} from "../../components/sidebar";
 import {formatQuantity} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 
-type Item={id:string;code:string;name:string};
+type Item={id:string;code:string;name:string;full_name?:string};
+type Employee=Item&{is_active?:boolean};
 type Machine=Item&{machine_type:string|null};
 type Order={id:string;code:string;order_name:string};
 type OrderStage={id:string;order_id:string;order_name:string;order_code:string;stage_name:string;stage_id:string;output_product_id:string|null;output_product_name:string|null};
@@ -13,11 +14,11 @@ type ProdType=Item;
 type Row={id:string;code:string;work_date:string;quantity:string;machine_name:string;product_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;stage_name:string|null;production_type_name:string|null};
 
 export default function MachineProductionPage(){
- const {has}=usePermissions();const [machines,setMachines]=useState<Machine[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]),[shifts,setShifts]=useState<Item[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[types,setTypes]=useState<ProdType[]>([]),[rows,setRows]=useState<Row[]>([]);
+ const {has}=usePermissions();const [machines,setMachines]=useState<Machine[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[shifts,setShifts]=useState<Item[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[types,setTypes]=useState<ProdType[]>([]),[rows,setRows]=useState<Row[]>([]);
  const [name,setName]=useState(""),[machineType,setMachineType]=useState(""),[machine,setMachine]=useState(""),[product,setProduct]=useState(""),[employee,setEmployee]=useState(""),[shift,setShift]=useState(""),[orderId,setOrderId]=useState(""),[orderStage,setOrderStage]=useState(""),[productionType,setProductionType]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10)),[qty,setQty]=useState(""),[notes,setNotes]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
- async function load(){try{const [m,p,e,s,ord,o,t,r]=await Promise.all([api<{data:Machine[]}>("/api/machines"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/employees"),api<{data:Item[]}>("/api/shifts"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProdType[]}>("/api/production-types"),api<{data:Row[]}>("/api/machine-production")]);setMachines(m.data);setProducts(p.data);setEmployees(e.data);setShifts(s.data);setOrders(ord.data);setOrderStages(o.data);setTypes(t.data);setRows(r.data);if(!machine&&m.data[0])setMachine(m.data[0].id);if(!productionType&&t.data[0])setProductionType(t.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل إنتاج الماكينات")}}
+ async function load(){try{const [m,p,e,s,ord,o,t,r]=await Promise.all([api<{data:Machine[]}>("/api/machines"),api<{data:Item[]}>("/api/products"),api<{data:Employee[]}>("/api/employees"),api<{data:Item[]}>("/api/shifts"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProdType[]}>("/api/production-types"),api<{data:Row[]}>("/api/machine-production")]);setMachines(m.data);setProducts(p.data);setEmployees(e.data);setShifts(s.data);setOrders(ord.data);setOrderStages(o.data);setTypes(t.data);setRows(r.data);if(!machine&&m.data[0])setMachine(m.data[0].id);if(!productionType&&t.data[0])setProductionType(t.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل إنتاج الماكينات")}}
  useEffect(()=>{void load()},[]);
- const opts=(a:Item[])=>a.map(x=>({value:x.id,label:x.name}));
+ const opts=(a:Item[])=>a.map(x=>({value:x.id,label:(x.full_name||x.name||"").trim()||x.code}));
  const orderOpts=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
  const availableProducts=useMemo(()=>products.filter(p=>orderStages.some(s=>s.order_id===orderId&&s.output_product_id===p.id)),[products,orderStages,orderId]);
  const stageOptions=useMemo(()=>orderStages.filter(s=>s.order_id===orderId&&s.output_product_id===product).map(s=>({value:s.id,label:s.stage_name,meta:s.output_product_name||"بدون منتج ناتج"})),[orderStages,orderId,product]);
