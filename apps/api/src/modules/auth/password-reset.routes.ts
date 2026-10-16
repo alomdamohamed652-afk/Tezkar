@@ -42,13 +42,13 @@ export async function passwordResetRoutes(app: FastifyInstance) {
          VALUES($1,$2,$3) RETURNING id`,
         [userId, login, parsed.data.phone || (normalizedPhone ? login : null)]
       );
-      if (userId) await client.query(
+      await client.query(
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
          SELECT u.id,'PASSWORD_RESET_REQUEST','طلب إعادة تعيين كلمة مرور',
            $1,'password_reset_request',$2
          FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id
          WHERE u.is_active=TRUE AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE`,
-        [`طلب إعادة تعيين كلمة مرور للحساب ${login}. راجع طلبات إعادة تعيين كلمة المرور.`, req.rows[0].id]
+        [`يوجد طلب جديد لإعادة تعيين كلمة مرور ويحتاج مراجعة الإدارة.`, req.rows[0].id]
       );
     });
     return reply.code(202).send({data:{submitted:true},message:"لو بيانات الحساب مطابقة، تم إرسال طلب إعادة تعيين كلمة المرور للإدارة. تابع مع المدير بعد المراجعة."});
@@ -77,8 +77,11 @@ export async function passwordResetRoutes(app: FastifyInstance) {
       const item=r.rows[0];
       if(item.status!=="pending") throw new AppError("RESET_REQUEST_REVIEWED","تمت مراجعة الطلب بالفعل",409);
       if(!item.user_id) {
-        await client.query("UPDATE password_reset_requests SET status='rejected',reviewed_by=$1,reviewed_at=now(),updated_at=now() WHERE id=$2",[request.user!.userId,id]);
-        return;
+        throw new AppError(
+          "RESET_ACCOUNT_NOT_FOUND",
+          "لم يتم العثور على حساب مطابق لبيانات الطلب. ارفض الطلب أو تحقق من اسم المستخدم ورقم الموبايل قبل الموافقة.",
+          422
+        );
       }
       await client.query("UPDATE users SET password_hash=$1,must_change_password=TRUE,updated_at=now() WHERE id=$2",[hashPassword(parsed.data.temporaryPassword),item.user_id]);
       await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[item.user_id]);
