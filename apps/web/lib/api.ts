@@ -7,9 +7,12 @@ export const API_URL = API_BASE;
 const GET_CACHE_TTL_MS = 1_500;
 const getCache = new Map<string, { expiresAt: number; value: unknown }>();
 const pendingGets = new Map<string, Promise<unknown>>();
+let cacheGeneration = 0;
 
 function invalidateGetCache() {
+  cacheGeneration += 1;
   getCache.clear();
+  pendingGets.clear();
 }
 
 export class ApiError extends Error {
@@ -39,6 +42,7 @@ export async function api<T>(
     invalidateGetCache();
   }
 
+  const requestGeneration = cacheGeneration;
   const request = (async () => {
     const response = await fetch(`${API_URL}${path}`, {
       ...options,
@@ -57,7 +61,9 @@ export async function api<T>(
       throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
     }
 
-    if (canCache) getCache.set(key, { value: body, expiresAt: Date.now() + GET_CACHE_TTL_MS });
+    if (canCache && requestGeneration === cacheGeneration) {
+      getCache.set(key, { value: body, expiresAt: Date.now() + GET_CACHE_TTL_MS });
+    }
     return body as T;
   })();
 
