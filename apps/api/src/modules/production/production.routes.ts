@@ -723,7 +723,6 @@ export async function productionRoutes(app: FastifyInstance) {
       }
       // Production quantity is the gross processed amount. Only good units enter
       // the regular warehouse; pre-approval scrap was already received separately.
-      const goodQuantity = Math.max(0, Number(current.quantity) - recordedScrapQuantity);
       const grossQuantity = Number(current.quantity);
       const methodSnapshot = String(current.wage_type_method_snapshot ?? "");
       const goodQuantity = Math.max(0, grossQuantity - recordedScrapQuantity);
@@ -837,7 +836,7 @@ export async function productionRoutes(app: FastifyInstance) {
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
          ON CONFLICT DO NOTHING`,
-        [current.employee_id, current.earning_amount, id, request.user!.userId]
+        [current.employee_id, approvedEarning, id, request.user!.userId]
       );
 
       // Advance repayment is intentionally not posted when production is approved.
