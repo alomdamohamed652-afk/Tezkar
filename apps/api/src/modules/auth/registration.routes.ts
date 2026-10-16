@@ -168,16 +168,11 @@ export async function registrationRoutes(app: FastifyInstance) {
 
       let user;
       if (linkedUserId) {
-        const userResult = await client.query(
-          `UPDATE users SET username=$1,full_name=$2,phone=$3,password_hash=$4,is_active=TRUE,
-             must_change_password=FALSE,updated_at=now()
-           WHERE id=$5
-           RETURNING id,code,username,phone,employee_id,is_active`,
-          [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, linkedUserId]
+        throw new AppError(
+          "EMPLOYEE_ACCOUNT_EXISTS",
+          "الموظف ده مرتبط بحساب دخول بالفعل. لا يمكن استبدال كلمة مروره بطلب تسجيل جديد؛ استخدم طلب إعادة تعيين كلمة المرور أو راجع الحساب الحالي.",
+          409
         );
-        user = userResult.rows[0];
-        await client.query("DELETE FROM user_roles WHERE user_id=$1", [user.id]);
-        await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [user.id]);
       } else {
         const userResult = await client.query(
           `INSERT INTO users(username,full_name,phone,password_hash,employee_id,is_active)
