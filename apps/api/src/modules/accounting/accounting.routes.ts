@@ -462,7 +462,7 @@ export async function accountingRoutes(app:FastifyInstance){
          last_reopened_by=$2,last_reopened_at=now(),last_reopen_reason=$3
      WHERE id=$1 RETURNING id,name,status,last_reopened_by,last_reopened_at,last_reopen_reason`,
      [id,request.user!.userId,payload.data.reason]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reopen",module:"finance",entityType:"accounting_period",entityId:id,beforeData:{status:"CLOSED",closedAt:period.rows[0].closed_at},afterData:updated.rows[0],metadata:{reason:payload.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reopen",module:"finance",entityType:"accounting_period",entityId:id,beforeData:{status:"CLOSED",closedAt:period.rows[0].closed_at,closingSnapshot:period.rows[0].closing_snapshot},afterData:updated.rows[0],metadata:{reason:payload.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   })};
  });
