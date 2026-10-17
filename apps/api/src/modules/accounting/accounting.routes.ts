@@ -352,6 +352,21 @@ export async function accountingRoutes(app:FastifyInstance){
    return r.rows[0];
   })};
  });
+
+ app.post("/api/accounting/periods/:id/return-for-corrections",{preHandler:[authenticateRequest,requirePermission("finance.period_close.review")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  const p=z.object({reason:z.string().trim().min(10).max(1000)}).safeParse(request.body);
+  if(!p.success)throw new AppError("CORRECTION_REASON_REQUIRED","يجب توثيق سبب إعادة الفترة للتعديل",422);
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(!["UNDER_REVIEW","READY_FOR_APPROVAL"].includes(period.rows[0].status))throw new AppError("ACCOUNTING_PERIOD_STATE_INVALID","يمكن إعادة الفترة للتعديل أثناء المراجعة أو قبل اعتماد المدير فقط",409);
+   const before=period.rows[0];
+   const r=await client.query("UPDATE accounting_periods SET status='OPEN',reviewed_by=NULL,reviewed_at=NULL,approved_by=NULL,approved_at=NULL,notes=concat_ws(E'\\n',NULLIF(notes,''),'إعادة للتعديل: ' || $2) WHERE id=$1 RETURNING *",[id,p.data.reason]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"return_for_corrections",module:"finance",entityType:"accounting_period",entityId:id,beforeData:before,afterData:{...r.rows[0],correctionReason:p.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return r.rows[0];
+  })};
+ });
  app.post("/api/accounting/periods/:id/approve-review",{preHandler:[authenticateRequest,requirePermission("finance.period_close.review")]},async(request)=>{
   const id=(request.params as {id:string}).id;
   return {data:await withTransaction(async client=>{
