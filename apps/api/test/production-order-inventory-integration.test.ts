@@ -662,14 +662,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(settlementResponse.statusCode,201,settlementResponse.body);
     const settlement=settlementResponse.json().data;
-    assert.equal(Number(settlement.cashPaid),205);
-    assert.equal(Number(settlement.advanceRepaymentAmount),100,"20% of 500 approved production earnings over the 15-day period is recovered at payout");
+    assert.equal(Number(settlement.cashPaid),208);
+    assert.equal(Number(settlement.advanceRepaymentAmount),97,"20% of 485 net approved production earnings (including the final entry's 10 bonus and 5 deduction) is recovered at payout");
     const productionRepayment = await apiPool.query(
       "SELECT amount,repayment_type,source_production_entry_id,settlement_id FROM advance_repayments WHERE advance_id=$1",
       [percentageAdvance.rows[0].id]
     );
     assert.equal(productionRepayment.rowCount,1);
-    assert.equal(Number(productionRepayment.rows[0].amount),100);
+    assert.equal(Number(productionRepayment.rows[0].amount),97,"repayment is capped by the calculated 20% of eligible earnings");
     assert.equal(productionRepayment.rows[0].repayment_type,"PRODUCTION_PERCENTAGE");
     assert.equal(productionRepayment.rows[0].source_production_entry_id,null);
     assert.equal(productionRepayment.rows[0].settlement_id,settlement.settlement.id);
@@ -677,20 +677,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT repayment_status,amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
       [percentageAdvance.rows[0].id]
     );
-    assert.equal(remainingAdvance.rows[0].repayment_status,"SETTLED");
-    assert.equal(Number(remainingAdvance.rows[0].remaining),0);
+    assert.equal(remainingAdvance.rows[0].repayment_status,"OPEN","the unpaid 3 EGP balance must remain open");
+    assert.equal(Number(remainingAdvance.rows[0].remaining),3);
     const custodySummary=await apiPool.query(
       "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('PRODUCTION_EARNINGS_SETTLEMENT','ADVANCE_REPAYMENT_OFFSET') GROUP BY direction",
       [settlement.settlement.id]
     );
     assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="OUT")?.amount),305);
-    assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),100);
+    assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),97);
     const repaymentLedger = await apiPool.query(
       "SELECT credit_amount,debit_amount,notes FROM employee_earnings_ledger WHERE entry_type='ADJUSTMENT' AND notes LIKE $1",
       [`%سداد سلفة ${percentageAdvance.rows[0].code}%`]
     );
     assert.equal(repaymentLedger.rowCount,1,"the repayment must update the employee balance without creating a second production expense");
-    assert.equal(Number(repaymentLedger.rows[0].credit_amount),100);
+    assert.equal(Number(repaymentLedger.rows[0].credit_amount),97);
     assert.equal(Number(repaymentLedger.rows[0].debit_amount),0);
 
     const finalBalance = await apiPool.query(
@@ -739,9 +739,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
         row.full_name === "submitter Employee"
     );
     assert.ok(reportedEmployee, "active employee should appear in earnings report");
-    assert.equal(Number(reportedEmployee.earned), 510, "employee earnings report must include base wages and bonus");
+    assert.equal(Number(reportedEmployee.earned), 490, "employee earnings report must include good-unit wages and bonus, excluding scrap wages");
     assert.equal(Number(reportedEmployee.debited), 410, "employee earnings report includes the advance payout, production deduction, and gross settlement; loan recovery is separately credited");
-    assert.equal(Number(reportedEmployee.balance), 200, "unpaid approved earnings remain as the employee's positive balance after settling the advance");
+    assert.equal(Number(reportedEmployee.balance), 177, "balance reflects good-unit earnings, gross settlement, and the 97 EGP advance recovery credit");
 
     const stageState = await apiPool.query(
       "SELECT os.completed_quantity,os.status,po.status AS order_status FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.id=$1",
@@ -858,7 +858,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(dashboard.json().data.stages.length, 2);
     assert.equal(dashboard.json().data.production.length, 3, "dashboard includes the replacement good unit needed after scrap");
     assert.equal(dashboard.json().data.movements.length, 1, "order withdrawals must show only actual OUT movements, not production receipts");
-    assert.equal(Number(dashboard.json().data.totals.production_cost), 525);
+    assert.equal(Number(dashboard.json().data.totals.production_cost), 505, "dashboard production cost excludes wages for scrapped units");
     assert.equal(dashboard.json().data.totals.stock_in_cost, undefined, "production receipt value must not be presented as an order withdrawal cost");
     assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
@@ -866,7 +866,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
     });
     assert.equal(profitability.statusCode, 200, profitability.body);
-    assert.equal(Number(profitability.json().data.laborCost), 525);
+    assert.equal(Number(profitability.json().data.laborCost), 505, "profitability labor cost excludes wages for scrapped units");
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
     // Resolve the exact final-product order line so delivery and stock-out remain line-specific.
@@ -1314,10 +1314,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(finalProfitability.json().data.revenue), 1000);
     assert.equal(Number(finalProfitability.json().data.expenses), 50);
     assert.equal(Number(finalProfitability.json().data.materialCost), 100);
-    assert.equal(Number(finalProfitability.json().data.laborCost), 525);
-    assert.equal(Number(finalProfitability.json().data.totalCost), 675);
-    assert.equal(Number(finalProfitability.json().data.profit), 325);
-    assert.equal(Number(finalProfitability.json().data.marginPercent), 32.5);
+    assert.equal(Number(finalProfitability.json().data.laborCost), 505);
+    assert.equal(Number(finalProfitability.json().data.totalCost), 655);
+    assert.equal(Number(finalProfitability.json().data.profit), 345);
+    assert.equal(Number(finalProfitability.json().data.marginPercent), 34.5);
 
     const accountingSummary = await app.inject({
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
