@@ -393,6 +393,24 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
 
+ app.post("/api/accounting/periods/:id/reopen",{preHandler:[authenticateRequest,requirePermission("finance.period_close.reopen")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  const p=z.object({reason:z.string().trim().min(10).max(1000)}).safeParse(request.body);
+  if(!p.success)throw new AppError("REOPEN_REASON_REQUIRED","يجب كتابة سبب واضح لإعادة فتح الفترة (10 أحرف على الأقل)",422);
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="CLOSED")throw new AppError("ACCOUNTING_PERIOD_NOT_CLOSED","يمكن إعادة فتح فترة مقفولة فقط",409);
+   const carried=await client.query("SELECT 1 FROM accounting_period_opening_balances WHERE source_period_id=$1 LIMIT 1",[id]);
+   if(carried.rowCount)throw new AppError("PERIOD_ALREADY_CARRIED_FORWARD","لا يمكن إعادة فتح الفترة بعد ترحيل أرصدتها؛ يلزم إجراء تصحيح محاسبي مستقل للفترة اللاحقة",409);
+   const before=period.rows[0];
+   const r=await client.query("UPDATE accounting_periods SET status='OPEN',closed_by=NULL,closed_at=NULL,reopened_by=$2,reopened_at=now(),reopen_reason=$3 WHERE id=$1 RETURNING *",[id,request.user!.userId,p.data.reason]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reopen",module:"finance",entityType:"accounting_period",entityId:id,beforeData:before,afterData:{...r.rows[0],reopenReason:p.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return r.rows[0];
+  })};
+ });
+
+
  app.get("/api/accounting/orders-dashboard",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
   const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),periodId:z.string().uuid().optional()}).safeParse(request.query);
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الحالة أو الفترة المالية غير صحيح",422);
