@@ -372,7 +372,7 @@ export default function AccountingPage() {
         {periodDetail.period.status==="OPEN"&&has("finance.period_close.create")&&<div className="form-actions">
          <button className="secondary-button" disabled={periodSaving||!periodDetail.expenses.length} onClick={autoAllocate}>توزيع تلقائي حسب التكلفة</button>
          <button className="secondary-button" disabled={periodSaving||!periodDetail.allocations.length} onClick={saveAllocations}>حفظ التوزيع المعدّل</button>
-         {!periodDetail.period.reviewed_at&&<button className="secondary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={reviewPeriod}>مراجعة المحاسب وتجهيز الإقفال</button>}
+         <button className="secondary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={reviewPeriod}>{periodDetail.period.reviewed_at?"إعادة مراجعة المحاسب":"مراجعة المحاسب وتجهيز الإقفال"}</button>
          {periodDetail.period.reviewed_at&&canApprovePeriodClose&&<button className="primary-button" disabled={periodSaving} onClick={closePeriod}>اعتماد المدير والإقفال النهائي</button>}
          {periodDetail.period.reviewed_at&&!canApprovePeriodClose&&<span className="form-hint">الفترة جاهزة لاعتماد المدير.</span>}
         </div>}
