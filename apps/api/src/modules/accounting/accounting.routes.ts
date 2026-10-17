@@ -467,6 +467,14 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="CLOSED")throw new AppError("ACCOUNTING_PERIOD_NOT_CLOSED","يمكن إعادة فتح فترة مقفولة فقط",409);
+   // Do not reopen an earlier period while a later period is under review or
+   // closed. Corrections would otherwise change the source snapshot while the
+   // later period's opening balances are frozen and cannot be refreshed.
+   const laterLocked=await client.query(
+    "SELECT id,name,status FROM accounting_periods WHERE period_start>$1::date AND status<>'OPEN' ORDER BY period_start LIMIT 1 FOR UPDATE",
+    [period.rows[0].period_start]
+   );
+   if(laterLocked.rowCount)throw new AppError("NEXT_ACCOUNTING_PERIOD_LOCKED","لا يمكن إعادة فتح فترة أسبق بينما توجد فترة لاحقة قيد المراجعة أو مقفولة؛ عالج الفترات بترتيب زمني عكسي أولًا",409);
    const carried=await client.query("SELECT 1 FROM accounting_period_opening_balances WHERE source_period_id=$1 LIMIT 1",[id]);
    if(carried.rowCount)throw new AppError("PERIOD_ALREADY_CARRIED_FORWARD","لا يمكن إعادة فتح الفترة بعد ترحيل أرصدتها؛ يلزم إجراء تصحيح محاسبي مستقل للفترة اللاحقة",409);
    const before=period.rows[0];
