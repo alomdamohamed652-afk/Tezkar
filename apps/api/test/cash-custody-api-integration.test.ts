@@ -117,6 +117,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       await apiPool.query(
         "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING"
       );
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='finance.period_close.create' WHERE r.code='worker' ON CONFLICT DO NOTHING");
       // Keep the granted all-scope permissions but remove the finance role name.
       // Access scope must follow RBAC permissions, not a hard-coded list of role codes.
       await apiPool.query("UPDATE roles SET code='cash_supervisor_test' WHERE code='manager'");
@@ -515,10 +516,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         ]}
       });
       assert.equal(adjustedAllocation.statusCode,200,adjustedAllocation.body);
+      await apiPool.query("UPDATE roles SET code='manager' WHERE code='cash_supervisor_test'");
+      const allocationPeriodReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/review",headers:{cookie:workerCookie},payload:{}});
+      assert.equal(allocationPeriodReview.statusCode,200,allocationPeriodReview.body);
       const closeAllocationPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/close",headers:{cookie:managerCookie},payload:{}
       });
       assert.equal(closeAllocationPeriod.statusCode,200,closeAllocationPeriod.body);
+      await apiPool.query("UPDATE roles SET code='cash_supervisor_test' WHERE code='manager'");
       const allocationProfitA=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderA.id+"/profitability",headers:{cookie:managerCookie}});
       const allocationProfitB=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderB.id+"/profitability",headers:{cookie:managerCookie}});
       assert.equal(allocationProfitA.statusCode,200,allocationProfitA.body);
@@ -657,10 +662,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
+      await apiPool.query("UPDATE roles SET code='manager' WHERE code='cash_supervisor_test'");
+      const periodReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/review",headers:{cookie:workerCookie},payload:{}});
+      assert.equal(periodReview.statusCode,200,periodReview.body);
       const closedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
+      await apiPool.query("UPDATE roles SET code='cash_supervisor_test' WHERE code='manager'");
       assert.equal(closedPeriod.json().data.status,"CLOSED");
 
       const closedPeriodExpense=await app.inject({
@@ -841,10 +850,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
+      await apiPool.query("UPDATE roles SET code='manager' WHERE code='cash_supervisor_test'");
+      const collectionPeriodReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/review",headers:{cookie:workerCookie},payload:{}});
+      assert.equal(collectionPeriodReview.statusCode,200,collectionPeriodReview.body);
       const closeCollectionPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });
       assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
+      await apiPool.query("UPDATE roles SET code='cash_supervisor_test' WHERE code='manager'");
       const closedPeriodCollectionRetry=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
       });
