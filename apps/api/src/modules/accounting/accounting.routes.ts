@@ -413,7 +413,7 @@ export async function accountingRoutes(app:FastifyInstance){
    // opening balances from this immutable snapshot, rather than only carrying
    // balances when the future period is first created.
    const nextPeriod=await client.query(
-    "SELECT id,status FROM accounting_periods WHERE period_start>$1::date ORDER BY period_start LIMIT 1 FOR UPDATE",
+    "SELECT id,status FROM accounting_periods WHERE period_start=($1::date + INTERVAL '1 day')::date ORDER BY period_start LIMIT 1 FOR UPDATE",
     [end]
    );
    if(nextPeriod.rowCount){
