@@ -53,24 +53,6 @@ CREATE TABLE IF NOT EXISTS accounting_period_opening_balances (
 CREATE INDEX IF NOT EXISTS idx_accounting_opening_balances_period
   ON accounting_period_opening_balances(period_id,balance_type);
 
--- Close reports are append-only evidence. Prevent accidental or direct mutation
--- of prior snapshots; reopening/reclosing creates a new snapshot version instead.
-CREATE OR REPLACE FUNCTION reject_accounting_period_snapshot_mutation()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $
-BEGIN
-  RAISE EXCEPTION 'accounting period close snapshots are immutable'
-    USING ERRCODE = '55000';
-END;
-$;
-
-DROP TRIGGER IF EXISTS accounting_period_close_snapshots_immutable
-  ON accounting_period_close_snapshots;
-CREATE TRIGGER accounting_period_close_snapshots_immutable
-  BEFORE UPDATE OR DELETE ON accounting_period_close_snapshots
-  FOR EACH ROW EXECUTE FUNCTION reject_accounting_period_snapshot_mutation();
-
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('finance.period_close.review','finance','period_close','review','all'),
  ('finance.period_close.approve','finance','period_close','approve','all'),
