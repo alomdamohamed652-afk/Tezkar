@@ -515,6 +515,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         ]}
       });
       assert.equal(adjustedAllocation.statusCode,200,adjustedAllocation.body);
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='worker' AND p.code='finance.period_close.create' ON CONFLICT DO NOTHING");
+      const reviewAllocationPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/review",headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewAllocationPeriod.statusCode,200,reviewAllocationPeriod.body);
       const closeAllocationPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/close",headers:{cookie:managerCookie},payload:{}
       });
@@ -657,6 +662,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
+      const reviewClosedPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/review",headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewClosedPeriod.statusCode,200,reviewClosedPeriod.body);
       const closedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });
@@ -841,6 +850,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
+      const reviewCollectionPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/review",headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewCollectionPeriod.statusCode,200,reviewCollectionPeriod.body);
       const closeCollectionPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });

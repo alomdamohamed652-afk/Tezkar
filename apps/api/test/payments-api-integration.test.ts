@@ -446,6 +446,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
       });
       assert.equal(allocations.statusCode,200,allocations.body);
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='worker' AND p.code='finance.period_close.create' ON CONFLICT DO NOTHING");
+      const reviewPeriod=await app.inject({
+        method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/review`,
+        headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewPeriod.statusCode,200,reviewPeriod.body);
       const closePeriod=await app.inject({
         method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/close`,
         headers:{cookie:managerCookie},payload:{}
