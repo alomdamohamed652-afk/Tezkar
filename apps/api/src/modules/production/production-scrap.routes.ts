@@ -80,7 +80,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         [input.productionEntryId]
       );
       if (!entry.rowCount) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
-      await assertAccountingPeriodOpen(client,String(entry.rows[0].work_date).slice(0,10));
+      await assertAccountingPeriodOpen(client,entry.rows[0].work_date instanceof Date?entry.rows[0].work_date.toISOString().slice(0,10):String(entry.rows[0].work_date).slice(0,10));
       const idempotencyFingerprint = JSON.stringify({
         productionEntryId: input.productionEntryId,
         scrapType: input.scrapType,
