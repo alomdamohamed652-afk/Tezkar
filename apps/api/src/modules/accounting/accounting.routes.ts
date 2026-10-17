@@ -407,7 +407,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const reportJson=JSON.stringify(report);
    const reportHash=createHash("sha256").update(reportJson).digest("hex");
    const snapshotVersion=await client.query("SELECT COALESCE(MAX(snapshot_no),0)+1 AS next_version FROM accounting_period_close_snapshots WHERE period_id=$1",[id]);
-   await client.query("INSERT INTO accounting_period_close_snapshots(period_id,snapshot_no,report,report_sha256,created_by) VALUES($1,$2,$3::jsonb,$4,$5)",[id,snapshotVersion.rows[0].next_version,reportJson,reportHash,request.user!.userId]);
+   await client.query("INSERT INTO accounting_period_close_snapshots(period_id,snapshot_no,report,report_json,report_sha256,created_by) VALUES($1,$2,$3::jsonb,$4,$5,$6)",[id,snapshotVersion.rows[0].next_version,reportJson,reportJson,reportHash,request.user!.userId]);
    const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now(),approved_by=$2,approved_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
@@ -418,7 +418,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  app.get("/api/accounting/periods/:id/report",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async(request)=>{
   const id=(request.params as {id:string}).id;
-  const r=await pool.query("SELECT p.id AS period_id,p.name,p.period_start,p.period_end,p.status,s.snapshot_no,s.report,s.report_sha256,s.created_by,s.created_at FROM accounting_periods p JOIN LATERAL (SELECT * FROM accounting_period_close_snapshots WHERE period_id=p.id ORDER BY snapshot_no DESC LIMIT 1) s ON TRUE WHERE p.id=$1",[id]);
+  const r=await pool.query("SELECT p.id AS period_id,p.name,p.period_start,p.period_end,p.status,s.snapshot_no,s.report,s.report_json,s.report_sha256,s.created_by,s.created_at FROM accounting_periods p JOIN LATERAL (SELECT * FROM accounting_period_close_snapshots WHERE period_id=p.id ORDER BY snapshot_no DESC LIMIT 1) s ON TRUE WHERE p.id=$1",[id]);
   if(!r.rowCount)throw new AppError("ACCOUNTING_PERIOD_REPORT_NOT_FOUND","لا يوجد تقرير إقفال محفوظ لهذه الفترة",404);
   return {data:r.rows[0]};
  });
