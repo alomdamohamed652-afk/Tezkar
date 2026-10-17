@@ -730,6 +730,30 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.ok(Number(directPayments.rows[0].count)>=2);
       assert.ok(Number(directPayments.rows[0].total)>=150);
+
+      // A retry of a committed payout remains safe after the accounting period closes,
+      // while a new payout must be blocked by that same period lock.
+      const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
+      const lockedPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Direct payout replay lock test",periodStart:today,periodEnd:today}
+      });
+      assert.equal(lockedPeriod.statusCode,201,lockedPeriod.body);
+      await apiPool.query("UPDATE accounting_periods SET status='CLOSED' WHERE id=$1",[lockedPeriod.json().data.id]);
+      const replayAfterClose=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:successfulDirectPayload
+      });
+      assert.equal(replayAfterClose.statusCode,200,replayAfterClose.body,
+        "a committed payout retry must still return the original result after close");
+      assert.equal(replayAfterClose.json().data.payment.id,directPaymentId);
+      const newPayoutAfterClose=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{...successfulDirectPayload,idempotencyKey:randomUUID(),amount:1}
+      });
+      assert.equal(newPayoutAfterClose.statusCode,409,newPayoutAfterClose.body);
+      assert.equal(newPayoutAfterClose.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),Number(directPayments.rows[0].count),
+        "the closed period must not permit an additional payout");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
