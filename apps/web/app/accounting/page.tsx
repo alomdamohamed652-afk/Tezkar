@@ -26,8 +26,8 @@ const localDateInput=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth(
 const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل عهدة خارجي (ليس إيراد مبيعات)" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
-  const { has, session } = usePermissions();
-  const canApprovePeriodClose=Boolean(session?.roleCodes?.some(code=>["ADMIN","ADMINISTRATOR","SUPER_ADMIN","MANAGER","GENERAL_MANAGER","FACTORY_MANAGER","OWNER","DIRECTOR"].includes(code.toUpperCase())));
+  const { has } = usePermissions();
+  const canApprovePeriodClose=has("finance.period_close.approve");
   const [tab,setTab]=useState<"dashboard"|"in"|"out"|"admin-expenses"|"profitability"|"periods"|"orders"|"custody">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
