@@ -69,6 +69,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     const parsed = profileSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات الراتب الأساسي غير صحيحة", 422);
     const result = await withTransaction(async client => {
+      await assertAccountingMonthOpen(client,parsed.data.effectiveFrom);
       const employee = await client.query("SELECT id,full_name FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE", [parsed.data.employeeId]);
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 404);
       const previous = await client.query("SELECT * FROM employee_salary_profiles WHERE employee_id=$1 AND effective_to IS NULL FOR UPDATE", [parsed.data.employeeId]);
