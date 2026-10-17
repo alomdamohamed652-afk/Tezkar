@@ -733,6 +733,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       // A retry of a committed payout remains safe after the accounting period closes,
       // while a new payout must be blocked by that same period lock.
+      const directCountBeforePeriodLock=await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id]);
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
@@ -752,7 +753,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(newPayoutAfterClose.statusCode,409,newPayoutAfterClose.body);
       assert.equal(newPayoutAfterClose.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
-      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),Number(directPayments.rows[0].count),
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),Number(directCountBeforePeriodLock.rows[0].count),
         "the closed period must not permit an additional payout");
     }finally{await app.close()}
   }finally{
