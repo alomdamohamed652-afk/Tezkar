@@ -970,9 +970,40 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Later period already under review",periodStart:"2399-02-01",periodEnd:"2399-02-28"}
       });
       assert.equal(guardedNext.statusCode,201,guardedNext.body);
-      await apiPool.query("UPDATE accounting_periods SET status='READY_FOR_APPROVAL' WHERE id=$1",[guardedNext.json().data.id]);
+      const submitGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/submit-review",
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(submitGuardedNext.statusCode,200,submitGuardedNext.body);
+      const approveGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/approve-review",
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(approveGuardedNext.statusCode,200,approveGuardedNext.body);
+
+      const closeBeforeLockedNext=await closePeriodWithApproval(guardedSource.json().data.id);
+      assert.equal(closeBeforeLockedNext.statusCode,409,closeBeforeLockedNext.body);
+      assert.equal(closeBeforeLockedNext.json().error.code,"NEXT_ACCOUNTING_PERIOD_LOCKED");
+
+      const returnGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/return-for-corrections",
+        headers:{cookie:managerCookie},payload:{reason:"إعادة الفترة للاختبار قبل إقفال الفترة السابقة"}
+      });
+      assert.equal(returnGuardedNext.statusCode,200,returnGuardedNext.body);
       const closeGuardedSource=await closePeriodWithApproval(guardedSource.json().data.id);
       assert.equal(closeGuardedSource.statusCode,200,closeGuardedSource.body);
+
+      const resubmitGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/submit-review",
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(resubmitGuardedNext.statusCode,200,resubmitGuardedNext.body);
+      const reapproveGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/approve-review",
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(reapproveGuardedNext.statusCode,200,reapproveGuardedNext.body);
+
       const reopenBeforeLockedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedSource.json().data.id+"/reopen",
         headers:{cookie:managerCookie},payload:{reason:"اختبار منع فتح فترة أسبق من فترة قيد المراجعة"}
