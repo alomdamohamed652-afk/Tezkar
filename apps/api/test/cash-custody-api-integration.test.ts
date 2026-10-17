@@ -693,6 +693,22 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(savedReport.json().data.integrityVerified,true,"saved report hash must verify against exact stored JSON");
       assert.equal(savedReport.json().data.snapshot_no,1);
       assert.ok(Array.isArray(savedReport.json().data.report.cashCustody));
+      const blockedSnapshotUpdate=await apiPool.query(
+        "UPDATE accounting_period_close_snapshots SET report_json='{}' WHERE period_id=$1 AND snapshot_no=1 RETURNING id",
+        [period.json().data.id]
+      );
+      assert.equal(blockedSnapshotUpdate.rowCount,0,"saved close snapshots must reject UPDATE");
+      const blockedSnapshotDelete=await apiPool.query(
+        "DELETE FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1 RETURNING id",
+        [period.json().data.id]
+      );
+      assert.equal(blockedSnapshotDelete.rowCount,0,"saved close snapshots must reject DELETE");
+      const unchangedSnapshot=await apiPool.query(
+        "SELECT report_json,report_sha256 FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1",
+        [period.json().data.id]
+      );
+      assert.equal(unchangedSnapshot.rowCount,1,"close snapshot must remain present");
+      assert.equal(unchangedSnapshot.rows[0].report_sha256,savedReport.json().data.report_sha256,"snapshot hash must remain unchanged");
       const reopenPeriod=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/reopen",headers:{cookie:managerCookie},payload:{reason:"تصحيح مراجعة الفترة في اختبار التكامل"}});
       assert.equal(reopenPeriod.statusCode,200,reopenPeriod.body);
       assert.equal(reopenPeriod.json().data.status,"OPEN");
