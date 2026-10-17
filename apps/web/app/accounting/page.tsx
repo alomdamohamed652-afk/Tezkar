@@ -132,6 +132,16 @@ export default function AccountingPage() {
     catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ خطوة التصفية")}finally{setPeriodSaving(false)}
   }
 
+  async function returnPeriodForCorrections(){
+    if(!selectedPeriodId||!periodDetail)return;
+    const reason=window.prompt("اكتب سبب إعادة الفترة للتعديل (10 أحرف على الأقل):");
+    if(reason===null)return;
+    if(reason.trim().length<10){setError("سبب الإعادة يجب ألا يقل عن 10 أحرف");return;}
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/return-for-corrections",{method:"POST",body:JSON.stringify({reason})});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تمت إعادة الفترة للتعديل وتسجيل السبب")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر إعادة الفترة للتعديل")}finally{setPeriodSaving(false)}
+  }
+
   async function reopenPeriod(){
     if(!selectedPeriodId||!periodDetail)return;
     const reason=window.prompt("اكتب سبب إعادة فتح الفترة (10 أحرف على الأقل):");
@@ -381,7 +391,7 @@ export default function AccountingPage() {
       </div>
      </section>}
      {periodDetail?.period.status==="CLOSED"&&has("finance.period_close.reopen")&&<section className="card"><div className="form-actions"><button className="secondary-button" disabled={periodSaving} onClick={reopenPeriod}>إعادة فتح الفترة (صلاحية خاصة)</button><button className="secondary-button" onClick={async()=>{try{const r=await api<{data:{report:unknown;report_sha256:string;snapshot_no:number}}>("/api/accounting/periods/"+selectedPeriodId+"/report");window.alert(JSON.stringify(r.data.report,null,2));setMessage("تم عرض تقرير الإقفال رقم "+r.data.snapshot_no+"، وبصمته SHA-256 محفوظة للتحقق.");setError("")}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تقرير الإقفال")}}}>عرض بيانات تقرير الإقفال</button></div></section>}
-     {periodDetail&&(periodDetail.period.status==="UNDER_REVIEW"&&has("finance.period_close.review")||periodDetail.period.status==="READY_FOR_APPROVAL"&&has("finance.period_close.approve"))&&<section className="card"><div className="form-actions"><button className="primary-button" disabled={periodSaving} onClick={closePeriod}>{periodDetail.period.status==="UNDER_REVIEW"?"اعتماد المراجعة المحاسبية":"الإقفال النهائي"}</button></div></section>}
+     {periodDetail&&(periodDetail.period.status==="UNDER_REVIEW"&&has("finance.period_close.review")||periodDetail.period.status==="READY_FOR_APPROVAL"&&has("finance.period_close.approve"))&&<section className="card"><div className="form-actions"><button className="primary-button" disabled={periodSaving} onClick={closePeriod}>{periodDetail.period.status==="UNDER_REVIEW"?"اعتماد المراجعة المحاسبية":"الإقفال النهائي"}</button>{has("finance.period_close.review")&&<button className="secondary-button" disabled={periodSaving} onClick={returnPeriodForCorrections}>إعادة للتعديل مع توثيق السبب</button>}</div></section>}
      {tab==="orders"&&has("finance.profitability.view")&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">لوحة كل الطلبيات</h2><div className="form-hint">الإيرادات والتكاليف المباشرة والإدارية وتكلفة المخزون وأجور الإنتاج وصافي الربح لكل طلبية. التحصيل النقدي لا يُضاف مرة ثانية للإيرادات.{dashboardPeriodId?" التقرير يعرض الحركات والتكاليف المؤرخة داخل الفترة المختارة؛ قيمة العقد المعروضة إجمالية للطلبية وليست إيرادًا محققًا داخل الفترة.":" قيمة العقد تمثل الإيراد المستحق تعاقديًا، بينما الإيراد المسجل هو ما تم تسجيله فعليًا."}</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث البيانات</button></div>
       <div className="stats finance-stats">
