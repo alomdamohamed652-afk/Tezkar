@@ -690,6 +690,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const savedReport=await app.inject({method:"GET",url:"/api/accounting/periods/"+period.json().data.id+"/report",headers:{cookie:managerCookie}});
       assert.equal(savedReport.statusCode,200,savedReport.body);
       assert.ok(savedReport.json().data.report_sha256);
+      assert.equal(savedReport.json().data.integrityVerified,true,"saved report hash must verify against exact stored JSON");
       assert.equal(savedReport.json().data.snapshot_no,1);
       assert.ok(Array.isArray(savedReport.json().data.report.cashCustody));
       const reopenPeriod=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/reopen",headers:{cookie:managerCookie},payload:{reason:"تصحيح مراجعة الفترة في اختبار التكامل"}});
