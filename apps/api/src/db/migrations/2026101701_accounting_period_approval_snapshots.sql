@@ -26,11 +26,13 @@ ALTER TABLE accounting_periods
 
 CREATE TABLE IF NOT EXISTS accounting_period_close_snapshots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  period_id UUID NOT NULL UNIQUE REFERENCES accounting_periods(id) ON DELETE RESTRICT,
+  period_id UUID NOT NULL REFERENCES accounting_periods(id) ON DELETE RESTRICT,
+  snapshot_no INTEGER NOT NULL DEFAULT 1 CHECK (snapshot_no > 0),
   report JSONB NOT NULL,
   report_sha256 TEXT NOT NULL,
   created_by UUID NOT NULL REFERENCES users(id),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(period_id,snapshot_no)
 );
 
 CREATE TABLE IF NOT EXISTS accounting_period_opening_balances (
