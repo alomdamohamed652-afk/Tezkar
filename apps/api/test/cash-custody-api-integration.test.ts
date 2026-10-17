@@ -662,6 +662,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
+      const reviewClosedPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/review",headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewClosedPeriod.statusCode,200,reviewClosedPeriod.body);
       const closedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });
