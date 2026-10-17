@@ -5,6 +5,12 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+
+async function assertProductionDateOpen(client: import("pg").PoolClient, date: string) {
+  const period = await client.query("SELECT status,review_status FROM accounting_periods WHERE $1::date BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE", [date]);
+  if (period.rows[0]?.status === "CLOSED") throw new AppError("ACCOUNTING_PERIOD_CLOSED", "تاريخ الإنتاج داخل فترة مالية مقفولة.", 409);
+  if (period.rows[0]?.review_status === "SUBMITTED") throw new AppError("ACCOUNTING_PERIOD_UNDER_REVIEW", "الفترة تحت المراجعة؛ لا يمكن تسجيل أو اعتماد إنتاج بتاريخ داخلها.", 409);
+}
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
@@ -210,6 +216,7 @@ export async function productionRoutes(app: FastifyInstance) {
     }
 
     const row = await withTransaction(async (client) => {
+      await assertProductionDateOpen(client, parsed.data.workDate);
       const worker = await isWorker(client, request.user!.userId);
       const employeeId = worker
         ? request.user!.employeeId
@@ -685,6 +692,7 @@ export async function productionRoutes(app: FastifyInstance) {
     const row = await withTransaction(async (client) => {
       const current = await getEntry(client, id, true);
       if (!current) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
+      await assertProductionDateOpen(client, String(current.work_date).slice(0,10));
       if (current.status !== "PENDING") {
         throw new AppError("INVALID_STATUS", "لا يمكن اعتماد سجل الإنتاج إلا إذا كان في حالة انتظار", 409);
       }
