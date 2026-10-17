@@ -678,6 +678,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(managerCannotReview.statusCode,403,managerCannotReview.body,"manager must not substitute for accountant review");
       const closeWithoutReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}});
       assert.equal(closeWithoutReview.statusCode,409,closeWithoutReview.body,"manager cannot close before accountant review");
+      const submitForReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
+      assert.equal(submitForReview.statusCode,200,submitForReview.body);
+      const returnForCorrections=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/return-for-corrections",headers:{cookie:accountantCookie},payload:{reason:"تصحيح بيانات التصفية قبل الاعتماد"}});
+      assert.equal(returnForCorrections.statusCode,200,returnForCorrections.body);
+      assert.equal(returnForCorrections.json().data.status,"OPEN");
       const closedPeriod=await closePeriodWithApproval(period.json().data.id);
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
