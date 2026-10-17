@@ -250,12 +250,13 @@ export async function accountingRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   const period=await pool.query("SELECT * FROM accounting_periods WHERE id=$1",[id]);
   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
-  const [expenses,allocations]=await Promise.all([
+  const [expenses,allocations,openingBalances]=await Promise.all([
    pool.query("SELECT e.id,e.code,e.category,e.description,e.amount,e.expense_date FROM accounting_expenses e WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 ORDER BY e.expense_date,e.created_at",[period.rows[0].period_start,period.rows[0].period_end]),
-   pool.query("SELECT a.*,e.code AS expense_code,e.description AS expense_description,o.code AS order_code,o.order_name FROM accounting_expense_allocations a JOIN accounting_expenses e ON e.id=a.expense_id JOIN production_orders o ON o.id=a.order_id WHERE a.period_id=$1 ORDER BY e.expense_date,e.created_at,o.code",[id])
+   pool.query("SELECT a.*,e.code AS expense_code,e.description AS expense_description,o.code AS order_code,o.order_name FROM accounting_expense_allocations a JOIN accounting_expenses e ON e.id=a.expense_id JOIN production_orders o ON o.id=a.order_id WHERE a.period_id=$1 ORDER BY e.expense_date,e.created_at,o.code",[id]),
+   pool.query("SELECT balance_type,entity_key,balance,source_period_id,created_at FROM accounting_period_opening_balances WHERE period_id=$1 ORDER BY balance_type,entity_key",[id])
   ]);
   const orders=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status<>'CANCELLED' ORDER BY created_at DESC");
-  return {data:{period:period.rows[0],expenses:expenses.rows,allocations:allocations.rows,orders:orders.rows}};
+  return {data:{period:period.rows[0],expenses:expenses.rows,allocations:allocations.rows,openingBalances:openingBalances.rows,orders:orders.rows}};
  });
  app.post("/api/accounting/periods/:id/auto-allocate",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
   const id=(request.params as {id:string}).id;
