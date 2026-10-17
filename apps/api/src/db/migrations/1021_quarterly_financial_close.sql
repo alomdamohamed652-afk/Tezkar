@@ -9,7 +9,7 @@ ALTER TABLE accounting_periods
   ADD COLUMN IF NOT EXISTS last_reopened_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS last_reopen_reason TEXT;
 
-CREATE INDEX IF NOT EXISTS accounting_periods_rollover_source_idx
+CREATE UNIQUE INDEX IF NOT EXISTS accounting_periods_rollover_source_uidx
   ON accounting_periods (rollover_source_period_id)
   WHERE rollover_source_period_id IS NOT NULL;
 
@@ -21,6 +21,7 @@ COMMENT ON COLUMN accounting_periods.opening_balance_snapshot IS
 -- Guard date-based posting APIs and direct SQL writes from mutating a closed period.
 CREATE OR REPLACE FUNCTION prevent_closed_financial_period_write() RETURNS trigger AS $$
 DECLARE effective_date DATE;
+DECLARE period_status TEXT;
 BEGIN
   IF TG_TABLE_NAME = 'accounting_expenses' THEN
     effective_date := COALESCE(NEW.expense_date, CURRENT_DATE);
@@ -38,11 +39,14 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF EXISTS (
-    SELECT 1 FROM accounting_periods p
-    WHERE p.status = 'CLOSED'
-      AND effective_date BETWEEN p.period_start AND p.period_end
-  ) THEN
+  SELECT p.status INTO period_status
+    FROM accounting_periods p
+   WHERE effective_date BETWEEN p.period_start AND p.period_end
+   ORDER BY p.period_start
+   LIMIT 1
+   FOR SHARE;
+
+  IF period_status = 'CLOSED' THEN
     RAISE EXCEPTION 'FINANCIAL_PERIOD_CLOSED: ordinary writes are blocked for a closed financial period'
       USING ERRCODE = '23514', CONSTRAINT = 'financial_period_closed_write';
   END IF;
