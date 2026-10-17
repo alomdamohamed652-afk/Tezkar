@@ -740,7 +740,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{name:"Direct payout replay lock test",periodStart:today,periodEnd:today}
       });
       assert.equal(lockedPeriod.statusCode,201,lockedPeriod.body);
-      await apiPool.query("UPDATE accounting_periods SET status='CLOSED' WHERE id=$1",[lockedPeriod.json().data.id]);
+      const closedLockPeriod=await closePeriodWithApproval(lockedPeriod.json().data.id);
+      assert.equal(closedLockPeriod.statusCode,200,closedLockPeriod.body);
+      assert.equal(closedLockPeriod.json().data.status,"CLOSED");
       const replayAfterClose=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:successfulDirectPayload
       });
