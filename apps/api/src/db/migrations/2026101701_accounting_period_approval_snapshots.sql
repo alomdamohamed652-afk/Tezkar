@@ -11,7 +11,9 @@ ALTER TABLE accounting_periods
   CHECK (status IN ('OPEN','UNDER_REVIEW','READY_FOR_APPROVAL','CLOSED')),
   ADD CONSTRAINT accounting_periods_close_timestamp_check
   CHECK (
-    (status='CLOSED' AND closed_at IS NOT NULL AND closed_by IS NOT NULL)
+    -- Historical closed periods may predate the close-actor field; new closes
+    -- still populate closed_by in the route, while all open states clear both.
+    (status='CLOSED' AND closed_at IS NOT NULL)
     OR (status<>'CLOSED' AND closed_at IS NULL AND closed_by IS NULL)
   );
 
