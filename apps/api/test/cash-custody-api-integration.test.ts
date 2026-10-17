@@ -949,6 +949,29 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.ok(refreshedBalances.rowCount>0,"closing a source period must populate the already-created next period");
       assert.ok(refreshedBalances.rows.every((row:any)=>row.source_period_id===lateCarrySource.json().data.id),"next-period balances must point to the latest closed source period");
 
+      // If a later period is already in review, the earlier close cannot carry
+      // balances into it. Reopening the earlier period must be blocked so the
+      // source snapshot cannot change behind the later period's frozen balances.
+      const guardedSource=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Earlier period before locked next",periodStart:"2399-01-01",periodEnd:"2399-01-31"}
+      });
+      assert.equal(guardedSource.statusCode,201,guardedSource.body);
+      const guardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Later period already under review",periodStart:"2399-02-01",periodEnd:"2399-02-28"}
+      });
+      assert.equal(guardedNext.statusCode,201,guardedNext.body);
+      await apiPool.query("UPDATE accounting_periods SET status='READY_FOR_APPROVAL' WHERE id=$1",[guardedNext.json().data.id]);
+      const closeGuardedSource=await closePeriodWithApproval(guardedSource.json().data.id);
+      assert.equal(closeGuardedSource.statusCode,200,closeGuardedSource.body);
+      const reopenBeforeLockedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedSource.json().data.id+"/reopen",
+        headers:{cookie:managerCookie},payload:{reason:"اختبار منع فتح فترة أسبق من فترة قيد المراجعة"}
+      });
+      assert.equal(reopenBeforeLockedNext.statusCode,409,reopenBeforeLockedNext.body);
+      assert.equal(reopenBeforeLockedNext.json().error.code,"NEXT_ACCOUNTING_PERIOD_LOCKED");
+
       const closedPeriodCollectionRetry=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
       });
