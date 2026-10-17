@@ -155,6 +155,15 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const advanceCreateScope=(await apiPool.query("SELECT scope FROM permissions WHERE code='advances.create'")).rows[0];
       assert.equal(advanceCreateScope?.scope,"all","advance creation must be an all-scope permission for administrative roles");
 
+      const accountantEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Period Accountant') RETURNING id")).rows[0];
+      const accountantUsername="periodacct-"+randomBytes(4).toString("hex");
+      const accountantPassword="Test-Period-Accountant-2026!";
+      const accountant=(await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        [accountantUsername,hashPassword(accountantPassword),accountantEmployee.id]
+      )).rows[0];
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='accountant' ON CONFLICT DO NOTHING",[accountant.id]);
+
       async function login(username: string, password: string) {
         const response = await app.inject({
           method: "POST", url: "/api/auth/login", payload: { username, password }
@@ -169,6 +178,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const managerCookie = await login(managerUsername, managerPassword);
       const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
+      const accountantCookie = await login(accountantUsername, accountantPassword);
+
+      async function closePeriodWithApproval(periodId:string){
+        const submitted=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(submitted.statusCode,200,submitted.body);
+        const reviewed=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/approve-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(reviewed.statusCode,200,reviewed.body);
+        return app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/close",headers:{cookie:managerCookie},payload:{}});
+      }
+
 
 
       // View access must not imply permission to create generic or order-linked cash movements.
@@ -515,9 +534,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         ]}
       });
       assert.equal(adjustedAllocation.statusCode,200,adjustedAllocation.body);
-      const closeAllocationPeriod=await app.inject({
-        method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/close",headers:{cookie:managerCookie},payload:{}
-      });
+      const closeAllocationPeriod=await closePeriodWithApproval(allocationPeriodId);
       assert.equal(closeAllocationPeriod.statusCode,200,closeAllocationPeriod.body);
       const allocationProfitA=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderA.id+"/profitability",headers:{cookie:managerCookie}});
       const allocationProfitB=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderB.id+"/profitability",headers:{cookie:managerCookie}});
@@ -657,9 +674,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
-      const closedPeriod=await app.inject({
-        method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
-      });
+      const closedPeriod=await closePeriodWithApproval(period.json().data.id);
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
 
@@ -841,9 +856,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
-      const closeCollectionPeriod=await app.inject({
-        method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
-      });
+      const closeCollectionPeriod=await closePeriodWithApproval(collectionPeriod.json().data.id);
       assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
       const closedPeriodCollectionRetry=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
