@@ -356,8 +356,7 @@ export async function accountingRoutes(app:FastifyInstance){
        -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
        -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id WHERE wp.employee_id=e.id AND s.id IS NULL AND wp.created_at::date<=$1::date),0)
       ) AS amount
-     FROM employees e WHERE e.is_active=TRUE
-     HAVING GREATEST(0,
+     FROM employees e WHERE e.is_active=TRUE AND GREATEST(0,
        COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
        +COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END) FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id WHERE a.employee_id=e.id AND a.created_at::date<=$1::date AND (a.production_entry_id IS NULL OR (p.status='APPROVED' AND p.work_date<=$1::date))),0)
        -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
@@ -374,7 +373,7 @@ export async function accountingRoutes(app:FastifyInstance){
       GREATEST(0,a.amount-COALESCE((SELECT SUM(r.amount) FROM advance_repayments r WHERE r.advance_id=a.id AND r.payment_date<=$1::date),0)) AS outstanding
      FROM advance_requests a JOIN employees e ON e.id=a.employee_id
      WHERE a.status='PAID' AND a.paid_at::date<=$1::date
-     HAVING GREATEST(0,a.amount-COALESCE((SELECT SUM(r.amount) FROM advance_repayments r WHERE r.advance_id=a.id AND r.payment_date<=$1::date),0))>=0.01
+       AND GREATEST(0,a.amount-COALESCE((SELECT SUM(r.amount) FROM advance_repayments r WHERE r.advance_id=a.id AND r.payment_date<=$1::date),0))>=0.01
      ORDER BY e.full_name,a.code`,[period.rows[0].period_end]);
    const snapshot={periodId:id,periodStart:period.rows[0].period_start,periodEnd:period.rows[0].period_end,
      financialSummary:expenseTotals.rows[0],custody: custody.rows,unpaidWorkerEarnings:unpaidEarnings.rows,
