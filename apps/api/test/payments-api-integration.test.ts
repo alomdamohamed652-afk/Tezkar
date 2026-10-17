@@ -82,8 +82,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         const setCookie=response.headers["set-cookie"];assert.ok(setCookie);
         return (Array.isArray(setCookie)?setCookie[0]:setCookie).split(";")[0];
       }
+      const accountantEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Period Accountant') RETURNING id")).rows[0];
+      const accountantUsername="periodacct-"+randomBytes(4).toString("hex");
+      const accountantPassword="Test-Period-Accountant-2026!";
+      const accountant=(await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        [accountantUsername,hashPassword(accountantPassword),accountantEmployee.id])).rows[0];
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='accountant' ON CONFLICT DO NOTHING",[accountant.id]);
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
+      const accountantCookie=await login(accountantUsername,accountantPassword);
+
+      async function closePeriodWithApproval(periodId:string){
+        const submitted=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(submitted.statusCode,200,submitted.body);
+        const reviewed=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/approve-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(reviewed.statusCode,200,reviewed.body);
+        return app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/close",headers:{cookie:managerCookie},payload:{}});
+      }
+
       const settlementSummary=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${workerEmployee.id}`,
         headers:{cookie:managerCookie}
@@ -446,10 +463,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
       });
       assert.equal(allocations.statusCode,200,allocations.body);
-      const closePeriod=await app.inject({
-        method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/close`,
-        headers:{cookie:managerCookie},payload:{}
-      });
+      const closePeriod=await closePeriodWithApproval(financePeriod.json().data.id);
       assert.equal(closePeriod.statusCode,200,closePeriod.body);
       const profitability=await app.inject({
         method:"GET",url:`/api/accounting/orders/${financeOrder.id}/profitability`,
