@@ -39,7 +39,7 @@ const idSchema=z.object({orderId:z.string().uuid()});
 async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined){
  // Lock the matching period row so closing the period cannot race with a posting.
  const result=await client.query("SELECT id,name,status FROM accounting_periods WHERE COALESCE($1::date,current_date) BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date??null]);
- if(result.rows[0]?.status==="CLOSED")throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
+ if(result.rows[0]&&result.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة المالية ليست مفتوحة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
 }
 
 export async function accountingRoutes(app:FastifyInstance){
@@ -387,7 +387,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const reportHash=createHash("sha256").update(reportJson).digest("hex");
    const snapshotVersion=await client.query("SELECT COALESCE(MAX(snapshot_no),0)+1 AS next_version FROM accounting_period_close_snapshots WHERE period_id=$1",[id]);
    await client.query("INSERT INTO accounting_period_close_snapshots(period_id,snapshot_no,report,report_sha256,created_by) VALUES($1,$2,$3::jsonb,$4,$5)",[id,snapshotVersion.rows[0].next_version,reportJson,reportHash,request.user!.userId]);
-   const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
+   const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now(),approved_by=$2,approved_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   })};
