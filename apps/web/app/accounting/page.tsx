@@ -11,10 +11,11 @@ type Profit = {
   accruedRevenue?: number; revenue: number; expenses: number; administrativeAllocation?: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
 };
 type Employee = {id:string;full_name:string;code:string};
-type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"CLOSED";allocation_count:number;allocated_amount:number};
+type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"CLOSED";review_status:"DRAFT"|"SUBMITTED"|"APPROVED";review_submitted_by?:string|null;review_submitted_at?:string|null;review_notes?:string|null;approved_by?:string|null;approved_at?:string|null;close_report?:Record<string,unknown>;closing_balances?:Array<{balanceType:string;entityKey:string;entityId?:string|null;label:string;amount:number;quantity?:number|null;metadata?:Record<string,unknown>}>;allocation_count:number;allocated_amount:number};
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
-type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[]};
+type OpeningBalance = {id:string;balance_type:string;entity_key:string;entity_id:string|null;label:string;amount:number;quantity:number|null;source_period_name:string;metadata:Record<string,unknown>};
+type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[];openingBalances:OpeningBalance[]};
 type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
@@ -121,12 +122,27 @@ export default function AccountingPage() {
       await loadPeriodDetail(selectedPeriodId);setMessage("تم حفظ توزيع المصروفات");
     }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ توزيع المصروفات")}finally{setPeriodSaving(false)}
   }
+  async function submitPeriodReview(){
+    if(!selectedPeriodId||!periodDetail)return;
+    if(!window.confirm("إرسال التصفية للمراجعة؟ سيتم تجميد الحركات العادية داخل الفترة لحين اعتماد المدير أو إرجاعها للمراجعة."))return;
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/submit-review",{method:"POST",body:JSON.stringify({notes:periodDetail.period.review_notes||""})});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تم إرسال التصفية للمراجعة وتثبيت لقطة الأرصدة")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر إرسال التصفية للمراجعة")}finally{setPeriodSaving(false)}
+  }
   async function closePeriod(){
     if(!selectedPeriodId||!periodDetail)return;
-    if(!window.confirm("تأكيد إقفال الفترة؟ لن يمكن تعديل التوزيع بعدها."))return;
+    if(!window.confirm("تأكيد اعتماد المدير للإقفال النهائي؟ سيتم حفظ التقرير وترحيل لقطة الأرصدة عند إنشاء الفترة التالية."))return;
     setPeriodSaving(true);setError("");setMessage("");
-    try{await api("/api/accounting/periods/"+selectedPeriodId+"/close",{method:"POST",body:"{}"});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تم إقفال الفترة المالية بنجاح")}
-    catch(e){setError(e instanceof Error?e.message:"تعذر إقفال الفترة")}finally{setPeriodSaving(false)}
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/close",{method:"POST",body:"{}"});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تم اعتماد الإقفال النهائي وحفظ أرصدة الترحيل")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد الإقفال")}finally{setPeriodSaving(false)}
+  }
+  async function requestPeriodRevision(){
+    if(!selectedPeriodId)return;
+    const notes=window.prompt("اكتب سبب إرجاع التصفية للمحاسب:");
+    if(!notes||notes.trim().length<3)return;
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/request-revision",{method:"POST",body:JSON.stringify({notes:notes.trim()})});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تم إرجاع التصفية للمحاسب لاستكمال المراجعة")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر إرجاع التصفية")}finally{setPeriodSaving(false)}
   }
 
   async function loadProfit(id:string) {
@@ -351,18 +367,25 @@ export default function AccountingPage() {
       <div className="card-body">
        <label className="finance-select">الفترة المسجلة<select value={selectedPeriodId} onChange={e=>void loadPeriodDetail(e.target.value)}><option value="">اختر فترة مالية</option>{periods.map(p=><option key={p.id} value={p.id}>{p.name} — {p.period_start} إلى {p.period_end} — {p.status==="CLOSED"?"مقفلة":"مفتوحة"}</option>)}</select></label>
        {periodDetail&&<>
-        <div className="detail-grid finance-detail"><div><b>الفترة</b><span>{periodDetail.period.name}</span></div><div><b>المصروفات الإدارية</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>الموزع</b><span>{n(periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>الحالة</b><span>{periodDetail.period.status==="CLOSED"?"مقفلة":"مفتوحة"}</span></div></div>
+        <div className="detail-grid finance-detail"><div><b>الفترة</b><span>{periodDetail.period.name}</span></div><div><b>المصروفات الإدارية</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>الموزع</b><span>{n(periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>حالة الفترة</b><span>{periodDetail.period.status==="CLOSED"?"مقفلة":"مفتوحة"}</span></div><div><b>حالة المراجعة</b><span>{periodDetail.period.review_status==="APPROVED"?"معتمدة نهائيًا":periodDetail.period.review_status==="SUBMITTED"?"بانتظار اعتماد المدير":"قيد التجهيز"}</span></div><div><b>الأرصدة الافتتاحية</b><span>{periodDetail.openingBalances?.length||0} بند مرحّل</span></div></div>
         <h3 className="card-title">المصروفات الإدارية داخل الفترة</h3>
         <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الكود</th><th>التصنيف</th><th>البيان</th><th>القيمة</th></tr></thead><tbody>{periodDetail.expenses.map(x=><tr key={x.id}><td>{x.expense_date}</td><td className="mono">{x.code}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td></tr>)}{!periodDetail.expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات إدارية في الفترة المحددة.</td></tr>}</tbody></table></div>
         <div className="card-header"><div><h3 className="card-title">توزيع المصروفات على الطلبيات</h3><div className="form-hint">عدّل المبالغ يدويًا إذا لزم الأمر، مع الحفاظ على إجمالي كل مصروف مساويًا لقيمته الأصلية.</div></div></div>
         <div className="detail-grid finance-detail"><div><b>إجمالي المصروفات</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>إجمالي الموزع</b><span>{n(periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>المتبقي</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0)-periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div></div>
         <div className="table-wrap"><table><thead><tr><th>المصروف</th><th>الطلبية المستفيدة</th><th>المبلغ الموزع</th><th>إجراء</th></tr></thead><tbody>{periodDetail.allocations.map((a,i)=><tr key={a.id}><td>{a.expense_code} — {a.expense_description}</td><td><select disabled={periodDetail.period.status==="CLOSED"} value={a.order_id} onChange={e=>{const order=periodDetail.orders.find(o=>o.id===e.target.value);setPeriodDetail(d=>d?({...d,allocations:d.allocations.map((x,j)=>j===i?({...x,order_id:e.target.value,order_code:order?.code||"",order_name:order?.order_name||""}):x)}):d)}}>{periodDetail.orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></td><td><input type="number" min="0" step="0.01" disabled={periodDetail.period.status==="CLOSED"} value={a.amount} onChange={e=>setPeriodDetail(d=>d?({...d,allocations:d.allocations.map((x,j)=>j===i?({...x,amount:Number(e.target.value)}):x)}):d)}/></td><td><button type="button" className="secondary-button" disabled={periodDetail.period.status==="CLOSED"} onClick={()=>setPeriodDetail(d=>d?({...d,allocations:d.allocations.filter((_,j)=>j!==i)}):d)}>حذف</button></td></tr>)}{!periodDetail.allocations.length&&<tr><td colSpan={4}>لم يتم إنشاء صفوف توزيع بعد. أضف توزيعًا لكل مصروف أو استخدم التوزيع التلقائي.</td></tr>}</tbody></table></div>
         {periodDetail.period.status==="OPEN"&&has("finance.period_close.create")&&periodDetail.expenses.length>0&&<div className="form-actions" style={{flexWrap:"wrap"}}>{periodDetail.expenses.map(expense=><button key={expense.id} type="button" className="secondary-button" disabled={periodSaving||!periodDetail.orders.length} onClick={()=>setPeriodDetail(d=>{if(!d)return d;const order=d.orders[0];if(!order)return d;return {...d,allocations:[...d.allocations,{id:"draft-"+crypto.randomUUID(),expense_id:expense.id,order_id:order.id,amount:0,expense_code:expense.code,expense_description:expense.description,order_code:order.code,order_name:order.order_name}]}})}>إضافة توزيع: {expense.code}</button>)}</div>}
-        {periodDetail.period.status==="OPEN"&&has("finance.period_close.create")&&<div className="form-actions">
+        {periodDetail.period.status==="OPEN"&&periodDetail.period.review_status!=="SUBMITTED"&&has("finance.period_close.create")&&<div className="form-actions">
          <button className="secondary-button" disabled={periodSaving||!periodDetail.expenses.length} onClick={autoAllocate}>توزيع تلقائي حسب التكلفة</button>
          <button className="secondary-button" disabled={periodSaving||!periodDetail.allocations.length} onClick={saveAllocations}>حفظ التوزيع المعدّل</button>
-         <button className="primary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={closePeriod}>إقفال الفترة</button>
+         <button className="primary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={submitPeriodReview}>إرسال للمراجعة والاعتماد</button>
         </div>}
+        {periodDetail.period.status==="OPEN"&&periodDetail.period.review_status==="SUBMITTED"&&<div className="form-actions">
+         {has("finance.period_close.approve")&&<button className="primary-button" disabled={periodSaving} onClick={closePeriod}>اعتماد المدير والإقفال النهائي</button>}
+         {has("finance.period_close.approve")&&<button className="secondary-button" disabled={periodSaving} onClick={requestPeriodRevision}>إرجاع للمحاسب للتعديل</button>}
+         {!has("finance.period_close.approve")&&<p className="form-hint">تم إرسال التصفية للمراجعة. بانتظار اعتماد المدير أو إرجاعها لاستكمال المراجعة.</p>}
+        </div>}
+        {periodDetail.openingBalances?.length>0&&<><h3 className="card-title">الأرصدة الافتتاحية المرحلة</h3><div className="form-hint">هذه أرصدة مرجعية مرحّلة من الفترة السابقة؛ لا تُنشئ قبضًا أو صرفًا جديدًا ولا تُكرر رصيد العهدة أو المخزون التشغيلي.</div><div className="table-wrap"><table><thead><tr><th>نوع الرصيد</th><th>البيان</th><th>المبلغ</th><th>الكمية</th><th>من فترة</th></tr></thead><tbody>{periodDetail.openingBalances.map(b=><tr key={b.id}><td>{b.balance_type==="CUSTODY"?"عهدة":b.balance_type==="ADVANCE"?"سلفة":b.balance_type==="WORKER_ENTITLEMENT"?"مستحقات عامل":"مخزون"}</td><td>{b.label}</td><td className="money">{n(Number(b.amount||0))}</td><td>{b.quantity===null?"—":n(Number(b.quantity||0))}</td><td>{b.source_period_name}</td></tr>)}</tbody></table></div></>}
+        {periodDetail.period.status==="CLOSED"&&<div className="form-hint">تم اعتماد الفترة بواسطة المدير. {periodDetail.period.approved_at?("تاريخ الاعتماد: "+new Date(periodDetail.period.approved_at).toLocaleString("ar-EG")):""} التقرير محفوظ ويمكن الرجوع إليه.</div>}
        </>}
       </div>
      </section>}
