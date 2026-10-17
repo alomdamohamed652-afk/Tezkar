@@ -690,7 +690,7 @@ export async function productionRoutes(app: FastifyInstance) {
       if (current.status !== "PENDING") {
         throw new AppError("INVALID_STATUS", "لا يمكن اعتماد سجل الإنتاج إلا إذا كان في حالة انتظار", 409);
       }
-      await assertAccountingPeriodOpen(client, String(current.work_date).slice(0,10));
+      await assertAccountingPeriodOpen(client, current.work_date instanceof Date ? current.work_date.toISOString().slice(0,10) : String(current.work_date).slice(0,10));
       if (current.submitted_by === request.user!.userId) {
         throw new AppError("SELF_APPROVAL", "لا يمكنك اعتماد سجل إنتاج قمت بتسجيله بنفسك", 409);
       }
@@ -886,7 +886,7 @@ export async function productionRoutes(app: FastifyInstance) {
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
       if(current.status!=="APPROVED")throw new AppError("REVERSAL_REQUIRES_APPROVED","التراجع العكسي متاح لسجل إنتاج معتمد فقط؛ السجلات المعلقة يمكن إلغاؤها مباشرة",409);
-      await assertAccountingPeriodOpen(client,String(current.work_date).slice(0,10));
+      await assertAccountingPeriodOpen(client,current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10));
       const paid=await client.query("SELECT 1 FROM worker_payment_allocations WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
       if(paid.rowCount)throw new AppError("PRODUCTION_ALREADY_PAID","لا يمكن عكس إنتاج تم تخصيص دفعة مالية له. عالج دفعة العامل أولًا حتى لا يتغير رصيد المستحقات بأثر رجعي.",409);
       const scrap=await client.query("SELECT 1 FROM production_scrap_records WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
