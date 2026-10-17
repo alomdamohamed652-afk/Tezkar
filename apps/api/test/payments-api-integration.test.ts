@@ -70,7 +70,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [workerUsername,hashPassword("Test-Worker-Password-2026!"),workerEmployee.id])).rows[0];
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",[manager.id]);
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[worker.id]);
-      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING");
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' AND p.code<>'finance.period_close.review' ON CONFLICT DO NOTHING");
       await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening cash custody',$2)",[managerEmployee.id,manager.id]);
       await apiPool.query(
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',500,$2,'test-only earned balance')",
