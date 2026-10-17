@@ -6,6 +6,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { createInventoryLot, consumeInventoryLots, adjustStockValueAfterLotConsumption } from "../warehouse/inventory-lots.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const createSchema = z.object({
   idempotencyKey: z.string().uuid(),
@@ -69,7 +70,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
     const created = await withTransaction(async (client) => {
       const entry = await client.query(
         `SELECT p.id, p.code, p.employee_id, p.product_id, p.stage_id, p.order_stage_id, p.shift_id,
-                p.unit_id, p.quantity, p.status, p.warehouse_id, p.location_id, e.full_name AS employee_name, pr.name AS product_name,
+                p.unit_id, p.quantity, p.status, p.work_date, p.warehouse_id, p.location_id, e.full_name AS employee_name, pr.name AS product_name,
                 os.order_id
            FROM production_entries p
            JOIN employees e ON e.id=p.employee_id
@@ -79,6 +80,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         [input.productionEntryId]
       );
       if (!entry.rowCount) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
+      
       const idempotencyFingerprint = JSON.stringify({
         productionEntryId: input.productionEntryId,
         scrapType: input.scrapType,
@@ -115,6 +117,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
       };
       const priorScrap = await lookupPriorScrap();
       if (priorScrap.rowCount) return replayPriorScrap(priorScrap.rows[0] as Record<string, unknown>);
+      await assertAccountingPeriodOpen(client,entry.rows[0].work_date instanceof Date?entry.rows[0].work_date.toISOString().slice(0,10):String(entry.rows[0].work_date).slice(0,10));
       if (!["PENDING", "APPROVED"].includes(entry.rows[0].status)) {
         throw new AppError("PRODUCTION_NOT_ACTIVE", "لا يمكن تسجيل هالك إلا على إنتاج قيد الاعتماد أو معتمد", 409);
       }

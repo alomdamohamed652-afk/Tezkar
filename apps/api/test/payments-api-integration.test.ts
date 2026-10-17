@@ -70,7 +70,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [workerUsername,hashPassword("Test-Worker-Password-2026!"),workerEmployee.id])).rows[0];
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",[manager.id]);
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[worker.id]);
-      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING");
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' AND p.code<>'finance.period_close.review' ON CONFLICT DO NOTHING");
+      await apiPool.query("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='manager') AND permission_id=(SELECT id FROM permissions WHERE code='finance.period_close.review')");
       await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening cash custody',$2)",[managerEmployee.id,manager.id]);
       await apiPool.query(
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',500,$2,'test-only earned balance')",
@@ -82,8 +83,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         const setCookie=response.headers["set-cookie"];assert.ok(setCookie);
         return (Array.isArray(setCookie)?setCookie[0]:setCookie).split(";")[0];
       }
+      const accountantEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Period Accountant') RETURNING id")).rows[0];
+      const accountantUsername="periodacct-"+randomBytes(4).toString("hex");
+      const accountantPassword="Test-Period-Accountant-2026!";
+      const accountant=(await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        [accountantUsername,hashPassword(accountantPassword),accountantEmployee.id])).rows[0];
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='accountant' ON CONFLICT DO NOTHING",[accountant.id]);
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
+      const accountantCookie=await login(accountantUsername,accountantPassword);
+
+      async function closePeriodWithApproval(periodId:string){
+        const submitted=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(submitted.statusCode,200,submitted.body);
+        const reviewed=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/approve-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(reviewed.statusCode,200,reviewed.body);
+        return app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/close",headers:{cookie:managerCookie},payload:{}});
+      }
+
       const settlementSummary=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${workerEmployee.id}`,
         headers:{cookie:managerCookie}
@@ -446,10 +464,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
       });
       assert.equal(allocations.statusCode,200,allocations.body);
-      const closePeriod=await app.inject({
-        method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/close`,
-        headers:{cookie:managerCookie},payload:{}
-      });
+      const closePeriod=await closePeriodWithApproval(financePeriod.json().data.id);
       assert.equal(closePeriod.statusCode,200,closePeriod.body);
       const profitability=await app.inject({
         method:"GET",url:`/api/accounting/orders/${financeOrder.id}/profitability`,
@@ -715,6 +730,33 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.ok(Number(directPayments.rows[0].count)>=2);
       assert.ok(Number(directPayments.rows[0].total)>=150);
+
+      // A retry of a committed payout remains safe after the accounting period closes,
+      // while a new payout must be blocked by that same period lock.
+      const directCountBeforePeriodLock=await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id]);
+      const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
+      const lockedPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Direct payout replay lock test",periodStart:today,periodEnd:today}
+      });
+      assert.equal(lockedPeriod.statusCode,201,lockedPeriod.body);
+      const closedLockPeriod=await closePeriodWithApproval(lockedPeriod.json().data.id);
+      assert.equal(closedLockPeriod.statusCode,200,closedLockPeriod.body);
+      assert.equal(closedLockPeriod.json().data.status,"CLOSED");
+      const replayAfterClose=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:successfulDirectPayload
+      });
+      assert.equal(replayAfterClose.statusCode,200,replayAfterClose.body,
+        "a committed payout retry must still return the original result after close");
+      assert.equal(replayAfterClose.json().data.payment.id,directPaymentId);
+      const newPayoutAfterClose=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{...successfulDirectPayload,idempotencyKey:randomUUID(),amount:1}
+      });
+      assert.equal(newPayoutAfterClose.statusCode,409,newPayoutAfterClose.body);
+      assert.equal(newPayoutAfterClose.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),Number(directCountBeforePeriodLock.rows[0].count),
+        "the closed period must not permit an additional payout");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();

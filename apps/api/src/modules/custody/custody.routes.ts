@@ -80,7 +80,7 @@ const cashSchema=z.object({
 async function assertPostingDateOpen(client:import("pg").PoolClient,date:string){
   // Share-lock the period row so period close waits for an in-flight posting.
   const period=await client.query("SELECT id,name,status FROM accounting_periods WHERE $1::date BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date]);
-  if(period.rows[0]?.status==="CLOSED")throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عهدة أو تحصيل عادي عليها. استخدم إجراء التصحيح المعتمد.",409);
+  if(period.rows[0]&&period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة المالية ليست مفتوحة؛ لا يمكن تسجيل حركة عهدة أو تحصيل عادي عليها. استخدم إجراء التصحيح المعتمد.",409);
 }
 
 async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,permissionCode:"cash_custody.view"|"cash_custody.create"){

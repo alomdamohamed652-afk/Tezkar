@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const cartonSchema=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().nonnegative(),barcode:z.string().trim().max(120).nullable().optional(),weight:z.number().nonnegative().nullable().optional(),batchCode:z.string().trim().max(100).nullable().optional(),status:z.enum(["OPEN","SEALED","PARTIAL"]).default("OPEN")});
 const deliverySchema=z.object({orderId:z.string().uuid(),destination:z.string().trim().min(2).max(200),notes:z.string().trim().max(500).nullable().optional(),deliveryValue:z.number().nonnegative().nullable().optional(),totalWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(2000).nullable().optional(),lines:z.array(z.object({orderItemId:z.string().uuid().optional(),productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),quantity:z.number().positive(),cartonCode:z.string().trim().max(100).nullable().optional(),cartonWeight:z.number().nonnegative().nullable().optional(),pieceCount:z.number().nonnegative().nullable().optional(),sampleQuantity:z.number().nonnegative().nullable().optional(),details:z.string().trim().max(1000).nullable().optional()})).min(1).max(100)});
@@ -324,6 +325,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  app.post("/api/delivery-permissions/:id/release",{preHandler:[authenticateRequest,requirePermission("deliveries.release")]},async(request)=>{
   const id=(request.params as {id:string}).id;const parsed=releaseSchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","كود المسح مطلوب",422);
   const row=await withTransaction(async(client)=>{
+   await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
    const d=await client.query("SELECT * FROM delivery_permissions WHERE id=$1 FOR UPDATE",[id]);if(!d.rowCount)throw new AppError("NOT_FOUND","إذن التسليم غير موجود",404);
    if(d.rows[0].status!=="READY")throw new AppError("INVALID_STATUS","إذن التسليم ليس جاهزًا للخروج",409);
    if(parsed.data.scanCode!==d.rows[0].code)throw new AppError("SCAN_MISMATCH","كود المسح لا يطابق إذن التسليم",409);

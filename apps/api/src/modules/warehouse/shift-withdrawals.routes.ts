@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const line=z.object({
   productId:z.string().uuid(),
@@ -149,6 +150,8 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
   const p=schema.safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مسحوبات الوردية غير صحيحة",422);
   const result=await withTransaction(async client=>{
+   const withdrawalDate=p.data.withdrawalDate??new Date().toISOString().slice(0,10);
+   await assertAccountingPeriodOpen(client,withdrawalDate);
    const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[p.data.shiftId]);
    if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
 

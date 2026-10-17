@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 
 const requestSchema = z.object({
@@ -384,6 +385,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional(),advanceRepaymentAmount:z.number().nonnegative().default(0)}).safeParse(request.body??{});
     if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
+      await assertAccountingPeriodOpen(client);
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
       if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       await lockEmployee(client,owner.rows[0].employee_id);
@@ -448,6 +450,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional(),advanceRepaymentAmount:z.number().nonnegative().default(0)}).safeParse(request.body??{});
     if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
+      await assertAccountingPeriodOpen(client);
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
       if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       // Keep the same employee -> request lock order used by request creation and approval.
@@ -577,6 +580,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     }
     const result = await withTransaction(async client => {
       // Serialize retries with the same client key before checking for an existing payout.
+      // A committed payout must remain replayable even if its accounting period has since closed.
       await client.query("SELECT pg_advisory_xact_lock(hashtext('worker-payment:' || $1))", [parsed.data.idempotencyKey]);
       await lockEmployee(client, parsed.data.employeeId);
       const prior = await client.query(
@@ -612,6 +616,9 @@ export async function paymentsRoutes(app:FastifyInstance){
           replayed: true
         };
       }
+      // Only a new posting is subject to the period lock. Existing committed requests
+      // above are safe to replay after close and must not create a second cash movement.
+      await assertAccountingPeriodOpen(client);
       const fingerprint = JSON.stringify({
         employeeId: parsed.data.employeeId,
         cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId,
