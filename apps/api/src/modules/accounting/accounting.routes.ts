@@ -219,12 +219,12 @@ export async function accountingRoutes(app:FastifyInstance){
 
  async function buildFinancialCloseSnapshot(client:import("pg").PoolClient,period:{id:string;name:string;period_start:string;period_end:string}){
   const end=period.period_end;
-  const [custody,workerDues,advances,inventory,periodTotals]=await Promise.all([
-   client.query(`SELECT c.employee_id,e.full_name,
+  // Use one transaction client sequentially so snapshot reads are serialized and pg clients are not queried concurrently.
+  const custody=await client.query(`SELECT c.employee_id,e.full_name,
       COALESCE(SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END),0) AS balance
      FROM cash_custody_transactions c LEFT JOIN employees e ON e.id=c.employee_id
-     WHERE c.transaction_date<=$1::date GROUP BY c.employee_id,e.full_name ORDER BY e.full_name`,[end]),
-   client.query(`SELECT e.id AS employee_id,e.full_name,
+     WHERE c.transaction_date<=$1::date GROUP BY c.employee_id,e.full_name ORDER BY e.full_name`,[end]);
+  const workerDues=await client.query(`SELECT e.id AS employee_id,e.full_name,
       GREATEST(0,
        COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p
                  WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
@@ -237,24 +237,23 @@ export async function accountingRoutes(app:FastifyInstance){
                   LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
                   WHERE wp.employee_id=e.id AND s.id IS NULL AND wp.created_at::date<=$1::date),0)
       ) AS balance
-     FROM employees e WHERE e.is_active=TRUE ORDER BY e.full_name`,[end]),
-   client.query(`SELECT a.id AS advance_id,a.code,a.employee_id,e.full_name,a.amount,
+     FROM employees e WHERE e.is_active=TRUE ORDER BY e.full_name`,[end]);
+  const advances=await client.query(`SELECT a.id AS advance_id,a.code,a.employee_id,e.full_name,a.amount,
       GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar
         WHERE ar.advance_id=a.id AND ar.payment_date<=$1::date),0),0) AS remaining
      FROM advance_requests a JOIN employees e ON e.id=a.employee_id
      WHERE a.status='PAID' AND a.paid_at::date<=$1::date
-     ORDER BY e.full_name,a.created_at`,[end]),
-   client.query(`SELECT product_id,warehouse_id,location_id,quantity,inventory_value,avg_unit_cost
+     ORDER BY e.full_name,a.created_at`,[end]);
+  const inventory=await client.query(`SELECT product_id,warehouse_id,location_id,quantity,inventory_value,avg_unit_cost
      FROM stock_balances WHERE COALESCE(quantity,0)<>0 OR COALESCE(inventory_value,0)<>0
-     ORDER BY product_id,warehouse_id,location_id`),
-   client.query(`SELECT
+     ORDER BY product_id,warehouse_id,location_id`);
+  const periodTotals=await client.query(`SELECT
       COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE expense_date BETWEEN $1::date AND $2::date),0) AS expenses,
       COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' AND revenue_date BETWEEN $1::date AND $2::date),0) AS revenues,
       COALESCE((SELECT SUM(COALESCE(total_earning_amount,earning_amount)) FROM production_entries
         WHERE status='APPROVED' AND work_date BETWEEN $1::date AND $2::date),0) AS approved_production_earnings,
       COALESCE((SELECT SUM(gross_amount) FROM employee_earnings_settlements
-        WHERE settlement_date BETWEEN $1::date AND $2::date),0) AS worker_settlements`,[period.period_start,end])
-  ]);
+        WHERE settlement_date BETWEEN $1::date AND $2::date),0) AS worker_settlements`,[period.period_start,end]);
   return {
    schemaVersion:1,capturedAt:new Date().toISOString(),
    period:{id:period.id,name:period.name,start:period.period_start,end:period.period_end},
