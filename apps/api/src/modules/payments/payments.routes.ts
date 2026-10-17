@@ -450,6 +450,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     const actionBody=z.object({cashCustodyEmployeeId:z.string().uuid().nullable().optional(),advanceRepaymentAmount:z.number().nonnegative().default(0)}).safeParse(request.body??{});
     if(!actionBody.success)throw new AppError("VALIDATION_ERROR","اختيار العهدة النقدية غير صحيح",422);
     const row=await withTransaction(async(client)=>{
+      await assertAccountingPeriodOpen(client);
       const owner=await client.query("SELECT employee_id FROM payment_requests WHERE id=$1",[id]);
       if(!owner.rowCount) throw new AppError("NOT_FOUND","طلب القبض غير موجود",404);
       // Keep the same employee -> request lock order used by request creation and approval.
