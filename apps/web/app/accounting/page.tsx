@@ -11,7 +11,7 @@ type Profit = {
   accruedRevenue?: number; revenue: number; expenses: number; administrativeAllocation?: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
 };
 type Employee = {id:string;full_name:string;code:string};
-type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"CLOSED";allocation_count:number;allocated_amount:number};
+type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"UNDER_REVIEW"|"READY_FOR_APPROVAL"|"CLOSED";allocation_count:number;allocated_amount:number};
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];orders:Order[]};
@@ -123,10 +123,13 @@ export default function AccountingPage() {
   }
   async function closePeriod(){
     if(!selectedPeriodId||!periodDetail)return;
-    if(!window.confirm("تأكيد إقفال الفترة؟ لن يمكن تعديل التوزيع بعدها."))return;
+    const status=periodDetail.period.status;
+    const action=status==="OPEN"?"submit-review":status==="UNDER_REVIEW"?"approve-review":"close";
+    const confirmText=action==="submit-review"?"إرسال الفترة للمراجعة المحاسبية؟":action==="approve-review"?"اعتماد المراجعة المحاسبية وتجهيز الفترة لاعتماد المدير؟":"تأكيد الإقفال النهائي؟";
+    if(!window.confirm(confirmText))return;
     setPeriodSaving(true);setError("");setMessage("");
-    try{await api("/api/accounting/periods/"+selectedPeriodId+"/close",{method:"POST",body:"{}"});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تم إقفال الفترة المالية بنجاح")}
-    catch(e){setError(e instanceof Error?e.message:"تعذر إقفال الفترة")}finally{setPeriodSaving(false)}
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/"+action,{method:"POST",body:"{}"});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage(action==="submit-review"?"تم إرسال الفترة للمراجعة":action==="approve-review"?"تم اعتماد المراجعة المحاسبية، وتنتظر اعتماد المدير":"تم إقفال الفترة المالية بنجاح")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ خطوة التصفية")}finally{setPeriodSaving(false)}
   }
 
   async function loadProfit(id:string) {
@@ -361,12 +364,12 @@ export default function AccountingPage() {
         {periodDetail.period.status==="OPEN"&&has("finance.period_close.create")&&<div className="form-actions">
          <button className="secondary-button" disabled={periodSaving||!periodDetail.expenses.length} onClick={autoAllocate}>توزيع تلقائي حسب التكلفة</button>
          <button className="secondary-button" disabled={periodSaving||!periodDetail.allocations.length} onClick={saveAllocations}>حفظ التوزيع المعدّل</button>
-         <button className="primary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={closePeriod}>إقفال الفترة</button>
+         <button className="primary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={closePeriod}>إرسال للمراجعة المحاسبية</button>
         </div>}
        </>}
       </div>
      </section>}
-     {tab==="orders"&&has("finance.profitability.view")&&<section className="card">
+     {periodDetail&&(periodDetail.period.status==="UNDER_REVIEW"&&has("finance.period_close.review")||periodDetail.period.status==="READY_FOR_APPROVAL"&&has("finance.period_close.approve"))&&<section className="card"><div className="form-actions"><button className="primary-button" disabled={periodSaving} onClick={closePeriod}>{periodDetail.period.status==="UNDER_REVIEW"?"اعتماد المراجعة المحاسبية":"الإقفال النهائي"}</button></div></section>}\n     {tab==="orders"&&has("finance.profitability.view")&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">لوحة كل الطلبيات</h2><div className="form-hint">الإيرادات والتكاليف المباشرة والإدارية وتكلفة المخزون وأجور الإنتاج وصافي الربح لكل طلبية. التحصيل النقدي لا يُضاف مرة ثانية للإيرادات.{dashboardPeriodId?" التقرير يعرض الحركات والتكاليف المؤرخة داخل الفترة المختارة؛ قيمة العقد المعروضة إجمالية للطلبية وليست إيرادًا محققًا داخل الفترة.":" قيمة العقد تمثل الإيراد المستحق تعاقديًا، بينما الإيراد المسجل هو ما تم تسجيله فعليًا."}</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث البيانات</button></div>
       <div className="stats finance-stats">
        <article className="card stat"><div className="stat-label">عدد الطلبيات</div><div className="stat-value">{orderFinance.length}</div></article>
