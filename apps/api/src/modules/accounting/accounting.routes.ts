@@ -283,6 +283,10 @@ export async function accountingRoutes(app:FastifyInstance){
    const overlap=await client.query("SELECT id FROM accounting_periods WHERE period_start<=$2::date AND period_end>=$1::date LIMIT 1",[p.data.periodStart,p.data.periodEnd]);
    if(overlap.rowCount)throw new AppError("ACCOUNTING_PERIOD_OVERLAP","الفترة تتداخل مع فترة مالية مسجلة بالفعل",409);
    const prior=await client.query("SELECT id,closing_snapshot FROM accounting_periods WHERE status='CLOSED' AND period_end<$1::date AND closing_snapshot IS NOT NULL ORDER BY period_end DESC LIMIT 1 FOR SHARE",[p.data.periodStart]);
+   if(prior.rows[0]){
+    const alreadyRolled=await client.query("SELECT id,name FROM accounting_periods WHERE rollover_source_period_id=$1 LIMIT 1",[prior.rows[0].id]);
+    if(alreadyRolled.rowCount)throw new AppError("PERIOD_ALREADY_ROLLED_FORWARD","تم ترحيل هذه الفترة إلى فترة لاحقة بالفعل؛ اقفل الفترة اللاحقة قبل إنشاء فترة أخرى",409);
+   }
    const openingSnapshot=prior.rows[0]?.closing_snapshot??{};
    const sourcePeriodId=prior.rows[0]?.id??null;
    const r=await client.query(`INSERT INTO accounting_periods(name,period_start,period_end,notes,created_by,opening_balance_snapshot,rollover_source_period_id)
