@@ -368,6 +368,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="READY_FOR_APPROVAL")throw new AppError("ACCOUNTING_PERIOD_NOT_APPROVED","يجب اعتماد المراجعة المحاسبية قبل الإقفال النهائي",409);
+   if(period.rows[0].reviewed_by===request.user!.userId)throw new AppError("SEPARATION_OF_DUTIES_REQUIRED","يجب أن يكون اعتماد الإقفال النهائي بواسطة مستخدم مختلف عن مراجع الفترة",409);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
    if(expenses.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل الإقفال",409);
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
