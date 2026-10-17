@@ -733,6 +733,31 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(closedPeriodTopUp.statusCode,409,closedPeriodTopUp.body);
       assert.equal(closedPeriodTopUp.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
 
+      const closedPeriodTransfer=await app.inject({
+        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
+        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:1,transactionDate:"2299-02-05",description:"Must be rejected in closed period"}
+      });
+      assert.equal(closedPeriodTransfer.statusCode,409,closedPeriodTransfer.body);
+      assert.equal(closedPeriodTransfer.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodCashOut=await app.inject({
+        method:"POST",url:"/api/cash-custody",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,direction:"OUT",amount:1,transactionDate:"2299-02-05",description:"Must be rejected in closed period"}
+      });
+      assert.equal(closedPeriodCashOut.statusCode,409,closedPeriodCashOut.body);
+      assert.equal(closedPeriodCashOut.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodCollectionOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Closed-period collection guard",manager.id]
+      )).rows[0];
+      const closedPeriodCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
+        payload:{orderId:closedPeriodCollectionOrder.id,employeeId:employeeA.id,amount:1,transactionDate:"2299-02-05",description:"Must be rejected in closed period",idempotencyKey:randomUUID()}
+      });
+      assert.equal(closedPeriodCollection.statusCode,409,closedPeriodCollection.body);
+      assert.equal(closedPeriodCollection.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
       const cancelledOrder=(await apiPool.query(
         "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'CANCELLED') RETURNING id",
         ["Cancelled order finance guard",manager.id]
