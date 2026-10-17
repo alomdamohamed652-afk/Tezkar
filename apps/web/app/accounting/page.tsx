@@ -55,7 +55,7 @@ export default function AccountingPage() {
   const [dashboardTo,setDashboardTo]=useState(localDateInput(new Date()));
   const [selectedPeriodId,setSelectedPeriodId]=useState("");
   const [periodDetail,setPeriodDetail]=useState<PeriodDetail|null>(null);
-  const [periodForm,setPeriodForm]=useState({name:"",periodStart:new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10),periodEnd:new Date().toISOString().slice(0,10),notes:""});
+  const [periodForm,setPeriodForm]=useState({name:"",periodStart:localDateInput(new Date(new Date().getFullYear(),new Date().getMonth()-2,1)),periodEnd:localDateInput(new Date()),notes:""});
   const [periodSaving,setPeriodSaving]=useState(false);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
