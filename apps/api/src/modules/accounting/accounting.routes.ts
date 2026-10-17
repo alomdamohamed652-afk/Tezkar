@@ -434,7 +434,7 @@ export async function accountingRoutes(app:FastifyInstance){
    if(expenses.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل الإقفال",409);
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
-   const finalSnapshot=await buildFinancialCloseSnapshot(client,{id:period.rows[0].id,name:period.rows[0].name,period_start:String(period.rows[0].period_start).slice(0,10),period_end:String(period.rows[0].period_end).slice(0,10)});
+   const finalSnapshot=await buildFinancialCloseSnapshot(client,{id:period.rows[0].id,name:period.rows[0].name,period_start:dateOnly(period.rows[0].period_start),period_end:dateOnly(period.rows[0].period_end)});
    const finalSnapshotHash=createHash("sha256").update(JSON.stringify({...finalSnapshot,capturedAt:undefined})).digest("hex");
    if(finalSnapshotHash!==period.rows[0].closing_snapshot.snapshotHash)throw new AppError("PERIOD_CHANGED_AFTER_REVIEW","تغيّرت أرصدة أو حركات بعد مراجعة المحاسب؛ أعد المراجعة قبل اعتماد الإقفال",409);
    const finalizedSnapshot={...finalSnapshot,snapshotHash:finalSnapshotHash};
