@@ -214,6 +214,7 @@ export async function accountingRoutes(app:FastifyInstance){
    amount:z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"مبلغ التوزيع يجب أن يكون بحد أقصى منزلتين عشريتين"})
   }))
  });
+ const dateOnly=(value:unknown)=>value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);
  const toMinorUnits=(value:unknown)=>Math.round(Number(value||0)*100);
  const hasCentPrecision=(value:unknown)=>Math.abs(Number(value||0)*100-toMinorUnits(value))<1e-7;
 
@@ -411,7 +412,7 @@ export async function accountingRoutes(app:FastifyInstance){
    if(expenses.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل المراجعة",409);
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن إرسال الفترة للاعتماد قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
-   const snapshot=await buildFinancialCloseSnapshot(client,{id:period.rows[0].id,name:period.rows[0].name,period_start:String(period.rows[0].period_start).slice(0,10),period_end:String(period.rows[0].period_end).slice(0,10)});
+   const snapshot=await buildFinancialCloseSnapshot(client,{id:period.rows[0].id,name:period.rows[0].name,period_start:dateOnly(period.rows[0].period_start),period_end:dateOnly(period.rows[0].period_end)});
    const snapshotHash=createHash("sha256").update(JSON.stringify({...snapshot,capturedAt:undefined})).digest("hex");
    const reviewedSnapshot={...snapshot,snapshotHash};
    const r=await client.query("UPDATE accounting_periods SET reviewed_by=$2,reviewed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(reviewedSnapshot)]);
