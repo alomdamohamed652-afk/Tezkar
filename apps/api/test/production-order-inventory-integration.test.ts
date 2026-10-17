@@ -739,9 +739,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
         row.full_name === "submitter Employee"
     );
     assert.ok(reportedEmployee, "active employee should appear in earnings report");
-    assert.equal(Number(reportedEmployee.earned), 510, "employee earnings report must include base wages and bonus");
+    assert.equal(Number(reportedEmployee.earned), 490, "employee earnings report must include good-unit wages and bonus, excluding scrap wages");
     assert.equal(Number(reportedEmployee.debited), 410, "employee earnings report includes the advance payout, production deduction, and gross settlement; loan recovery is separately credited");
-    assert.equal(Number(reportedEmployee.balance), 200, "unpaid approved earnings remain as the employee's positive balance after settling the advance");
+    assert.equal(Number(reportedEmployee.balance), 177, "balance reflects good-unit earnings, gross settlement, and the 97 EGP advance recovery credit");
 
     const stageState = await apiPool.query(
       "SELECT os.completed_quantity,os.status,po.status AS order_status FROM order_stages os JOIN production_orders po ON po.id=os.order_id WHERE os.id=$1",
