@@ -71,6 +71,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager' ON CONFLICT DO NOTHING",[manager.id]);
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[worker.id]);
       await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING");
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='finance.period_close.create' WHERE r.code='worker' ON CONFLICT DO NOTHING");
       await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening cash custody',$2)",[managerEmployee.id,manager.id]);
       await apiPool.query(
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',500,$2,'test-only earned balance')",
@@ -446,6 +447,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
       });
       assert.equal(allocations.statusCode,200,allocations.body);
+      const financeReview=await app.inject({method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/review`,headers:{cookie:workerCookie},payload:{}});
+      assert.equal(financeReview.statusCode,200,financeReview.body);
       const closePeriod=await app.inject({
         method:"POST",url:`/api/accounting/periods/${financePeriod.json().data.id}/close`,
         headers:{cookie:managerCookie},payload:{}
