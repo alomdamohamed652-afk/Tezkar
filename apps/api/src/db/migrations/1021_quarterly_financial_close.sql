@@ -35,6 +35,9 @@ BEGIN
     effective_date := COALESCE(NEW.settlement_date, CURRENT_DATE);
   ELSIF TG_TABLE_NAME = 'advance_repayments' THEN
     effective_date := COALESCE(NEW.payment_date, CURRENT_DATE);
+  ELSIF TG_TABLE_NAME = 'advance_requests' THEN
+    IF NEW.status IS DISTINCT FROM 'PAID' THEN RETURN NEW; END IF;
+    effective_date := COALESCE(NEW.paid_at::date, CURRENT_DATE);
   ELSE
     RETURN NEW;
   END IF;
@@ -78,3 +81,28 @@ DROP TRIGGER IF EXISTS advance_repayments_closed_period_guard ON advance_repayme
 CREATE TRIGGER advance_repayments_closed_period_guard
   BEFORE INSERT OR UPDATE ON advance_repayments
   FOR EACH ROW EXECUTE FUNCTION prevent_closed_financial_period_write();
+
+DROP TRIGGER IF EXISTS advance_requests_closed_period_guard ON advance_requests;
+CREATE TRIGGER advance_requests_closed_period_guard
+  BEFORE INSERT OR UPDATE ON advance_requests
+  FOR EACH ROW EXECUTE FUNCTION prevent_closed_financial_period_write();
+
+CREATE OR REPLACE FUNCTION prevent_closed_period_allocation_write() RETURNS trigger AS $$
+DECLARE target_period_id UUID;
+DECLARE period_status TEXT;
+BEGIN
+  target_period_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.period_id ELSE NEW.period_id END;
+  SELECT status INTO period_status FROM accounting_periods WHERE id=target_period_id FOR SHARE;
+  IF period_status='CLOSED' THEN
+    RAISE EXCEPTION 'FINANCIAL_PERIOD_CLOSED: allocations are immutable after close'
+      USING ERRCODE = '23514', CONSTRAINT = 'financial_period_closed_allocation';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS accounting_expense_allocations_closed_period_guard ON accounting_expense_allocations;
+CREATE TRIGGER accounting_expense_allocations_closed_period_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON accounting_expense_allocations
+  FOR EACH ROW EXECUTE FUNCTION prevent_closed_period_allocation_write();
