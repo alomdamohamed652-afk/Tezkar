@@ -850,6 +850,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
+      const reviewCollectionPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/review",headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewCollectionPeriod.statusCode,200,reviewCollectionPeriod.body);
       const closeCollectionPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
       });
