@@ -230,7 +230,7 @@ export async function accountingRoutes(app:FastifyInstance){
                  WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
        +COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                   FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
-                  WHERE a.employee_id=e.id AND (a.production_entry_id IS NULL OR (p.status='APPROVED' AND p.work_date<=$1::date))),0)
+                  WHERE a.employee_id=e.id AND a.created_at::date<=$1::date AND (a.production_entry_id IS NULL OR (p.status='APPROVED' AND p.work_date<=$1::date))),0)
        -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
                   WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
        -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
@@ -266,7 +266,10 @@ export async function accountingRoutes(app:FastifyInstance){
   };
  }
  app.get("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async()=>{
-  const r=await pool.query(`SELECT p.*,
+  const r=await pool.query(`SELECT p.id,p.code,p.name,p.period_start,p.period_end,p.status,p.notes,p.created_by,p.created_at,
+    p.reviewed_by,p.reviewed_at,p.closed_by,p.closed_at,p.rollover_source_period_id,
+    (p.opening_balance_snapshot IS NOT NULL AND p.opening_balance_snapshot<>'{}'::jsonb) AS has_opening_balance_snapshot,
+    (p.closing_snapshot IS NOT NULL) AS has_closing_snapshot,
     (SELECT COUNT(*)::int FROM accounting_expense_allocations a WHERE a.period_id=p.id) AS allocation_count,
     COALESCE((SELECT SUM(amount) FROM accounting_expense_allocations a WHERE a.period_id=p.id),0) AS allocated_amount
     FROM accounting_periods p ORDER BY p.period_start DESC,p.created_at DESC`);
@@ -319,6 +322,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const totalCost=eligibleOrders.reduce((sum,row)=>sum+Number(row.cost||0),0);
    if(!eligibleOrders.length||totalCost<=0)throw new AppError("NO_COST_BASIS","لا توجد تكاليف موجبة للطلبيات يمكن توزيع المصروفات عليها",409);
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   await client.query("UPDATE accounting_periods SET reviewed_by=NULL,reviewed_at=NULL,closing_snapshot=NULL WHERE id=$1",[id]);
    let allocationCount=0;
    for(const expense of expenses.rows){
     if(!hasCentPrecision(expense.amount))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل التصفية",409);
@@ -374,6 +378,7 @@ export async function accountingRoutes(app:FastifyInstance){
     else grouped.set(key,{expenseId:a.expenseId,orderId:a.orderId,amount:a.amount});
    }
    await client.query("DELETE FROM accounting_expense_allocations WHERE period_id=$1",[id]);
+   await client.query("UPDATE accounting_periods SET reviewed_by=NULL,reviewed_at=NULL,closing_snapshot=NULL WHERE id=$1",[id]);
    let savedAllocationCount=0;
    for(const a of grouped.values()){
     if(toMinorUnits(a.amount)===0)continue;
@@ -395,7 +400,9 @@ export async function accountingRoutes(app:FastifyInstance){
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن إرسال الفترة للاعتماد قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const snapshot=await buildFinancialCloseSnapshot(client,{id:period.rows[0].id,name:period.rows[0].name,period_start:String(period.rows[0].period_start).slice(0,10),period_end:String(period.rows[0].period_end).slice(0,10)});
-   const r=await client.query("UPDATE accounting_periods SET reviewed_by=$2,reviewed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(snapshot)]);
+   const snapshotHash=createHash("sha256").update(JSON.stringify({...snapshot,capturedAt:undefined})).digest("hex");
+   const reviewedSnapshot={...snapshot,snapshotHash};
+   const r=await client.query("UPDATE accounting_periods SET reviewed_by=$2,reviewed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(reviewedSnapshot)]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"review_close",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,reviewedBy:request.user!.userId,periodTotals:snapshot.periodTotals},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   })};
@@ -414,7 +421,10 @@ export async function accountingRoutes(app:FastifyInstance){
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const finalSnapshot=await buildFinancialCloseSnapshot(client,{id:period.rows[0].id,name:period.rows[0].name,period_start:String(period.rows[0].period_start).slice(0,10),period_end:String(period.rows[0].period_end).slice(0,10)});
-   const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(finalSnapshot)]);
+   const finalSnapshotHash=createHash("sha256").update(JSON.stringify({...finalSnapshot,capturedAt:undefined})).digest("hex");
+   if(finalSnapshotHash!==period.rows[0].closing_snapshot.snapshotHash)throw new AppError("PERIOD_CHANGED_AFTER_REVIEW","تغيّرت أرصدة أو حركات بعد مراجعة المحاسب؛ أعد المراجعة قبل اعتماد الإقفال",409);
+   const finalizedSnapshot={...finalSnapshot,snapshotHash:finalSnapshotHash};
+   const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(finalizedSnapshot)]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:{...r.rows[0],closingSnapshotVersion:1,rolloverSourcePeriodId:r.rows[0].rollover_source_period_id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   })};
