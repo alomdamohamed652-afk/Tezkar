@@ -420,9 +420,8 @@ export async function accountingRoutes(app:FastifyInstance){
    return r.rows[0];
   })};
  });
- app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+ app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.approve")]},async(request)=>{
   const id=(request.params as {id:string}).id;
-  if(!request.user!.roleCodes.some(code=>["ADMIN","ADMINISTRATOR","SUPER_ADMIN","MANAGER","GENERAL_MANAGER","FACTORY_MANAGER","OWNER","DIRECTOR"].includes(code.toUpperCase())))throw new AppError("MANAGER_APPROVAL_REQUIRED","الإقفال النهائي متاح للمدير أو المسؤول الأعلى فقط",403);
   return {data:await withTransaction(async client=>{
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
@@ -446,11 +445,10 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
 
- app.post("/api/accounting/periods/:id/reopen",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+ app.post("/api/accounting/periods/:id/reopen",{preHandler:[authenticateRequest,requirePermission("finance.period_close.approve")]},async(request)=>{
   const id=(request.params as {id:string}).id;
   const payload=z.object({reason:z.string().trim().min(8).max(1000)}).safeParse(request.body);
   if(!payload.success)throw new AppError("REOPEN_REASON_REQUIRED","اكتب سببًا واضحًا لإعادة فتح الفترة (8 أحرف على الأقل)",422);
-  if(!request.user!.roleCodes.some(code=>["ADMIN","ADMINISTRATOR","SUPER_ADMIN","MANAGER","GENERAL_MANAGER","FACTORY_MANAGER","OWNER","DIRECTOR"].includes(code.toUpperCase())))throw new AppError("MANAGER_APPROVAL_REQUIRED","إعادة فتح الفترة متاحة للمدير أو المسؤول الأعلى فقط",403);
   return {data:await withTransaction(async client=>{
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
