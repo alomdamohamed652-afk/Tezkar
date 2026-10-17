@@ -13,6 +13,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS accounting_periods_rollover_source_uidx
   ON accounting_periods (rollover_source_period_id)
   WHERE rollover_source_period_id IS NOT NULL;
 
+-- Keep manager approval permission-based rather than relying on a hard-coded role name at runtime.
+INSERT INTO permissions(code,module,entity,action,scope)
+VALUES('finance.period_close.approve','finance','period_close','approve','all')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT r.id,p.id
+FROM roles r CROSS JOIN permissions p
+WHERE LOWER(r.code) IN ('manager','admin','administrator','super_admin','general_manager','factory_manager','owner','director')
+  AND p.code='finance.period_close.approve'
+ON CONFLICT DO NOTHING;
+
 COMMENT ON COLUMN accounting_periods.closing_snapshot IS
   'Immutable financial close snapshot captured when the manager closes this period.';
 COMMENT ON COLUMN accounting_periods.opening_balance_snapshot IS
