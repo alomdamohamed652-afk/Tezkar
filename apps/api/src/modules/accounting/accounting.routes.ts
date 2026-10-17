@@ -219,7 +219,8 @@ export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/periods",{preHandler:[authenticateRequest,requirePermission("finance.period_close.view")]},async()=>{
   const r=await pool.query(`SELECT p.*,
     (SELECT COUNT(*)::int FROM accounting_expense_allocations a WHERE a.period_id=p.id) AS allocation_count,
-    COALESCE((SELECT SUM(amount) FROM accounting_expense_allocations a WHERE a.period_id=p.id),0) AS allocated_amount
+    COALESCE((SELECT SUM(amount) FROM accounting_expense_allocations a WHERE a.period_id=p.id),0) AS allocated_amount,
+    (SELECT COUNT(*)::int FROM accounting_period_rollovers b WHERE b.target_period_id=p.id) AS opening_balance_count
     FROM accounting_periods p ORDER BY p.period_start DESC,p.created_at DESC`);
   return {data:r.rows};
  });
@@ -231,7 +232,12 @@ export async function accountingRoutes(app:FastifyInstance){
    const overlap=await client.query("SELECT id FROM accounting_periods WHERE period_start<=$2::date AND period_end>=$1::date LIMIT 1",[p.data.periodStart,p.data.periodEnd]);
    if(overlap.rowCount)throw new AppError("ACCOUNTING_PERIOD_OVERLAP","الفترة تتداخل مع فترة مالية مسجلة بالفعل",409);
    const r=await client.query("INSERT INTO accounting_periods(name,period_start,period_end,notes,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[p.data.name,p.data.periodStart,p.data.periodEnd,p.data.notes??null,request.user!.userId]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"accounting_period",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   // Attach unclaimed carry-forward balances only when this period starts the day after the source period ends.
+   await client.query(`UPDATE accounting_period_rollovers b SET target_period_id=$1
+     FROM accounting_periods source
+     WHERE b.source_period_id=source.id AND b.target_period_id IS NULL
+       AND source.status='CLOSED' AND source.period_end + 1 = $2::date`,[r.rows[0].id,p.data.periodStart]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"accounting_period",entityId:r.rows[0].id,afterData:r.rows[0],metadata:{openingBalancesAttached:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   });
   return reply.code(201).send({data:row});
@@ -240,12 +246,13 @@ export async function accountingRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   const period=await pool.query("SELECT * FROM accounting_periods WHERE id=$1",[id]);
   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
-  const [expenses,allocations]=await Promise.all([
+  const [expenses,allocations,openingBalances]=await Promise.all([
    pool.query("SELECT e.id,e.code,e.category,e.description,e.amount,e.expense_date FROM accounting_expenses e WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 ORDER BY e.expense_date,e.created_at",[period.rows[0].period_start,period.rows[0].period_end]),
-   pool.query("SELECT a.*,e.code AS expense_code,e.description AS expense_description,o.code AS order_code,o.order_name FROM accounting_expense_allocations a JOIN accounting_expenses e ON e.id=a.expense_id JOIN production_orders o ON o.id=a.order_id WHERE a.period_id=$1 ORDER BY e.expense_date,e.created_at,o.code",[id])
+   pool.query("SELECT a.*,e.code AS expense_code,e.description AS expense_description,o.code AS order_code,o.order_name FROM accounting_expense_allocations a JOIN accounting_expenses e ON e.id=a.expense_id JOIN production_orders o ON o.id=a.order_id WHERE a.period_id=$1 ORDER BY e.expense_date,e.created_at,o.code",[id]),
+   pool.query("SELECT b.*,source.name AS source_period_name FROM accounting_period_rollovers b JOIN accounting_periods source ON source.id=b.source_period_id WHERE b.target_period_id=$1 ORDER BY b.balance_type,b.label",[id])
   ]);
   const orders=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status<>'CANCELLED' ORDER BY created_at DESC");
-  return {data:{period:period.rows[0],expenses:expenses.rows,allocations:allocations.rows,orders:orders.rows}};
+  return {data:{period:period.rows[0],expenses:expenses.rows,allocations:allocations.rows,openingBalances:openingBalances.rows,orders:orders.rows}};
  });
  app.post("/api/accounting/periods/:id/auto-allocate",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
   const id=(request.params as {id:string}).id;
@@ -330,18 +337,85 @@ export async function accountingRoutes(app:FastifyInstance){
    return {periodId:id,allocationCount:savedAllocationCount};
   })};
  });
+ app.post("/api/accounting/periods/:id/review",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن مراجعة فترة مقفولة",409);
+   if(period.rows[0].reviewed_by)throw new AppError("ACCOUNTING_PERIOD_ALREADY_REVIEWED","تم تسجيل مراجعة الفترة بالفعل؛ اطلب من المدير إعادتها للمراجعة إذا لزم التصحيح",409);
+   const expenseTotals=await client.query(`SELECT
+     COALESCE((SELECT SUM(amount) FROM order_revenues WHERE revenue_date BETWEEN $1 AND $2 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS revenue,
+     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE expense_date BETWEEN $1 AND $2),0) AS expenses,
+     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2),0) AS administrative_expenses`,
+     [period.rows[0].period_start,period.rows[0].period_end]);
+   const unpaidEarnings=await client.query(`SELECT e.id AS employee_id,e.full_name,
+      GREATEST(0,
+       COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
+       +COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END) FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id WHERE a.employee_id=e.id AND a.created_at::date<=$1::date AND (a.production_entry_id IS NULL OR (p.status='APPROVED' AND p.work_date<=$1::date))),0)
+       -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
+       -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id WHERE wp.employee_id=e.id AND s.id IS NULL AND wp.created_at::date<=$1::date),0)
+      ) AS amount
+     FROM employees e WHERE e.is_active=TRUE
+     HAVING GREATEST(0,
+       COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
+       +COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END) FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id WHERE a.employee_id=e.id AND a.created_at::date<=$1::date AND (a.production_entry_id IS NULL OR (p.status='APPROVED' AND p.work_date<=$1::date))),0)
+       -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
+       -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id WHERE wp.employee_id=e.id AND s.id IS NULL AND wp.created_at::date<=$1::date),0)
+      )>0
+     ORDER BY e.full_name`,[period.rows[0].period_end]);
+   const custody=await client.query(`SELECT e.id AS employee_id,e.full_name,
+      SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END) AS balance
+     FROM cash_custody_transactions c JOIN employees e ON e.id=c.employee_id
+     WHERE c.transaction_date<=$1::date GROUP BY e.id,e.full_name
+     HAVING ABS(SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END))>=0.01
+     ORDER BY e.full_name`,[period.rows[0].period_end]);
+   const advances=await client.query(`SELECT a.id AS advance_id,a.employee_id,e.full_name,a.code,
+      GREATEST(0,a.amount-COALESCE((SELECT SUM(r.amount) FROM advance_repayments r WHERE r.advance_id=a.id AND r.payment_date<=$1::date),0)) AS outstanding
+     FROM advance_requests a JOIN employees e ON e.id=a.employee_id
+     WHERE a.status='PAID' AND a.paid_at::date<=$1::date
+     HAVING GREATEST(0,a.amount-COALESCE((SELECT SUM(r.amount) FROM advance_repayments r WHERE r.advance_id=a.id AND r.payment_date<=$1::date),0))>=0.01
+     ORDER BY e.full_name,a.code`,[period.rows[0].period_end]);
+   const snapshot={periodId:id,periodStart:period.rows[0].period_start,periodEnd:period.rows[0].period_end,
+     financialSummary:expenseTotals.rows[0],custody: custody.rows,unpaidWorkerEarnings:unpaidEarnings.rows,
+     outstandingAdvances:advances.rows,preparedBy:request.user!.userId,preparedAt:new Date().toISOString()};
+   const updated=await client.query("UPDATE accounting_periods SET reviewed_by=$2,reviewed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(snapshot)]);
+   await client.query("DELETE FROM accounting_period_rollovers WHERE source_period_id=$1 AND target_period_id IS NULL",[id]);
+   for(const item of custody.rows){
+     await client.query("INSERT INTO accounting_period_rollovers(source_period_id,balance_type,reference_id,label,amount,metadata) VALUES($1,'CASH_CUSTODY',$2,$3,$4,$5::jsonb) ON CONFLICT(source_period_id,balance_type,reference_id) DO UPDATE SET label=EXCLUDED.label,amount=EXCLUDED.amount,metadata=EXCLUDED.metadata",
+       [id,item.employee_id,"عهدة: "+item.full_name,Number(item.balance),JSON.stringify({employeeId:item.employee_id,asOf:period.rows[0].period_end})]);
+   }
+   for(const item of unpaidEarnings.rows){
+     await client.query("INSERT INTO accounting_period_rollovers(source_period_id,balance_type,reference_id,label,amount,metadata) VALUES($1,'WORKER_EARNINGS',$2,$3,$4,$5::jsonb) ON CONFLICT(source_period_id,balance_type,reference_id) DO UPDATE SET label=EXCLUDED.label,amount=EXCLUDED.amount,metadata=EXCLUDED.metadata",
+       [id,item.employee_id,"مستحقات عامل: "+item.full_name,Number(item.amount),JSON.stringify({employeeId:item.employee_id,asOf:period.rows[0].period_end})]);
+   }
+   for(const item of advances.rows){
+     await client.query("INSERT INTO accounting_period_rollovers(source_period_id,balance_type,reference_id,label,amount,metadata) VALUES($1,'ADVANCE',$2,$3,$4,$5::jsonb) ON CONFLICT(source_period_id,balance_type,reference_id) DO UPDATE SET label=EXCLUDED.label,amount=EXCLUDED.amount,metadata=EXCLUDED.metadata",
+       [id,item.advance_id,"سلفة "+item.code+" — "+item.full_name,Number(item.outstanding),JSON.stringify({employeeId:item.employee_id,advanceCode:item.code,asOf:period.rows[0].period_end})]);
+   }
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"review",module:"finance",entityType:"accounting_period",entityId:id,afterData:updated.rows[0],metadata:{custodyBalances:custody.rowCount,workerBalances:unpaidEarnings.rowCount,advances:advances.rowCount},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return updated.rows[0];
+  })};
+ });
  app.post("/api/accounting/periods/:id/close",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
   const id=(request.params as {id:string}).id;
   return {data:await withTransaction(async client=>{
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة مقفلة بالفعل",409);
+   if(!period.rows[0].reviewed_by||!period.rows[0].reviewed_at||!period.rows[0].closing_snapshot)
+     throw new AppError("ACCOUNTING_PERIOD_REVIEW_REQUIRED","لازم المحاسب يراجع تقرير التصفية أولًا قبل اعتماد المدير للإقفال",409);
+   if(period.rows[0].reviewed_by===request.user!.userId)
+     throw new AppError("SEPARATION_OF_DUTIES_REQUIRED","لازم اعتماد الإقفال يتم بواسطة المدير، وليس نفس مستخدم المراجعة",403);
+   const manager=await client.query(`SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+      WHERE ur.user_id=$1 AND r.code='manager' AND r.is_active=TRUE) AS allowed`,[request.user!.userId]);
+   if(!manager.rows[0]?.allowed)throw new AppError("MANAGER_APPROVAL_REQUIRED","الإقفال النهائي يتطلب حساب مدير مخوّل",403);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
    if(expenses.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل الإقفال",409);
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],metadata:{reviewedBy:period.rows[0].reviewed_by,rolloverCount:(await client.query("SELECT COUNT(*)::int AS count FROM accounting_period_rollovers WHERE source_period_id=$1",[id])).rows[0].count},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   })};
  });
