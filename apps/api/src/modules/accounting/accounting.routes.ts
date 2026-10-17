@@ -231,7 +231,8 @@ export async function accountingRoutes(app:FastifyInstance){
    const overlap=await client.query("SELECT id FROM accounting_periods WHERE period_start<=$2::date AND period_end>=$1::date LIMIT 1",[p.data.periodStart,p.data.periodEnd]);
    if(overlap.rowCount)throw new AppError("ACCOUNTING_PERIOD_OVERLAP","الفترة تتداخل مع فترة مالية مسجلة بالفعل",409);
    const r=await client.query("INSERT INTO accounting_periods(name,period_start,period_end,notes,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[p.data.name,p.data.periodStart,p.data.periodEnd,p.data.notes??null,request.user!.userId]);
-   const previous=await client.query("SELECT p.id,s.report FROM accounting_periods p JOIN accounting_period_close_snapshots s ON s.period_id=p.id WHERE p.status='CLOSED' AND p.period_end<$1::date ORDER BY p.period_end DESC,s.snapshot_no DESC LIMIT 1 FOR SHARE OF p",[p.data.periodStart]);
+   // Carry opening balances only from the immediately preceding day; a closed period separated by a gap must not seed a later period.
+   const previous=await client.query("SELECT p.id,s.report FROM accounting_periods p JOIN accounting_period_close_snapshots s ON s.period_id=p.id WHERE p.status='CLOSED' AND p.period_end=($1::date - INTERVAL '1 day')::date ORDER BY s.snapshot_no DESC LIMIT 1 FOR SHARE OF p",[p.data.periodStart]);
    if(previous.rowCount){
     const report=previous.rows[0].report as {cashCustody?:Array<Record<string,unknown>>;workerDues?:Array<Record<string,unknown>>;advances?:Array<Record<string,unknown>>;inventory?:Array<Record<string,unknown>>};
     const sourceId=previous.rows[0].id;
