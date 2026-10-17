@@ -138,6 +138,16 @@ export default function AccountingPage() {
     catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد الإقفال")}finally{setPeriodSaving(false)}
   }
 
+  async function reopenPeriod(){
+    if(!selectedPeriodId||!periodDetail)return;
+    const reason=window.prompt("اكتب سبب إعادة فتح الفترة المقفولة (مطلوب للتدقيق):");
+    if(!reason||reason.trim().length<8){setError("لازم تكتب سببًا واضحًا من 8 أحرف على الأقل");return;}
+    if(!window.confirm("إعادة فتح الفترة ستلغي اعتمادها الحالي وتتطلب مراجعة وإقفالًا جديدين. هل تريد المتابعة؟"))return;
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/reopen",{method:"POST",body:JSON.stringify({reason:reason.trim()})});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تمت إعادة فتح الفترة مع تسجيل السبب في سجل التدقيق")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر إعادة فتح الفترة")}finally{setPeriodSaving(false)}
+  }
+
   async function loadProfit(id:string) {
     setOrderId(id);setProfit(null);if(!id)return;
     try{const x=await api<{data:Profit}>(`/api/accounting/orders/${id}/profitability`);setProfit(x.data)}
@@ -364,6 +374,7 @@ export default function AccountingPage() {
          {periodDetail.period.rollover_source_period_id&&<div className="form-hint">تم ترحيل الرصيد الافتتاحي من الفترة السابقة. الترحيل سجل افتتاحي وليس حركة قبض أو صرف جديدة.</div>}
          {periodDetail.period.reviewed_at&&<div className="form-hint">تم تسجيل مراجعة المحاسب بتاريخ {new Date(periodDetail.period.reviewed_at).toLocaleString("ar-EG")}؛ الإقفال النهائي يحتاج اعتماد المدير من حساب مختلف.</div>}
          {periodDetail.period.status==="CLOSED"&&periodDetail.period.closing_snapshot&&<div className="form-hint">تم حفظ لقطة الأرصدة الختامية والتقرير المالي عند الإقفال. وقت اللقطة: {periodDetail.period.closing_snapshot.capturedAt?new Date(periodDetail.period.closing_snapshot.capturedAt).toLocaleString("ar-EG"):"—"}.</div>
+         {periodDetail.period.status==="CLOSED"&&canApprovePeriodClose&&has("finance.period_close.create")&&<div className="form-actions"><button className="secondary-button" disabled={periodSaving} onClick={reopenPeriod}>إعادة فتح الفترة (سبب إلزامي)</button></div>}
          <div className="detail-grid finance-detail"><div><b>إيرادات الفترة</b><span>{n(Number(periodDetail.period.closing_snapshot.periodTotals?.revenues||0))}</span></div><div><b>مصروفات الفترة</b><span>{n(Number(periodDetail.period.closing_snapshot.periodTotals?.expenses||0))}</span></div><div><b>مستحقات إنتاج معتمدة</b><span>{n(Number(periodDetail.period.closing_snapshot.periodTotals?.approved_production_earnings||0))}</span></div><div><b>تسويات العمال المدفوعة</b><span>{n(Number(periodDetail.period.closing_snapshot.periodTotals?.worker_settlements||0))}</span></div><div><b>أرصدة العهد</b><span>{periodDetail.period.closing_snapshot.custodyBalances?.length||0} حساب</span></div><div><b>مستحقات العمال</b><span>{periodDetail.period.closing_snapshot.workerDues?.length||0} عامل</span></div><div><b>السلف المتبقية</b><span>{periodDetail.period.closing_snapshot.outstandingAdvances?.length||0} سلفة</span></div><div><b>أرصدة المخزون</b><span>{periodDetail.period.closing_snapshot.inventoryBalances?.length||0} رصيد مخزني</span></div></div>}
         <h3 className="card-title">المصروفات الإدارية داخل الفترة</h3>
         <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الكود</th><th>التصنيف</th><th>البيان</th><th>القيمة</th></tr></thead><tbody>{periodDetail.expenses.map(x=><tr key={x.id}><td>{x.expense_date}</td><td className="mono">{x.code}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td></tr>)}{!periodDetail.expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات إدارية في الفترة المحددة.</td></tr>}</tbody></table></div>
