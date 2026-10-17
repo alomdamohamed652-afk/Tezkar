@@ -416,7 +416,10 @@ export async function accountingRoutes(app:FastifyInstance){
     "SELECT id,status FROM accounting_periods WHERE period_start=($1::date + INTERVAL '1 day')::date ORDER BY period_start LIMIT 1 FOR UPDATE",
     [end]
    );
-   if(nextPeriod.rowCount && nextPeriod.rows[0].status==="OPEN"){
+   if(nextPeriod.rowCount && nextPeriod.rows[0].status!=="OPEN"){
+    throw new AppError("NEXT_ACCOUNTING_PERIOD_LOCKED","الفترة التالية مقفولة أو قيد المراجعة؛ لا يمكن إقفال الفترة السابقة قبل معالجة الترتيب الزمني",409);
+   }
+   if(nextPeriod.rowCount){
     const nextPeriodId=nextPeriod.rows[0].id;
     await client.query("DELETE FROM accounting_period_opening_balances WHERE period_id=$1 AND source_period_id<>$2",[nextPeriodId,id]);
     for(const row of report.cashCustody??[]) await client.query(
