@@ -693,6 +693,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(savedReport.json().data.integrityVerified,true,"saved report hash must verify against exact stored JSON");
       assert.equal(savedReport.json().data.snapshot_no,1);
       assert.ok(Array.isArray(savedReport.json().data.report.cashCustody));
+      await assert.rejects(
+        () => apiPool.query("UPDATE accounting_period_close_snapshots SET report_json=report_json WHERE period_id=$1 AND snapshot_no=1",[period.json().data.id]),
+        /accounting period close snapshots are immutable/,
+        "a saved close snapshot must reject UPDATE"
+      );
+      await assert.rejects(
+        () => apiPool.query("DELETE FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1",[period.json().data.id]),
+        /accounting period close snapshots are immutable/,
+        "a saved close snapshot must reject DELETE"
+      );
       const reopenPeriod=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/reopen",headers:{cookie:managerCookie},payload:{reason:"تصحيح مراجعة الفترة في اختبار التكامل"}});
       assert.equal(reopenPeriod.statusCode,200,reopenPeriod.body);
       assert.equal(reopenPeriod.json().data.status,"OPEN");
