@@ -515,6 +515,11 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         ]}
       });
       assert.equal(adjustedAllocation.statusCode,200,adjustedAllocation.body);
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='worker' AND p.code='finance.period_close.create' ON CONFLICT DO NOTHING");
+      const reviewAllocationPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/review",headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(reviewAllocationPeriod.statusCode,200,reviewAllocationPeriod.body);
       const closeAllocationPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/close",headers:{cookie:managerCookie},payload:{}
       });
