@@ -669,7 +669,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [percentageAdvance.rows[0].id]
     );
     assert.equal(productionRepayment.rowCount,1);
-    assert.equal(Number(productionRepayment.rows[0].amount),100);
+    assert.equal(Number(productionRepayment.rows[0].amount),97,"repayment is capped by the calculated 20% of eligible earnings");
     assert.equal(productionRepayment.rows[0].repayment_type,"PRODUCTION_PERCENTAGE");
     assert.equal(productionRepayment.rows[0].source_production_entry_id,null);
     assert.equal(productionRepayment.rows[0].settlement_id,settlement.settlement.id);
@@ -677,20 +677,20 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT repayment_status,amount-(SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.advance_id=advance_requests.id) AS remaining FROM advance_requests WHERE id=$1",
       [percentageAdvance.rows[0].id]
     );
-    assert.equal(remainingAdvance.rows[0].repayment_status,"SETTLED");
-    assert.equal(Number(remainingAdvance.rows[0].remaining),0);
+    assert.equal(remainingAdvance.rows[0].repayment_status,"OPEN","the unpaid 3 EGP balance must remain open");
+    assert.equal(Number(remainingAdvance.rows[0].remaining),3);
     const custodySummary=await apiPool.query(
       "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('PRODUCTION_EARNINGS_SETTLEMENT','ADVANCE_REPAYMENT_OFFSET') GROUP BY direction",
       [settlement.settlement.id]
     );
     assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="OUT")?.amount),305);
-    assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),100);
+    assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),97);
     const repaymentLedger = await apiPool.query(
       "SELECT credit_amount,debit_amount,notes FROM employee_earnings_ledger WHERE entry_type='ADJUSTMENT' AND notes LIKE $1",
       [`%سداد سلفة ${percentageAdvance.rows[0].code}%`]
     );
     assert.equal(repaymentLedger.rowCount,1,"the repayment must update the employee balance without creating a second production expense");
-    assert.equal(Number(repaymentLedger.rows[0].credit_amount),100);
+    assert.equal(Number(repaymentLedger.rows[0].credit_amount),97);
     assert.equal(Number(repaymentLedger.rows[0].debit_amount),0);
 
     const finalBalance = await apiPool.query(
