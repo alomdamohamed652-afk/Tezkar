@@ -260,6 +260,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
+   if(period.rows[0].reviewed_at)throw new AppError("ACCOUNTING_PERIOD_ALREADY_REVIEWED","تمت مراجعة الفترة؛ لا يمكن تعديل التوزيع بعد المراجعة",409);
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
    if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
    const orders=await client.query(`SELECT o.id,
@@ -308,6 +309,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
+   if(period.rows[0].reviewed_at)throw new AppError("ACCOUNTING_PERIOD_ALREADY_REVIEWED","تمت مراجعة الفترة؛ لا يمكن تعديل التوزيع بعد المراجعة",409);
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2",[period.rows[0].period_start,period.rows[0].period_end]);
    const sums=new Map<string,number>();
    for(const item of p.data.allocations)sums.set(item.expenseId,(sums.get(item.expenseId)||0)+toMinorUnits(item.amount));
@@ -344,6 +346,11 @@ export async function accountingRoutes(app:FastifyInstance){
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن مراجعة فترة مقفولة",409);
    if(period.rows[0].reviewed_by)throw new AppError("ACCOUNTING_PERIOD_ALREADY_REVIEWED","تم تسجيل مراجعة الفترة بالفعل؛ اطلب من المدير إعادتها للمراجعة إذا لزم التصحيح",409);
+   const isManager=await client.query(`SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1 AND r.code='manager' AND r.is_active=TRUE) AS allowed`,[request.user!.userId]);
+   if(isManager.rows[0]?.allowed)throw new AppError("ACCOUNTANT_REVIEW_REQUIRED","المحاسب يجهّز المراجعة أولًا، ثم يعتمد المدير الإقفال النهائي من حسابه",403);
+   const allocationsCheck=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
+   if(allocationsCheck.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل المراجعة",409);
+   if(allocationsCheck.rows.some(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated)))throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن اعتماد المراجعة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const expenseTotals=await client.query(`SELECT
      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE revenue_date BETWEEN $1 AND $2 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS revenue,
      COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE expense_date BETWEEN $1 AND $2),0) AS expenses,
