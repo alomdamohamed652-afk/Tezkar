@@ -71,6 +71,22 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
         [leader.rows[0].id]
       );
       assert.deepEqual(missingWorkerPermissions.rows, [], "shift leader must inherit every existing worker permission");
+      const periodColumns=await verification.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='accounting_periods'
+            AND column_name=ANY($1::text[]) ORDER BY column_name`,
+        [["reviewed_by","reviewed_at","closing_snapshot","opening_balance_snapshot","rollover_source_period_id","last_reopened_by","last_reopened_at","last_reopen_reason"]]
+      );
+      assert.deepEqual(periodColumns.rows.map(row=>row.column_name),[
+        "closing_snapshot","last_reopen_reason","last_reopened_at","last_reopened_by",
+        "opening_balance_snapshot","reviewed_at","reviewed_by","rollover_source_period_id"
+      ],"quarterly close migration must add the review, snapshot, rollover and reopen fields");
+      const closeTriggers=await verification.query(
+        `SELECT tgname FROM pg_trigger
+          WHERE NOT tgisinternal AND tgname=ANY($1::text[]) ORDER BY tgname`,
+        [["accounting_expenses_closed_period_guard","order_revenues_closed_period_guard","cash_custody_closed_period_guard","production_entries_closed_period_guard","earnings_settlements_closed_period_guard","advance_repayments_closed_period_guard","advance_requests_closed_period_guard","accounting_expense_allocations_closed_period_guard"]]
+      );
+      assert.equal(closeTriggers.rowCount,8,"closed-period write guards must be installed on the financial source tables");
     } finally {
       await verification.end();
     }
