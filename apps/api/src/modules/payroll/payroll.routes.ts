@@ -228,9 +228,11 @@ export async function payrollRoutes(app: FastifyInstance) {
     const parsed = adjustmentSchema.safeParse(request.body);
     if (!parsed.success || (parsed.data.bonusAmount===undefined && parsed.data.deductionAmount===undefined && parsed.data.deductionMode===undefined && parsed.data.deductionPercentage===undefined && parsed.data.deductionBasis===undefined && parsed.data.notes===undefined)) throw new AppError("VALIDATION_ERROR", "بيانات تعديل مسير الراتب غير صحيحة", 422);
     return withTransaction(async client => {
-      const before = await client.query("SELECT i.*,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
+      const before = await client.query("SELECT i.*,p.status AS period_status,p.period_month AS accounting_period_month FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
       if (!before.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
       if (before.rows[0].period_status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "لا يمكن تعديل مسير راتب معتمد", 409);
+      const accountingDate=before.rows[0].accounting_period_month instanceof Date?before.rows[0].accounting_period_month.toISOString().slice(0,10):String(before.rows[0].accounting_period_month).slice(0,10);
+      await assertAccountingPeriodOpen(client,accountingDate);
       const bonus = parsed.data.bonusAmount ?? Number(before.rows[0].bonus_amount);
       const deductionMode = parsed.data.deductionMode ?? before.rows[0].deduction_mode ?? "FIXED";
       const deductionBasis = parsed.data.deductionBasis ?? before.rows[0].deduction_basis ?? "BASE_SALARY";
