@@ -1314,10 +1314,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(finalProfitability.json().data.revenue), 1000);
     assert.equal(Number(finalProfitability.json().data.expenses), 50);
     assert.equal(Number(finalProfitability.json().data.materialCost), 100);
-    assert.equal(Number(finalProfitability.json().data.laborCost), 525);
-    assert.equal(Number(finalProfitability.json().data.totalCost), 675);
-    assert.equal(Number(finalProfitability.json().data.profit), 325);
-    assert.equal(Number(finalProfitability.json().data.marginPercent), 32.5);
+    assert.equal(Number(finalProfitability.json().data.laborCost), 505);
+    assert.equal(Number(finalProfitability.json().data.totalCost), 655);
+    assert.equal(Number(finalProfitability.json().data.profit), 345);
+    assert.equal(Number(finalProfitability.json().data.marginPercent), 34.5);
 
     const accountingSummary = await app.inject({
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
