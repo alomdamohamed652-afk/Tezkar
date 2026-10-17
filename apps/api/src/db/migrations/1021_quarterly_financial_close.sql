@@ -91,7 +91,11 @@ CREATE OR REPLACE FUNCTION prevent_closed_period_allocation_write() RETURNS trig
 DECLARE target_period_id UUID;
 DECLARE period_status TEXT;
 BEGIN
-  target_period_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.period_id ELSE NEW.period_id END;
+  IF TG_OP = 'DELETE' THEN
+    target_period_id := OLD.period_id;
+  ELSE
+    target_period_id := NEW.period_id;
+  END IF;
   SELECT status INTO period_status FROM accounting_periods WHERE id=target_period_id FOR SHARE;
   IF period_status='CLOSED' THEN
     RAISE EXCEPTION 'FINANCIAL_PERIOD_CLOSED: allocations are immutable after close'
