@@ -117,6 +117,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       await apiPool.query(
         "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' AND p.code<>'finance.period_close.review' ON CONFLICT DO NOTHING"
       );
+      await apiPool.query("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='manager') AND permission_id=(SELECT id FROM permissions WHERE code='finance.period_close.review')");
       // Keep the granted all-scope permissions but remove the finance role name.
       // Access scope must follow RBAC permissions, not a hard-coded list of role codes.
       await apiPool.query("UPDATE roles SET code='cash_supervisor_test' WHERE code='manager'");
