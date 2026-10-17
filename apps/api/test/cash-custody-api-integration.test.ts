@@ -677,6 +677,20 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const closedPeriod=await closePeriodWithApproval(period.json().data.id);
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
+      const savedReport=await app.inject({method:"GET",url:"/api/accounting/periods/"+period.json().data.id+"/report",headers:{cookie:managerCookie}});
+      assert.equal(savedReport.statusCode,200,savedReport.body);
+      assert.ok(savedReport.json().data.report_sha256);
+      assert.equal(savedReport.json().data.snapshot_no,1);
+      assert.ok(Array.isArray(savedReport.json().data.report.cashCustody));
+      const reopenPeriod=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/reopen",headers:{cookie:managerCookie},payload:{reason:"تصحيح مراجعة الفترة في اختبار التكامل"}});
+      assert.equal(reopenPeriod.statusCode,200,reopenPeriod.body);
+      assert.equal(reopenPeriod.json().data.status,"OPEN");
+      assert.equal(reopenPeriod.json().data.reopen_reason,"تصحيح مراجعة الفترة في اختبار التكامل");
+      const reclosedPeriod=await closePeriodWithApproval(period.json().data.id);
+      assert.equal(reclosedPeriod.statusCode,200,reclosedPeriod.body);
+      const savedReportAfterReclose=await app.inject({method:"GET",url:"/api/accounting/periods/"+period.json().data.id+"/report",headers:{cookie:managerCookie}});
+      assert.equal(savedReportAfterReclose.statusCode,200,savedReportAfterReclose.body);
+      assert.equal(savedReportAfterReclose.json().data.snapshot_no,2,"reclosing must preserve the prior snapshot and create a new version");
 
       const closedPeriodExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
