@@ -870,6 +870,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
+      const openingBalances=await apiPool.query("SELECT balance_type,source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[collectionPeriod.json().data.id]);
+      assert.ok(openingBalances.rowCount>0,"next period must receive opening balances from the prior closed snapshot");
+      assert.ok(openingBalances.rows.every((row:any)=>row.source_period_id===period.json().data.id),"opening balances must identify the source period");
+      assert.ok(openingBalances.rows.some((row:any)=>row.balance_type==="CASH_CUSTODY"),"cash custody balances must carry forward");
       const closeCollectionPeriod=await closePeriodWithApproval(collectionPeriod.json().data.id);
       assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
       const closedPeriodCollectionRetry=await app.inject({
