@@ -948,6 +948,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const refreshedBalances=await apiPool.query("SELECT balance_type,source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[precreatedNext.json().data.id]);
       assert.ok(refreshedBalances.rowCount>0,"closing a source period must populate the already-created next period");
       assert.ok(refreshedBalances.rows.every((row:any)=>row.source_period_id===lateCarrySource.json().data.id),"next-period balances must point to the latest closed source period");
+       const gapPeriod=await app.inject({
+         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+         payload:{name:"Gap after open intervening period",periodStart:"2199-07-01",periodEnd:"2199-07-31"}
+       });
+       assert.equal(gapPeriod.statusCode,201,gapPeriod.body);
+       const gapOpeningBalances=await apiPool.query("SELECT source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[gapPeriod.json().data.id]);
+       assert.equal(gapOpeningBalances.rowCount,0,"do not carry balances across an intervening open period or date gap");
+
 
       // If a later period is already in review, the earlier close cannot carry
       // balances into it. Reopening the earlier period must be blocked so the
