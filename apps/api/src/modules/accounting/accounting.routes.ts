@@ -230,7 +230,7 @@ export async function accountingRoutes(app:FastifyInstance){
      LEFT JOIN advance_repayments ar ON ar.advance_id=a.id AND ar.payment_date<=$1::date
      WHERE a.status='PAID' GROUP BY a.id,a.code,a.amount,e.full_name,a.employee_id
      HAVING GREATEST(a.amount-COALESCE(SUM(ar.amount),0),0)>0 ORDER BY e.full_name,a.code`,[periodEnd]),
-   client.query(`SELECT employee_id AS entity_id, e.full_name AS label,
+   client.query(`SELECT e.id AS entity_id, e.full_name AS label,
       GREATEST(0,
        COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
        -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
