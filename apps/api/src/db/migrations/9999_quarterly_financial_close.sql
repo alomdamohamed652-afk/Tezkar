@@ -28,7 +28,7 @@ ON CONFLICT DO NOTHING;
 COMMENT ON COLUMN accounting_periods.closing_snapshot IS
   'Immutable financial close snapshot captured when the manager closes this period.';
 COMMENT ON COLUMN accounting_periods.opening_balance_snapshot IS
-  'Opening balances copied once from the immediately preceding closed period snapshot; not a new cash movement.';
+  'Opening balances captured once when a new period is created; not a new cash movement.';
 
 -- Guard date-based posting APIs and direct SQL writes from mutating a closed period.
 CREATE OR REPLACE FUNCTION prevent_closed_financial_period_write() RETURNS trigger AS $$
