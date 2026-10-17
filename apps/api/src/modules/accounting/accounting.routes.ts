@@ -249,7 +249,7 @@ export async function accountingRoutes(app:FastifyInstance){
      ORDER BY product_id,warehouse_id,location_id`),
    client.query(`SELECT
       COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE expense_date BETWEEN $1::date AND $2::date),0) AS expenses,
-      COALESCE((SELECT SUM(amount) FROM accounting_revenues WHERE revenue_date BETWEEN $1::date AND $2::date),0) AS revenues,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' AND revenue_date BETWEEN $1::date AND $2::date),0) AS revenues,
       COALESCE((SELECT SUM(COALESCE(total_earning_amount,earning_amount)) FROM production_entries
         WHERE status='APPROVED' AND work_date BETWEEN $1::date AND $2::date),0) AS approved_production_earnings,
       COALESCE((SELECT SUM(gross_amount) FROM employee_earnings_settlements
@@ -425,7 +425,7 @@ export async function accountingRoutes(app:FastifyInstance){
    if(finalSnapshotHash!==period.rows[0].closing_snapshot.snapshotHash)throw new AppError("PERIOD_CHANGED_AFTER_REVIEW","تغيّرت أرصدة أو حركات بعد مراجعة المحاسب؛ أعد المراجعة قبل اعتماد الإقفال",409);
    const finalizedSnapshot={...finalSnapshot,snapshotHash:finalSnapshotHash};
    const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now(),closing_snapshot=$3::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,JSON.stringify(finalizedSnapshot)]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:{...r.rows[0],closingSnapshotVersion:1,rolloverSourcePeriodId:r.rows[0].rollover_source_period_id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:{periodId:id,status:"CLOSED",reviewedBy:period.rows[0].reviewed_by,closedBy:request.user!.userId,closingSnapshotVersion:1,rolloverSourcePeriodId:r.rows[0].rollover_source_period_id,periodTotals:finalizedSnapshot.periodTotals},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   })};
  });
