@@ -578,8 +578,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       throw new AppError("TRANSFER_REFERENCE_REQUIRED", "رقم التحويل مطلوب لطريقة الدفع المختارة", 422);
     }
     const result = await withTransaction(async client => {
-      await assertAccountingPeriodOpen(client);
       // Serialize retries with the same client key before checking for an existing payout.
+      // A committed payout must remain replayable even if its accounting period has since closed.
       await client.query("SELECT pg_advisory_xact_lock(hashtext('worker-payment:' || $1))", [parsed.data.idempotencyKey]);
       await lockEmployee(client, parsed.data.employeeId);
       const prior = await client.query(
@@ -615,6 +615,9 @@ export async function paymentsRoutes(app:FastifyInstance){
           replayed: true
         };
       }
+      // Only a new posting is subject to the period lock. Existing committed requests
+      // above are safe to replay after close and must not create a second cash movement.
+      await assertAccountingPeriodOpen(client);
       const fingerprint = JSON.stringify({
         employeeId: parsed.data.employeeId,
         cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId,
