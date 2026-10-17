@@ -375,7 +375,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
    if(unbalanced.length)throw new AppError("UNALLOCATED_ADMIN_EXPENSES","لا يمكن قفل الفترة قبل توزيع كامل المصروفات الإدارية على الطلبيات",409);
    const start=period.rows[0].period_start,end=period.rows[0].period_end;
-   const [cash,workerDues,advances,inventory,revenue,expense]=await Promise.all([
+   const [cash,workerDues,advances,inventory,revenue,expense,pending]=await Promise.all([
     client.query("SELECT e.id AS employee_id,e.code,e.full_name,COALESCE(SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END),0) AS balance FROM employees e LEFT JOIN cash_custody_transactions c ON c.employee_id=e.id AND c.transaction_date<=$1::date GROUP BY e.id,e.code,e.full_name ORDER BY e.code",[end]),
     client.query("SELECT e.id AS employee_id,e.code,e.full_name,COALESCE(SUM(l.credit_amount-l.debit_amount),0) AS balance FROM employees e LEFT JOIN employee_earnings_ledger l ON l.employee_id=e.id AND l.created_at::date<=$1::date GROUP BY e.id,e.code,e.full_name ORDER BY e.code",[end]),
     client.query("SELECT a.id,a.code,a.employee_id,e.code AS employee_code,e.full_name,a.amount,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id AND ar.payment_date<=$1::date),0),0) AS remaining FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.status='PAID' AND a.paid_at::date<=$1::date ORDER BY e.code,a.code",[end]),
