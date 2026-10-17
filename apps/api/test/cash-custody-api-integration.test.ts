@@ -672,7 +672,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
-        payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
+        payload:{name:"Integration test period",periodStart:"2299-02-01",periodEnd:"2299-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
       const managerCannotReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/submit-review",headers:{cookie:managerCookie},payload:{}});
@@ -705,14 +705,14 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       const closedPeriodExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
-        payload:{category:"مصروف إداري",description:"Must be rejected in closed period",amount:5,expenseType:"ADMINISTRATIVE",expenseDate:"2099-02-05"}
+        payload:{category:"مصروف إداري",description:"Must be rejected in closed period",amount:5,expenseType:"ADMINISTRATIVE",expenseDate:"2299-02-05"}
       });
       assert.equal(closedPeriodExpense.statusCode,409,closedPeriodExpense.body);
       assert.equal(closedPeriodExpense.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
 
       const closedPeriodTopUp=await app.inject({
         method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
-        payload:{employeeId:employeeA.id,amount:11,transactionDate:"2099-02-05",description:"Must be rejected in closed period"}
+        payload:{employeeId:employeeA.id,amount:11,transactionDate:"2299-02-05",description:"Must be rejected in closed period"}
       });
       assert.equal(closedPeriodTopUp.statusCode,409,closedPeriodTopUp.body);
       assert.equal(closedPeriodTopUp.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
