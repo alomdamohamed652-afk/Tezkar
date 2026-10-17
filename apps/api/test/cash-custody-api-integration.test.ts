@@ -984,6 +984,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const closeBeforeLockedNext=await closePeriodWithApproval(guardedSource.json().data.id);
       assert.equal(closeBeforeLockedNext.statusCode,409,closeBeforeLockedNext.body);
       assert.equal(closeBeforeLockedNext.json().error.code,"NEXT_ACCOUNTING_PERIOD_LOCKED");
+      // The approval workflow reached READY_FOR_APPROVAL before the final close
+      // was rejected, so return the earlier period to OPEN before retrying.
+      const returnGuardedSource=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedSource.json().data.id+"/return-for-corrections",
+        headers:{cookie:managerCookie},payload:{reason:"إعادة الفترة الأقدم بعد رفض الإقفال"}
+      });
+      assert.equal(returnGuardedSource.statusCode,200,returnGuardedSource.body);
 
       const returnGuardedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/return-for-corrections",
