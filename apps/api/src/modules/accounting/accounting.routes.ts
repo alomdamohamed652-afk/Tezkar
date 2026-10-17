@@ -408,6 +408,36 @@ export async function accountingRoutes(app:FastifyInstance){
    const reportHash=createHash("sha256").update(reportJson).digest("hex");
    const snapshotVersion=await client.query("SELECT COALESCE(MAX(snapshot_no),0)+1 AS next_version FROM accounting_period_close_snapshots WHERE period_id=$1",[id]);
    await client.query("INSERT INTO accounting_period_close_snapshots(period_id,snapshot_no,report,report_json,report_sha256,created_by) VALUES($1,$2,$3::jsonb,$4,$5,$6)",[id,snapshotVersion.rows[0].next_version,reportJson,reportJson,reportHash,request.user!.userId]);
+
+   // A future quarter may already exist when this quarter is closed. Refresh its
+   // opening balances from this immutable snapshot, rather than only carrying
+   // balances when the future period is first created.
+   const nextPeriod=await client.query(
+    "SELECT id,status FROM accounting_periods WHERE period_start>$1::date ORDER BY period_start LIMIT 1 FOR UPDATE",
+    [end]
+   );
+   if(nextPeriod.rowCount){
+    if(nextPeriod.rows[0].status!=="OPEN")throw new AppError("NEXT_ACCOUNTING_PERIOD_LOCKED","الفترة المالية التالية ليست مفتوحة؛ راجع ترتيب الإقفال قبل ترحيل الأرصدة",409);
+    const nextPeriodId=nextPeriod.rows[0].id;
+    await client.query("DELETE FROM accounting_period_opening_balances WHERE period_id=$1 AND source_period_id<>$2",[nextPeriodId,id]);
+    for(const row of report.cashCustody??[]) await client.query(
+     "INSERT INTO accounting_period_opening_balances(period_id,source_period_id,balance_type,entity_key,balance) VALUES($1,$2,'CASH_CUSTODY',$3,$4::jsonb) ON CONFLICT(period_id,balance_type,entity_key) DO UPDATE SET source_period_id=EXCLUDED.source_period_id,balance=EXCLUDED.balance,created_at=now()",
+     [nextPeriodId,id,String(row.employee_id),JSON.stringify(row)]
+    );
+    for(const row of report.workerDues??[]) await client.query(
+     "INSERT INTO accounting_period_opening_balances(period_id,source_period_id,balance_type,entity_key,balance) VALUES($1,$2,'WORKER_DUES',$3,$4::jsonb) ON CONFLICT(period_id,balance_type,entity_key) DO UPDATE SET source_period_id=EXCLUDED.source_period_id,balance=EXCLUDED.balance,created_at=now()",
+     [nextPeriodId,id,String(row.employee_id),JSON.stringify(row)]
+    );
+    for(const row of report.advances??[]) if(Number(row.remaining)>0) await client.query(
+     "INSERT INTO accounting_period_opening_balances(period_id,source_period_id,balance_type,entity_key,balance) VALUES($1,$2,'ADVANCE',$3,$4::jsonb) ON CONFLICT(period_id,balance_type,entity_key) DO UPDATE SET source_period_id=EXCLUDED.source_period_id,balance=EXCLUDED.balance,created_at=now()",
+     [nextPeriodId,id,String(row.id),JSON.stringify(row)]
+    );
+    for(const row of report.inventory??[]) await client.query(
+     "INSERT INTO accounting_period_opening_balances(period_id,source_period_id,balance_type,entity_key,balance) VALUES($1,$2,'INVENTORY',$3,$4::jsonb) ON CONFLICT(period_id,balance_type,entity_key) DO UPDATE SET source_period_id=EXCLUDED.source_period_id,balance=EXCLUDED.balance,created_at=now()",
+     [nextPeriodId,id,[row.product_id,row.warehouse_id,row.location_id??''].join(':'),JSON.stringify(row)]
+    );
+    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"carry_forward",module:"finance",entityType:"accounting_period",entityId:nextPeriodId,afterData:{sourcePeriodId:id,openingBalanceTypes:["CASH_CUSTODY","WORKER_DUES","ADVANCE","INVENTORY"],trigger:"source_period_close"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   }
    const r=await client.query("UPDATE accounting_periods SET status='CLOSED',closed_by=$2,closed_at=now(),approved_by=$2,approved_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"close",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
