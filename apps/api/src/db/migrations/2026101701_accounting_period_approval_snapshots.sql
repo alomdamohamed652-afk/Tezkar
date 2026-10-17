@@ -53,15 +53,6 @@ CREATE TABLE IF NOT EXISTS accounting_period_opening_balances (
 CREATE INDEX IF NOT EXISTS idx_accounting_opening_balances_period
   ON accounting_period_opening_balances(period_id,balance_type);
 
--- Keep close evidence append-only. These simple rules are compatible with the
--- project's semicolon-based SQL migration runner (no procedural dollar blocks).
-DROP RULE IF EXISTS accounting_period_close_snapshots_no_update ON accounting_period_close_snapshots;
-CREATE RULE accounting_period_close_snapshots_no_update AS
-  ON UPDATE TO accounting_period_close_snapshots DO INSTEAD NOTHING;
-DROP RULE IF EXISTS accounting_period_close_snapshots_no_delete ON accounting_period_close_snapshots;
-CREATE RULE accounting_period_close_snapshots_no_delete AS
-  ON DELETE TO accounting_period_close_snapshots DO INSTEAD NOTHING;
-
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('finance.period_close.review','finance','period_close','review','all'),
  ('finance.period_close.approve','finance','period_close','approve','all'),
