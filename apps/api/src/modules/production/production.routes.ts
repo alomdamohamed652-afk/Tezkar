@@ -8,6 +8,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const createSchema = z.object({
   employeeId: z.string().uuid().optional(),
@@ -210,6 +211,7 @@ export async function productionRoutes(app: FastifyInstance) {
     }
 
     const row = await withTransaction(async (client) => {
+      await assertAccountingPeriodOpen(client, parsed.data.workDate);
       const worker = await isWorker(client, request.user!.userId);
       const employeeId = worker
         ? request.user!.employeeId
@@ -688,6 +690,7 @@ export async function productionRoutes(app: FastifyInstance) {
       if (current.status !== "PENDING") {
         throw new AppError("INVALID_STATUS", "لا يمكن اعتماد سجل الإنتاج إلا إذا كان في حالة انتظار", 409);
       }
+      await assertAccountingPeriodOpen(client, String(current.work_date).slice(0,10));
       if (current.submitted_by === request.user!.userId) {
         throw new AppError("SELF_APPROVAL", "لا يمكنك اعتماد سجل إنتاج قمت بتسجيله بنفسك", 409);
       }
@@ -883,6 +886,7 @@ export async function productionRoutes(app: FastifyInstance) {
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
       if(current.status!=="APPROVED")throw new AppError("REVERSAL_REQUIRES_APPROVED","التراجع العكسي متاح لسجل إنتاج معتمد فقط؛ السجلات المعلقة يمكن إلغاؤها مباشرة",409);
+      await assertAccountingPeriodOpen(client,String(current.work_date).slice(0,10));
       const paid=await client.query("SELECT 1 FROM worker_payment_allocations WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
       if(paid.rowCount)throw new AppError("PRODUCTION_ALREADY_PAID","لا يمكن عكس إنتاج تم تخصيص دفعة مالية له. عالج دفعة العامل أولًا حتى لا يتغير رصيد المستحقات بأثر رجعي.",409);
       const scrap=await client.query("SELECT 1 FROM production_scrap_records WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
@@ -1062,6 +1066,7 @@ export async function productionRoutes(app: FastifyInstance) {
     const p=adjustmentSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات البونص أو الخصم غير صحيحة",422);
     const row=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,p.data.adjustmentDate??new Date().toISOString().slice(0,10));
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
       if(p.data.shiftId){
@@ -1140,6 +1145,7 @@ export async function productionRoutes(app: FastifyInstance) {
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات صرف مستحقات العامل غير صحيحة",422);
     if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف المستحقات",409);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,parsed.data.settlementDate??new Date().toISOString().slice(0,10));
       const employee=await client.query("SELECT id,full_name FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
       const earnings=await client.query(`
