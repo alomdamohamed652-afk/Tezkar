@@ -395,6 +395,8 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن مراجعة فترة مقفولة",409);
+   const pendingProduction=await client.query("SELECT COUNT(*)::int AS count FROM production_entries WHERE status IN ('PENDING','SUBMITTED') AND work_date BETWEEN $1::date AND $2::date",[period.rows[0].period_start,period.rows[0].period_end]);
+   if(Number(pendingProduction.rows[0]?.count??0)>0)throw new AppError("PENDING_PRODUCTION_ENTRIES","لا يمكن مراجعة التصفية قبل اعتماد أو رفض كل سجلات الإنتاج المعلقة داخل الفترة",409);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
    if(expenses.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل المراجعة",409);
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
@@ -414,6 +416,8 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة مقفلة بالفعل",409);
+   const pendingProduction=await client.query("SELECT COUNT(*)::int AS count FROM production_entries WHERE status IN ('PENDING','SUBMITTED') AND work_date BETWEEN $1::date AND $2::date",[period.rows[0].period_start,period.rows[0].period_end]);
+   if(Number(pendingProduction.rows[0]?.count??0)>0)throw new AppError("PENDING_PRODUCTION_ENTRIES","لا يمكن إقفال الفترة قبل اعتماد أو رفض كل سجلات الإنتاج المعلقة داخل الفترة",409);
    if(!period.rows[0].reviewed_by||!period.rows[0].reviewed_at||!period.rows[0].closing_snapshot)throw new AppError("ACCOUNTING_PERIOD_REVIEW_REQUIRED","لازم المحاسب يراجع الفترة ويسجل تقرير المراجعة قبل اعتماد المدير",409);
    if(period.rows[0].reviewed_by===request.user!.userId)throw new AppError("SEPARATE_APPROVAL_REQUIRED","لازم اعتماد الإقفال يكون من مستخدم مختلف عن اللي راجع الفترة",409);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
