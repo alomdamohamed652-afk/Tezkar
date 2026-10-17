@@ -2,11 +2,18 @@
 -- Existing accounting_periods are extended in place; no parallel period system is created.
 
 ALTER TABLE accounting_periods
-  DROP CONSTRAINT IF EXISTS accounting_periods_status_check;
+  DROP CONSTRAINT IF EXISTS accounting_periods_status_check,
+  DROP CONSTRAINT IF EXISTS accounting_periods_check1,
+  DROP CONSTRAINT IF EXISTS accounting_periods_check_1;
 
 ALTER TABLE accounting_periods
   ADD CONSTRAINT accounting_periods_status_check
-  CHECK (status IN ('OPEN','UNDER_REVIEW','READY_FOR_APPROVAL','CLOSED'));
+  CHECK (status IN ('OPEN','UNDER_REVIEW','READY_FOR_APPROVAL','CLOSED')),
+  ADD CONSTRAINT accounting_periods_close_timestamp_check
+  CHECK (
+    (status='CLOSED' AND closed_at IS NOT NULL AND closed_by IS NOT NULL)
+    OR (status<>'CLOSED' AND closed_at IS NULL AND closed_by IS NULL)
+  );
 
 ALTER TABLE accounting_periods
   ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES users(id),
@@ -57,7 +64,7 @@ ON CONFLICT DO NOTHING;
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code IN ('admin','manager')
-  AND p.code IN ('finance.period_close.view','finance.period_close.create','finance.period_close.review','finance.period_close.approve','finance.period_close.reopen')
+  AND p.code IN ('finance.period_close.view','finance.period_close.create','finance.period_close.approve','finance.period_close.reopen')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version)
