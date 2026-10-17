@@ -420,7 +420,9 @@ export async function accountingRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   const r=await pool.query("SELECT p.id AS period_id,p.name,p.period_start,p.period_end,p.status,s.snapshot_no,s.report,s.report_json,s.report_sha256,s.created_by,s.created_at FROM accounting_periods p JOIN LATERAL (SELECT * FROM accounting_period_close_snapshots WHERE period_id=p.id ORDER BY snapshot_no DESC LIMIT 1) s ON TRUE WHERE p.id=$1",[id]);
   if(!r.rowCount)throw new AppError("ACCOUNTING_PERIOD_REPORT_NOT_FOUND","لا يوجد تقرير إقفال محفوظ لهذه الفترة",404);
-  return {data:r.rows[0]};
+  const report=r.rows[0];
+  const integrityVerified=createHash("sha256").update(String(report.report_json)).digest("hex")===report.report_sha256;
+  return {data:{...report,integrityVerified}};
  });
 
  app.post("/api/accounting/periods/:id/reopen",{preHandler:[authenticateRequest,requirePermission("finance.period_close.reopen")]},async(request)=>{
