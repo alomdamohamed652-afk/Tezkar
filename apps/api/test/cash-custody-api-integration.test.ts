@@ -887,6 +887,27 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.ok(openingBalances.rows.some((row:any)=>row.balance_type==="CASH_CUSTODY"),"cash custody balances must carry forward");
       const closeCollectionPeriod=await closePeriodWithApproval(collectionPeriod.json().data.id);
       assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
+
+      // Periods are often created in advance. Closing the source period later must
+      // refresh the already-existing next period's opening balances from its snapshot.
+      const lateCarrySource=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Late carry source",periodStart:"2199-05-01",periodEnd:"2199-05-31"}
+      });
+      assert.equal(lateCarrySource.statusCode,201,lateCarrySource.body);
+      const precreatedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Precreated next period",periodStart:"2199-06-01",periodEnd:"2199-06-30"}
+      });
+      assert.equal(precreatedNext.statusCode,201,precreatedNext.body);
+      const preCloseBalances=await apiPool.query("SELECT DISTINCT source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[precreatedNext.json().data.id]);
+      assert.ok(preCloseBalances.rows.every((row:any)=>row.source_period_id!==lateCarrySource.json().data.id),"before the May close, June must not point to May's snapshot");
+      const closeLateCarrySource=await closePeriodWithApproval(lateCarrySource.json().data.id);
+      assert.equal(closeLateCarrySource.statusCode,200,closeLateCarrySource.body);
+      const refreshedBalances=await apiPool.query("SELECT balance_type,source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[precreatedNext.json().data.id]);
+      assert.ok(refreshedBalances.rowCount>0,"closing a source period must populate the already-created next period");
+      assert.ok(refreshedBalances.rows.every((row:any)=>row.source_period_id===lateCarrySource.json().data.id),"next-period balances must point to the latest closed source period");
+
       const closedPeriodCollectionRetry=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
       });
