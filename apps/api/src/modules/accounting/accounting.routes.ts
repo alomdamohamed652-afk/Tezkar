@@ -431,6 +431,26 @@ export async function accountingRoutes(app:FastifyInstance){
  });
 
 
+ app.post("/api/accounting/periods/:id/reopen",{preHandler:[authenticateRequest,requirePermission("finance.period_close.create")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  const payload=z.object({reason:z.string().trim().min(8).max(1000)}).safeParse(request.body);
+  if(!payload.success)throw new AppError("REOPEN_REASON_REQUIRED","اكتب سببًا واضحًا لإعادة فتح الفترة (8 أحرف على الأقل)",422);
+  if(!request.user!.roleCodes.some(code=>["ADMIN","ADMINISTRATOR","SUPER_ADMIN","MANAGER","GENERAL_MANAGER","FACTORY_MANAGER","OWNER","DIRECTOR"].includes(code.toUpperCase())))throw new AppError("MANAGER_APPROVAL_REQUIRED","إعادة فتح الفترة متاحة للمدير أو المسؤول الأعلى فقط",403);
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="CLOSED")throw new AppError("ACCOUNTING_PERIOD_NOT_CLOSED","الفترة ليست مقفولة",409);
+   const dependents=await client.query("SELECT id,name FROM accounting_periods WHERE rollover_source_period_id=$1 LIMIT 1",[id]);
+   if(dependents.rowCount)throw new AppError("PERIOD_HAS_ROLLOVER_DEPENDENTS","تم ترحيل رصيد هذه الفترة إلى فترة لاحقة؛ اقفل أو عالج الفترات اللاحقة أولًا قبل إعادة فتحها",409);
+   const updated=await client.query(`UPDATE accounting_periods
+     SET status='OPEN',closed_by=NULL,closed_at=NULL,reviewed_by=NULL,reviewed_at=NULL,closing_snapshot=NULL,
+         last_reopened_by=$2,last_reopened_at=now(),last_reopen_reason=$3
+     WHERE id=$1 RETURNING id,name,status,last_reopened_by,last_reopened_at,last_reopen_reason`,
+     [id,request.user!.userId,payload.data.reason]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reopen",module:"finance",entityType:"accounting_period",entityId:id,beforeData:{status:"CLOSED",closedAt:period.rows[0].closed_at},afterData:updated.rows[0],metadata:{reason:payload.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return updated.rows[0];
+  })};
+ });
  app.get("/api/accounting/orders-dashboard",{preHandler:[authenticateRequest,requirePermission("finance.profitability.view")]},async(request)=>{
   const q=z.object({status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),periodId:z.string().uuid().optional()}).safeParse(request.query);
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الحالة أو الفترة المالية غير صحيح",422);
