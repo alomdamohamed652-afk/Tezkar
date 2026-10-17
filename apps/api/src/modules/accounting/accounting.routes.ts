@@ -414,7 +414,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const carried=await client.query("SELECT 1 FROM accounting_period_opening_balances WHERE source_period_id=$1 LIMIT 1",[id]);
    if(carried.rowCount)throw new AppError("PERIOD_ALREADY_CARRIED_FORWARD","لا يمكن إعادة فتح الفترة بعد ترحيل أرصدتها؛ يلزم إجراء تصحيح محاسبي مستقل للفترة اللاحقة",409);
    const before=period.rows[0];
-   const r=await client.query("UPDATE accounting_periods SET status='OPEN',closed_by=NULL,closed_at=NULL,reopened_by=$2,reopened_at=now(),reopen_reason=$3 WHERE id=$1 RETURNING *",[id,request.user!.userId,p.data.reason]);
+   const r=await client.query("UPDATE accounting_periods SET status='OPEN',closed_by=NULL,closed_at=NULL,reviewed_by=NULL,reviewed_at=NULL,approved_by=NULL,approved_at=NULL,reopened_by=$2,reopened_at=now(),reopen_reason=$3 WHERE id=$1 RETURNING *",[id,request.user!.userId,p.data.reason]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reopen",module:"finance",entityType:"accounting_period",entityId:id,beforeData:before,afterData:{...r.rows[0],reopenReason:p.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   })};
