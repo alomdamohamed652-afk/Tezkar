@@ -694,12 +694,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(savedReport.json().data.snapshot_no,1);
       assert.ok(Array.isArray(savedReport.json().data.report.cashCustody));
       const blockedSnapshotUpdate=await apiPool.query(
-        "UPDATE accounting_period_close_snapshots SET report_json='{}' WHERE period_id=$1 AND snapshot_no=1 RETURNING id",
+        "UPDATE accounting_period_close_snapshots SET report_json='{}' WHERE period_id=$1 AND snapshot_no=1",
         [period.json().data.id]
       );
       assert.equal(blockedSnapshotUpdate.rowCount,0,"saved close snapshots must reject UPDATE");
       const blockedSnapshotDelete=await apiPool.query(
-        "DELETE FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1 RETURNING id",
+        "DELETE FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1",
         [period.json().data.id]
       );
       assert.equal(blockedSnapshotDelete.rowCount,0,"saved close snapshots must reject DELETE");
