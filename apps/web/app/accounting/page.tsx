@@ -11,7 +11,7 @@ type Profit = {
   accruedRevenue?: number; revenue: number; expenses: number; administrativeAllocation?: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
 };
 type Employee = {id:string;full_name:string;code:string};
-type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"CLOSED";allocation_count:number;allocated_amount:number;reviewed_by?:string|null;reviewed_at?:string|null;closed_by?:string|null;closed_at?:string|null;opening_balance_count?:number;closing_snapshot?:{financialSummary?:{revenue?:number;expenses?:number;administrative_expenses?:number}}|null};
+type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"CLOSED";allocation_count:number;allocated_amount:number;reviewed_by?:string|null;reviewed_at?:string|null;closed_by?:string|null;closed_at?:string|null;opening_balance_count?:number;closing_snapshot?:{financialSummary?:{revenue?:number;expenses?:number;administrative_expenses?:number};custody?:Array<{employee_id:string;full_name:string;balance:number}>;unpaidWorkerEarnings?:Array<{employee_id:string;full_name:string;amount:number}>;outstandingAdvances?:Array<{advance_id:string;full_name:string;code:string;outstanding:number}>}|null};
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodRollover={id:string;balance_type:"CASH_CUSTODY"|"WORKER_EARNINGS"|"ADVANCE"|"INVENTORY";reference_id:string;label:string;amount:number;source_period_name:string;metadata?:Record<string,unknown>};
@@ -375,11 +375,20 @@ export default function AccountingPage() {
         </div>}
         {periodDetail.period.reviewed_at&&<div className="form-hint">تمت مراجعة الفترة بتاريخ {new Date(periodDetail.period.reviewed_at).toLocaleString("ar-EG")}. الإقفال النهائي يتطلب دخول المدير من حساب مختلف.</div>}
         {periodDetail.period.status==="CLOSED"&&<div className="form-hint">الفترة مقفولة بتاريخ {periodDetail.period.closed_at?new Date(periodDetail.period.closed_at).toLocaleString("ar-EG"):"—"}، والتقرير محفوظ للرجوع إليه.</div>}
+        {periodDetail.period.closing_snapshot&&<><h3 className="card-title" style={{marginTop:20}}>ملخص المراجعة المحفوظ للفترة</h3>
+         <div className="detail-grid finance-detail">
+          <div><b>إيرادات الفترة</b><span>{n(periodDetail.period.closing_snapshot.financialSummary?.revenue||0)}</span></div>
+          <div><b>مصروفات الفترة</b><span>{n(periodDetail.period.closing_snapshot.financialSummary?.expenses||0)}</span></div>
+          <div><b>أرصدة العهد</b><span>{n((periodDetail.period.closing_snapshot.custody||[]).reduce((sum,x)=>sum+Number(x.balance||0),0))}</span></div>
+          <div><b>مستحقات العمال</b><span>{n((periodDetail.period.closing_snapshot.unpaidWorkerEarnings||[]).reduce((sum,x)=>sum+Number(x.amount||0),0))}</span></div>
+          <div><b>السلف القائمة</b><span>{n((periodDetail.period.closing_snapshot.outstandingAdvances||[]).reduce((sum,x)=>sum+Number(x.outstanding||0),0))}</span></div>
+         </div>
+         <div className="form-hint">هذا ملخص المراجعة عند اعتماد المحاسب، ويظل محفوظًا كتقرير تاريخي حتى بعد بدء الفترة التالية.</div></>}
         <h3 className="card-title" style={{marginTop:20}}>الأرصدة الافتتاحية المرحلة لهذه الفترة</h3>
         <div className="form-hint">هذه الأرصدة سجل توثيقي ولا تنشئ قبضًا أو صرفًا جديدًا ولا تكرر المستحقات أو السلف.</div>
         <div className="table-wrap"><table><thead><tr><th>نوع الرصيد</th><th>البيان</th><th>الفترة المصدر</th><th>القيمة</th></tr></thead><tbody>
          {periodDetail.openingBalances.map(b=><tr key={b.id}><td>{({CASH_CUSTODY:"رصيد عهدة",WORKER_EARNINGS:"مستحقات عامل",ADVANCE:"سلفة قائمة",INVENTORY:"مخزون"} as Record<string,string>)[b.balance_type]||b.balance_type}</td><td>{b.label}</td><td>{b.source_period_name}</td><td className="money">{n(b.amount)}</td></tr>)}
-         {!periodDetail.openingBalances.length&&<tr><td colSpan={4}>لا توجد أرصدة مرحلة لهذه الفترة. يتم الربط تلقائيًا إذا بدأت في اليوم التالي لنهاية فترة مقفولة.</td></tr>}
+         {!periodDetail.openingBalances.length&&<tr><td colSpan={4}>لا توجد أرصدة مرحلة لهذه الفترة. يربط النظام الأرصدة غير المرحلة من آخر فترة مقفولة عند إنشاء الفترة التالية.</td></tr>}
         </tbody></table></div>
        </>}
       </div>
