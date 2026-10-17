@@ -236,7 +236,12 @@ export async function accountingRoutes(app:FastifyInstance){
    await client.query(`UPDATE accounting_period_rollovers b SET target_period_id=$1
      FROM accounting_periods source
      WHERE b.source_period_id=source.id AND b.target_period_id IS NULL
-       AND source.status='CLOSED' AND source.period_end + 1 = $2::date`,[r.rows[0].id,p.data.periodStart]);
+       AND source.status='CLOSED' AND source.id=(
+         SELECT p2.id FROM accounting_periods p2
+         WHERE p2.status='CLOSED' AND p2.period_end < $2::date
+           AND EXISTS (SELECT 1 FROM accounting_period_rollovers pending WHERE pending.source_period_id=p2.id AND pending.target_period_id IS NULL)
+         ORDER BY p2.period_end DESC,p2.created_at DESC LIMIT 1
+       )`,[r.rows[0].id,p.data.periodStart]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"finance",entityType:"accounting_period",entityId:r.rows[0].id,afterData:r.rows[0],metadata:{openingBalancesAttached:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   });
