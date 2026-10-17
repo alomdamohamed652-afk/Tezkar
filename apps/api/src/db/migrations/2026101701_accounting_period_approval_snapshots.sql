@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS accounting_period_close_snapshots (
   period_id UUID NOT NULL REFERENCES accounting_periods(id) ON DELETE RESTRICT,
   snapshot_no INTEGER NOT NULL DEFAULT 1 CHECK (snapshot_no > 0),
   report JSONB NOT NULL,
+  report_json TEXT NOT NULL,
   report_sha256 TEXT NOT NULL,
   created_by UUID NOT NULL REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
