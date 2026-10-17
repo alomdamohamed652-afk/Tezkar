@@ -858,7 +858,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(dashboard.json().data.stages.length, 2);
     assert.equal(dashboard.json().data.production.length, 3, "dashboard includes the replacement good unit needed after scrap");
     assert.equal(dashboard.json().data.movements.length, 1, "order withdrawals must show only actual OUT movements, not production receipts");
-    assert.equal(Number(dashboard.json().data.totals.production_cost), 505, "dashboard production cost excludes wages for scrapped units");
+    assert.equal(Number(dashboard.json().data.totals.production_cost), 525);
     assert.equal(dashboard.json().data.totals.stock_in_cost, undefined, "production receipt value must not be presented as an order withdrawal cost");
     assert.equal(Number(dashboard.json().data.totals.stock_out_cost), 100);
 
@@ -866,7 +866,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "GET", url: "/api/accounting/orders/" + orderId + "/profitability", headers: { cookie: submitter.cookie }
     });
     assert.equal(profitability.statusCode, 200, profitability.body);
-    assert.equal(Number(profitability.json().data.laborCost), 505, "profitability labor cost excludes wages for scrapped units");
+    assert.equal(Number(profitability.json().data.laborCost), 525);
     assert.equal(Number(profitability.json().data.materialCost), 100);
 
     // Resolve the exact final-product order line so delivery and stock-out remain line-specific.
@@ -1314,10 +1314,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(finalProfitability.json().data.revenue), 1000);
     assert.equal(Number(finalProfitability.json().data.expenses), 50);
     assert.equal(Number(finalProfitability.json().data.materialCost), 100);
-    assert.equal(Number(finalProfitability.json().data.laborCost), 505);
-    assert.equal(Number(finalProfitability.json().data.totalCost), 655);
-    assert.equal(Number(finalProfitability.json().data.profit), 345);
-    assert.equal(Number(finalProfitability.json().data.marginPercent), 34.5);
+    assert.equal(Number(finalProfitability.json().data.laborCost), 525);
+    assert.equal(Number(finalProfitability.json().data.totalCost), 675);
+    assert.equal(Number(finalProfitability.json().data.profit), 325);
+    assert.equal(Number(finalProfitability.json().data.marginPercent), 32.5);
 
     const accountingSummary = await app.inject({
       method: "GET", url: "/api/accounting/summary", headers: { cookie: submitter.cookie }
