@@ -235,8 +235,7 @@ export async function accountingRoutes(app:FastifyInstance){
        -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
        -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id WHERE wp.employee_id=e.id AND s.id IS NULL AND wp.created_at::date<=$1::date),0)
       ) AS amount
-     FROM employees e WHERE e.is_active=TRUE
-     HAVING GREATEST(0,
+     FROM employees e WHERE e.is_active=TRUE AND GREATEST(0,
        COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED' AND p.work_date<=$1::date),0)
        -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id AND s.settlement_date<=$1::date),0)
        -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id WHERE wp.employee_id=e.id AND s.id IS NULL AND wp.created_at::date<=$1::date),0)
@@ -301,6 +300,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
+   if(period.rows[0].review_status==="SUBMITTED")throw new AppError("ACCOUNTING_PERIOD_UNDER_REVIEW","الفترة تحت المراجعة؛ اطلب إرجاعها قبل تعديل التوزيع",409);
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
    if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
    const orders=await client.query(`SELECT o.id,
@@ -349,6 +349,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","لا يمكن تعديل فترة مقفلة",409);
+   if(period.rows[0].review_status==="SUBMITTED")throw new AppError("ACCOUNTING_PERIOD_UNDER_REVIEW","الفترة تحت المراجعة؛ اطلب إرجاعها قبل تعديل التوزيع",409);
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2",[period.rows[0].period_start,period.rows[0].period_end]);
    const sums=new Map<string,number>();
    for(const item of p.data.allocations)sums.set(item.expenseId,(sums.get(item.expenseId)||0)+toMinorUnits(item.amount));
@@ -395,6 +396,19 @@ export async function accountingRoutes(app:FastifyInstance){
    const report={...snapshot.report,periodId:id,periodName:period.rows[0].name,periodStart:period.rows[0].period_start,administrativeExpenseCount:expenses.rowCount,administrativeExpenseTotal:expenses.rows.reduce((sum:number,e:any)=>sum+Number(e.amount||0),0),allocationTotal:expenses.rows.reduce((sum:number,e:any)=>sum+Number(e.allocated||0),0),reviewNotes:noteSchema.data.notes??null};
    const updated=await client.query("UPDATE accounting_periods SET review_status='SUBMITTED',review_submitted_by=$2,review_submitted_at=now(),review_notes=$3,close_report=$4::jsonb,closing_balances=$5::jsonb WHERE id=$1 RETURNING *",[id,request.user!.userId,noteSchema.data.notes??null,JSON.stringify(report),JSON.stringify(snapshot.balances)]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"submit_for_review",module:"finance",entityType:"accounting_period",entityId:id,afterData:{reviewStatus:updated.rows[0].review_status,report,balances:snapshot.balances},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return updated.rows[0];
+  })};
+ });
+ app.post("/api/accounting/periods/:id/request-revision",{preHandler:[authenticateRequest,requirePermission("finance.period_close.approve")]},async(request)=>{
+  const id=(request.params as {id:string}).id;
+  const p=z.object({notes:z.string().trim().min(3).max(1000)}).safeParse(request.body);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","سبب إرجاع التصفية مطلوب",422);
+  return {data:await withTransaction(async client=>{
+   const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
+   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(period.rows[0].status!=="OPEN"||period.rows[0].review_status!=="SUBMITTED")throw new AppError("PERIOD_NOT_PENDING_REVIEW","الفترة ليست بانتظار اعتماد المدير",409);
+   const updated=await client.query("UPDATE accounting_periods SET review_status='DRAFT',review_submitted_by=NULL,review_submitted_at=NULL,review_notes=$2,close_report='{}'::jsonb,closing_balances='[]'::jsonb WHERE id=$1 RETURNING *",[id,p.data.notes]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"request_revision",module:"finance",entityType:"accounting_period",entityId:id,beforeData:{reviewStatus:period.rows[0].review_status},afterData:{reviewStatus:updated.rows[0].review_status,notes:p.data.notes},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   })};
  });
