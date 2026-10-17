@@ -674,6 +674,10 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
+      const managerCannotReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/submit-review",headers:{cookie:managerCookie},payload:{}});
+      assert.equal(managerCannotReview.statusCode,403,managerCannotReview.body,"manager must not substitute for accountant review");
+      const closeWithoutReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}});
+      assert.equal(closeWithoutReview.statusCode,409,closeWithoutReview.body,"manager cannot close before accountant review");
       const closedPeriod=await closePeriodWithApproval(period.json().data.id);
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
