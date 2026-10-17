@@ -287,8 +287,15 @@ export async function accountingRoutes(app:FastifyInstance){
     const alreadyRolled=await client.query("SELECT id,name FROM accounting_periods WHERE rollover_source_period_id=$1 LIMIT 1",[prior.rows[0].id]);
     if(alreadyRolled.rowCount)throw new AppError("PERIOD_ALREADY_ROLLED_FORWARD","تم ترحيل هذه الفترة إلى فترة لاحقة بالفعل؛ اقفل الفترة اللاحقة قبل إنشاء فترة أخرى",409);
    }
-   const openingSnapshot=prior.rows[0]?.closing_snapshot??{};
+   let openingSnapshot:Record<string,unknown>={};
    const sourcePeriodId=prior.rows[0]?.id??null;
+   if(prior.rows[0]){
+    const asOf=new Date(p.data.periodStart+"T00:00:00.000Z");
+    asOf.setUTCDate(asOf.getUTCDate()-1);
+    const asOfDate=asOf.toISOString().slice(0,10);
+    const liveBalances=await buildFinancialCloseSnapshot(client,{id:prior.rows[0].id,name:prior.rows[0].name??"رصيد افتتاحي مرحّل",period_start:asOfDate,period_end:asOfDate});
+    openingSnapshot={...liveBalances,snapshotPurpose:"OPENING_BALANCE",asOfDate,period:{id:prior.rows[0].id,name:prior.rows[0].name,start:prior.rows[0].period_start,end:prior.rows[0].period_end},periodTotals:undefined};
+   }
    const r=await client.query(`INSERT INTO accounting_periods(name,period_start,period_end,notes,created_by,opening_balance_snapshot,rollover_source_period_id)
      VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING *`,
      [p.data.name,p.data.periodStart,p.data.periodEnd,p.data.notes??null,request.user!.userId,JSON.stringify(openingSnapshot),sourcePeriodId]);
