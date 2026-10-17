@@ -5,7 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
-import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
+import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculatePayrollDeduction } from "./payroll-calculation.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
@@ -132,7 +132,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "حدد شهرًا صحيحًا بصيغة YYYY-MM", 422);
     const month = parsed.data.month + "-01";
     const result = await withTransaction(async client => {
-      await assertAccountingPeriodOpen(client,month);
+      await assertAccountingMonthOpen(client,month);
       const periodResult = await client.query("INSERT INTO payroll_periods(period_month,generated_by) VALUES($1::date,$2) ON CONFLICT(period_month) DO UPDATE SET period_month=EXCLUDED.period_month RETURNING *", [month,request.user!.userId]);
       const period = periodResult.rows[0];
       if (period.status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة معتمدة أو مغلقة ولا يمكن إعادة توليدها", 409);
@@ -232,7 +232,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (!before.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
       if (before.rows[0].period_status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "لا يمكن تعديل مسير راتب معتمد", 409);
       const accountingDate=before.rows[0].accounting_period_month instanceof Date?before.rows[0].accounting_period_month.toISOString().slice(0,10):String(before.rows[0].accounting_period_month).slice(0,10);
-      await assertAccountingPeriodOpen(client,accountingDate);
+      await assertAccountingMonthOpen(client,accountingDate);
       const bonus = parsed.data.bonusAmount ?? Number(before.rows[0].bonus_amount);
       const deductionMode = parsed.data.deductionMode ?? before.rows[0].deduction_mode ?? "FIXED";
       const deductionBasis = parsed.data.deductionBasis ?? before.rows[0].deduction_basis ?? "BASE_SALARY";
