@@ -57,7 +57,9 @@ export async function attendanceRoutes(app:FastifyInstance){
   const result=await withTransaction(async client=>{
    if(!(await client.query("SELECT id FROM employees WHERE id=$1",[id])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
    for(const d of p.data.days)await client.query(`INSERT INTO attendance_weekly_schedule(employee_id,weekday,starts_at,ends_at,is_day_off) VALUES($1,$2,$3,$4,$5) ON CONFLICT(employee_id,weekday) DO UPDATE SET starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,is_day_off=EXCLUDED.is_day_off,updated_at=now()`,[id,d.weekday,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff]);
-   return (await client.query("SELECT weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule WHERE employee_id=$1 ORDER BY weekday",[id])).rows;
+   const saved=(await client.query("SELECT weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule WHERE employee_id=$1 ORDER BY weekday",[id])).rows;
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"attendance",entityType:"attendance_weekly_schedule",entityId:id,afterData:saved,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return saved;
   });return {data:result};
  });
  app.post("/api/attendance/exceptions",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async request=>{
