@@ -80,7 +80,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    for(const r of rows){
     if((await client.query("SELECT id FROM attendance_punches WHERE external_key=$1",[r.key])).rowCount){duplicates++;continue;}
     const mapping=await client.query("SELECT employee_id FROM attendance_employee_settings WHERE device_code=$1",[r.code]);const employeeId=mapping.rows[0]?.employee_id??null;
-    const near=await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString()]);
+    const near=await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString(),r.state]);
     const saved=await client.query(`INSERT INTO attendance_punches(batch_id,employee_id,device_code,punch_at,status,verify_method,location_id,id_number,card_no,suspicious,review_status,duplicate_of,raw_record,external_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $10 OR $2 IS NULL THEN 'PENDING' ELSE 'AUTO_ACCEPTED' END,$11,$12::jsonb,$13) ON CONFLICT(external_key) DO NOTHING RETURNING id`,[batch.id,employeeId,r.code,r.at.toISOString(),r.state,r.method,r.location||null,r.idNumber||null,r.card||null,Boolean(near.rowCount),near.rows[0]?.id??null,JSON.stringify(r.raw),r.key]);
     if(!saved.rowCount){duplicates++;continue;}inserted++;if(near.rowCount)suspicious++;if(!employeeId)unknown++;
    }
