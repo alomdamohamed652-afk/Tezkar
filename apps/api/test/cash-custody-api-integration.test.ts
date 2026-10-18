@@ -972,12 +972,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       assert.equal(guardedNext.statusCode,201,guardedNext.body);
       const submitGuardedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/submit-review",
-        headers:{cookie:managerCookie},payload:{}
+        headers:{cookie:accountantCookie},payload:{}
       });
       assert.equal(submitGuardedNext.statusCode,200,submitGuardedNext.body);
       const approveGuardedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/approve-review",
-        headers:{cookie:managerCookie},payload:{}
+        headers:{cookie:accountantCookie},payload:{}
       });
       assert.equal(approveGuardedNext.statusCode,200,approveGuardedNext.body);
 
@@ -988,13 +988,13 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       // was rejected, so return the earlier period to OPEN before retrying.
       const returnGuardedSource=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedSource.json().data.id+"/return-for-corrections",
-        headers:{cookie:managerCookie},payload:{reason:"إعادة الفترة الأقدم بعد رفض الإقفال"}
+        headers:{cookie:accountantCookie},payload:{reason:"إعادة الفترة الأقدم بعد رفض الإقفال"}
       });
       assert.equal(returnGuardedSource.statusCode,200,returnGuardedSource.body);
 
       const returnGuardedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/return-for-corrections",
-        headers:{cookie:managerCookie},payload:{reason:"إعادة الفترة للاختبار قبل إقفال الفترة السابقة"}
+        headers:{cookie:accountantCookie},payload:{reason:"إعادة الفترة للاختبار قبل إقفال الفترة السابقة"}
       });
       assert.equal(returnGuardedNext.statusCode,200,returnGuardedNext.body);
       const closeGuardedSource=await closePeriodWithApproval(guardedSource.json().data.id);
@@ -1002,12 +1002,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       const resubmitGuardedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/submit-review",
-        headers:{cookie:managerCookie},payload:{}
+        headers:{cookie:accountantCookie},payload:{}
       });
       assert.equal(resubmitGuardedNext.statusCode,200,resubmitGuardedNext.body);
       const reapproveGuardedNext=await app.inject({
         method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/approve-review",
-        headers:{cookie:managerCookie},payload:{}
+        headers:{cookie:accountantCookie},payload:{}
       });
       assert.equal(reapproveGuardedNext.statusCode,200,reapproveGuardedNext.body);
 
