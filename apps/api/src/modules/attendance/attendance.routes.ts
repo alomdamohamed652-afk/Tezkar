@@ -81,8 +81,17 @@ export async function attendanceRoutes(app:FastifyInstance){
     if((await client.query("SELECT id FROM attendance_punches WHERE external_key=$1",[r.key])).rowCount){duplicates++;continue;}
     const mapping=await client.query("SELECT employee_id FROM attendance_employee_settings WHERE device_code=$1",[r.code]);const employeeId=mapping.rows[0]?.employee_id??null;
     const near=await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString(),r.state]);
-    const saved=await client.query(`INSERT INTO attendance_punches(batch_id,employee_id,device_code,punch_at,status,verify_method,location_id,id_number,card_no,suspicious,review_status,duplicate_of,raw_record,external_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $10 OR $2 IS NULL THEN 'PENDING' ELSE 'AUTO_ACCEPTED' END,$11,$12::jsonb,$13) ON CONFLICT(external_key) DO NOTHING RETURNING id`,[batch.id,employeeId,r.code,r.at.toISOString(),r.state,r.method,r.location||null,r.idNumber||null,r.card||null,Boolean(near.rowCount),near.rows[0]?.id??null,JSON.stringify(r.raw),r.key]);
-    if(!saved.rowCount){duplicates++;continue;}inserted++;if(near.rowCount)suspicious++;if(!employeeId)unknown++;
+    // A second same-type punch on the same Cairo calendar date is ambiguous even when hours apart
+    // (for example IN at 15:00 and IN at 23:00 on a 15:00–23:00 shift). Preserve both and require review.
+    const repeatedSameDay = ["IN","OUT","OVERTIME_IN","OVERTIME_OUT"].includes(r.state)
+      ? await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND (punch_at AT TIME ZONE 'Africa/Cairo')::date = ($2::timestamptz AT TIME ZONE 'Africa/Cairo')::date",[r.code,r.at.toISOString(),r.state])
+      : { rows: [], rowCount: 0 };
+    if(repeatedSameDay.rowCount){
+      await client.query("UPDATE attendance_punches SET suspicious=TRUE,review_status='PENDING' WHERE id = ANY($1::uuid[]) AND review_status <> 'REJECTED'",[repeatedSameDay.rows.map((row:{id:string})=>row.id)]);
+    }
+    const needsReview = Boolean(near.rowCount || repeatedSameDay.rowCount || employeeId === null);
+    const saved=await client.query(`INSERT INTO attendance_punches(batch_id,employee_id,device_code,punch_at,status,verify_method,location_id,id_number,card_no,suspicious,review_status,duplicate_of,raw_record,external_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $10 THEN 'PENDING' ELSE 'AUTO_ACCEPTED' END,$11,$12::jsonb,$13) ON CONFLICT(external_key) DO NOTHING RETURNING id`,[batch.id,employeeId,r.code,r.at.toISOString(),r.state,r.method,r.location||null,r.idNumber||null,r.card||null,needsReview,near.rows[0]?.id??null,JSON.stringify(r.raw),r.key]);
+    if(!saved.rowCount){duplicates++;continue;}inserted++;if(needsReview)suspicious++;if(!employeeId)unknown++;
    }
    await client.query("UPDATE attendance_import_batches SET inserted_rows=$2,duplicate_rows=$3,suspicious_rows=$4,unknown_rows=$5 WHERE id=$1",[batch.id,inserted,duplicates,suspicious,unknown]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"import",module:"attendance",entityType:"attendance_import_batch",entityId:batch.id,afterData:{sourceName:p.data.sourceName,totalRows:rows.length,inserted,duplicates,suspicious,unknown},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
