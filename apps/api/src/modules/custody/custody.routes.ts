@@ -7,6 +7,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -80,7 +81,7 @@ const cashSchema=z.object({
 async function assertPostingDateOpen(client:import("pg").PoolClient,date:string){
   // Share-lock the period row so period close waits for an in-flight posting.
   const period=await client.query("SELECT id,name,status FROM accounting_periods WHERE $1::date BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date]);
-  if(period.rows[0]?.status==="CLOSED")throw new AppError("ACCOUNTING_PERIOD_CLOSED","التاريخ يقع داخل فترة مالية مقفولة؛ لا يمكن تسجيل حركة عهدة أو تحصيل عادي عليها. استخدم إجراء التصحيح المعتمد.",409);
+  if(period.rows[0]&&period.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة المالية ليست مفتوحة؛ لا يمكن تسجيل حركة عهدة أو تحصيل عادي عليها. استخدم إجراء التصحيح المعتمد.",409);
 }
 
 async function cashAccess(client:import("pg").PoolClient,userId:string,employeeId:string|undefined,permissionCode:"cash_custody.view"|"cash_custody.create"){
@@ -172,6 +173,9 @@ export async function custodyRoutes(app:FastifyInstance){
     if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
     const total=p.data.quantity*p.data.unitValue;
     const r=await withTransaction(async client=>{
+      // Physical custody creation changes employee-held asset balances; serialize it
+      // against accounting review/close just like other dated custody movements.
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const x=await client.query(
         "INSERT INTO employee_custodies(employee_id,custody_type,description,quantity,unit_value,total_value,due_date,created_by,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
         [p.data.employeeId,p.data.custodyType,p.data.description,p.data.quantity,p.data.unitValue,total,p.data.dueDate??null,request.user!.userId,p.data.notes??null]
@@ -215,6 +219,7 @@ export async function custodyRoutes(app:FastifyInstance){
   app.post("/api/custodies/:id/transfer",{preHandler:[authenticateRequest,requirePermission("custody.transfer")]},async(request,reply)=>{
     const id=(request.params as {id:string}).id;const p=transferCustodySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحويل العهدة غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
       if(!["ACTIVE","PARTIAL_RETURNED"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","لا يمكن تحويل عهدة مغلقة أو تمت تسويتها",409);
       const sums=await client.query("SELECT COALESCE(SUM(returned_quantity+lost_quantity),0) AS accounted FROM custody_settlements WHERE custody_id=$1",[id]);const remaining=Number(custody.rows[0].quantity)-Number(sums.rows[0].accounted||0);
@@ -233,6 +238,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const id=(request.params as {id:string}).id;const p=settleSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تسوية العهدة غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);
       if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
       if(["RETURNED","CANCELLED","DAMAGED","LOST"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","العهدة مغلقة بالفعل",409);

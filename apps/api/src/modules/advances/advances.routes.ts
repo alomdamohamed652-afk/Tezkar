@@ -6,6 +6,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -164,6 +165,7 @@ export async function advanceRoutes(app:FastifyInstance){
   app.post("/api/advances/:id/pay",{preHandler:[authenticateRequest,requirePermission("advances.pay")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const row=await withTransaction(async(client)=>{
+      await assertAccountingPeriodOpen(client);
       const current=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
       if(!current.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
       if(current.rows[0].status!=="APPROVED")throw new AppError("INVALID_STATUS","يجب اعتماد السلفة قبل صرفها",409);
@@ -194,6 +196,7 @@ export async function advanceRoutes(app:FastifyInstance){
   app.post("/api/advances/:id/repayments",{preHandler:[authenticateRequest,requirePermission("advances.repay")]},async(request,reply)=>{
     const id=(request.params as {id:string}).id;const p=repaySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات دفعة سداد السلفة غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,p.data.paymentDate??new Date().toISOString().slice(0,10));
       const advance=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
       if(!advance.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
       if(advance.rows[0].status!=="PAID")throw new AppError("INVALID_STATUS","لا يمكن تسجيل السداد قبل صرف السلفة",409);

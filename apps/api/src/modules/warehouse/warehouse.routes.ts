@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { consumeInventoryLots, adjustStockValueAfterLotConsumption, createInventoryLot } from "./inventory-lots.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const warehouseSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -256,6 +257,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const parsed=movementSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات حركة المخزن غير صحيحة",422);
     const row=await withTransaction(async(client)=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       // Serialize stock mutations for the same product. This prevents concurrent first-time balance inserts and opposing transfers from locking balance rows in opposite orders.
       const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير متابع مخزنيًا",422);

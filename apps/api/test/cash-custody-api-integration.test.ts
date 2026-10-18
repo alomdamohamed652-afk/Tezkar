@@ -115,8 +115,9 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         [manager.id]
       );
       await apiPool.query(
-        "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' ON CONFLICT DO NOTHING"
+        "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager' AND p.code<>'finance.period_close.review' ON CONFLICT DO NOTHING"
       );
+      await apiPool.query("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='manager') AND permission_id=(SELECT id FROM permissions WHERE code='finance.period_close.review')");
       // Keep the granted all-scope permissions but remove the finance role name.
       // Access scope must follow RBAC permissions, not a hard-coded list of role codes.
       await apiPool.query("UPDATE roles SET code='cash_supervisor_test' WHERE code='manager'");
@@ -155,6 +156,15 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const advanceCreateScope=(await apiPool.query("SELECT scope FROM permissions WHERE code='advances.create'")).rows[0];
       assert.equal(advanceCreateScope?.scope,"all","advance creation must be an all-scope permission for administrative roles");
 
+      const accountantEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Period Accountant') RETURNING id")).rows[0];
+      const accountantUsername="periodacct-"+randomBytes(4).toString("hex");
+      const accountantPassword="Test-Period-Accountant-2026!";
+      const accountant=(await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        [accountantUsername,hashPassword(accountantPassword),accountantEmployee.id]
+      )).rows[0];
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='accountant' ON CONFLICT DO NOTHING",[accountant.id]);
+
       async function login(username: string, password: string) {
         const response = await app.inject({
           method: "POST", url: "/api/auth/login", payload: { username, password }
@@ -169,6 +179,16 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       const managerCookie = await login(managerUsername, managerPassword);
       const unprivilegedCookie = await login(unprivilegedUsername, unprivilegedPassword);
       const ownScopeCookie = await login(ownScopeUsername, ownScopePassword);
+      const accountantCookie = await login(accountantUsername, accountantPassword);
+
+      async function closePeriodWithApproval(periodId:string){
+        const submitted=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(submitted.statusCode,200,submitted.body);
+        const reviewed=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/approve-review",headers:{cookie:accountantCookie},payload:{}});
+        assert.equal(reviewed.statusCode,200,reviewed.body);
+        return app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/close",headers:{cookie:managerCookie},payload:{}});
+      }
+
 
 
       // View access must not imply permission to create generic or order-linked cash movements.
@@ -515,9 +535,7 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
         ]}
       });
       assert.equal(adjustedAllocation.statusCode,200,adjustedAllocation.body);
-      const closeAllocationPeriod=await app.inject({
-        method:"POST",url:"/api/accounting/periods/"+allocationPeriodId+"/close",headers:{cookie:managerCookie},payload:{}
-      });
+      const closeAllocationPeriod=await closePeriodWithApproval(allocationPeriodId);
       assert.equal(closeAllocationPeriod.statusCode,200,closeAllocationPeriod.body);
       const allocationProfitA=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderA.id+"/profitability",headers:{cookie:managerCookie}});
       const allocationProfitB=await app.inject({method:"GET",url:"/api/accounting/orders/"+allocationOrderB.id+"/profitability",headers:{cookie:managerCookie}});
@@ -654,28 +672,91 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
 
       const period=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
-        payload:{name:"Integration test period",periodStart:"2099-02-01",periodEnd:"2099-02-28"}
+        payload:{name:"Integration test period",periodStart:"2299-02-01",periodEnd:"2299-02-28"}
       });
       assert.equal(period.statusCode,201,period.body);
-      const closedPeriod=await app.inject({
-        method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
-      });
+      const managerCannotReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/submit-review",headers:{cookie:managerCookie},payload:{}});
+      assert.equal(managerCannotReview.statusCode,403,managerCannotReview.body,"manager must not substitute for accountant review");
+      const closeWithoutReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}});
+      assert.equal(closeWithoutReview.statusCode,409,closeWithoutReview.body,"manager cannot close before accountant review");
+      const submitForReview=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
+      assert.equal(submitForReview.statusCode,200,submitForReview.body);
+      const returnForCorrections=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/return-for-corrections",headers:{cookie:accountantCookie},payload:{reason:"تصحيح بيانات التصفية قبل الاعتماد"}});
+      assert.equal(returnForCorrections.statusCode,200,returnForCorrections.body);
+      assert.equal(returnForCorrections.json().data.status,"OPEN");
+      const closedPeriod=await closePeriodWithApproval(period.json().data.id);
       assert.equal(closedPeriod.statusCode,200,closedPeriod.body);
       assert.equal(closedPeriod.json().data.status,"CLOSED");
+      const savedReport=await app.inject({method:"GET",url:"/api/accounting/periods/"+period.json().data.id+"/report",headers:{cookie:managerCookie}});
+      assert.equal(savedReport.statusCode,200,savedReport.body);
+      assert.ok(savedReport.json().data.report_sha256);
+      assert.equal(savedReport.json().data.integrityVerified,true,"saved report hash must verify against exact stored JSON");
+      assert.equal(savedReport.json().data.snapshot_no,1);
+      assert.ok(Array.isArray(savedReport.json().data.report.cashCustody));
+      const blockedSnapshotUpdate=await apiPool.query(
+        "UPDATE accounting_period_close_snapshots SET report_json='{}' WHERE period_id=$1 AND snapshot_no=1",
+        [period.json().data.id]
+      );
+      assert.equal(blockedSnapshotUpdate.rowCount,0,"saved close snapshots must reject UPDATE");
+      const blockedSnapshotDelete=await apiPool.query(
+        "DELETE FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1",
+        [period.json().data.id]
+      );
+      assert.equal(blockedSnapshotDelete.rowCount,0,"saved close snapshots must reject DELETE");
+      const unchangedSnapshot=await apiPool.query(
+        "SELECT report_json,report_sha256 FROM accounting_period_close_snapshots WHERE period_id=$1 AND snapshot_no=1",
+        [period.json().data.id]
+      );
+      assert.equal(unchangedSnapshot.rowCount,1,"close snapshot must remain present");
+      assert.equal(unchangedSnapshot.rows[0].report_sha256,savedReport.json().data.report_sha256,"snapshot hash must remain unchanged");
+      const reopenPeriod=await app.inject({method:"POST",url:"/api/accounting/periods/"+period.json().data.id+"/reopen",headers:{cookie:managerCookie},payload:{reason:"تصحيح مراجعة الفترة في اختبار التكامل"}});
+      assert.equal(reopenPeriod.statusCode,200,reopenPeriod.body);
+      assert.equal(reopenPeriod.json().data.status,"OPEN");
+      assert.equal(reopenPeriod.json().data.reopen_reason,"تصحيح مراجعة الفترة في اختبار التكامل");
+      const reclosedPeriod=await closePeriodWithApproval(period.json().data.id);
+      assert.equal(reclosedPeriod.statusCode,200,reclosedPeriod.body);
+      const savedReportAfterReclose=await app.inject({method:"GET",url:"/api/accounting/periods/"+period.json().data.id+"/report",headers:{cookie:managerCookie}});
+      assert.equal(savedReportAfterReclose.statusCode,200,savedReportAfterReclose.body);
+      assert.equal(savedReportAfterReclose.json().data.snapshot_no,2,"reclosing must preserve the prior snapshot and create a new version");
 
       const closedPeriodExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
-        payload:{category:"مصروف إداري",description:"Must be rejected in closed period",amount:5,expenseType:"ADMINISTRATIVE",expenseDate:"2099-02-05"}
+        payload:{category:"مصروف إداري",description:"Must be rejected in closed period",amount:5,expenseType:"ADMINISTRATIVE",expenseDate:"2299-02-05"}
       });
       assert.equal(closedPeriodExpense.statusCode,409,closedPeriodExpense.body);
       assert.equal(closedPeriodExpense.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
 
       const closedPeriodTopUp=await app.inject({
         method:"POST",url:"/api/cash-custody/top-ups",headers:{cookie:managerCookie},
-        payload:{employeeId:employeeA.id,amount:11,transactionDate:"2099-02-05",description:"Must be rejected in closed period"}
+        payload:{employeeId:employeeA.id,amount:11,transactionDate:"2299-02-05",description:"Must be rejected in closed period"}
       });
       assert.equal(closedPeriodTopUp.statusCode,409,closedPeriodTopUp.body);
       assert.equal(closedPeriodTopUp.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodTransfer=await app.inject({
+        method:"POST",url:"/api/cash-custody/transfers",headers:{cookie:managerCookie},
+        payload:{fromEmployeeId:employeeA.id,toEmployeeId:employeeB.id,amount:1,transactionDate:"2299-02-05",description:"Must be rejected in closed period"}
+      });
+      assert.equal(closedPeriodTransfer.statusCode,409,closedPeriodTransfer.body);
+      assert.equal(closedPeriodTransfer.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodCashOut=await app.inject({
+        method:"POST",url:"/api/cash-custody",headers:{cookie:managerCookie},
+        payload:{employeeId:employeeA.id,direction:"OUT",amount:1,transactionDate:"2299-02-05",description:"Must be rejected in closed period"}
+      });
+      assert.equal(closedPeriodCashOut.statusCode,409,closedPeriodCashOut.body);
+      assert.equal(closedPeriodCashOut.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
+
+      const closedPeriodCollectionOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'IN_PROGRESS') RETURNING id",
+        ["Closed-period collection guard",manager.id]
+      )).rows[0];
+      const closedPeriodCollection=await app.inject({
+        method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},
+        payload:{orderId:closedPeriodCollectionOrder.id,employeeId:employeeA.id,amount:1,transactionDate:"2299-02-05",description:"Must be rejected in closed period",idempotencyKey:randomUUID()}
+      });
+      assert.equal(closedPeriodCollection.statusCode,409,closedPeriodCollection.body);
+      assert.equal(closedPeriodCollection.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
 
       const cancelledOrder=(await apiPool.query(
         "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'CANCELLED') RETURNING id",
@@ -838,13 +919,105 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       // return its original records; it must not attempt a new posting.
       const collectionPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
-        payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
+        payload:{name:"Collection retry closed period",periodStart:"2089-03-01",periodEnd:"2089-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
-      const closeCollectionPeriod=await app.inject({
-        method:"POST",url:"/api/accounting/periods/"+collectionPeriod.json().data.id+"/close",headers:{cookie:managerCookie},payload:{}
-      });
+      const openingBalances=await apiPool.query("SELECT balance_type,source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[collectionPeriod.json().data.id]);
+      // Keep this idempotency fixture away from the separately closed April 2099
+      // allocation period; adjacent locked periods must block out-of-order closing.
+      assert.equal(openingBalances.rowCount,0,"a non-contiguous earlier closed period must not seed opening balances");
+      const closeCollectionPeriod=await closePeriodWithApproval(collectionPeriod.json().data.id);
       assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
+
+      // Periods are often created in advance. Closing the source period later must
+      // refresh the already-existing next period's opening balances from its snapshot.
+      const lateCarrySource=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Late carry source",periodStart:"2199-05-01",periodEnd:"2199-05-31"}
+      });
+      assert.equal(lateCarrySource.statusCode,201,lateCarrySource.body);
+      const precreatedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Precreated next period",periodStart:"2199-06-01",periodEnd:"2199-06-30"}
+      });
+      assert.equal(precreatedNext.statusCode,201,precreatedNext.body);
+      const preCloseBalances=await apiPool.query("SELECT DISTINCT source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[precreatedNext.json().data.id]);
+      assert.ok(preCloseBalances.rows.every((row:any)=>row.source_period_id!==lateCarrySource.json().data.id),"before the May close, June must not point to May's snapshot");
+      const closeLateCarrySource=await closePeriodWithApproval(lateCarrySource.json().data.id);
+      assert.equal(closeLateCarrySource.statusCode,200,closeLateCarrySource.body);
+      const refreshedBalances=await apiPool.query("SELECT balance_type,source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[precreatedNext.json().data.id]);
+      assert.ok(refreshedBalances.rowCount>0,"closing a source period must populate the already-created next period");
+      assert.ok(refreshedBalances.rows.every((row:any)=>row.source_period_id===lateCarrySource.json().data.id),"next-period balances must point to the latest closed source period");
+       const gapPeriod=await app.inject({
+         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+         payload:{name:"Gap after open intervening period",periodStart:"2199-07-01",periodEnd:"2199-07-31"}
+       });
+       assert.equal(gapPeriod.statusCode,201,gapPeriod.body);
+       const gapOpeningBalances=await apiPool.query("SELECT source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[gapPeriod.json().data.id]);
+       assert.equal(gapOpeningBalances.rowCount,0,"do not carry balances across an intervening open period or date gap");
+
+
+      // If a later period is already in review, the earlier close cannot carry
+      // balances into it. Reopening the earlier period must be blocked so the
+      // source snapshot cannot change behind the later period's frozen balances.
+      const guardedSource=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Earlier period before locked next",periodStart:"2399-01-01",periodEnd:"2399-01-31"}
+      });
+      assert.equal(guardedSource.statusCode,201,guardedSource.body);
+      const guardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Later period already under review",periodStart:"2399-02-01",periodEnd:"2399-02-28"}
+      });
+      assert.equal(guardedNext.statusCode,201,guardedNext.body);
+      const submitGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/submit-review",
+        headers:{cookie:accountantCookie},payload:{}
+      });
+      assert.equal(submitGuardedNext.statusCode,200,submitGuardedNext.body);
+      const approveGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/approve-review",
+        headers:{cookie:accountantCookie},payload:{}
+      });
+      assert.equal(approveGuardedNext.statusCode,200,approveGuardedNext.body);
+
+      const closeBeforeLockedNext=await closePeriodWithApproval(guardedSource.json().data.id);
+      assert.equal(closeBeforeLockedNext.statusCode,409,closeBeforeLockedNext.body);
+      assert.equal(closeBeforeLockedNext.json().error.code,"NEXT_ACCOUNTING_PERIOD_LOCKED");
+      // The approval workflow reached READY_FOR_APPROVAL before the final close
+      // was rejected, so return the earlier period to OPEN before retrying.
+      const returnGuardedSource=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedSource.json().data.id+"/return-for-corrections",
+        headers:{cookie:accountantCookie},payload:{reason:"إعادة الفترة الأقدم بعد رفض الإقفال"}
+      });
+      assert.equal(returnGuardedSource.statusCode,200,returnGuardedSource.body);
+
+      const returnGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/return-for-corrections",
+        headers:{cookie:accountantCookie},payload:{reason:"إعادة الفترة للاختبار قبل إقفال الفترة السابقة"}
+      });
+      assert.equal(returnGuardedNext.statusCode,200,returnGuardedNext.body);
+      const closeGuardedSource=await closePeriodWithApproval(guardedSource.json().data.id);
+      assert.equal(closeGuardedSource.statusCode,200,closeGuardedSource.body);
+
+      const resubmitGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/submit-review",
+        headers:{cookie:accountantCookie},payload:{}
+      });
+      assert.equal(resubmitGuardedNext.statusCode,200,resubmitGuardedNext.body);
+      const reapproveGuardedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedNext.json().data.id+"/approve-review",
+        headers:{cookie:accountantCookie},payload:{}
+      });
+      assert.equal(reapproveGuardedNext.statusCode,200,reapproveGuardedNext.body);
+
+      const reopenBeforeLockedNext=await app.inject({
+        method:"POST",url:"/api/accounting/periods/"+guardedSource.json().data.id+"/reopen",
+        headers:{cookie:managerCookie},payload:{reason:"اختبار منع فتح فترة أسبق من فترة قيد المراجعة"}
+      });
+      assert.equal(reopenBeforeLockedNext.statusCode,409,reopenBeforeLockedNext.body);
+      assert.equal(reopenBeforeLockedNext.json().error.code,"NEXT_ACCOUNTING_PERIOD_LOCKED");
+
       const closedPeriodCollectionRetry=await app.inject({
         method:"POST",url:"/api/cash-custody/order-collections",headers:{cookie:managerCookie},payload:collectionPayload
       });
