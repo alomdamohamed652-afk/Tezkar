@@ -6,7 +6,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { selectAttendanceDayEvents } from "./attendance-calculation.js";
+import { belongsToAttendanceShift, selectAttendanceDayEvents } from "./attendance-calculation.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
@@ -128,7 +128,7 @@ export async function attendanceRoutes(app:FastifyInstance){
     const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
     const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:schedules.find(s=>s.employee_id===employee.id&&s.weekday===weekday);
     const noSchedule=!schedule;const dayOff=Boolean(schedule?.is_day_off);const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
-    const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&(p.localDate===date||(overnight&&p.localDate===addDateKey(date,1)&&p.minute<=(end??0)+120)));
+    const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.status,shiftDate:date,overnight,scheduledEndMinute:end}));
     assigned.forEach(p=>used.add(p.id));
     const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
     const selectedEvents=selectAttendanceDayEvents(ordered);
