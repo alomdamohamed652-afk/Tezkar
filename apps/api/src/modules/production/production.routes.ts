@@ -491,6 +491,7 @@ export async function productionRoutes(app: FastifyInstance) {
       if(!actor.rowCount || !verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم حذف سجل الإنتاج",401);
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      await assertAccountingPeriodOpen(client,current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10));
       if(current.status!=="PENDING")throw new AppError("PRODUCTION_DELETE_LOCKED","يمكن حذف الإنتاج المعلّق فقط. الإنتاج المعتمد له أثر مخزني ومستحقات، ويحتاج إجراء عكس معتمد حتى لا تتلخبط الأرصدة.",409);
       const updated=await client.query("UPDATE production_entries SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,status,employee_id,order_stage_id,quantity,work_date",[id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"cancel",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:"password_confirmed_delete"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -523,11 +524,14 @@ export async function productionRoutes(app: FastifyInstance) {
     const row=await withTransaction(async client=>{
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      const originalWorkDate=current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10);
+      await assertAccountingPeriodOpen(client,originalWorkDate);
       if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه. استخدم إجراء العكس المعتمد بدل تعديل سجل مرحّل.",409);
       const data=parsed.data;
       const employeeId=data.employeeId??current.employee_id;
       const shiftId=data.shiftId??current.shift_id;
       const workDate=data.workDate??String(current.work_date).slice(0,10);
+      if(workDate!==originalWorkDate)await assertAccountingPeriodOpen(client,workDate);
       const quantity=data.quantity??Number(current.quantity);
       const baseAmount=data.baseAmount===undefined?(current.base_amount==null?null:Number(current.base_amount)):data.baseAmount;
       const hoursWorked=data.hoursWorked===undefined?(current.hours_worked==null?null:Number(current.hours_worked)):data.hoursWorked;
