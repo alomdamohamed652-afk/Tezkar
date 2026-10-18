@@ -684,7 +684,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           [
             parsed.data.orderId,
             parsed.data.orderStageId ?? null,
-            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(parsed.data.orderId)}`,
+            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(order.rows[0].code)}${order.rows[0].order_name ? ` — ${String(order.rows[0].order_name)}` : ""}`,
             parsed.data.amount,
             parsed.data.method,
             request.user!.userId,
