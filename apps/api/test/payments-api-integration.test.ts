@@ -448,6 +448,34 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{orderId:financeOrder.id,category:"اختبار",description:"Direct cost no-double-count test",amount:25,expenseDate:"2099-02-10",expenseType:"DIRECT"}
       });
       assert.equal(directExpense.statusCode,201,directExpense.body);
+
+      // Historical settlements must not silently debit a current custody, and their date must belong to an open period.
+      const historicalDate="1800-03-10";
+      const historicalWithoutPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"تسوية قديمة",description:"Historical expense requires an open period",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:null,historicalSettlement:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(historicalWithoutPeriod.statusCode,409,historicalWithoutPeriod.body);
+      assert.equal(historicalWithoutPeriod.json().error.code,"ACCOUNTING_PERIOD_NOT_FOUND");
+
+      const historicalWithCurrentCustody=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"تسوية قديمة",description:"Historical expense must not debit current custody",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,historicalSettlement:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(historicalWithCurrentCustody.statusCode,422,historicalWithCurrentCustody.body);
+
+      const historicalPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Historical expense test period",periodStart:"1800-01-01",periodEnd:"1800-12-31"}
+      });
+      assert.equal(historicalPeriod.statusCode,201,historicalPeriod.body);
+      const historicalExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"تسوية قديمة",description:"Historical expense inside open period",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:null,historicalSettlement:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(historicalExpense.statusCode,201,historicalExpense.body);
+      assert.equal(historicalExpense.json().data.paid_from_employee_id,null);
+
       const adminExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
         payload:{category:"اختبار إداري",description:"Administrative allocation no-double-count test",amount:30,expenseDate:"2099-02-11",expenseType:"ADMINISTRATIVE"}
@@ -614,6 +642,79 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "payout preview must show the lower of available earnings and cash custody before confirmation");
 
       
+      // A previous-custody settlement must still settle employee earnings and post labor cost
+      // to the selected order, without creating a new cash-custody OUT on today's custody.
+      const previousCustodyEmployee = (await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Previous Custody Worker') RETURNING id"
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',75,$2,'test previous-custody available earnings')",
+        [previousCustodyEmployee.id,manager.id]
+      );
+      const previousCustodyKey = randomUUID();
+      const custodyBeforePreviousSettlement = Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [managerEmployee.id]
+      )).rows[0].balance);
+      const previousCustodyPayout = await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{
+          employeeId:previousCustodyEmployee.id,
+          settlementSource:"PREVIOUS_CUSTODY",
+          orderId:hamzaOrder.json().data.id,
+          amount:75,
+          method:"CASH",
+          idempotencyKey:previousCustodyKey,
+          notes:"integration test — previous custody"
+        }
+      });
+      assert.equal(previousCustodyPayout.statusCode,201,previousCustodyPayout.body);
+      assert.equal(Number(previousCustodyPayout.json().data.grossAmount),75);
+      const previousCustodyPaymentId=previousCustodyPayout.json().data.payment.id;
+      const previousCustodyOut = await apiPool.query(
+        "SELECT id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [previousCustodyPaymentId]
+      );
+      assert.equal(previousCustodyOut.rowCount,0,"previous-custody settlement must not debit the current custody");
+      const custodyAfterPreviousSettlement = Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [managerEmployee.id]
+      )).rows[0].balance);
+      assert.equal(custodyAfterPreviousSettlement,custodyBeforePreviousSettlement,"current custody balance remains unchanged");
+      const previousCustodyExpense=await apiPool.query(
+        "SELECT order_id,order_stage_id,category,amount,expense_type,paid_from_employee_id,idempotency_key FROM accounting_expenses WHERE idempotency_key=$1",
+        [previousCustodyKey]
+      );
+      assert.equal(previousCustodyExpense.rowCount,1,"previous-custody settlement must create exactly one order expense");
+      assert.equal(previousCustodyExpense.rows[0].order_id,hamzaOrder.json().data.id);
+      assert.equal(previousCustodyExpense.rows[0].order_stage_id,null);
+      assert.equal(previousCustodyExpense.rows[0].category,"WORKER_PAYMENT");
+      assert.equal(previousCustodyExpense.rows[0].expense_type,"DIRECT");
+      assert.equal(previousCustodyExpense.rows[0].paid_from_employee_id,null,"the expense must not be tied to today's custody");
+      assert.equal(previousCustodyExpense.rows[0].idempotency_key,previousCustodyKey);
+      const previousCustodyRetry=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{
+          employeeId:previousCustodyEmployee.id,
+          settlementSource:"PREVIOUS_CUSTODY",
+          orderId:hamzaOrder.json().data.id,
+          amount:75,
+          method:"CASH",
+          idempotencyKey:previousCustodyKey,
+          notes:"integration test — previous custody"
+        }
+      });
+      assert.equal(previousCustodyRetry.statusCode,200,previousCustodyRetry.body,"retry must return the original previous-custody payout");
+      assert.equal(previousCustodyRetry.json().data.payment.id,previousCustodyPaymentId);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",
+        [previousCustodyKey]
+      )).rows[0].count),1,"retry must not duplicate the order cost");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [previousCustodyPaymentId]
+      )).rows[0].count),0,"retry must not create a custody debit");
+
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
       // base 100 + bonus 50 - deduction 20 = 130, not the base amount alone.

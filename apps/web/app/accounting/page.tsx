@@ -160,7 +160,7 @@ export default function AccountingPage() {
 
   async function addExpense() {
     setError("");setMessage("");
-    const payload={orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseDate:eForm.expenseDate,expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId||null};
+    const payload={orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseDate:eForm.expenseDate,expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId&&eForm.paidFromEmployeeId!=="HISTORICAL"?eForm.paidFromEmployeeId:null,historicalSettlement:eForm.paidFromEmployeeId==="HISTORICAL"};
     const fingerprint=JSON.stringify(payload);
     const previous=expenseIdempotency.current;
     const operationKey=previous?.fingerprint===fingerprint?previous.key:crypto.randomUUID();
@@ -168,7 +168,7 @@ export default function AccountingPage() {
     try {
       await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:operationKey})});
       expenseIdempotency.current=null;
-      setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId?" وتم خصمه من عهدة الموظف":""));await load();if(orderId)await loadProfit(orderId);
+      setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId&&eForm.paidFromEmployeeId!=="HISTORICAL"?" وتم خصمه من عهدة الموظف":eForm.paidFromEmployeeId==="HISTORICAL"?" كتسوية سجل قديم بدون خصم عهدة":""));await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
   }
 
@@ -324,7 +324,8 @@ export default function AccountingPage() {
        <label>نوع المصروف<select value={eForm.expenseType} onChange={e=>setEForm({...eForm,expenseType:e.target.value as "DIRECT"|"ADMINISTRATIVE",orderId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderId,orderStageId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderStageId})}><option value="DIRECT">مصروف مباشر</option><option value="ADMINISTRATIVE">مصروف إداري — يوزع وقت التصفية</option></select></label>
        {eForm.expenseType==="DIRECT"&&<label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value,orderStageId:""})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>}
         {eForm.expenseType==="DIRECT"&&eForm.orderId&&<label>مرحلة الإنتاج <span className="optional">اختياري</span><select value={eForm.orderStageId} onChange={e=>setEForm({...eForm,orderStageId:e.target.value})}><option value="">تكلفة على الطلبية بالكامل</option>{expenseStages.filter(s=>s.status!=="CANCELLED").map(s=><option key={s.id} value={s.id}>{s.sequence_no}. {s.stage_name}</option>)}</select></label>}
-       <label>الدفع من عهدة موظف <span className="optional">اختياري</span><select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value})}><option value="">ليس من عهدة موظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+       <label>مصدر المصروف<select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value})}><option value="">مصروف عادي — بدون خصم عهدة</option><option value="HISTORICAL">تسوية سجل قديم — بدون عهدة</option>{employees.map(e=><option key={e.id} value={e.id}>من عهدة: {e.full_name}</option>)}</select></label>
+       {eForm.paidFromEmployeeId==="HISTORICAL"&&<div className="form-hint" style={{gridColumn:"1/-1"}}>تسوية سجل قديم: لازم تاريخ المصروف يقع داخل فترة مالية مفتوحة. سيتم تسجيله في السجلات والتقارير دون إنشاء حركة خصم من عهدة أي موظف.</div>}
        <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
        <label>الوصف<input value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value})}/></label>
        <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value})}/></label>
@@ -342,7 +343,7 @@ export default function AccountingPage() {
         <label>البيان التفصيلي<input required value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})} placeholder="مثال: فاتورة كهرباء شهر أكتوبر"/></label>
         <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
         <label>المبلغ<input required type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
-        <label>الدفع من عهدة موظف <span className="optional">اختياري</span><select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value,expenseType:"ADMINISTRATIVE"})}><option value="">ليس من عهدة موظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+        <label>مصدر المصروف <select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value,expenseType:"ADMINISTRATIVE"})}><option value="">مصروف عادي — بدون خصم عهدة</option><option value="HISTORICAL">تسوية سجل قديم — بدون عهدة</option>{employees.map(e=><option key={e.id} value={e.id}>من عهدة: {e.full_name}</option>)}</select></label>{eForm.paidFromEmployeeId==="HISTORICAL"&&<div className="form-hint" style={{gridColumn:"1/-1"}}>تسوية سجل قديم: لازم تاريخ المصروف يقع داخل فترة مالية مفتوحة. سيتم تسجيله في السجلات والتقارير دون إنشاء حركة خصم من عهدة أي موظف.</div>}
        </div>
        <div className="form-actions"><button className="primary-button" onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""}));void addExpense()}} disabled={!eForm.description.trim()||!eForm.amount||Number(eForm.amount)<=0}>تسجيل المصروف الإداري</button></div>
       </div>}
