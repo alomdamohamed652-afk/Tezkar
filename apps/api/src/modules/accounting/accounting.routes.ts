@@ -386,14 +386,15 @@ export async function accountingRoutes(app:FastifyInstance){
    if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="READY_FOR_APPROVAL")throw new AppError("ACCOUNTING_PERIOD_NOT_APPROVED","يجب اعتماد المراجعة المحاسبية قبل الإقفال النهائي",409);
    if(period.rows[0].reviewed_by===request.user!.userId)throw new AppError("SEPARATION_OF_DUTIES_REQUIRED","يجب أن يكون اعتماد الإقفال النهائي بواسطة مستخدم مختلف عن مراجع الفترة",409);
-   // Lock the immediately following period before closing this one. If that
-   // contiguous period is already under review or closed, its opening balances
-   // are frozen and cannot safely be refreshed from this period's close snapshot.
-   const nextPeriod=await client.query(
-    "SELECT id,name,status FROM accounting_periods WHERE period_start=($1::date + INTERVAL '1 day')::date ORDER BY period_start LIMIT 1 FOR UPDATE",
-    [period.rows[0].period_end]
+   // Lock all later periods before closing this one. A later period already
+   // under review or closed has frozen opening balances and cannot safely be
+   // refreshed from this period's close snapshot.
+   const futurePeriods=await client.query(
+    "SELECT id,name,status FROM accounting_periods WHERE period_start>$1::date ORDER BY period_start FOR UPDATE",
+    [period.rows[0].period_start]
    );
-   if(nextPeriod.rowCount && nextPeriod.rows[0].status!=="OPEN")throw new AppError("NEXT_ACCOUNTING_PERIOD_LOCKED","لا يمكن إقفال الفترة قبل الفترة التالية مباشرة إذا كانت قيد المراجعة أو مقفولة؛ أكمل التصفية بالترتيب الزمني",409);
+   const lockedFuturePeriod=futurePeriods.rows.find((candidate:any)=>candidate.status!=="OPEN");
+   if(lockedFuturePeriod)throw new AppError("NEXT_ACCOUNTING_PERIOD_LOCKED","لا يمكن إقفال فترة أسبق بينما توجد فترة لاحقة قيد المراجعة أو مقفولة؛ أكمل التصفية بالترتيب الزمني",409);
    const expenses=await client.query("SELECT e.id,e.amount,COALESCE(SUM(a.amount),0) AS allocated FROM accounting_expense_allocations a RIGHT JOIN accounting_expenses e ON e.id=a.expense_id AND a.period_id=$3 WHERE e.expense_type='ADMINISTRATIVE' AND e.expense_date BETWEEN $1 AND $2 GROUP BY e.id,e.amount",[period.rows[0].period_start,period.rows[0].period_end,id]);
    if(expenses.rows.some(e=>!hasCentPrecision(e.amount)))throw new AppError("EXPENSE_PRECISION_UNSUPPORTED","يوجد مصروف مسجل بأجزاء من القرش؛ صحح دقته بتسوية موثقة قبل الإقفال",409);
    const unbalanced=expenses.rows.filter(e=>toMinorUnits(e.amount)!==toMinorUnits(e.allocated));
