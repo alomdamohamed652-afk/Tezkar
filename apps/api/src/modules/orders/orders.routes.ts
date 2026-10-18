@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { verifyPassword } from "../auth/auth.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const orderLineSchema = z.object({
   productId: z.string().uuid().optional(),
@@ -657,6 +658,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
     const row=await withTransaction(async(client)=>{
+      await assertAccountingPeriodOpen(client, parsed.data.workDate);
       const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
       if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
       const product = await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
@@ -693,7 +695,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
       const r=await client.query(
         `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+         VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11) RETURNING *`,
         [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
       );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -704,7 +706,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
     const r=await pool.query(
-      `SELECT mp.id,mp.code,mp.work_date,mp.quantity,mp.notes,m.code AS machine_code,m.name AS machine_name,
+      `SELECT mp.id,mp.code,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,mp.quantity,mp.notes,mp.status,mp.cancellation_reason,m.code AS machine_code,m.name AS machine_name,
               p.code AS product_code,p.name AS product_name,e.full_name AS employee_name,
               o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
          FROM machine_productions mp
