@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
+import { belongsToAttendanceShift, selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
 
 const event = (id: string, status: string, hour: number): AttendancePunchEvent => ({
   id,
@@ -21,4 +21,36 @@ test("same-type clock-ins eight hours apart on the same workday require review",
   assert.equal(result.multipleNormalIns, true);
   assert.equal(result.needsReview, true);
   assert.deepEqual(result.reviewPunchIds, ["clock-in-23"]);
+});
+
+
+test("overnight shift accepts next-day checkout but never absorbs a next-day clock-in", () => {
+  const common = {
+    shiftDate: "2026-10-15",
+    overnight: true,
+    scheduledEndMinute: 7 * 60,
+  };
+  assert.equal(belongsToAttendanceShift({
+    ...common,
+    punchLocalDate: "2026-10-16",
+    punchMinute: 6 * 60 + 45,
+    punchStatus: "OUT",
+  }), true);
+  assert.equal(belongsToAttendanceShift({
+    ...common,
+    punchLocalDate: "2026-10-16",
+    punchMinute: 3 * 60,
+    punchStatus: "IN",
+  }), false);
+});
+
+test("next-day punches are not assigned to a same-day shift", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-10-16",
+    punchMinute: 6 * 60,
+    punchStatus: "OUT",
+    shiftDate: "2026-10-15",
+    overnight: false,
+    scheduledEndMinute: 23 * 60,
+  }), false);
 });
