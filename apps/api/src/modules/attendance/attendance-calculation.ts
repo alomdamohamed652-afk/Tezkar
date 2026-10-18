@@ -11,6 +11,32 @@ export type AttendancePunchEvent = {
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 
 /**
+ * Assign punches to a scheduled shift using Cairo-local calendar dates.
+ * For an overnight shift, only an OUT punch (regular or overtime) from the
+ * following day may be attached to the prior shift. A next-day IN must remain
+ * on its own day so it cannot be mistaken for the previous shift's checkout.
+ */
+export function belongsToAttendanceShift(input: {
+  punchLocalDate: string;
+  punchMinute: number;
+  punchStatus: string;
+  shiftDate: string;
+  overnight: boolean;
+  scheduledEndMinute: number | null;
+}): boolean {
+  if (input.punchLocalDate === input.shiftDate) return true;
+  const nextDay = new Date(input.shiftDate + "T00:00:00Z");
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  const nextDate = nextDay.toISOString().slice(0, 10);
+  const isCheckout = input.punchStatus === "OUT" || input.punchStatus === "OVERTIME_OUT";
+  return input.overnight
+    && input.punchLocalDate === nextDate
+    && isCheckout
+    && input.scheduledEndMinute !== null
+    && input.punchMinute <= input.scheduledEndMinute + 120;
+}
+
+/**
  * Collapse repeated same-type punches within two minutes for attendance
  * calculations, while keeping their raw records untouched in the database.
  * The duplicate remains visible for audit/review and marks the day for review.
