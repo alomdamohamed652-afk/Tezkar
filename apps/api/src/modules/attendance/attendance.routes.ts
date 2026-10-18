@@ -118,7 +118,8 @@ export async function attendanceRoutes(app:FastifyInstance){
   const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
   const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule")).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
-  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE punch_at>=($1::date-interval '1 day') AND punch_at<($2::date+interval '2 days') AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
+  // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
+  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE (punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2) AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
   const punches=raw.map(p=>({...p,localDate:cairoDateKey(new Date(p.punch_at)),minute:cairoMinute(new Date(p.punch_at))}));
   const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
   for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
