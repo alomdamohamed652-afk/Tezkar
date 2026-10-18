@@ -730,9 +730,20 @@ export async function productionRoutes(app: FastifyInstance) {
       }
       // Production quantity is the gross processed amount. Only good units enter
       // the regular warehouse; pre-approval scrap was already received separately.
-      const goodQuantity = Math.max(0, Number(current.quantity) - recordedScrapQuantity);
-      const totalLaborCost = Number(current.total_earning_amount ?? current.earning_amount);
-      const productionUnitCost = Number(current.quantity) > 0 ? totalLaborCost / Number(current.quantity) : 0;
+      const grossQuantity = Number(current.quantity);
+      const methodSnapshot = String(current.wage_type_method_snapshot ?? "");
+      const goodQuantity = Math.max(0, grossQuantity - recordedScrapQuantity);
+      const approvedEarning = methodSnapshot === "PER_PIECE"
+        ? goodQuantity * Number(current.rate_snapshot)
+        : methodSnapshot === "PER_1000"
+          ? goodQuantity / 1000 * Number(current.rate_snapshot)
+          : Number(current.earning_amount);
+      if (!Number.isFinite(approvedEarning) || approvedEarning < 0) {
+        throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج الصالح بعد خصم الهالك", 409);
+      }
+      await client.query("UPDATE production_entries SET earning_amount=$1, updated_at=now() WHERE id=$2", [approvedEarning, id]);
+      const totalLaborCost = approvedEarning + Number(current.bonus_amount ?? 0) - Number(current.deduction_amount ?? 0);
+      const productionUnitCost = goodQuantity > 0 ? Math.max(0,totalLaborCost) / goodQuantity : 0;
       const goodInventoryValue = goodQuantity * productionUnitCost;
       const lockedBalance = await client.query(
         "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
@@ -832,7 +843,7 @@ export async function productionRoutes(app: FastifyInstance) {
          )
          VALUES($1,'PRODUCTION_APPROVAL',$2,$3,$4,'Approved production earning')
          ON CONFLICT DO NOTHING`,
-        [current.employee_id, current.earning_amount, id, request.user!.userId]
+        [current.employee_id, approvedEarning, id, request.user!.userId]
       );
 
       // Advance repayment is intentionally not posted when production is approved.
