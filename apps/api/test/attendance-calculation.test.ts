@@ -68,6 +68,16 @@ test("same-type punch within two minutes is duplicate; later repeat is a distinc
   assert.equal(later.needsReview, true);
 });
 
+test("reviewed repeated clock-in no longer keeps the day flagged", () => {
+  const result = selectAttendanceDayEvents([
+    punch("clock-in-15", "IN", 15 * 60),
+    punch("clock-in-23", "IN", 23 * 60, { review_status: "APPROVED" }),
+  ]);
+  assert.equal(result.multipleNormalIns, true);
+  assert.equal(result.needsReview, false);
+  assert.deepEqual(result.reviewPunchIds, []);
+});
+
 test("pending or suspicious punches require review", () => {
   assert.equal(selectAttendanceDayEvents([
     punch("pending", "IN", 8 * 60, { review_status: "PENDING" }),
