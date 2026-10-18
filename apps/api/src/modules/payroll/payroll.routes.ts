@@ -269,7 +269,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
       const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
-      await assertAccountingPeriodOpen(client,accountingDate);
+      // Payroll approval posts salary expenses and earnings for the entire month.
+      // Check overlap with the full calendar month, not only its first day.
+      await assertAccountingMonthOpen(client,accountingDate);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
       if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
       const periodMonthValue=period.rows[0].period_month;
