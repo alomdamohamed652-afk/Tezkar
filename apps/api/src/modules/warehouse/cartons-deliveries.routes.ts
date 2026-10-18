@@ -33,6 +33,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  app.post("/api/warehouse/cartons",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])]},async(request,reply)=>{
   const parsed=cartonSchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الكرتونة غير صحيحة",422);
   const row=await withTransaction(async(client)=>{
+   // Carton registration/sealing affects warehouse release eligibility; do not
+   // mutate it while its accounting period is under review or closed.
+   await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
    const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود",422);
    await assertLocation(client,parsed.data.warehouseId,parsed.data.locationId);
    const quantity=Number(parsed.data.quantity);
