@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -199,7 +198,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
@@ -236,7 +235,7 @@ async function executeWorkerPayment(
      ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
     [input.employeeId,input.grossAmount,payment.rows[0].id,settlement.rows[0].id,input.userId,
       planned.total>0?`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}؛ سداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي نقد مدفوع ${planned.cashPaid.toFixed(2)} ج.م`:`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}`]);
-  if(!input.skipCashCustodyOut) await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
+  await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
 
   let allocationRemaining=input.grossAmount;
   const productions=await client.query(
@@ -562,73 +561,50 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   // Finance may settle an employee's available production earnings directly without a prior payment request.
-    app.post("/api/worker-payments/direct", {
+  app.post("/api/worker-payments/direct", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request, reply) => {
     const parsed = z.object({
       employeeId: z.string().uuid(),
-      cashCustodyEmployeeId: z.string().uuid().nullable().optional(),
-      settlementSource: z.enum(["CURRENT_CUSTODY", "PREVIOUS_CUSTODY"]).default("CURRENT_CUSTODY"),
-      orderId: z.string().uuid().nullable().optional(),
-      orderStageId: z.string().uuid().nullable().optional(),
+      cashCustodyEmployeeId: z.string().uuid(),
       idempotencyKey: z.string().uuid(),
       amount: z.number().positive().max(100000000),
       method: z.string().trim().min(1).max(50).default("CASH"),
       transferReference: z.string().trim().max(120).nullable().optional(),
       advanceRepaymentAmount: z.number().nonnegative().default(0),
       notes: z.string().trim().max(500).nullable().optional()
-    }).superRefine((value, ctx) => {
-      if (value.settlementSource === "CURRENT_CUSTODY" && !value.cashCustodyEmployeeId) {
-        ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
-      }
-      if (value.settlementSource === "PREVIOUS_CUSTODY" && !value.orderId) {
-        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب عند التسوية من عهدة سابقة" });
-      }
-      if (value.orderStageId && !value.orderId) {
-        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
-      }
-      if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(value.method) && !value.transferReference?.trim()) {
-        ctx.addIssue({ code: "custom", path: ["transferReference"], message: "رقم التحويل مطلوب لطريقة الدفع المختارة" });
-      }
     }).safeParse(request.body);
-    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "راجع بيانات صرف مستحقات العامل واختيار العهدة أو الطلبية", 422);
-
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "راجع بيانات صرف مستحقات العامل", 422);
+    if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(parsed.data.method) && !parsed.data.transferReference?.trim()) {
+      throw new AppError("TRANSFER_REFERENCE_REQUIRED", "رقم التحويل مطلوب لطريقة الدفع المختارة", 422);
+    }
     const result = await withTransaction(async client => {
+      // Serialize retries with the same client key before checking for an existing payout.
+      // A committed payout must remain replayable even if its accounting period has since closed.
       await client.query("SELECT pg_advisory_xact_lock(hashtext('worker-payment:' || $1))", [parsed.data.idempotencyKey]);
       await lockEmployee(client, parsed.data.employeeId);
-
-      const fingerprint = JSON.stringify({
-        employeeId: parsed.data.employeeId,
-        settlementSource: parsed.data.settlementSource,
-        cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId ?? null,
-        orderId: parsed.data.orderId ?? null,
-        orderStageId: parsed.data.orderStageId ?? null,
-        amount: parsed.data.amount,
-        method: parsed.data.method,
-        transferReference: parsed.data.transferReference ?? null,
-        advanceRepaymentAmount: parsed.data.advanceRepaymentAmount,
-        notes: parsed.data.notes ?? null
-      });
       const prior = await client.query(
-        `SELECT wp.*,
-                c.employee_id AS custody_employee_id,
-                e.order_id AS expense_order_id,
-                e.order_stage_id AS expense_order_stage_id
+        `SELECT wp.*, c.employee_id AS custody_employee_id
            FROM worker_payments wp
            LEFT JOIN cash_custody_transactions c
              ON c.source_type='WORKER_PAYMENT' AND c.source_id=wp.id
-           LEFT JOIN accounting_expenses e
-             ON e.expense_type='DIRECT' AND e.category='WORKER_PAYMENT' AND e.idempotency_key=wp.idempotency_key
           WHERE wp.idempotency_key=$1
           LIMIT 1`,
         [parsed.data.idempotencyKey]
       );
       if (prior.rowCount) {
         const payment = prior.rows[0];
+        const fingerprint = JSON.stringify({
+          employeeId: parsed.data.employeeId,
+          cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId,
+          amount: parsed.data.amount,
+          method: parsed.data.method,
+          transferReference: parsed.data.transferReference ?? null,
+          advanceRepaymentAmount: parsed.data.advanceRepaymentAmount,
+          notes: parsed.data.notes ?? null
+        });
         const sameRequest = payment.employee_id === parsed.data.employeeId
-          && payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null)
-          && payment.expense_order_id === (parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderId ?? null : null)
-          && payment.expense_order_stage_id === (parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderStageId ?? null : null)
+          && payment.custody_employee_id === parsed.data.cashCustodyEmployeeId
           && payment.idempotency_fingerprint === fingerprint;
         if (!sameRequest) throw new AppError("IDEMPOTENCY_KEY_REUSED", "مفتاح العملية مستخدم مع بيانات صرف مختلفة", 409);
         return {
@@ -640,83 +616,54 @@ export async function paymentsRoutes(app:FastifyInstance){
           replayed: true
         };
       }
-
+      // Only a new posting is subject to the period lock. Existing committed requests
+      // above are safe to replay after close and must not create a second cash movement.
       await assertAccountingPeriodOpen(client);
+      const fingerprint = JSON.stringify({
+        employeeId: parsed.data.employeeId,
+        cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId,
+        amount: parsed.data.amount,
+        method: parsed.data.method,
+        transferReference: parsed.data.transferReference ?? null,
+        advanceRepaymentAmount: parsed.data.advanceRepaymentAmount,
+        notes: parsed.data.notes ?? null
+      });
       const available = await getAvailableEarnings(client, parsed.data.employeeId);
       if (parsed.data.amount > available + 0.009) {
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
       }
-
-      if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
-        const order = await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE", [parsed.data.orderId]);
-        if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND", "الطلبية غير موجودة", 404);
-        if (order.rows[0].status === "CANCELLED") throw new AppError("ORDER_CANCELLED", "لا يمكن تحميل تسوية على طلبية ملغاة", 409);
-        if (order.rows[0].status === "COMPLETED") throw new AppError("ORDER_NOT_EXPENSABLE", "لا يمكن تحميل تكلفة جديدة على طلبية مكتملة؛ أعد فتحها أولًا", 409);
-        if (parsed.data.orderStageId) {
-          const stage = await client.query("SELECT id,order_id,status FROM order_stages WHERE id=$1 FOR SHARE", [parsed.data.orderStageId]);
-          if (!stage.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND", "مرحلة الطلبية غير موجودة", 404);
-          if (stage.rows[0].order_id !== parsed.data.orderId) throw new AppError("ORDER_STAGE_ORDER_MISMATCH", "المرحلة لا تتبع الطلبية المختارة", 422);
-          if (stage.rows[0].status === "CANCELLED") throw new AppError("ORDER_STAGE_CANCELLED", "لا يمكن تحميل تكلفة على مرحلة ملغاة", 409);
-        }
-      }
-
       const settlement = await executeWorkerPayment(client, {
         userId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null,
-        custodyEmployeeId: parsed.data.cashCustodyEmployeeId ?? parsed.data.employeeId,
+        custodyEmployeeId: parsed.data.cashCustodyEmployeeId,
         employeeId: parsed.data.employeeId,
         requestId: null,
-        requestCode: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? "تسوية من عهدة سابقة" : "صرف مباشر بدون طلب قبض",
+        requestCode: "صرف مباشر بدون طلب قبض",
         grossAmount: parsed.data.amount,
         method: parsed.data.method,
         transferReference: parsed.data.transferReference ?? null,
         manualRepaymentAmount: parsed.data.advanceRepaymentAmount,
         idempotencyKey: parsed.data.idempotencyKey,
-        idempotencyFingerprint: fingerprint,
-        skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY"
+        idempotencyFingerprint: fingerprint
       });
-      if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
-        await client.query(
-          `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',NULL,$7,$8)`,
-          [
-            parsed.data.orderId,
-            parsed.data.orderStageId ?? null,
-            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(parsed.data.orderId)}`,
-            parsed.data.amount,
-            parsed.data.method,
-            request.user!.userId,
-            parsed.data.idempotencyKey,
-            createHash("sha256").update(fingerprint).digest("hex")
-          ]
-        );
-      }
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
       }
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
-        action: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? "previous_custody_worker_settlement" : "direct_worker_payment",
+        action: "direct_worker_payment",
         module: "payments",
         entityType: "worker_payment",
         entityId: settlement.payment.id,
         afterData: settlement.payment,
-        metadata: {
-          employeeId: parsed.data.employeeId,
-          settlementSource: parsed.data.settlementSource,
-          orderId: parsed.data.orderId ?? null,
-          orderStageId: parsed.data.orderStageId ?? null,
-          grossAmount: settlement.grossAmount,
-          cashPaid: settlement.cashPaid,
-          advanceRepaymentAmount: settlement.advanceRepaymentAmount
-        },
+        metadata: { employeeId: parsed.data.employeeId, requestId: null, grossAmount: settlement.grossAmount, cashPaid: settlement.cashPaid, advanceRepaymentAmount: settlement.advanceRepaymentAmount },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
-      return { ...settlement, replayed: false, settlementSource: parsed.data.settlementSource };
+      return { ...settlement, replayed: false };
     });
     const { replayed, ...responseData } = result;
     return reply.code(replayed ? 200 : 201).send({ data: responseData });
