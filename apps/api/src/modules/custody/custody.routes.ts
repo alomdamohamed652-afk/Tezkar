@@ -7,6 +7,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const createSchema=z.object({
   employeeId:z.string().uuid(),
@@ -215,6 +216,7 @@ export async function custodyRoutes(app:FastifyInstance){
   app.post("/api/custodies/:id/transfer",{preHandler:[authenticateRequest,requirePermission("custody.transfer")]},async(request,reply)=>{
     const id=(request.params as {id:string}).id;const p=transferCustodySchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحويل العهدة غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
       if(!["ACTIVE","PARTIAL_RETURNED"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","لا يمكن تحويل عهدة مغلقة أو تمت تسويتها",409);
       const sums=await client.query("SELECT COALESCE(SUM(returned_quantity+lost_quantity),0) AS accounted FROM custody_settlements WHERE custody_id=$1",[id]);const remaining=Number(custody.rows[0].quantity)-Number(sums.rows[0].accounted||0);
@@ -233,6 +235,7 @@ export async function custodyRoutes(app:FastifyInstance){
     const id=(request.params as {id:string}).id;const p=settleSchema.safeParse(request.body);
     if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تسوية العهدة غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const custody=await client.query("SELECT * FROM employee_custodies WHERE id=$1 FOR UPDATE",[id]);
       if(!custody.rowCount)throw new AppError("CUSTODY_NOT_FOUND","العهدة غير موجودة",404);
       if(["RETURNED","CANCELLED","DAMAGED","LOST"].includes(custody.rows[0].status))throw new AppError("CUSTODY_CLOSED","العهدة مغلقة بالفعل",409);
