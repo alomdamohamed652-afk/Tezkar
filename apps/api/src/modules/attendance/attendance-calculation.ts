@@ -65,7 +65,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   const reviewPunches = [...candidateIds]
     .map((id) => ordered.find((candidate) => candidate.id === id))
     .filter((event): event is AttendancePunchEvent =>
-      Boolean(event) && event.review_status !== "APPROVED" && event.review_status !== "REJECTED"
+      event !== undefined && event.review_status !== "APPROVED" && event.review_status !== "REJECTED"
     )
     .map((event) => ({ id: event.id, status: event.status, punch_at: event.punch_at }));
   const reviewPunchIds = reviewPunches.map((event) => event.id);
