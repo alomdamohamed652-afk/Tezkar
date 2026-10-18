@@ -48,6 +48,25 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   const overtimeIns = usable.filter((p) => p.status === "OVERTIME_IN");
   const overtimeOuts = usable.filter((p) => p.status === "OVERTIME_OUT");
 
+  const extraSameType = [
+    ...normalIns.slice(1),
+    ...normalOuts.slice(0, -1),
+    ...overtimeIns.slice(1),
+    ...overtimeOuts.slice(0, -1),
+  ];
+  const candidateIds = new Set([
+    ...collapsed.duplicateIds,
+    ...extraSameType.map((event) => event.id),
+    ...usable.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
+  ]);
+  // A second same-type punch is a review candidate, not automatically an error:
+  // employees may legitimately have multiple shifts. Once a manager reviews it,
+  // the report must stop asking for the same review again.
+  const reviewPunchIds = [...candidateIds].filter((id) => {
+    const event = ordered.find((candidate) => candidate.id === id);
+    return event && event.review_status !== "APPROVED" && event.review_status !== "REJECTED";
+  });
+
   return {
     // Do not mistake an overtime checkout for the employee's regular shift checkout.
     inPunch: normalIns[0] ?? null,
@@ -56,13 +75,8 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     otOut: overtimeOuts.at(-1) ?? null,
     duplicateIds: collapsed.duplicateIds,
     duplicatePunchCount: collapsed.duplicateIds.length,
-    needsReview:
-      collapsed.duplicateIds.length > 0 ||
-      usable.some((p) => p.suspicious || p.review_status === "PENDING") ||
-      normalIns.length > 1 ||
-      normalOuts.length > 1 ||
-      overtimeIns.length > 1 ||
-      overtimeOuts.length > 1,
+    reviewPunchIds,
+    needsReview: reviewPunchIds.length > 0,
     multipleNormalIns: normalIns.length > 1,
     multipleNormalOuts: normalOuts.length > 1,
     multipleOvertimeIns: overtimeIns.length > 1,
