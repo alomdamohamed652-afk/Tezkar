@@ -678,13 +678,14 @@ export async function paymentsRoutes(app:FastifyInstance){
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY"
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
+        const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
         await client.query(
           `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
            VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',NULL,$7,$8)`,
           [
             parsed.data.orderId,
             parsed.data.orderStageId ?? null,
-            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(order.rows[0].code)}${order.rows[0].order_name ? ` — ${String(order.rows[0].order_name)}` : ""}`,
+            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`,
             parsed.data.amount,
             parsed.data.method,
             request.user!.userId,
