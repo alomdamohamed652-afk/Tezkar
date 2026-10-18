@@ -173,6 +173,9 @@ export async function custodyRoutes(app:FastifyInstance){
     if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
     const total=p.data.quantity*p.data.unitValue;
     const r=await withTransaction(async client=>{
+      // Physical custody creation changes employee-held asset balances; serialize it
+      // against accounting review/close just like other dated custody movements.
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const x=await client.query(
         "INSERT INTO employee_custodies(employee_id,custody_type,description,quantity,unit_value,total_value,due_date,created_by,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
         [p.data.employeeId,p.data.custodyType,p.data.description,p.data.quantity,p.data.unitValue,total,p.data.dueDate??null,request.user!.userId,p.data.notes??null]
