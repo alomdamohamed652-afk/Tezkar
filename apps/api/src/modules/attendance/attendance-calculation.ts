@@ -62,10 +62,13 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   // A second same-type punch is a review candidate, not automatically an error:
   // employees may legitimately have multiple shifts. Once a manager reviews it,
   // the report must stop asking for the same review again.
-  const reviewPunchIds = [...candidateIds].filter((id) => {
-    const event = ordered.find((candidate) => candidate.id === id);
-    return event && event.review_status !== "APPROVED" && event.review_status !== "REJECTED";
-  });
+  const reviewPunches = [...candidateIds]
+    .map((id) => ordered.find((candidate) => candidate.id === id))
+    .filter((event): event is AttendancePunchEvent =>
+      Boolean(event) && event.review_status !== "APPROVED" && event.review_status !== "REJECTED"
+    )
+    .map((event) => ({ id: event.id, status: event.status, punch_at: event.punch_at }));
+  const reviewPunchIds = reviewPunches.map((event) => event.id);
 
   return {
     // Do not mistake an overtime checkout for the employee's regular shift checkout.
@@ -76,6 +79,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     duplicateIds: collapsed.duplicateIds,
     duplicatePunchCount: collapsed.duplicateIds.length,
     reviewPunchIds,
+    reviewPunches,
     needsReview: reviewPunchIds.length > 0,
     multipleNormalIns: normalIns.length > 1,
     multipleNormalOuts: normalOuts.length > 1,
