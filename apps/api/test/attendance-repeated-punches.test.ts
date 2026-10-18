@@ -20,4 +20,5 @@ test("same-type clock-ins eight hours apart on the same workday require review",
   assert.equal(result.inPunch?.id, "clock-in-15");
   assert.equal(result.multipleNormalIns, true);
   assert.equal(result.needsReview, true);
+  assert.deepEqual(result.reviewPunchIds, ["clock-in-23"]);
 });
