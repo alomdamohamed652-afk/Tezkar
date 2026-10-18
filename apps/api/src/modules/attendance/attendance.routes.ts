@@ -80,7 +80,7 @@ export async function attendanceRoutes(app:FastifyInstance){
     if((await client.query("SELECT id FROM attendance_punches WHERE external_key=$1",[r.key])).rowCount){duplicates++;continue;}
     const mapping=await client.query("SELECT employee_id FROM attendance_employee_settings WHERE device_code=$1",[r.code]);const employeeId=mapping.rows[0]?.employee_id??null;
     const near=await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString()]);
-    const saved=await client.query(`INSERT INTO attendance_punches(batch_id,employee_id,device_code,punch_at,status,verify_method,location_id,id_number,card_no,suspicious,duplicate_of,raw_record,external_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13) ON CONFLICT(external_key) DO NOTHING RETURNING id`,[batch.id,employeeId,r.code,r.at.toISOString(),r.state,r.method,r.location||null,r.idNumber||null,r.card||null,Boolean(near.rowCount),near.rows[0]?.id??null,JSON.stringify(r.raw),r.key]);
+    const saved=await client.query(`INSERT INTO attendance_punches(batch_id,employee_id,device_code,punch_at,status,verify_method,location_id,id_number,card_no,suspicious,review_status,duplicate_of,raw_record,external_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $10 OR $2 IS NULL THEN 'PENDING' ELSE 'AUTO_ACCEPTED' END,$11,$12::jsonb,$13) ON CONFLICT(external_key) DO NOTHING RETURNING id`,[batch.id,employeeId,r.code,r.at.toISOString(),r.state,r.method,r.location||null,r.idNumber||null,r.card||null,Boolean(near.rowCount),near.rows[0]?.id??null,JSON.stringify(r.raw),r.key]);
     if(!saved.rowCount){duplicates++;continue;}inserted++;if(near.rowCount)suspicious++;if(!employeeId)unknown++;
    }
    await client.query("UPDATE attendance_import_batches SET inserted_rows=$2,duplicate_rows=$3,suspicious_rows=$4,unknown_rows=$5 WHERE id=$1",[batch.id,inserted,duplicates,suspicious,unknown]);
@@ -101,7 +101,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
   const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule")).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY created_at DESC",[dates.data.from,dates.data.to])).rows;
-  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE punch_at>=($1::date-interval '1 day') AND punch_at<($2::date+interval '2 days') ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
+  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE punch_at>=($1::date-interval '1 day') AND punch_at<($2::date+interval '2 days') AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
   const punches=raw.map(p=>({...p,localDate:cairoDateKey(new Date(p.punch_at)),minute:cairoMinute(new Date(p.punch_at))}));
   const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
   for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
@@ -120,7 +120,7 @@ export async function attendanceRoutes(app:FastifyInstance){
     const expectedEnd=end===null?null:(overnight?end+1440:end);
     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
     let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
-    const needsReview=ordered.some(p=>p.suspicious||p.review_status!=="APPROVED");
+    const needsReview=ordered.some(p=>p.suspicious||p.review_status==="PENDING");
     let status:string;if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
     report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,suspiciousCount:ordered.filter(p=>p.suspicious).length,punchCount:ordered.length});
    }
