@@ -919,12 +919,12 @@ test("cash custody API enforces employee scope, duplicate confirmation, balance 
       // return its original records; it must not attempt a new posting.
       const collectionPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
-        payload:{name:"Collection retry closed period",periodStart:"2099-03-01",periodEnd:"2099-03-31"}
+        payload:{name:"Collection retry closed period",periodStart:"2089-03-01",periodEnd:"2089-03-31"}
       });
       assert.equal(collectionPeriod.statusCode,201,collectionPeriod.body);
       const openingBalances=await apiPool.query("SELECT balance_type,source_period_id FROM accounting_period_opening_balances WHERE period_id=$1",[collectionPeriod.json().data.id]);
-      // This March 2099 period is not contiguous with the closed February 2299
-      // fixture period above. Never carry balances across a gap in accounting periods.
+      // Keep this idempotency fixture away from the separately closed April 2099
+      // allocation period; adjacent locked periods must block out-of-order closing.
       assert.equal(openingBalances.rowCount,0,"a non-contiguous earlier closed period must not seed opening balances");
       const closeCollectionPeriod=await closePeriodWithApproval(collectionPeriod.json().data.id);
       assert.equal(closeCollectionPeriod.statusCode,200,closeCollectionPeriod.body);
