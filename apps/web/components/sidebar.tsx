@@ -37,7 +37,7 @@ const groups:NavGroup[]=[
   {icon:"⌕",label:"البحث المركزي",href:"/search",permissions:["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view","deliveries.view","payroll.view","advances.view","advances.view_own","tasks.view","tasks.view_own","cartons.view","finance.expenses.view","finance.revenues.view","finance.period_close.view"]},
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
-  {icon:"◷",label:"الحضور والبصمة",href:"/attendance",permissions:["attendance.view","attendance.import","attendance.manage"]},
+  {icon:"◷",label:"الحضور والبصمة",href:"/attendance",permissions:["attendance.view","attendance.import","attendance.manage","attendance.review"]},
   {icon:"♙",label:"طلبات الحسابات",href:"/registration-requests",permissions:["users.create"]},
   {icon:"↻",label:"طلبات إعادة تعيين كلمة المرور",href:"/password-reset-requests",permissions:["users.create"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
