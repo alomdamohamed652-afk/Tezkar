@@ -18,6 +18,11 @@ function cairoWallTimeToUtc(wall:Date):Date{const parts=new Intl.DateTimeFormat(
 function parseTimestamp(raw:string):Date|null{if(!raw)return null;if(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)){const absolute=new Date(raw);return Number.isNaN(absolute.getTime())?null:absolute;}let wall:Date;if(/^\d+(\\.\d+)?$/.test(raw)){const n=Number(raw);if(n<=20000||n>=80000)return null;wall=new Date(Date.UTC(1899,11,30)+n*86400000);}else{const parsed=new Date(raw);if(Number.isNaN(parsed.getTime()))return null;wall=new Date(Date.UTC(parsed.getFullYear(),parsed.getMonth(),parsed.getDate(),parsed.getHours(),parsed.getMinutes(),parsed.getSeconds(),parsed.getMilliseconds()));}return cairoWallTimeToUtc(wall);}
 function statusFrom(raw:string):string{const s=raw.toLowerCase();if(s==="c/in"||s==="in"||s.includes("check in"))return "IN";if(s==="c/out"||s==="out"||s.includes("check out"))return "OUT";if(s.includes("overtime in"))return "OVERTIME_IN";if(s.includes("overtime out"))return "OVERTIME_OUT";return "UNKNOWN";}
 
+function cairoDateKey(date:Date):string{const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(date);const get=(type:string)=>parts.find(p=>p.type===type)?.value??"";return get("year")+"-"+get("month")+"-"+get("day");}
+function cairoMinute(date:Date):number{const parts=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Cairo",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(date);return Number(parts.find(p=>p.type==="hour")?.value??0)*60+Number(parts.find(p=>p.type==="minute")?.value??0);}
+function addDateKey(key:string,days:number):string{const d=new Date(key+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);}
+function minutesOfTime(value:string|null|undefined):number|null{if(!value)return null;const [h,m]=value.slice(0,5).split(":").map(Number);return h*60+m;}
+
 export async function attendanceRoutes(app:FastifyInstance){
  app.get("/api/attendance",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
   const q=request.query as {from?:string;to?:string;review?:string};const args:unknown[]=[];const where:string[]=[];
@@ -87,5 +92,41 @@ export async function attendanceRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;const p=z.object({decision:z.enum(["APPROVED","REJECTED"])}).safeParse(request.body);
   if(!z.string().uuid().safeParse(id).success||!p.success)throw new AppError("VALIDATION_ERROR","قرار المراجعة غير صحيح",422);
   const r=await pool.query("UPDATE attendance_punches SET review_status=$2,reviewed_by=$3,reviewed_at=now() WHERE id=$1 RETURNING id,review_status,reviewed_at",[id,p.data.decision,request.user!.userId]);if(!r.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","الحركة غير موجودة",404);return {data:r.rows[0]};
+ }); 
+ app.get("/api/attendance/report",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
+  const q=request.query as {from?:string;to?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
+  if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
+  const first=new Date(dates.data.from+"T00:00:00Z"),last=new Date(dates.data.to+"T00:00:00Z");const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
+  if(daysCount>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
+  const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
+  const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule")).rows;
+  const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY created_at DESC",[dates.data.from,dates.data.to])).rows;
+  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE punch_at>=($1::date-interval '1 day') AND punch_at<($2::date+interval '2 days') ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
+  const punches=raw.map(p=>({...p,localDate:cairoDateKey(new Date(p.punch_at)),minute:cairoMinute(new Date(p.punch_at))}));
+  const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
+  for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
+   const date=addDateKey(dates.data.from,dayIndex);const weekday=new Date(date+"T00:00:00Z").getUTCDay();
+   for(const employee of employees){
+    const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
+    const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:schedules.find(s=>s.employee_id===employee.id&&s.weekday===weekday);
+    const dayOff=!schedule||schedule.is_day_off;const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
+    const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&(p.localDate===date||(overnight&&p.localDate===addDateKey(date,1)&&p.minute<=(end??0)+120)));
+    assigned.forEach(p=>used.add(p.id));
+    const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
+    const inPunch=ordered.find(p=>p.status==="IN");const outPunch=[...ordered].reverse().find(p=>p.status==="OUT"||p.status==="OVERTIME_OUT");
+    const otIn=ordered.find(p=>p.status==="OVERTIME_IN");const otOut=[...ordered].reverse().find(p=>p.status==="OVERTIME_OUT");
+    let inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
+    const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
+    const expectedEnd=end===null?null:(overnight?end+1440:end);
+    const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
+    let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
+    const needsReview=ordered.some(p=>p.suspicious||p.review_status!=="APPROVED");
+    let status:string;if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
+    report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,suspiciousCount:ordered.filter(p=>p.suspicious).length,punchCount:ordered.length});
+   }
+  }
+  const totals={rows:report.length,absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
+  return {data:report,summary:totals};
  });
+
 }
