@@ -64,7 +64,12 @@ export async function attendanceRoutes(app:FastifyInstance){
   const p=z.object({employeeId:z.string().uuid(),startDate:z.string().date(),endDate:z.string().date(),startsAt:z.string().regex(timePattern).nullable().optional(),endsAt:z.string().regex(timePattern).nullable().optional(),isDayOff:z.boolean().default(false),note:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","استثناء الجدول غير صحيح",422);
   const d=p.data;if(d.endDate<d.startDate||(!d.isDayOff&&(!d.startsAt||!d.endsAt)))throw new AppError("VALIDATION_ERROR","استثناء الجدول غير صحيح",422);
-  const r=await pool.query("INSERT INTO attendance_schedule_exceptions(employee_id,start_date,end_date,starts_at,ends_at,is_day_off,note,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",[d.employeeId,d.startDate,d.endDate,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff,d.note??null,request.user!.userId]);return {data:r.rows[0]};
+  const saved=await withTransaction(async client=>{
+   if(!(await client.query("SELECT id FROM employees WHERE id=$1",[d.employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+   const r=await client.query("INSERT INTO attendance_schedule_exceptions(employee_id,start_date,end_date,starts_at,ends_at,is_day_off,note,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",[d.employeeId,d.startDate,d.endDate,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff,d.note??null,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"attendance",entityType:"attendance_schedule_exception",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return r.rows[0];
+  });return {data:saved};
  });
  app.post("/api/attendance/import",{preHandler:[authenticateRequest,requirePermission("attendance.import")]},async(request,reply)=>{
   const p=importSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","ملف الاستيراد غير صحيح أو يتجاوز 5000 حركة",422);
