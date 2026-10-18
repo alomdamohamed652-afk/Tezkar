@@ -17,6 +17,7 @@ const expenseSchema=z.object({
   paymentMethod:z.string().trim().max(50).nullable().optional(),
   expenseType:z.enum(["DIRECT","ADMINISTRATIVE"]).default("DIRECT"),
   paidFromEmployeeId:z.string().uuid().nullable().optional(),
+  historicalSettlement:z.boolean().default(false),
   idempotencyKey:z.string().uuid().optional()
 }).superRefine((v,ctx)=>{
   if(v.expenseType==="ADMINISTRATIVE"&&(v.orderId||v.orderStageId)){
@@ -36,10 +37,13 @@ const revenueSchema=z.object({
 });
 const idSchema=z.object({orderId:z.string().uuid()});
 
-async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined){
+async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined,requirePeriod=false){
  // Lock the matching period row so closing the period cannot race with a posting.
  const result=await client.query("SELECT id,name,status FROM accounting_periods WHERE COALESCE($1::date,current_date) BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date??null]);
- if(!result.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","لا توجد فترة مالية تغطي تاريخ الحركة؛ أنشئ الفترة المالية يدويًا قبل تسجيل المصروف أو الإيراد.",409);
+ if(!result.rowCount){
+  if(requirePeriod)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","لا توجد فترة مالية مفتوحة تغطي تاريخ تسوية السجل القديم؛ أنشئ الفترة يدويًا أولًا.",409);
+  return;
+ }
  if(result.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة المالية ليست مفتوحة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
 }
 
@@ -65,7 +69,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const payloadHash=p.data.idempotencyKey?createHash("sha256").update(JSON.stringify({
     orderId:p.data.orderId??null,orderStageId:p.data.orderStageId??null,category:p.data.category,
     description:p.data.description,amountMinor:Math.round(p.data.amount*100),expenseDate:p.data.expenseDate??null,
-    paymentMethod:p.data.paymentMethod??null,expenseType:p.data.expenseType,paidFromEmployeeId:p.data.paidFromEmployeeId??null
+    paymentMethod:p.data.paymentMethod??null,expenseType:p.data.expenseType,paidFromEmployeeId:p.data.paidFromEmployeeId??null,historicalSettlement:p.data.historicalSettlement
    })).digest("hex"):null;
    if(p.data.idempotencyKey){
     const prior=await client.query("SELECT * FROM accounting_expenses WHERE idempotency_key=$1 FOR SHARE",[p.data.idempotencyKey]);
@@ -98,7 +102,7 @@ export async function accountingRoutes(app:FastifyInstance){
     if(stage.rows[0].order_id!==p.data.orderId)throw new AppError("ORDER_STAGE_ORDER_MISMATCH","مرحلة الإنتاج لا تتبع الطلبية المختارة",422);
     if(stage.rows[0].status==="CANCELLED")throw new AppError("ORDER_STAGE_CANCELLED","لا يمكن تحميل مصروف على مرحلة ملغاة",409);
    }
-   await assertAccountingDateOpen(client,p.data.expenseDate);
+   await assertAccountingDateOpen(client,p.data.expenseDate,p.data.historicalSettlement);
    let r;
    if(p.data.idempotencyKey){
     r=await client.query("INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,COALESCE($6,current_date),$7,$8,$9,$10,$11,$12) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *",
