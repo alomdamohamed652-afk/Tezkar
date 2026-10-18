@@ -26,6 +26,9 @@ const expenseSchema=z.object({
   if(v.orderStageId&&!v.orderId){
     ctx.addIssue({code:"custom",path:["orderId"],message:"اختيار مرحلة إنتاج يتطلب اختيار الطلبية أولًا"});
   }
+  if(v.historicalSettlement&&v.paidFromEmployeeId){
+    ctx.addIssue({code:"custom",path:["paidFromEmployeeId"],message:"تسوية السجل القديم لا يجوز أن تخصم من عهدة حالية"});
+  }
 });
 const revenueSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
