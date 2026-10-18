@@ -39,7 +39,8 @@ const idSchema=z.object({orderId:z.string().uuid()});
 async function assertAccountingDateOpen(client:import("pg").PoolClient,date:string|undefined){
  // Lock the matching period row so closing the period cannot race with a posting.
  const result=await client.query("SELECT id,name,status FROM accounting_periods WHERE COALESCE($1::date,current_date) BETWEEN period_start AND period_end ORDER BY period_start LIMIT 1 FOR SHARE",[date??null]);
- if(result.rows[0]&&result.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة المالية ليست مفتوحة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
+ if(!result.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","لا توجد فترة مالية تغطي تاريخ الحركة؛ أنشئ الفترة المالية يدويًا قبل تسجيل المصروف أو الإيراد.",409);
+ if(result.rows[0].status!=="OPEN")throw new AppError("ACCOUNTING_PERIOD_CLOSED","الفترة المالية ليست مفتوحة؛ لا يمكن تسجيل حركة عادية عليها. استخدم إجراء التصحيح المعتمد.",409);
 }
 
 export async function accountingRoutes(app:FastifyInstance){
