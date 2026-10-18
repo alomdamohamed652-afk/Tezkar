@@ -6,6 +6,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { selectAttendanceDayEvents } from "./attendance-calculation.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
@@ -113,14 +114,15 @@ export async function attendanceRoutes(app:FastifyInstance){
     const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&(p.localDate===date||(overnight&&p.localDate===addDateKey(date,1)&&p.minute<=(end??0)+120)));
     assigned.forEach(p=>used.add(p.id));
     const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
-    const inPunch=ordered.find(p=>p.status==="IN");const outPunch=[...ordered].reverse().find(p=>p.status==="OUT"||p.status==="OVERTIME_OUT");
-    const otIn=ordered.find(p=>p.status==="OVERTIME_IN");const otOut=[...ordered].reverse().find(p=>p.status==="OVERTIME_OUT");
+    const selectedEvents=selectAttendanceDayEvents(ordered);
+    const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
+    const otIn=selectedEvents.otIn;const otOut=selectedEvents.otOut;
     let inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
     const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
     const expectedEnd=end===null?null:(overnight?end+1440:end);
     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
     let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
-    const needsReview=ordered.some(p=>p.suspicious||p.review_status==="PENDING");
+    const needsReview=selectedEvents.needsReview;
     let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
     report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,suspiciousCount:ordered.filter(p=>p.suspicious).length,punchCount:ordered.length});
    }
