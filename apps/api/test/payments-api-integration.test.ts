@@ -448,6 +448,34 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{orderId:financeOrder.id,category:"اختبار",description:"Direct cost no-double-count test",amount:25,expenseDate:"2099-02-10",expenseType:"DIRECT"}
       });
       assert.equal(directExpense.statusCode,201,directExpense.body);
+
+      // Historical settlements must not silently debit a current custody, and their date must belong to an open period.
+      const historicalDate="1800-03-10";
+      const historicalWithoutPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"تسوية قديمة",description:"Historical expense requires an open period",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:null,historicalSettlement:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(historicalWithoutPeriod.statusCode,409,historicalWithoutPeriod.body);
+      assert.equal(historicalWithoutPeriod.json().error.code,"ACCOUNTING_PERIOD_NOT_FOUND");
+
+      const historicalWithCurrentCustody=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"تسوية قديمة",description:"Historical expense must not debit current custody",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,historicalSettlement:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(historicalWithCurrentCustody.statusCode,422,historicalWithCurrentCustody.body);
+
+      const historicalPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Historical expense test period",periodStart:"1800-01-01",periodEnd:"1800-12-31"}
+      });
+      assert.equal(historicalPeriod.statusCode,201,historicalPeriod.body);
+      const historicalExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{category:"تسوية قديمة",description:"Historical expense inside open period",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:null,historicalSettlement:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(historicalExpense.statusCode,201,historicalExpense.body);
+      assert.equal(historicalExpense.json().data.paid_from_employee_id,null);
+
       const adminExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
         payload:{category:"اختبار إداري",description:"Administrative allocation no-double-count test",amount:30,expenseDate:"2099-02-11",expenseType:"ADMINISTRATIVE"}
