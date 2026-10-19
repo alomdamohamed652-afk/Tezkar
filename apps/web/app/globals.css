@@ -1561,11 +1561,11 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .search-select:has(.search-select-menu){z-index:1200}
 .search-select-menu{
   position:fixed!important;
-  top:var(--search-select-top,auto)!important;
+  top:auto;
   right:auto!important;
   bottom:auto!important;
-  left:var(--search-select-left,auto)!important;
-  width:var(--search-select-width, min(360px, calc(100vw - 24px)))!important;
+  left:auto;
+  width:min(360px, calc(100vw - 24px));
   max-width:calc(100vw - 24px);
   max-height:min(420px, var(--search-select-max-height, 55vh))!important;
   overflow:hidden;
