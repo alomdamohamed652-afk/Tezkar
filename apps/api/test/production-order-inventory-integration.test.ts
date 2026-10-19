@@ -1644,7 +1644,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(overpaidHistory.statusCode, 200, overpaidHistory.body);
     assert.equal(overpaidHistory.json().data.length, 4);
-    assert.equal(Number(overpaidHistory.json().data[0].affected[0].delta_amount), -200);
+    assert.equal(Number(overpaidHistory.json().data[0].affected[0].delta_amount), -290);
 
   } finally {
     if (app) await app.close();
