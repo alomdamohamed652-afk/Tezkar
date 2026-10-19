@@ -35,7 +35,7 @@ export default function ReportsPage(){
  const [audit,setAudit]=useState<Audit[]>([]);
  const [production,setProduction]=useState<Production[]>([]);
  const [allProduction,setAllProduction]=useState<Production[]>([]);
- const [earnings,setEarnings]=useState<EmployeeEarning[]>([]);
+ const [earnings,setEarnings]=useState<EmployeeEarning[]>([]);\n const [allEarnings,setAllEarnings]=useState<EmployeeEarning[]>([]);
  const [tab,setTab]=useState<"production"|"earnings">("production");
  const [from,setFrom]=useState("");
  const [to,setTo]=useState("");
@@ -47,7 +47,7 @@ export default function ReportsPage(){
  const [loading,setLoading]=useState(true);
  const [error,setError]=useState("");
 
- const employees=useMemo(()=>earnings.map(x=>({id:x.employee_id,label:x.employee_name,code:x.employee_code})),[earnings]);
+ const employees=useMemo(()=>allEarnings.map(x=>({id:x.employee_id,label:x.employee_name,code:x.employee_code})),[allEarnings]);
  const orders=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)if(x.order_id)m.set(x.order_id,[x.order_code,x.order_name].filter(Boolean).join(" — ")||"طلبية");return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
  const stages=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)m.set(x.stage_id,x.stage_name);return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
  const shifts=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)m.set(x.shift_id,x.shift_name);return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
@@ -63,7 +63,7 @@ export default function ReportsPage(){
    const earningParams=new URLSearchParams();if(from)earningParams.set("from",from);if(to)earningParams.set("to",to);if(employeeId)earningParams.set("employeeId",employeeId);
    const [p,e]=await Promise.all([
     api<{data:Production[]}>(`/api/reports/production?${params.toString()}`),
-    api<{data:EmployeeEarning[]}>(`/api/reports/employee-earnings${earningParams.size?"?"+earningParams.toString():""}`)
+    api<{data:EmployeeEarning[]}>(`/api/reports/employee-earnings${earningParams.toString()?"?"+earningParams.toString():""}`)
    ]);
    setProduction(p.data);setEarnings(e.data);
    if(initial)setAllProduction(p.data);
