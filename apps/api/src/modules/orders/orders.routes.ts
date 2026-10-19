@@ -783,7 +783,7 @@ export async function orderRoutes(app: FastifyInstance) {
           }
         }
       }
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],metadata:parsed.data.orderStageId?{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}:undefined,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return r.rows[0];
     });
     return reply.code(201).send({data:row});
