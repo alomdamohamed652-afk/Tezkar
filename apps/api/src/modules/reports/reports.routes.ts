@@ -100,7 +100,7 @@ export async function reportsRoutes(app: FastifyInstance) {
     }
 
     const result = await pool.query(
-      `SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
+      `SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,e.full_name AS full_name,
               COALESCE(SUM(l.credit_amount) FILTER (WHERE l.advance_repayment_id IS NULL),0) AS earned,
               COALESCE(SUM(l.debit_amount),0) AS debited,
               COALESCE(SUM(l.credit_amount-l.debit_amount),0) AS balance,
