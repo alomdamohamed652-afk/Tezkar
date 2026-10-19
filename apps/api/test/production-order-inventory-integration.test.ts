@@ -1619,23 +1619,23 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const overpaidPriceChange = await app.inject({
       method: "POST", url: "/api/orders/" + priceOrderId + "/price-changes",
       headers: { cookie: submitter.cookie },
-      payload: { orderStageId: priceStage.rows[0].id, newRate: 10, scope: "ALL", reason: "Integration overpaid price" }
+      payload: { orderStageId: priceStage.rows[0].id, newRate: 1, scope: "ALL", reason: "Integration overpaid price" }
     });
     assert.equal(overpaidPriceChange.statusCode, 201, overpaidPriceChange.body);
-    assert.equal(Number(overpaidPriceChange.json().data.total_delta), -400);
+    assert.equal(Number(overpaidPriceChange.json().data.total_delta), -580);
     const overpaidPriceLedger = await apiPool.query(
       "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE '%Integration overpaid price%'",
       [submitterEmployee]
     );
     assert.equal(Number(overpaidPriceLedger.rows[0].credits), 0);
-    assert.equal(Number(overpaidPriceLedger.rows[0].debits), 900,
+    assert.equal(Number(overpaidPriceLedger.rows[0].debits), 1080,
       "the payment and price decrease must both remain visible as auditable ledger debits");
     const negativeDueBalance = await apiPool.query(
       "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS remaining FROM employee_earnings_ledger WHERE employee_id=$1",
       [submitterEmployee]
     );
-    assert.equal(Number(negativeDueBalance.rows[0].remaining), balanceBeforePriceChange - 400,
-      "the full 400 EGP price reduction must be deducted from the worker's ledger balance");
+    assert.equal(Number(negativeDueBalance.rows[0].remaining), balanceBeforePriceChange - 580,
+      "the full 580 EGP price reduction must be deducted from the worker's ledger balance");
     assert.ok(Number(negativeDueBalance.rows[0].remaining) < 0,
       "overpayment must remain as a negative worker due balance instead of blocking the price change");
     const overpaidHistory = await app.inject({
