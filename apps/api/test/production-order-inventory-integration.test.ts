@@ -1610,6 +1610,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,300),($1,$3,200)",
       [paidWorkerPaymentId, priceProductionId, secondPriceProductionId]
     );
+    const balanceBeforeOverpaidPriceChange = await apiPool.query(
+      "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS remaining FROM employee_earnings_ledger WHERE employee_id=$1",
+      [submitterEmployee]
+    );
+    const balanceBeforePriceChange = Number(balanceBeforeOverpaidPriceChange.rows[0].remaining);
 
     const overpaidPriceChange = await app.inject({
       method: "POST", url: "/api/orders/" + priceOrderId + "/price-changes",
@@ -1629,7 +1634,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS remaining FROM employee_earnings_ledger WHERE employee_id=$1",
       [submitterEmployee]
     );
-    assert.equal(Number(negativeDueBalance.rows[0].remaining), -300,
+    assert.equal(Number(negativeDueBalance.rows[0].remaining), balanceBeforePriceChange - 400,
+      "the full 400 EGP price reduction must be deducted from the worker's ledger balance");
+    assert.ok(Number(negativeDueBalance.rows[0].remaining) < 0,
       "overpayment must remain as a negative worker due balance instead of blocking the price change");
     const overpaidHistory = await app.inject({
       method: "GET", url: "/api/orders/" + priceOrderId + "/price-changes",
