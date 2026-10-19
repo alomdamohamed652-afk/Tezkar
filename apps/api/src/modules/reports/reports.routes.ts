@@ -55,12 +55,12 @@ export async function reportsRoutes(app: FastifyInstance) {
               st.id AS stage_id,st.name AS stage_name,
               sh.id AS shift_id,sh.name AS shift_name,
               sle.full_name AS shift_leader_name,
-              po.id AS order_id,po.code AS order_code,po.name AS order_name,
+              po.id AS order_id,po.code AS order_code,po.order_name AS order_name,
               p.quantity,u.name AS unit_name,p.hours_worked,
               p.wage_type_code_snapshot AS wage_type_code,
               p.wage_type_method_snapshot AS wage_type_method,
               p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,
-              COALESCE(p.total_earning_amount,p.earning_amount)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS total_earning_amount,
+              COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)) AS total_earning_amount,
               p.status
          FROM production_entries p
          JOIN employees e ON e.id=p.employee_id
@@ -84,14 +84,18 @@ export async function reportsRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("INVALID_REPORT_FILTERS", "فلاتر تقرير المستحقات غير صحيحة", 422);
     const q = parsed.data;
     const params: unknown[] = [];
-    const conditions: string[] = ["l.employee_id=e.id"];
-    const add = (value: unknown, clause: (index: number) => string) => {
+    const ledgerConditions: string[] = ["l.employee_id=e.id"];
+    const addLedgerFilter = (value: unknown, clause: (index: number) => string) => {
       params.push(value);
-      conditions.push(clause(params.length));
+      ledgerConditions.push(clause(params.length));
     };
-    if (q.from) add(q.from, i => `l.created_at >= $${i}::date`);
-    if (q.to) add(q.to, i => `l.created_at < ($${i}::date + INTERVAL '1 day')`);
-    if (q.employeeId) add(q.employeeId, i => `e.id = $${i}`);
+    if (q.from) addLedgerFilter(q.from, i => `l.created_at >= $${i}::date`);
+    if (q.to) addLedgerFilter(q.to, i => `l.created_at < ($${i}::date + INTERVAL '1 day')`);
+    let employeeWhere = "";
+    if (q.employeeId) {
+      params.push(q.employeeId);
+      employeeWhere = `WHERE e.id = $${params.length}`;
+    }
 
     const result = await pool.query(
       `SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
@@ -101,8 +105,8 @@ export async function reportsRoutes(app: FastifyInstance) {
               COUNT(l.id)::int AS ledger_entries,
               COUNT(l.id) FILTER (WHERE l.entry_type='PRODUCTION_APPROVAL')::int AS production_entries
          FROM employees e
-         LEFT JOIN employee_earnings_ledger l ON ${conditions.join(" AND ")}
-        ${q.employeeId ? "" : ""}
+         LEFT JOIN employee_earnings_ledger l ON ${ledgerConditions.join(" AND ")}
+        ${employeeWhere}
         GROUP BY e.id,e.code,e.full_name
         ORDER BY e.full_name`,
       params
