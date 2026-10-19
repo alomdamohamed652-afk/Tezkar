@@ -32,6 +32,7 @@ import { payrollRoutes } from "./modules/payroll/payroll.routes.js";
 import { globalSearchRoutes } from "./modules/search/global-search.routes.js";
 import { notificationRoutes } from "./modules/notifications/notifications.routes.js";
 import { systemResetRoutes } from "./modules/system-reset/system-reset.routes.js";
+import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -67,6 +68,7 @@ await app.register(registrationRoutes);
 await app.register(passwordResetRoutes);
 await app.register(accountRoutes);
 await app.register(employeeRoutes);
+await app.register(attendanceRoutes);
 await app.register(masterDataRoutes);
 await app.register(userRoutes);
 await app.register(operationsMasterRoutes);
