@@ -58,7 +58,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    if(!(await client.query("SELECT id FROM employees WHERE id=$1",[id])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
    for(const d of p.data.days)await client.query(`INSERT INTO attendance_weekly_schedule(employee_id,weekday,starts_at,ends_at,is_day_off) VALUES($1,$2,$3,$4,$5) ON CONFLICT(employee_id,weekday) DO UPDATE SET starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,is_day_off=EXCLUDED.is_day_off,updated_at=now()`,[id,d.weekday,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff]);
    const saved=(await client.query("SELECT weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule WHERE employee_id=$1 ORDER BY weekday",[id])).rows;
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"attendance",entityType:"attendance_weekly_schedule",entityId:id,afterData:saved,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"attendance",entityType:"attendance_weekly_schedule",entityId:id,afterData:{days:saved},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return saved;
   });return {data:result};
  });
@@ -104,6 +104,17 @@ export async function attendanceRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"import",module:"attendance",entityType:"attendance_import_batch",entityId:batch.id,afterData:{sourceName:p.data.sourceName,totalRows:rows.length,inserted,duplicates,suspicious,unknown},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {batchId:batch.id,totalRows:rows.length,inserted,duplicates,suspicious,unknown};
   });return reply.code(201).send({data:result});
+ });
+ app.delete("/api/attendance/imported-data",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async request=>{
+  const result=await withTransaction(async client=>{
+   const counts=(await client.query("SELECT (SELECT count(*)::int FROM attendance_punches) punches,(SELECT count(*)::int FROM attendance_import_batches) batches")).rows[0] as {punches:number;batches:number};
+   // Keep schedule/device mappings and the audit trail; remove only imported punches and their batch history.
+   await client.query("DELETE FROM attendance_punches");
+   await client.query("DELETE FROM attendance_import_batches");
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"clear_imported_data",module:"attendance",entityType:"attendance_import_batch",metadata:{deletedPunches:counts.punches,deletedBatches:counts.batches,scope:"attendance imports only"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return counts;
+  });
+  return {data:{deletedPunches:result.punches,deletedBatches:result.batches}};
  });
  app.post("/api/attendance/punches/:id/review",{preHandler:[authenticateRequest,requirePermission("attendance.review")]},async request=>{
   const id=(request.params as {id:string}).id;const p=z.object({decision:z.enum(["APPROVED","REJECTED"])}).safeParse(request.body);
