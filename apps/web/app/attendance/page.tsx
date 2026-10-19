@@ -1,5 +1,5 @@
 "use client";
-import { ChangeEvent,useEffect,useState } from "react";
+import { ChangeEvent,ReactNode,useEffect,useState } from "react";
 import * as XLSX from "xlsx";
 import { api } from "../../lib/api";
 import { Sidebar,usePermissions } from "../../components/sidebar";
@@ -25,7 +25,7 @@ const attendanceColors:Record<string,{background:string;color:string;border:stri
  SUCCESS:{background:"#dcfce7",color:"#166534",border:"#86efac"},
  DANGER:{background:"#fee2e2",color:"#991b1b",border:"#fca5a5"}
 };
-function AttendancePill({children,tone="NEUTRAL"}:{children:React.ReactNode;tone?:string}){const color=attendanceColors[tone]??attendanceColors.NEUTRAL;return <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 9px",borderRadius:999,border:"1px solid "+color.border,background:color.background,color:color.color,fontSize:12,fontWeight:700,whiteSpace:"nowrap",lineHeight:1.5}}>{children}</span>}
+function AttendancePill({children,tone="NEUTRAL"}:{children:ReactNode;tone?:string}){const color=attendanceColors[tone]??attendanceColors.NEUTRAL;return <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 9px",borderRadius:999,border:"1px solid "+color.border,background:color.background,color:color.color,fontSize:12,fontWeight:700,whiteSpace:"nowrap",lineHeight:1.5}}>{children}</span>}
 function punchTone(status:string){return status==="IN"?"SUCCESS":status==="OUT"?"DANGER":status==="OVERTIME_IN"?"OVERTIME_IN":status==="OVERTIME_OUT"?"OVERTIME_OUT":"NEUTRAL"}
 function reportTone(status:string){return status==="PRESENT"?"SUCCESS":status==="ABSENT"?"DANGER":status==="MISSING_PUNCH"?"WARNING":status==="DAY_OFF"?"NEUTRAL":status==="DAY_OFF_WITH_PUNCH"?"OVERTIME_IN":status==="NOT_STARTED"?"NEUTRAL":"WARNING"}
 
