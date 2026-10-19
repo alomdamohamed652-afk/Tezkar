@@ -35,7 +35,8 @@ export default function ReportsPage(){
  const [audit,setAudit]=useState<Audit[]>([]);
  const [production,setProduction]=useState<Production[]>([]);
  const [allProduction,setAllProduction]=useState<Production[]>([]);
- const [earnings,setEarnings]=useState<EmployeeEarning[]>([]);\n const [allEarnings,setAllEarnings]=useState<EmployeeEarning[]>([]);
+ const [earnings,setEarnings]=useState<EmployeeEarning[]>([]);
+ const [allEarnings,setAllEarnings]=useState<EmployeeEarning[]>([]);
  const [tab,setTab]=useState<"production"|"earnings">("production");
  const [from,setFrom]=useState("");
  const [to,setTo]=useState("");
