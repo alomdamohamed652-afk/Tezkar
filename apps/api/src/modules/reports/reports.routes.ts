@@ -60,7 +60,7 @@ export async function reportsRoutes(app: FastifyInstance) {
               p.wage_type_code_snapshot AS wage_type_code,
               p.wage_type_method_snapshot AS wage_type_method,
               p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,
-              COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)) AS total_earning_amount,
+              p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS total_earning_amount,
               p.status
          FROM production_entries p
          JOIN employees e ON e.id=p.employee_id
