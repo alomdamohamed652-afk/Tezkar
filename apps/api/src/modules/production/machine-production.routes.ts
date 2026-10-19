@@ -88,7 +88,7 @@ export async function machineProductionCancellationRoutes(app: FastifyInstance) 
             WHERE id=$2`,
           [Number(current.rows[0].quantity),current.rows[0].order_stage_id]
         );
-        await client.query("UPDATE production_orders SET status='IN_PROGRESS',updated_at=now() WHERE id=$1 AND status='COMPLETED'",[current.rows[0].order_id]);
+        await client.query("UPDATE production_orders SET status='IN_PROGRESS',updated_at=now() WHERE id=$1 AND status='COMPLETED' AND EXISTS (SELECT 1 FROM order_stages WHERE order_id=$1 AND status NOT IN ('COMPLETED','CANCELLED'))",[current.rows[0].order_id]);
       }
       const updated = await client.query(`UPDATE machine_productions
             SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),cancellation_reason=$2
