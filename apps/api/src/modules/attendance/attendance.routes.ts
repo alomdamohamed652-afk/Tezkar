@@ -128,7 +128,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   const first=new Date(dates.data.from+"T00:00:00Z"),last=new Date(dates.data.to+"T00:00:00Z");const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
   if(daysCount>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
   const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
-  const schedules=(await pool.query("SELECT employee_id,effective_from::text,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date ORDER BY employee_id,weekday,effective_from DESC",[dates.data.from])).rows;
+  const schedules=(await pool.query("SELECT employee_id,effective_from::text,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date ORDER BY employee_id,weekday,effective_from DESC",[dates.data.to])).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
   // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
   const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE (punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2) AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
@@ -138,7 +138,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    const date=addDateKey(dates.data.from,dayIndex);const weekday=new Date(date+"T00:00:00Z").getUTCDay();
    for(const employee of employees){
     const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
-    const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:schedules.find(s=>s.employee_id===employee.id&&s.weekday===weekday);
+    const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:schedules.find(s=>s.employee_id===employee.id&&s.weekday===weekday&&s.effective_from<=date);
     const noSchedule=!schedule;const dayOff=Boolean(schedule?.is_day_off);const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
     const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.status,shiftDate:date,overnight,scheduledEndMinute:end}));
     assigned.forEach(p=>used.add(p.id));
