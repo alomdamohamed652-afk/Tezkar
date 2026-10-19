@@ -726,7 +726,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const order=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1",[id]);
     if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
     const [ordered,produced,delivered,stock,warehouseBalances] = await Promise.all([
-      pool.query("SELECT product_id,COALESCE(SUM(quantity),0) AS quantity FROM production_order_lines WHERE order_id=$1 GROUP BY product_id",[id]),
+      pool.query("SELECT pol.product_id,pr.name AS product_name,COALESCE(SUM(pol.quantity),0) AS quantity FROM production_order_lines pol JOIN products pr ON pr.id=pol.product_id WHERE pol.order_id=$1 GROUP BY pol.product_id,pr.name",[id]),
       pool.query("SELECT pe.product_id,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' GROUP BY pe.product_id",[id]),
       pool.query("SELECT dl.product_id,COALESCE(SUM(dl.quantity),0) AS quantity FROM delivery_permission_lines dl JOIN delivery_permissions d ON d.id=dl.delivery_permission_id WHERE d.order_id=$1 AND d.status='RELEASED' GROUP BY dl.product_id",[id]),
       pool.query("SELECT sm.product_id,pr.name AS product_name,COALESCE(SUM(CASE WHEN sm.movement_type IN ('OUT','TRANSFER_OUT') THEN sm.quantity ELSE 0 END),0) AS stock_out FROM stock_movements sm JOIN products pr ON pr.id=sm.product_id WHERE sm.order_id=$1 AND sm.movement_type IN ('OUT','TRANSFER_OUT') AND COALESCE(sm.reference_type,'') <> 'PRODUCTION_SCRAP' AND COALESCE(pr.product_type,'') <> 'SCRAP' GROUP BY sm.product_id,pr.name",[id]),
@@ -734,7 +734,7 @@ export async function orderRoutes(app: FastifyInstance) {
     ]);
     const map=new Map<string,{ordered:number;produced:number;delivered:number;stockOut:number;stockIn:number;stockBalanceBefore:number;stockBalanceAfter:number;productName?:string}>();
     const blank=():{ordered:number;produced:number;delivered:number;stockOut:number;stockIn:number;stockBalanceBefore:number;stockBalanceAfter:number;productName?:string}=>({ordered:0,produced:0,delivered:0,stockOut:0,stockIn:0,stockBalanceBefore:0,stockBalanceAfter:0});
-    for(const row of ordered.rows)map.set(row.product_id,{...blank(),ordered:Number(row.quantity)});
+    for(const row of ordered.rows)map.set(row.product_id,{...blank(),ordered:Number(row.quantity),productName:row.product_name});
     for(const row of produced.rows){const x=map.get(row.product_id)||blank();x.produced=Number(row.quantity);map.set(row.product_id,x)}
     for(const row of delivered.rows){const x=map.get(row.product_id)||blank();x.delivered=Number(row.quantity);map.set(row.product_id,x)}
     for(const row of stock.rows){const x=map.get(row.product_id)||blank();x.stockOut=Number(row.stock_out);x.productName=row.product_name;map.set(row.product_id,x)}
