@@ -1578,3 +1578,16 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   scrollbar-gutter:stable;
 }
 .card,.card-body,.form-card,.content{min-width:0}
+
+
+/* Attendance: high-contrast visual coding for fast shift review */
+.attendance-event,.attendance-metric{display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid transparent;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;line-height:1.35;white-space:nowrap}
+.attendance-event::before{content:"";width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:currentColor}
+.event-in{color:#166534;background:#dcfce7;border-color:#86efac}
+.event-out{color:#991b1b;background:#fee2e2;border-color:#fca5a5}
+.event-overtime{color:#6b21a8;background:#f3e8ff;border-color:#d8b4fe}
+.event-unknown{color:#475569;background:#f1f5f9;border-color:#cbd5e1}
+.metric-late{color:#9a3412;background:#ffedd5;border-color:#fdba74}
+.metric-early{color:#9f1239;background:#ffe4e6;border-color:#fda4af}
+.metric-overtime{color:#6b21a8;background:#f3e8ff;border-color:#d8b4fe}
+.metric-zero{color:#475569;background:#f8fafc;border-color:#e2e8f0}
