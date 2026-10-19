@@ -12,7 +12,7 @@ const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
 const settingSchema=z.object({deviceCode:z.string().trim().max(80).nullable(),lateGraceMinutes:z.number().int().min(0).max(240).default(10),earlyGraceMinutes:z.number().int().min(0).max(240).default(5)});
 const timePattern=/^([01]\d|2[0-3]):[0-5]\d$/;
-const scheduleSchema=z.object({days:z.array(z.object({weekday:z.number().int().min(0).max(6),startsAt:z.string().regex(timePattern).nullable(),endsAt:z.string().regex(timePattern).nullable(),isDayOff:z.boolean()})).max(7)});
+const scheduleSchema=z.object({effectiveFrom:z.string().date(),days:z.array(z.object({weekday:z.number().int().min(0).max(6),startsAt:z.string().regex(timePattern).nullable(),endsAt:z.string().regex(timePattern).nullable(),isDayOff:z.boolean()})).max(7)});
 const str=(v:unknown)=>v==null?"":String(v).trim();
 function methodFrom(raw:string):"FINGERPRINT"|"PASSWORD"|"CARD"|"UNKNOWN"{const s=raw.toLowerCase();if(s.includes("finger")||s.includes("بصمة"))return "FINGERPRINT";if(s.includes("password")||s.includes("كلمة"))return "PASSWORD";if(s.includes("card")||s.includes("كارت")||s.includes("badge"))return "CARD";return "UNKNOWN";}
 function cairoWallTimeToUtc(wall:Date):Date{const parts=new Intl.DateTimeFormat("en-US",{timeZone:"Africa/Cairo",timeZoneName:"shortOffset"}).formatToParts(wall);const zone=parts.find(p=>p.type==="timeZoneName")?.value??"GMT+2";const m=zone.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);const sign=m?.[1]==="-"?-1:1;const minutes=sign*((Number(m?.[2]??2)*60)+Number(m?.[3]??0));return new Date(wall.getTime()-minutes*60000);}
@@ -37,7 +37,7 @@ export async function attendanceRoutes(app:FastifyInstance){
  });
  app.get("/api/attendance/settings",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async()=>{
   const employees=await pool.query(`SELECT e.id,e.code,e.full_name,e.is_active,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id ORDER BY e.code`);
-  const schedules=await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule ORDER BY employee_id,weekday");
+  const schedules=await pool.query(`SELECT DISTINCT ON (employee_id,weekday) employee_id,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule_versions WHERE effective_from<=CURRENT_DATE ORDER BY employee_id,weekday,effective_from DESC`);
   const exceptions=await pool.query("SELECT id,employee_id,start_date,end_date,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE end_date>=CURRENT_DATE-30 ORDER BY start_date DESC LIMIT 200");
   return {employees:employees.rows,schedules:schedules.rows,exceptions:exceptions.rows};
  });
@@ -56,10 +56,11 @@ export async function attendanceRoutes(app:FastifyInstance){
   if(!z.string().uuid().safeParse(id).success||!p.success||(p.success&&(p.data.days.length!==7||new Set(p.data.days.map(d=>d.weekday)).size!==7||p.data.days.some(d=>!d.isDayOff&&(!d.startsAt||!d.endsAt)))))throw new AppError("VALIDATION_ERROR","لازم تحدد الأيام السبعة كلها، وتحدد بداية ونهاية كل وردية أو تعلّم اليوم إجازة",422);
   const result=await withTransaction(async client=>{
    if(!(await client.query("SELECT id FROM employees WHERE id=$1",[id])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
-   for(const d of p.data.days)await client.query(`INSERT INTO attendance_weekly_schedule(employee_id,weekday,starts_at,ends_at,is_day_off) VALUES($1,$2,$3,$4,$5) ON CONFLICT(employee_id,weekday) DO UPDATE SET starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,is_day_off=EXCLUDED.is_day_off,updated_at=now()`,[id,d.weekday,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff]);
-   const saved=(await client.query("SELECT weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule WHERE employee_id=$1 ORDER BY weekday",[id])).rows;
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"attendance",entityType:"attendance_weekly_schedule",entityId:id,afterData:{days:saved},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-   return saved;
+   for(const d of p.data.days)await client.query(`INSERT INTO attendance_weekly_schedule_versions(employee_id,effective_from,weekday,starts_at,ends_at,is_day_off,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(employee_id,effective_from,weekday) DO UPDATE SET starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,is_day_off=EXCLUDED.is_day_off,created_by=EXCLUDED.created_by`,[id,p.data.effectiveFrom,d.weekday,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff,request.user!.userId]);
+   if(p.data.effectiveFrom<=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()))for(const d of p.data.days)await client.query(`INSERT INTO attendance_weekly_schedule(employee_id,weekday,starts_at,ends_at,is_day_off) VALUES($1,$2,$3,$4,$5) ON CONFLICT(employee_id,weekday) DO UPDATE SET starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,is_day_off=EXCLUDED.is_day_off,updated_at=now()`,[id,d.weekday,d.isDayOff?null:d.startsAt,d.isDayOff?null:d.endsAt,d.isDayOff]);
+   const saved=(await client.query("SELECT weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule_versions WHERE employee_id=$1 AND effective_from=$2 ORDER BY weekday",[id,p.data.effectiveFrom])).rows;
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"attendance",entityType:"attendance_weekly_schedule",entityId:id,afterData:{effectiveFrom:p.data.effectiveFrom,days:saved},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {effectiveFrom:p.data.effectiveFrom,days:saved};
   });return {data:result};
  });
  app.post("/api/attendance/exceptions",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async request=>{
@@ -127,7 +128,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   const first=new Date(dates.data.from+"T00:00:00Z"),last=new Date(dates.data.to+"T00:00:00Z");const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
   if(daysCount>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
   const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
-  const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule")).rows;
+  const schedules=(await pool.query("SELECT employee_id,effective_from::text,weekday,starts_at::text,ends_at::text,is_day_off FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date ORDER BY employee_id,weekday,effective_from DESC",[dates.data.from])).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
   // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
   const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE (punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2) AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
