@@ -554,17 +554,11 @@ export async function orderRoutes(app: FastifyInstance) {
           const previous=Number(entry.effective_earning);
           const revised=calculateStageEarning(String(entry.wage_type_method_snapshot),newRate,entry);
           const delta=Math.round((revised-previous+Number.EPSILON)*100)/100;
-          const paid=Number(entry.paid_amount);
-          const revisedTotal=revised+Number(entry.bonus_amount||0)-Number(entry.deduction_amount||0);
-          if(revisedTotal+0.0001<paid)throw new AppError("PRICE_BELOW_PAID_AMOUNT","السعر الجديد سيجعل مستحق العملية أقل من المبلغ المصروف بالفعل. راجع السعر قبل الحفظ.",409);
-          return {...entry,previous,revised,delta,paid};
+          // A price correction may legitimately make the revised entitlement lower
+          // than the amount already paid. Keep the full earnings delta in the ledger;
+          // the resulting negative balance represents the worker's outstanding deduction.
+          return {...entry,previous,revised,delta};
         });
-        const debitsByEmployee=new Map<string,number>();
-        for(const item of proposed){if(item.status==="APPROVED"&&item.delta<0)debitsByEmployee.set(item.employee_id,(debitsByEmployee.get(item.employee_id)||0)+Math.abs(item.delta));}
-        for(const [employeeId,needed] of debitsByEmployee){
-          const balance=await client.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS remaining FROM employee_earnings_ledger WHERE employee_id=$1",[employeeId]);
-          if(Number(balance.rows[0]?.remaining||0)+0.0001<needed)throw new AppError("INSUFFICIENT_EARNINGS_BALANCE","خفض السعر سيخصم أكثر من الرصيد المتاح لأحد العمال. تم إلغاء العملية بالكامل لحماية حساباتهم.",409);
-        }
         for(const item of proposed){
           await client.query(
             "INSERT INTO order_price_change_items(price_change_id,production_entry_id,employee_id,previous_earning,revised_earning,delta_amount,ledger_adjustment,applied_rate) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(price_change_id,production_entry_id) DO NOTHING",
@@ -577,7 +571,7 @@ export async function orderRoutes(app: FastifyInstance) {
             const debit=item.delta<0?Math.abs(item.delta):0;
             await client.query(
               "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
-              [item.employee_id,credit,debit,request.user!.userId,"تغيير سعر الطلبية "+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+              [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
             );
           }
           affected++;
