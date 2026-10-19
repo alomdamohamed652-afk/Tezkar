@@ -103,6 +103,8 @@ export async function productionRoutes(app: FastifyInstance) {
     const query = z.object({
       status: z.enum(["PENDING","APPROVED","REJECTED","CANCELLED"]).optional(),
       employeeId: z.string().uuid().optional(),
+      orderId: z.string().uuid().optional(),
+      stageId: z.string().uuid().optional(),
       from: z.string().date().optional(),
       to: z.string().date().optional(),
       limit: z.coerce.number().int().min(1).max(200).default(100)
@@ -129,7 +131,12 @@ export async function productionRoutes(app: FastifyInstance) {
 
     if (query.data.status) { params.push(query.data.status); where.push(`p.status=$${params.length}`); }
     else where.push("p.status <> 'CANCELLED'");
-    if (query.data.employeeId) { params.push(query.data.employeeId); where.push(`p.employee_id=$${params.length}`); }
+    if (query.data.employeeId) { params.push(query.data.employeeId); where.push(`p.employee_id=${params.length}`); }
+    if (query.data.orderId) {
+      params.push(query.data.orderId);
+      where.push(`EXISTS (SELECT 1 FROM order_stages os_filter WHERE os_filter.id=p.order_stage_id AND os_filter.order_id=${params.length})`);
+    }
+    if (query.data.stageId) { params.push(query.data.stageId); where.push(`p.stage_id=${params.length}`); }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
 
