@@ -59,7 +59,9 @@ export async function reportsRoutes(app: FastifyInstance) {
               p.quantity,u.name AS unit_name,p.hours_worked,
               p.wage_type_code_snapshot AS wage_type_code,
               p.wage_type_method_snapshot AS wage_type_method,
-              p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,
+              p.rate_snapshot,p.earning_amount AS base_earning_amount,
+              p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS earning_amount,
+              p.bonus_amount,p.deduction_amount,
               p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS total_earning_amount,
               p.status
          FROM production_entries p
