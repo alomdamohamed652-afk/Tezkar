@@ -1543,3 +1543,38 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   .toolbar,.filters{grid-template-columns:minmax(0,1fr)}
   .stats{grid-template-columns:minmax(0,1fr)}
 }
+
+
+/* Tezkar: keep long result lists inside their panels instead of extending the whole page. */
+.table-wrap{
+  max-height:min(62vh,680px);
+  overflow:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.table-wrap thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+}
+.search-select{position:relative;min-width:0;z-index:1}
+.search-select:has(.search-select-menu){z-index:1200}
+.search-select-menu{
+  position:fixed!important;
+  top:auto;
+  right:auto!important;
+  bottom:auto!important;
+  left:auto;
+  width:min(360px, calc(100vw - 24px));
+  max-width:calc(100vw - 24px);
+  max-height:min(420px, var(--search-select-max-height, 55vh))!important;
+  overflow:hidden;
+  z-index:99999!important;
+}
+.search-select-list{
+  max-height:calc(min(420px, var(--search-select-max-height, 55vh)) - 56px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.card,.card-body,.form-card,.content{min-width:0}
