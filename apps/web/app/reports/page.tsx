@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 import { formatMoney, formatInteger } from "../../lib/format";
@@ -47,6 +47,7 @@ export default function ReportsPage(){
  const [status,setStatus]=useState("");
  const [loading,setLoading]=useState(true);
  const [error,setError]=useState("");
+ const filtersInitialized=useRef(false);
 
  const employees=useMemo(()=>allEarnings.map(x=>({id:x.employee_id,label:x.employee_name,code:x.employee_code})),[allEarnings]);
  const orders=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)if(x.order_id)m.set(x.order_id,[x.order_code,x.order_name].filter(Boolean).join(" — ")||"طلبية");return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
@@ -76,10 +77,13 @@ export default function ReportsPage(){
   finally{setLoading(false);}
  }
 
- useEffect(()=>{void load(true);},[]);
+ useEffect(()=>{void load(true).finally(()=>{filtersInitialized.current=true;});},[]);
+ useEffect(()=>{if(filtersInitialized.current)void load(false);},[from,to,employeeId,orderId,stageId,shiftId,status]);
  const money=(x:string|number|null|undefined)=>formatMoney(x??0);
  const productionTotal=production.reduce((sum,x)=>sum+Number(x.total_earning_amount??x.earning_amount??0),0);
  const productionQuantity=production.reduce((sum,x)=>sum+Number(x.quantity??0),0);
+ const productionHours=production.reduce((sum,x)=>sum+Number(x.hours_worked??0),0);
+ const selectedEmployeeDues=employeeId?earnings.find(x=>x.employee_id===employeeId):undefined;
  const duesTotals=earnings.reduce((sum,x)=>({earned:sum.earned+Number(x.earned),debited:sum.debited+Number(x.debited),balance:sum.balance+Number(x.balance)}),{earned:0,debited:0,balance:0});
 
  function exportProduction(){
@@ -116,7 +120,8 @@ export default function ReportsPage(){
        <label className="field"><span>الوردية</span><select value={shiftId} onChange={e=>setShiftId(e.target.value)}><option value="">كل الورديات</option>{shifts.map(x=><option key={x.id} value={x.id}>{x.label}</option>)}</select></label>
        <label className="field"><span>حالة سجل الإنتاج</span><select value={status} onChange={e=>setStatus(e.target.value)}><option value="">كل الحالات عدا الملغي</option><option value="APPROVED">معتمد</option><option value="PENDING">معلق</option><option value="REJECTED">مرفوض</option><option value="CANCELLED">ملغي</option></select></label>
       </div>
-      <div className="form-actions"><button className="primary-button" type="button" onClick={()=>void load()} disabled={loading}>{loading?"جاري التحميل…":"عرض التقرير"}</button><button className="secondary-btn" type="button" onClick={()=>{setFrom("");setTo("");setEmployeeId("");setOrderId("");setStageId("");setShiftId("");setStatus("");setTimeout(()=>void load(),0);}}>مسح الفلاتر</button></div>
+      <div className="form-actions"><button className="primary-button" type="button" onClick={()=>void load()} disabled={loading}>{loading?"جاري تحديث التقرير…":"تحديث التقرير الآن"}</button><button className="secondary-btn" type="button" onClick={()=>{setFrom("");setTo("");setEmployeeId("");setOrderId("");setStageId("");setShiftId("");setStatus("");}}>مسح الفلاتر</button></div>
+      <div className="report-summary-grid filter-live-summary"><div><span>إجمالي قيمة الإنتاج المطابق للفلاتر</span><strong>{money(productionTotal)}</strong></div><div><span>إجمالي الكمية</span><strong>{formatInteger(productionQuantity)}</strong></div><div><span>عدد السجلات</span><strong>{formatInteger(production.length)}</strong></div><div><span>إجمالي ساعات العمل</span><strong>{formatInteger(productionHours)}</strong></div>{selectedEmployeeDues&&<div><span>رصيد مستحقات العامل المختار</span><strong>{money(selectedEmployeeDues.balance)}</strong></div>}<div className="filter-summary-note">{loading?"جاري حساب الإجمالي للفلاتر المختارة…":"الإجمالي بيتحدّث تلقائيًا مع تغيير أي فلتر."}</div></div>
      </div>
     </section>
     <section className="card">
