@@ -37,7 +37,7 @@ export async function attendanceRoutes(app:FastifyInstance){
  });
  app.get("/api/attendance/settings",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async()=>{
   const employees=await pool.query(`SELECT e.id,e.code,e.full_name,e.is_active,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id ORDER BY e.code`);
-  const schedules=await pool.query("SELECT DISTINCT ON (employee_id,weekday) employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=(now() AT TIME ZONE 'Africa/Cairo')::date AND (effective_to IS NULL OR effective_to>=(now() AT TIME ZONE 'Africa/Cairo')::date) ORDER BY employee_id,weekday,effective_from DESC");
+  const schedules=await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions ORDER BY employee_id,weekday,effective_from");
   const exceptions=await pool.query("SELECT id,employee_id,start_date,end_date,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE end_date>=CURRENT_DATE-30 ORDER BY start_date DESC LIMIT 200");
   return {employees:employees.rows,schedules:schedules.rows,exceptions:exceptions.rows};
  });
