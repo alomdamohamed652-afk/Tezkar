@@ -8,6 +8,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
+import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 
 const orderLineSchema = z.object({
   productId: z.string().uuid().optional(),
@@ -661,7 +662,7 @@ export async function orderRoutes(app: FastifyInstance) {
       await assertAccountingPeriodOpen(client, parsed.data.workDate);
       const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
       if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
-      const product = await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
+      const product = await client.query("SELECT id,unit_id,track_inventory FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
       if(parsed.data.employeeId){
         const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);
@@ -698,7 +699,91 @@ export async function orderRoutes(app: FastifyInstance) {
          VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11) RETURNING *`,
         [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
       );
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      // Order-linked machine output must enter the virtual warehouse for its stage.
+      // Keep the stock receipt, cost lot, stage progress, and production record atomic.
+      if (parsed.data.orderStageId) {
+        if (!product.rows[0].track_inventory) {
+          throw new AppError("PRODUCT_NOT_INVENTORIED","منتج المرحلة غير مفعّل للمتابعة المخزنية؛ فعّل متابعة المخزون قبل تسجيل إنتاجه",409);
+        }
+        const stageRoute = await client.query(
+          `SELECT os.id,os.order_id,os.sequence_no,os.is_final_product
+             FROM order_stages os WHERE os.id=$1`,
+          [parsed.data.orderStageId]
+        );
+        if (!stageRoute.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
+        const finalStage = await client.query(
+          "SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status<>'CANCELLED'",
+          [stageRoute.rows[0].order_id]
+        );
+        const warehouseType = Boolean(stageRoute.rows[0].is_final_product) ||
+          (!Boolean(finalStage.rows[0]?.has_explicit_final) && Number(stageRoute.rows[0].sequence_no)===Number(finalStage.rows[0]?.max_sequence))
+          ? "FINISHED_GOODS" : "WIP";
+        const warehouse = await client.query(
+          "SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",
+          [warehouseType]
+        );
+        if (!warehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING",warehouseType==="FINISHED_GOODS"?"مخزن المنتجات النهائية غير مُجهز":"مخزن منتجات تحت التشغيل غير مُجهز",500);
+        const location = await client.query(
+          "SELECT id FROM warehouse_locations WHERE warehouse_id=$1 AND is_active=TRUE ORDER BY code,id LIMIT 1",
+          [warehouse.rows[0].id]
+        );
+        if (!location.rowCount) throw new AppError("DESTINATION_NOT_FOUND","المخزن المحدد للإنتاج لا يحتوي على مكان تخزين نشط",409);
+        const productLock = await client.query(
+          "SELECT id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",
+          [parsed.data.productId]
+        );
+        if (!productLock.rowCount) throw new AppError("PRODUCT_NOT_INVENTORIED","المنتج غير متابع مخزنيًا",409);
+        const balance = await client.query(
+          "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+          [parsed.data.productId,warehouse.rows[0].id,location.rows[0].id]
+        );
+        const currentQty=Number(balance.rows[0]?.quantity??0);
+        const currentValue=Number(balance.rows[0]?.inventory_value??0);
+        const currentAvg=Number(balance.rows[0]?.avg_unit_cost??0);
+        const costBasis=await client.query(
+          "SELECT COALESCE(SUM(inventory_value),0) AS value,COALESCE(SUM(quantity),0) AS quantity FROM stock_balances WHERE product_id=$1 AND quantity>0",
+          [parsed.data.productId]
+        );
+        const knownQty=Number(costBasis.rows[0]?.quantity??0);
+        const unitCost=knownQty>0?Math.max(0,Number(costBasis.rows[0]?.value??0)/knownQty):currentAvg;
+        const quantity=parsed.data.quantity;
+        const totalCost=quantity*unitCost;
+        const nextQty=currentQty+quantity;
+        const nextValue=currentValue+totalCost;
+        const nextAvg=nextQty>0?nextValue/nextQty:0;
+        if (balance.rowCount) {
+          await client.query("UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
+            [nextQty,nextValue,nextAvg,parsed.data.productId,warehouse.rows[0].id,location.rows[0].id]);
+        } else {
+          await client.query("INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,inventory_value,avg_unit_cost) VALUES($1,$2,$3,$4,$5,$6)",
+            [parsed.data.productId,warehouse.rows[0].id,location.rows[0].id,quantity,totalCost,unitCost]);
+        }
+        await client.query(
+          `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
+           VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'MACHINE_PRODUCTION',$12)`,
+          [parsed.data.productId,warehouse.rows[0].id,location.rows[0].id,quantity,unitId,unitCost,totalCost,stageRoute.rows[0].order_id,parsed.data.orderStageId,"إدخال إنتاج ماكينة "+r.rows[0].code+" إلى "+(warehouseType==="FINISHED_GOODS"?"مخزن المنتجات النهائية":"مخزن تحت التشغيل"),request.user!.userId,r.rows[0].id]
+        );
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:warehouse.rows[0].id,locationId:location.rows[0].id,quantity,unitCost,batchCode:r.rows[0].code,sourceType:"MACHINE_PRODUCTION",sourceId:r.rows[0].id});
+        const stageUpdate=await client.query(
+          `UPDATE order_stages
+              SET completed_quantity=completed_quantity+$1,
+                  status=CASE WHEN planned_quantity IS NOT NULL AND completed_quantity+$1>=planned_quantity THEN 'COMPLETED'
+                              WHEN status='PENDING' THEN 'IN_PROGRESS' ELSE status END,
+                  completed_at=CASE WHEN planned_quantity IS NOT NULL AND completed_quantity+$1>=planned_quantity THEN COALESCE(completed_at,now()) ELSE completed_at END
+            WHERE id=$2 RETURNING order_id`,
+          [quantity,parsed.data.orderStageId]
+        );
+        if (stageUpdate.rowCount) {
+          const completion=await client.query(
+            "SELECT COUNT(*)::int AS total,COUNT(*) FILTER(WHERE status='COMPLETED')::int AS completed FROM order_stages WHERE order_id=$1 AND status<>'CANCELLED'",
+            [stageUpdate.rows[0].order_id]
+          );
+          if(Number(completion.rows[0]?.total??0)>0 && Number(completion.rows[0].total)===Number(completion.rows[0].completed)) {
+            await client.query("UPDATE production_orders SET status='COMPLETED',updated_at=now() WHERE id=$1 AND status NOT IN ('CANCELLED','COMPLETED')",[stageUpdate.rows[0].order_id]);
+          }
+        }
+      }
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return r.rows[0];
     });
     return reply.code(201).send({data:row});
