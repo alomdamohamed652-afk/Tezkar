@@ -29,8 +29,10 @@ export async function machineProductionCancellationRoutes(app: FastifyInstance) 
         throw new AppError("INVALID_PASSWORD", "كلمة المرور غير صحيحة؛ لم يتم إلغاء السجل", 401);
       }
       const current = await client.query(
-        `SELECT mp.*,to_char(mp.work_date,'YYYY-MM-DD') AS normalized_work_date
-           FROM machine_productions mp WHERE mp.id=$1 FOR UPDATE`,
+        `SELECT mp.*,os.order_id,to_char(mp.work_date,'YYYY-MM-DD') AS normalized_work_date
+           FROM machine_productions mp
+           LEFT JOIN order_stages os ON os.id=mp.order_stage_id
+          WHERE mp.id=$1 FOR UPDATE OF mp`,
         [id]
       );
       if (!current.rowCount) throw new AppError("MACHINE_PRODUCTION_NOT_FOUND", "سجل إنتاج الماكينة غير موجود", 404);
