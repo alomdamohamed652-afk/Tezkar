@@ -84,7 +84,8 @@ export default function ReportsPage(){
  useEffect(()=>{void load(true).finally(()=>{filtersInitialized.current=true;});},[]);
  useEffect(()=>{if(filtersInitialized.current)void load(false);},[from,to,employeeId,orderId,stageId,shiftId,status,paymentStatus,groupBy]);
  const money=(x:string|number|null|undefined)=>formatMoney(x??0);
- const productionTotal=production.reduce((sum,x)=>sum+Number(x.total_earning_amount??x.earning_amount??0),0);\n const scrapTotal=production.reduce((sum,x)=>sum+Number(x.scrap_quantity??0),0);\n const paidTotal=production.reduce((sum,x)=>sum+Number(x.paid_amount??0),0);\n const remainingTotal=production.reduce((sum,x)=>sum+Number(x.remaining_amount??0),0);
+ const productionTotal=production.reduce((sum,x)=>sum+Number(x.total_earning_amount??x.earning_amount??0),0);
+ const scrapTotal=production.reduce((sum,x)=>sum+Number(x.scrap_quantity??0),0);\n const paidTotal=production.reduce((sum,x)=>sum+Number(x.paid_amount??0),0);\n const remainingTotal=production.reduce((sum,x)=>sum+Number(x.remaining_amount??0),0);
  const productionQuantity=production.reduce((sum,x)=>sum+Number(x.quantity??0),0);
  const productionHours=production.reduce((sum,x)=>sum+Number(x.hours_worked??0),0);
  const selectedEmployeeDues=employeeId?earnings.find(x=>x.employee_id===employeeId):undefined;
