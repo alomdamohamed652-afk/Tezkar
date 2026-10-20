@@ -25,7 +25,7 @@ function csvCell(value:unknown){const text=String(value??"");return '"' + text.r
 
 // CSV export metadata is kept in the same UTF-8 file ahead of the detail rows.
 function downloadCsv(filename:string,headers:string[],rows:unknown[][],metadata:unknown[][]=[]){
- const content="\\uFEFF"+[...metadata,...(metadata.length?[[]]:[]),headers,...rows].map(row=>row.map(csvCell).join(",")).join("\\r\\n");
+ const content="\uFEFF"+[...metadata,...(metadata.length?[[]]:[]),headers,...rows].map(row=>row.map(csvCell).join(",")).join("\r\n");
  const blob=new Blob([content],{type:"text/csv;charset=utf-8;"});
  const url=URL.createObjectURL(blob);const link=document.createElement("a");
  link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
@@ -51,6 +51,7 @@ export default function ReportsPage(){
  const [paymentStatus,setPaymentStatus]=useState("");
  const [groupBy,setGroupBy]=useState("none");
  const [weeklyMode,setWeeklyMode]=useState(false);
+ const [groups,setGroups]=useState<Array<{group_name:string;entries:number;quantity:number|string;earnings:number|string;hours:number|string}>>([]);
  const [loading,setLoading]=useState(true);
  const [error,setError]=useState("");
  const filtersInitialized=useRef(false);
@@ -77,8 +78,8 @@ export default function ReportsPage(){
    let offset=completeRows.length;
    const total=p.pagination?.total??completeRows.length;
    while(offset<total){const nextParams=new URLSearchParams(params);nextParams.set("offset",String(offset));const next=await api<{data:Production[]}>(`/api/reports/production?${nextParams.toString()}`);if(!next.data.length)break;completeRows=completeRows.concat(next.data);offset=completeRows.length;}
-   setProduction(completeRows);setEarnings(e.data);
-   if(initial)setAllProduction(completeRows);
+   setProduction(completeRows);setEarnings(e.data);setGroups(p.groups??[]);
+   if(initial){setAllProduction(completeRows);setAllEarnings(e.data);}
    if(initial){
     const s=await api<{data:Summary}>("/api/reports/summary");setSummary(s.data);
     if(canAudit){const a=await api<{data:Audit[]}>("/api/audit-log?limit=100");setAudit(a.data);}
@@ -137,7 +138,7 @@ export default function ReportsPage(){
        <label className="field"><span>الوردية</span><select value={shiftId} onChange={e=>setShiftId(e.target.value)}><option value="">كل الورديات</option>{shifts.map(x=><option key={x.id} value={x.id}>{x.label}</option>)}</select></label>
        <label className="field"><span>حالة سجل الإنتاج</span><select value={status} onChange={e=>setStatus(e.target.value)}><option value="">كل الحالات عدا الملغي</option><option value="APPROVED">معتمد</option><option value="PENDING">معلق</option><option value="REJECTED">مرفوض</option><option value="CANCELLED">ملغي</option></select></label>
       </div>
-      <div className="form-actions"><button className="primary-button" type="button" onClick={()=>void load()} disabled={loading}>{loading?"جاري تحديث التقرير…":"تحديث التقرير الآن"}</button><button className="secondary-btn" type="button" onClick={()=>{setFrom("");setTo("");setEmployeeId("");setOrderId("");setStageId("");setShiftId("");setStatus("");setPaymentStatus("");setGroupBy("none");}}>مسح الفلاتر</button></div>
+      <div className="form-actions"><button className="secondary-btn" type="button" onClick={()=>{const today=new Date().toLocaleDateString("en-CA");setWeeklyMode(false);setFrom(today);setTo(today);}}>اليوم الحالي</button><button className="primary-button" type="button" onClick={()=>void load()} disabled={loading}>{loading?"جاري تحديث التقرير…":"تحديث التقرير الآن"}</button><button className="secondary-btn" type="button" onClick={()=>{setFrom("");setTo("");setEmployeeId("");setOrderId("");setStageId("");setShiftId("");setStatus("");setPaymentStatus("");setGroupBy("none");}}>مسح الفلاتر</button></div>
       <div className="report-summary-grid filter-live-summary"><div><span>إجمالي قيمة الإنتاج المطابق للفلاتر</span><strong>{money(productionTotal)}</strong></div><div><span>إجمالي الكمية</span><strong>{formatInteger(productionQuantity)}</strong></div><div><span>عدد السجلات</span><strong>{formatInteger(production.length)}</strong></div><div><span>إجمالي ساعات العمل</span><strong>{formatInteger(productionHours)}</strong></div><div><span>إجمالي الهالك</span><strong>{formatInteger(scrapTotal)}</strong></div><div><span>المدفوع المخصص</span><strong>{money(paidTotal)}</strong></div><div><span>المتبقي</span><strong>{money(remainingTotal)}</strong></div>{selectedEmployeeDues&&<div><span>رصيد مستحقات العامل المختار</span><strong>{money(selectedEmployeeDues.balance)}</strong></div>}<div className="filter-summary-note">{loading?"جاري حساب الإجمالي للفلاتر المختارة…":"الإجمالي بيتحدّث تلقائيًا مع تغيير أي فلتر."}</div></div>
      </div>
     </section>
