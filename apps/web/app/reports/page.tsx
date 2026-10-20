@@ -23,7 +23,8 @@ const methodLabel:Record<string,string>={PER_PIECE:"بالقطعة",PER_1000:"ب
 
 function csvCell(value:unknown){const text=String(value??"");return '"' + text.replace(/"/g,'""') + '"';}
 function downloadCsv(filename:string,headers:string[],rows:unknown[][]){
- const content="\uFEFF"+[headers,...rows].map(row=>row.map(csvCell).join(",")).join("\r\n");
+ const content="\uFEFF"+[headers,...rows].map(row=>row.map(csvCell).join(",")).join("\r
+");
  const blob=new Blob([content],{type:"text/csv;charset=utf-8;"});
  const url=URL.createObjectURL(blob);const link=document.createElement("a");
  link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
@@ -71,7 +72,11 @@ export default function ReportsPage(){
     api<{data:Production[];pagination?:{total:number;hasMore:boolean};groups?:Array<{group_name:string;entries:number;quantity:number|string;earnings:number|string;hours:number|string}>}>(`/api/reports/production?${params.toString()}`),
     api<{data:EmployeeEarning[]}>(`/api/reports/employee-earnings${earningParams.toString()?"?"+earningParams.toString():""}`)
    ]);
-   let completeRows=p.data;\n   let offset=completeRows.length;\n   const total=p.pagination?.total??completeRows.length;\n   while(offset<total){const nextParams=new URLSearchParams(params);nextParams.set("offset",String(offset));const next=await api<{data:Production[]}>(`/api/reports/production?${nextParams.toString()}`);if(!next.data.length)break;completeRows=completeRows.concat(next.data);offset=completeRows.length;}\n   setProduction(completeRows);setEarnings(e.data);
+   let completeRows=p.data;
+   let offset=completeRows.length;
+   const total=p.pagination?.total??completeRows.length;
+   while(offset<total){const nextParams=new URLSearchParams(params);nextParams.set("offset",String(offset));const next=await api<{data:Production[]}>(`/api/reports/production?${nextParams.toString()}`);if(!next.data.length)break;completeRows=completeRows.concat(next.data);offset=completeRows.length;}
+   setProduction(completeRows);setEarnings(e.data);
    if(initial)setAllProduction(completeRows);
    if(initial){
     const s=await api<{data:Summary}>("/api/reports/summary");setSummary(s.data);
@@ -85,7 +90,9 @@ export default function ReportsPage(){
  useEffect(()=>{if(filtersInitialized.current)void load(false);},[from,to,employeeId,orderId,stageId,shiftId,status,paymentStatus,groupBy]);
  const money=(x:string|number|null|undefined)=>formatMoney(x??0);
  const productionTotal=production.reduce((sum,x)=>sum+Number(x.total_earning_amount??x.earning_amount??0),0);
- const scrapTotal=production.reduce((sum,x)=>sum+Number(x.scrap_quantity??0),0);\n const paidTotal=production.reduce((sum,x)=>sum+Number(x.paid_amount??0),0);\n const remainingTotal=production.reduce((sum,x)=>sum+Number(x.remaining_amount??0),0);
+ const scrapTotal=production.reduce((sum,x)=>sum+Number(x.scrap_quantity??0),0);
+ const paidTotal=production.reduce((sum,x)=>sum+Number(x.paid_amount??0),0);
+ const remainingTotal=production.reduce((sum,x)=>sum+Number(x.remaining_amount??0),0);
  const productionQuantity=production.reduce((sum,x)=>sum+Number(x.quantity??0),0);
  const productionHours=production.reduce((sum,x)=>sum+Number(x.hours_worked??0),0);
  const selectedEmployeeDues=employeeId?earnings.find(x=>x.employee_id===employeeId):undefined;
@@ -117,7 +124,10 @@ export default function ReportsPage(){
     <section className="card">
      <div className="card-header"><h2 className="card-title">إعداد التقرير</h2><span className="form-hint">اختار فترة أو عامل أو طلبية أو مرحلة أو وردية.</span></div>
      <div className="card-body">
-      <div className="form-grid">\n       <label className="field"><span>نوع التقرير</span><select value={weeklyMode?"weekly":"daily"} onChange={e=>{const weekly=e.target.value==="weekly";setWeeklyMode(weekly);if(weekly){const d=from?new Date(from+"T00:00:00"):new Date();const day=(d.getDay()+6)%7;d.setDate(d.getDate()-day);const start=d.toISOString().slice(0,10);const end=new Date(d);end.setDate(end.getDate()+6);setFrom(start);setTo(end.toISOString().slice(0,10));}else{const today=new Date().toISOString().slice(0,10);setFrom(today);setTo(today);}}}><option value="daily">تقرير شغل اليوم</option><option value="weekly">التقرير الأسبوعي</option></select></label>\n       <label className="field"><span>تجميع التقرير</span><select value={groupBy} onChange={e=>setGroupBy(e.target.value)}><option value="none">تفصيلي</option><option value="day">حسب اليوم</option><option value="employee">حسب العامل</option><option value="machine">حسب الماكينة / نوع الإنتاج</option><option value="order">حسب الطلبية</option><option value="shift">حسب الوردية</option></select></label>\n       <label className="field"><span>حالة الدفع</span><select value={paymentStatus} onChange={e=>setPaymentStatus(e.target.value)}><option value="">كل الحالات</option><option value="PAID">مدفوع</option><option value="PARTIAL">مدفوع جزئيًا</option><option value="UNPAID">غير مدفوع</option><option value="UNALLOCATED">دفعة تاريخية غير موزعة</option></select></label>
+      <div className="form-grid">
+       <label className="field"><span>نوع التقرير</span><select value={weeklyMode?"weekly":"daily"} onChange={e=>{const weekly=e.target.value==="weekly";setWeeklyMode(weekly);if(weekly){const d=from?new Date(from+"T00:00:00"):new Date();const day=(d.getDay()+6)%7;d.setDate(d.getDate()-day);const start=d.toISOString().slice(0,10);const end=new Date(d);end.setDate(end.getDate()+6);setFrom(start);setTo(end.toISOString().slice(0,10));}else{const today=new Date().toISOString().slice(0,10);setFrom(today);setTo(today);}}}><option value="daily">تقرير شغل اليوم</option><option value="weekly">التقرير الأسبوعي</option></select></label>
+       <label className="field"><span>تجميع التقرير</span><select value={groupBy} onChange={e=>setGroupBy(e.target.value)}><option value="none">تفصيلي</option><option value="day">حسب اليوم</option><option value="employee">حسب العامل</option><option value="machine">حسب الماكينة / نوع الإنتاج</option><option value="order">حسب الطلبية</option><option value="shift">حسب الوردية</option></select></label>
+       <label className="field"><span>حالة الدفع</span><select value={paymentStatus} onChange={e=>setPaymentStatus(e.target.value)}><option value="">كل الحالات</option><option value="PAID">مدفوع</option><option value="PARTIAL">مدفوع جزئيًا</option><option value="UNPAID">غير مدفوع</option><option value="UNALLOCATED">دفعة تاريخية غير موزعة</option></select></label>
        <label className="field"><span>من تاريخ</span><input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></label>
        <label className="field"><span>إلى تاريخ</span><input type="date" value={to} onChange={e=>setTo(e.target.value)}/></label>
        <label className="field"><span>العامل</span><select value={employeeId} onChange={e=>setEmployeeId(e.target.value)}><option value="">كل العمال</option>{employees.map(x=><option key={x.id} value={x.id}>{x.label} — {x.code}</option>)}</select></label>
