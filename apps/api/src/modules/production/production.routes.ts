@@ -1188,10 +1188,22 @@ export async function productionRoutes(app: FastifyInstance) {
       SELECT employee_id,employee_code,employee_name,order_id,order_code,order_name,
              COUNT(*)::int AS production_records,
              SUM(earned)::numeric(14,2) AS total_earned,
-             SUM(allocated_paid)::numeric(14,2) AS paid_amount,
-             GREATEST(SUM(earned)-SUM(allocated_paid),0)::numeric(14,2) AS remaining_amount,
-             CASE WHEN SUM(earned)-SUM(allocated_paid)<=0.009 THEN 'PAID'
-                  WHEN SUM(allocated_paid)>0.009 THEN 'PARTIAL' ELSE 'UNPAID' END AS payment_status
+             (SUM(allocated_paid)+COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0))::numeric(14,2) AS paid_amount,
+             GREATEST(SUM(earned)-SUM(allocated_paid)-COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0),0)::numeric(14,2) AS remaining_amount,
+             CASE WHEN SUM(earned)-SUM(allocated_paid)-COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)<=0.009 THEN 'PAID'
+                  WHEN SUM(allocated_paid)+COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)>0.009 THEN 'PARTIAL' ELSE 'UNPAID' END AS payment_status
         FROM production_due
        ${filters.length ? "WHERE "+filters.join(" AND ") : ""}
        GROUP BY employee_id,employee_code,employee_name,order_id,order_code,order_name
