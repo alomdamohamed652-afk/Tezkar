@@ -675,6 +675,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       await assertAccountingPeriodOpen(client);
       const available = await getAvailableEarnings(client, parsed.data.employeeId);
       let orderAvailable: number | null = null;
+      let orderLegacyPaid = 0;
+      let orderProductionCount = 0;
       if(parsed.data.settlementSource==="PREVIOUS_CUSTODY"){
         const orderDue=await client.query(`
           SELECT
@@ -692,8 +694,10 @@ export async function paymentsRoutes(app:FastifyInstance){
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
                 AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
-        orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-Number(orderDue.rows[0]?.legacy_order_paid??0));
-        if(Number(orderDue.rows[0]?.production_count??0)>0){
+        orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
+        orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
+        orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-orderLegacyPaid);
+        if(orderProductionCount>0){
           if(parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
         }else if(parsed.data.amount>available+0.009){
           throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
@@ -743,9 +747,16 @@ export async function paymentsRoutes(app:FastifyInstance){
            ORDER BY p.work_date,p.created_at,p.id
            FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
+        let legacyToApply=orderLegacyPaid;
         for(const row of productionRows.rows){
+          let rowRemaining=Number(row.remaining);
+          if(legacyToApply>0.009){
+            const legacyApplied=Math.min(legacyToApply,rowRemaining);
+            rowRemaining=Math.round((rowRemaining-legacyApplied)*100)/100;
+            legacyToApply=Math.round((legacyToApply-legacyApplied)*100)/100;
+          }
           if(amountToAllocate<=0.009)break;
-          const amount=Math.round(Math.min(amountToAllocate,Number(row.remaining))*100)/100;
+          const amount=Math.round(Math.min(amountToAllocate,rowRemaining)*100)/100;
           if(amount<=0)continue;
           await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
           amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
