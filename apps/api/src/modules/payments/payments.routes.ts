@@ -762,6 +762,17 @@ export async function paymentsRoutes(app:FastifyInstance){
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
                 AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
+        const unallocatedGlobal=await client.query(`
+          SELECT COALESCE(SUM(wp.gross_amount),0) AS amount
+            FROM worker_payments wp
+            LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+           WHERE wp.employee_id=$1 AND s.id IS NULL
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+             AND NOT EXISTS(SELECT 1 FROM accounting_expenses ae WHERE ae.idempotency_key=wp.idempotency_key)
+        `,[parsed.data.employeeId]);
+        if(Number(unallocatedGlobal.rows[0]?.amount??0)>0.009){
+          throw new AppError("HISTORICAL_PAYMENTS_NEED_ALLOCATION",`يوجد ${Number(unallocatedGlobal.rows[0].amount).toFixed(2)} ج.م من دفعات قديمة غير مرتبطة بطلبية؛ راجع توزيع الدفعات القديمة أولًا حتى لا يتكرر الصرف.`,409);
+        }
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
         orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-orderLegacyPaid);
