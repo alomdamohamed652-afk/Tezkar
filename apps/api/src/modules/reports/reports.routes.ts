@@ -57,7 +57,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         UNALLOCATED: "COALESCE(unallocated.has_unallocated,FALSE)",
         UNPAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)<=0.009 AND NOT COALESCE(unallocated.has_unallocated,FALSE)"
       };
-      where.push(paymentPredicates[q.paymentStatus]);
+      where.push(paymentPredicates[q.paymentStatus]!);
       whereSql = "WHERE " + where.join(" AND ");
     }
 
