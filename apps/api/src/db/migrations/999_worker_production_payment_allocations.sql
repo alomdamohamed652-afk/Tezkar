@@ -20,3 +20,17 @@ CREATE TABLE IF NOT EXISTS employee_earnings_settlement_allocations (
 
 CREATE INDEX IF NOT EXISTS employee_earnings_settlement_allocations_production_idx
   ON employee_earnings_settlement_allocations(production_entry_id);
+
+CREATE TABLE IF NOT EXISTS worker_payment_order_allocations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  worker_payment_id UUID NOT NULL REFERENCES worker_payments(id) ON DELETE RESTRICT,
+  production_entry_id UUID NOT NULL REFERENCES production_entries(id) ON DELETE RESTRICT,
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (worker_payment_id, production_entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS worker_payment_order_allocations_production_idx
+  ON worker_payment_order_allocations(production_entry_id);
+CREATE INDEX IF NOT EXISTS worker_payment_order_allocations_payment_idx
+  ON worker_payment_order_allocations(worker_payment_id);
