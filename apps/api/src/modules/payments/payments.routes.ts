@@ -777,7 +777,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyKey: parsed.data.idempotencyKey,
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
-        allocationOrderId: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderId : null,
+        allocationOrderId: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderId ?? null : null,
         allocationOrderStageId: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderStageId ?? null : null
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
