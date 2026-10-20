@@ -100,6 +100,8 @@ export async function reportsRoutes(app: FastifyInstance) {
     );
 
     const dataParams = [...params, q.limit, q.offset];
+    const limitParameter = params.length + 1;
+    const offsetParameter = params.length + 2;
     const result = await pool.query(
       `SELECT p.id,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.code AS production_code,
               e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
@@ -155,7 +157,7 @@ export async function reportsRoutes(app: FastifyInstance) {
          ) adj ON TRUE
         ${whereSql}
         ORDER BY p.work_date DESC,p.created_at DESC,p.id
-        LIMIT $${params.length-1} OFFSET $${params.length}`,
+        LIMIT ${limitParameter} OFFSET ${offsetParameter}`,
       dataParams
     );
 
