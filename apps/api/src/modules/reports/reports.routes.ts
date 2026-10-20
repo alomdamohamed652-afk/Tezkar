@@ -49,11 +49,32 @@ export async function reportsRoutes(app: FastifyInstance) {
     if (q.shiftId) add(q.shiftId, i => `p.shift_id = $${i}`);
     if (q.status) add(q.status, i => `p.status = $${i}`);
     else where.push("p.status <> 'CANCELLED'");
-    const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+    let whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+    if (q.paymentStatus) {
+      const paymentPredicates: Record<string,string> = {
+        PAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
+        PARTIAL: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)>0.009 AND COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) < COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
+        UNALLOCATED: "COALESCE(unallocated.has_unallocated,FALSE)",
+        UNPAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)<=0.009 AND NOT COALESCE(unallocated.has_unallocated,FALSE)"
+      };
+      where.push(paymentPredicates[q.paymentStatus]);
+      whereSql = "WHERE " + where.join(" AND ");
+    }
 
+    // The count and totals use all of the same business filters (including payment state).
+    // Keep joins for allocation-based filters so pagination cannot hide matching rows.
+    const countJoins = `
+      LEFT JOIN order_stages os ON os.id=p.order_stage_id
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
+          AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+      ) unallocated ON TRUE`;
     const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM production_entries p
-         LEFT JOIN order_stages os ON os.id=p.order_stage_id ${whereSql}`,
+      `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
       params
     );
     const summaryResult = await pool.query(
@@ -128,9 +149,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       dataParams
     );
 
-    // Apply payment state after data fetch so legacy unallocated payments remain visibly separate.
-    // Filters may not be pushed to SQL without changing the pagination count semantics.
-    const rows = q.paymentStatus ? result.rows.filter((row: {payment_status:string}) => row.payment_status === q.paymentStatus) : result.rows;
+    const rows = result.rows;
     const count = Number(countResult.rows[0]?.total ?? 0);
     const groupExpression: Record<string,string> = {
       employee: "e.full_name",
