@@ -530,7 +530,11 @@ export async function paymentsRoutes(app:FastifyInstance){
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
               LEFT JOIN order_stages os ON os.id=p.order_stage_id
-              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS allocated_paid,
+              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+              + COALESCE((SELECT SUM(sea.amount) FROM employee_earnings_settlement_allocations sea
+                JOIN production_entries p ON p.id=sea.production_entry_id
+                JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE p.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS allocated_paid,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
