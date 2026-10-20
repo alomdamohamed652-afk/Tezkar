@@ -83,70 +83,6 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
   const outstanding=await getOutstandingAdvanceAmount(client,employeeId);
   return Math.max(0,Math.round((balance+outstanding)*100)/100);
 }
-async function allocateWorkerPaymentToProduction(
-  client:import("pg").PoolClient,
-  paymentId:string,
-  employeeId:string,
-  grossAmount:number
-) {
-  // Older payments that were not tied to a specific order are applied FIFO to the oldest
-  // approved production rows before allocating the current payment. Order-costed historical
-  // payments are virtually applied only to rows from their own order.
-  const legacyGlobalResult=await client.query(`
-    SELECT COALESCE(SUM(wp.gross_amount),0) AS amount
-      FROM worker_payments wp
-      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-     WHERE wp.employee_id=$1 AND wp.id<>$2 AND s.id IS NULL
-       AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
-       AND NOT EXISTS(SELECT 1 FROM accounting_expenses ae WHERE ae.idempotency_key=wp.idempotency_key)
-  `,[employeeId,paymentId]);
-  let legacyGlobal=Number(legacyGlobalResult.rows[0]?.amount??0);
-  const rows=await client.query(`
-    SELECT p.id,os.order_id,
-      GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-        -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
-        -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining,
-      COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-        LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-        WHERE wp.employee_id=p.employee_id AND ae.order_id=os.order_id AND s.id IS NULL
-          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
-      FROM production_entries p
-      LEFT JOIN order_stages os ON os.id=p.order_stage_id
-     WHERE p.employee_id=$1 AND p.status='APPROVED'
-     ORDER BY p.work_date,p.created_at,p.id
-     FOR UPDATE OF p
-  `,[employeeId]);
-  const legacyByOrder=new Map<string,number>();
-  let amountToAllocate=Math.round(grossAmount*100)/100;
-  for(const row of rows.rows){
-    let remaining=Number(row.remaining);
-    if(row.order_id){
-      const orderId=String(row.order_id);
-      const legacyOrder=legacyByOrder.has(orderId)?(legacyByOrder.get(orderId)??0):Number(row.legacy_order_paid??0);
-      if(legacyOrder>0.009){
-        const applied=Math.min(legacyOrder,remaining);
-        remaining=Math.round((remaining-applied)*100)/100;
-        legacyByOrder.set(orderId,Math.round((legacyOrder-applied)*100)/100);
-      }
-    }
-    if(legacyGlobal>0.009){
-      const applied=Math.min(legacyGlobal,remaining);
-      remaining=Math.round((remaining-applied)*100)/100;
-      legacyGlobal=Math.round((legacyGlobal-applied)*100)/100;
-    }
-    if(amountToAllocate<=0.009)break;
-    const amount=Math.round(Math.min(amountToAllocate,remaining)*100)/100;
-    if(amount<=0)continue;
-    await client.query(
-      "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
-      [paymentId,row.id,amount]
-    );
-    amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
-  }
-  return {allocatedAmount:Math.round((grossAmount-amountToAllocate)*100)/100,unallocatedAmount:amountToAllocate};
-}
-
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
   const r=await client.query(`
     SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
@@ -263,7 +199,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allocationOrderId?:string|null;allocationOrderStageId?:string|null}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
@@ -306,11 +242,15 @@ async function executeWorkerPayment(
   const productions=await client.query(
     `SELECT pe.id,
       GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)-
+        COALESCE((SELECT SUM(sea.amount) FROM employee_earnings_settlement_allocations sea WHERE sea.production_entry_id=pe.id),0)) AS remaining
       FROM production_entries pe
+      LEFT JOIN order_stages os ON os.id=pe.order_stage_id
      WHERE pe.employee_id=$1 AND pe.status='APPROVED'
-     ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
-    [input.employeeId]);
+       AND ($2::uuid IS NULL OR os.order_id=$2)
+       AND ($3::uuid IS NULL OR pe.order_stage_id=$3)
+     ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE OF pe`,
+    [input.employeeId,input.allocationOrderId??null,input.allocationOrderStageId??null]);
   for(const production of productions.rows){
     if(allocationRemaining<=0.000001)break;
     const take=Math.min(allocationRemaining,Number(production.remaining));
@@ -533,7 +473,6 @@ export async function paymentsRoutes(app:FastifyInstance){
         grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
         manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
       });
-      await allocateWorkerPaymentToProduction(client,settlement.payment.id,String(current.rows[0].employee_id),settlement.grossAmount);
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [settlement.payment.id,id]);
@@ -587,7 +526,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           COALESCE((SELECT COUNT(*)::int FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
-            COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
               LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -595,7 +534,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]})
       ]);
       const earned = Number(production.rows[0]?.amount ?? 0);
@@ -752,7 +691,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE((SELECT COUNT(*)::int FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
-            COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
               LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -760,14 +699,14 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         const unallocatedGlobal=await client.query(`
           SELECT COALESCE(SUM(wp.gross_amount),0) AS amount
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
            WHERE wp.employee_id=$1 AND s.id IS NULL
-             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id)
              AND NOT EXISTS(SELECT 1 FROM accounting_expenses ae WHERE ae.idempotency_key=wp.idempotency_key)
         `,[parsed.data.employeeId]);
         if(Number(unallocatedGlobal.rows[0]?.amount??0)>0.009){
@@ -813,37 +752,11 @@ export async function paymentsRoutes(app:FastifyInstance){
         manualRepaymentAmount: parsed.data.advanceRepaymentAmount,
         idempotencyKey: parsed.data.idempotencyKey,
         idempotencyFingerprint: fingerprint,
-        skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY"
+        skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
+        allocationOrderId: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderId : null,
+        allocationOrderStageId: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderStageId ?? null : null
       });
-      if (parsed.data.settlementSource === "CURRENT_CUSTODY") {
-        await allocateWorkerPaymentToProduction(client,settlement.payment.id,parsed.data.employeeId,settlement.grossAmount);
-      }
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
-        let amountToAllocate=Math.round(parsed.data.amount*100)/100;
-        const productionRows=await client.query(`
-          SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
-            FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
-           WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
-             AND ($3::uuid IS NULL OR p.order_stage_id=$3)
-           ORDER BY p.work_date,p.created_at,p.id
-           FOR UPDATE OF p
-        `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
-        let legacyToApply=orderLegacyPaid;
-        for(const row of productionRows.rows){
-          let rowRemaining=Number(row.remaining);
-          if(legacyToApply>0.009){
-            const legacyApplied=Math.min(legacyToApply,rowRemaining);
-            rowRemaining=Math.round((rowRemaining-legacyApplied)*100)/100;
-            legacyToApply=Math.round((legacyToApply-legacyApplied)*100)/100;
-          }
-          if(amountToAllocate<=0.009)break;
-          const amount=Math.round(Math.min(amountToAllocate,rowRemaining)*100)/100;
-          if(amount<=0)continue;
-          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
-          amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
-        }
-        if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
         const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
         await client.query(
           `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
