@@ -1173,7 +1173,7 @@ export async function productionRoutes(app: FastifyInstance) {
              CASE WHEN SUM(earned)-SUM(allocated_paid)<=0.009 THEN 'PAID'
                   WHEN SUM(allocated_paid)>0.009 THEN 'PARTIAL' ELSE 'UNPAID' END AS payment_status
         FROM production_due
-       ${filters.length ? "WHERE "+filters.map(f=>f.replace(/o\\.id/,"order_id").replace(/e\\.id/,"employee_id")).join(" AND ") : ""}
+       ${filters.length ? "WHERE "+filters.join(" AND ") : ""}
        GROUP BY employee_id,employee_code,employee_name,order_id,order_code,order_name
        ORDER BY order_name,employee_name
     `,values);
@@ -1345,6 +1345,9 @@ export async function productionRoutes(app: FastifyInstance) {
         if(amount<=0)continue;
         await client.query("INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(settlement_id,production_entry_id) DO NOTHING",[settlement.rows[0].id,entry.id,amount]);
         allocationRemaining=Math.round((allocationRemaining-amount)*100)/100;
+      }
+      if(parsed.data.orderId && allocationRemaining>0.009){
+        throw new AppError("ORDER_SETTLEMENT_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ التسوية على إنتاج الطلبية؛ راجع المستحقات المرتبطة بالطلبية قبل الاعتماد.",409);
       }
       for(const item of repaymentPlan){
         const repayment=await client.query(
