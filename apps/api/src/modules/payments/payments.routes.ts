@@ -519,6 +519,9 @@ export async function paymentsRoutes(app:FastifyInstance){
               FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS earned,
+          COALESCE((SELECT COUNT(*)::int FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
+              WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
+                AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
             COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
@@ -690,7 +693,11 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-Number(orderDue.rows[0]?.legacy_order_paid??0));
-        if(parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
+        if(Number(orderDue.rows[0]?.production_count??0)>0){
+          if(parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
+        }else if(parsed.data.amount>available+0.009){
+          throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
+        }
       } else if(parsed.data.amount > available + 0.009) {
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
       }
@@ -743,7 +750,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
           amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
         }
-        if(amountToAllocate>0.009)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
+        if(amountToAllocate>0.009 && productionRows.rowCount>0)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
         const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
         await client.query(
           `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
