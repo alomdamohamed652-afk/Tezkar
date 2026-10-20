@@ -147,6 +147,24 @@ export async function productionRoutes(app: FastifyInstance) {
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='BONUS' ORDER BY a.created_at DESC LIMIT 1) AS bonus_reason,
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
               p.total_earning_amount,p.status,
+              COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0) AS paid_amount,
+              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+                - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
+              CASE
+                WHEN EXISTS(SELECT 1 FROM worker_payments wp
+                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                  JOIN order_stages os2 ON os2.id=p.order_stage_id
+                  WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
+                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
+                WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                   + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                   >= COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID'
+                WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                   + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)>0.009 THEN 'PARTIAL'
+                ELSE 'UNPAID'
+              END AS payment_status,
               e.code AS employee_code,e.full_name AS employee_name,
               sle.full_name AS shift_leader_name,
               pr.code AS product_code,pr.name AS product_name,
@@ -1140,6 +1158,75 @@ export async function productionRoutes(app: FastifyInstance) {
     return {data:result.rows};
   });
 
+  app.get("/api/production/earnings/order-summary", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async request => {
+    const q=z.object({orderId:z.string().uuid().optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
+    if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر حساب الطلبيات غير صحيحة",422);
+    const values:unknown[]=[];const filters:string[]=[];
+    if(q.data.orderId){values.push(q.data.orderId);filters.push("order_id=$"+values.length);}
+    if(q.data.employeeId){values.push(q.data.employeeId);filters.push("employee_id=$"+values.length);}
+    const result=await pool.query(`
+      WITH production_due AS (
+        SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
+               o.id AS order_id,o.code AS order_code,o.order_name,
+               p.id AS production_entry_id,p.code AS production_code,p.work_date,
+               GREATEST(COALESCE(p.total_earning_amount,p.earning_amount),0)::numeric(14,2) AS earned,
+               COALESCE(a.paid_amount,0)::numeric(14,2) AS allocated_paid
+          FROM production_entries p
+          JOIN employees e ON e.id=p.employee_id
+          JOIN order_stages os ON os.id=p.order_stage_id
+          JOIN production_orders o ON o.id=os.order_id
+          LEFT JOIN LATERAL (
+            SELECT
+              COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa
+                         JOIN employee_earnings_settlements s ON s.id=sa.settlement_id
+                        WHERE sa.production_entry_id=p.id),0)
+              + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_order_allocations wpa
+                           WHERE wpa.production_entry_id=p.id),0) AS paid_amount
+          ) a ON TRUE
+         WHERE p.status='APPROVED'
+      )
+      SELECT employee_id,employee_code,employee_name,order_id,order_code,order_name,
+             COUNT(*)::int AS production_records,
+             SUM(earned)::numeric(14,2) AS total_earned,
+             (SUM(allocated_paid)+COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0))::numeric(14,2) AS paid_amount,
+             GREATEST(SUM(earned)-SUM(allocated_paid)-COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0),0)::numeric(14,2) AS remaining_amount,
+             CASE WHEN SUM(earned)-SUM(allocated_paid)-COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)<=0.009 THEN 'PAID'
+                  WHEN SUM(allocated_paid)+COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                WHERE wp.employee_id=production_due.employee_id AND ae.order_id=production_due.order_id
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)>0.009 THEN 'PARTIAL' ELSE 'UNPAID' END AS payment_status
+        FROM production_due
+       ${filters.length ? "WHERE "+filters.join(" AND ") : ""}
+       GROUP BY employee_id,employee_code,employee_name,order_id,order_code,order_name
+       ORDER BY order_name,employee_name
+    `,values);
+    const unallocated=await pool.query(`
+      SELECT e.id AS employee_id,e.full_name AS employee_name,
+             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+                        WHERE s.employee_id=e.id AND NOT EXISTS(
+                          SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
+                        )),0)
+             + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                          WHERE wp.employee_id=e.id
+                            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+                            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                          ),0) AS unallocated_historical_payments
+        FROM employees e
+       WHERE e.is_active=TRUE AND ($1::uuid IS NULL OR e.id=$1)
+       ORDER BY e.full_name
+    `,[q.data.employeeId??null]);
+    return {data:result.rows,unallocatedHistoricalPayments:unallocated.rows};
+  });
+
   app.get("/api/production/earnings/settlements", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async request => {
     const q=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الموظف غير صحيح",422);
@@ -1159,9 +1246,11 @@ export async function productionRoutes(app: FastifyInstance) {
   app.post("/api/production/earnings/settlements", { preHandler: [authenticateRequest, requirePermission("production.adjustments.create")] }, async (request,reply) => {
     const parsed=z.object({
       employeeId:z.string().uuid(),
+      orderId:z.string().uuid().nullable().optional(),
       grossAmount:z.number().positive(),
       settlementDate:z.string().date().optional(),
       notes:z.string().trim().max(500).optional(),
+      idempotencyKey:z.string().uuid().optional(),
       repayments:z.array(z.object({advanceId:z.string().uuid(),amount:z.number().positive()})).max(20).optional()
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات صرف مستحقات العامل غير صحيحة",422);
@@ -1170,8 +1259,25 @@ export async function productionRoutes(app: FastifyInstance) {
       await assertAccountingPeriodOpen(client,parsed.data.settlementDate??new Date().toISOString().slice(0,10));
       const employee=await client.query("SELECT id,full_name FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
+      if(parsed.data.idempotencyKey){
+        const prior=await client.query("SELECT * FROM employee_earnings_settlements WHERE idempotency_key=$1 FOR SHARE",[parsed.data.idempotencyKey]);
+        if(prior.rowCount) return {settlement:prior.rows[0],employee:employee.rows[0],availableBefore:0,grossAmount:Number(prior.rows[0].gross_amount),cashPaid:Number(prior.rows[0].cash_paid_amount),advanceRepaymentAmount:Number(prior.rows[0].advance_repayment_amount),repayments:[],idempotentReplay:true};
+      }
+      if(parsed.data.orderId){
+        const legacy=await client.query(`
+          SELECT COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+                            WHERE s.employee_id=$1 AND NOT EXISTS(
+                              SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
+                            )),0)
+               + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                            WHERE wp.employee_id=$1 AND NOT EXISTS(
+                              SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id
+                            )),0) AS unallocated
+        `,[parsed.data.employeeId]);
+        if(Number(legacy.rows[0].unallocated)>0.009)throw new AppError("HISTORICAL_PAYMENTS_NEED_ALLOCATION",`يوجد ${Number(legacy.rows[0].unallocated).toFixed(2)} ج.م من دفعات قديمة غير موزعة على طلبيات؛ راجعها قبل تسوية طلبية محددة حتى لا يتكرر الصرف.`,409);
+      }
       const earnings=await client.query(`
-        SELECT
+        SELECT CASE WHEN $2::uuid IS NULL THEN
           COALESCE((SELECT SUM(p.earning_amount) FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED'),0)
           + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                        FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
@@ -1179,8 +1285,25 @@ export async function productionRoutes(app: FastifyInstance) {
           - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0)
           - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
                        LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-                      WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS available
-      `,[parsed.data.employeeId]);
+                      WHERE wp.employee_id=$1 AND s.id IS NULL),0)
+        ELSE
+          COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p
+                     JOIN order_stages os ON os.id=p.order_stage_id
+                    WHERE p.employee_id=$1 AND os.order_id=$2 AND p.status='APPROVED'),0)
+          - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+                       JOIN production_entries p ON p.id=a.production_entry_id
+                       JOIN order_stages os ON os.id=p.order_stage_id
+                      WHERE p.employee_id=$1 AND os.order_id=$2),0)
+          - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                       JOIN production_entries p ON p.id=a.production_entry_id
+                       JOIN order_stages os ON os.id=p.order_stage_id
+                      WHERE p.employee_id=$1 AND os.order_id=$2),0)
+          - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                       JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                      WHERE wp.employee_id=$1 AND ae.order_id=$2
+                        AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)
+        END AS available
+      `,[parsed.data.employeeId,parsed.data.orderId??null]);
       const available=Math.round(Number(earnings.rows[0].available)*100)/100;
       if(parsed.data.grossAmount>available+0.009)throw new AppError("SETTLEMENT_EXCEEDS_EARNINGS",`المستحقات المتاحة للعامل ${available.toFixed(2)} جنيه فقط`,409);
       const date=parsed.data.settlementDate??new Date().toISOString().slice(0,10);
@@ -1241,9 +1364,33 @@ export async function productionRoutes(app: FastifyInstance) {
       const repaymentTotal=Math.round(repaymentPlan.reduce((sum,x)=>sum+x.amount,0)*100)/100;
       const cashPaid=Math.round((parsed.data.grossAmount-repaymentTotal)*100)/100;
       const settlement=await client.query(
-        "INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-        [parsed.data.employeeId,parsed.data.grossAmount,cashPaid,repaymentTotal,date,parsed.data.notes??null,request.user!.userId]
+        "INSERT INTO employee_earnings_settlements(employee_id,order_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+        [parsed.data.employeeId,parsed.data.orderId??null,parsed.data.grossAmount,cashPaid,repaymentTotal,date,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey??null]
       );
+      // Allocate the settlement to the selected order's approved production rows (oldest first).
+      // The transaction locks each production row and caps each allocation at its remaining due.
+      let allocationRemaining=parsed.data.grossAmount;
+      const eligibleEntries=await client.query(`
+        SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+          -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+          -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+          FROM production_entries p
+          LEFT JOIN order_stages os ON os.id=p.order_stage_id
+         WHERE p.employee_id=$1 AND p.status='APPROVED'
+           AND ($2::uuid IS NULL OR os.order_id=$2)
+         ORDER BY p.work_date,p.created_at,p.id
+         FOR UPDATE OF p
+      `,[parsed.data.employeeId,parsed.data.orderId??null]);
+      for(const entry of eligibleEntries.rows){
+        if(allocationRemaining<=0.009)break;
+        const amount=Math.round(Math.min(allocationRemaining,Number(entry.remaining))*100)/100;
+        if(amount<=0)continue;
+        await client.query("INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(settlement_id,production_entry_id) DO NOTHING",[settlement.rows[0].id,entry.id,amount]);
+        allocationRemaining=Math.round((allocationRemaining-amount)*100)/100;
+      }
+      if(parsed.data.orderId && allocationRemaining>0.009){
+        throw new AppError("ORDER_SETTLEMENT_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ التسوية على إنتاج الطلبية؛ راجع المستحقات المرتبطة بالطلبية قبل الاعتماد.",409);
+      }
       for(const item of repaymentPlan){
         const repayment=await client.query(
           "INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,settlement_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id",
