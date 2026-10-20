@@ -77,22 +77,24 @@ export async function reportsRoutes(app: FastifyInstance) {
       `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
       params
     );
+    const summaryJoins = `
+      LEFT JOIN order_stages os ON os.id=p.order_stage_id
+      LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+      ) unallocated ON TRUE`;
     const summaryResult = await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
               COALESCE(SUM(p.hours_worked),0) AS hours,
               COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))),0) AS earnings,
               COALESCE(SUM(p.bonus_amount),0) AS bonuses,COALESCE(SUM(p.deduction_amount),0) AS deductions,
               COALESCE(SUM(scrap.scrap_quantity),0) AS scrap
-         FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
-         LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
-         LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
-         LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
-         LEFT JOIN LATERAL (
-           SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
-           JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-           WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
-             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-         ) unallocated ON TRUE
+         FROM production_entries p ${summaryJoins}
         ${whereSql}`,
       params
     );
