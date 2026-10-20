@@ -750,14 +750,11 @@ export async function paymentsRoutes(app:FastifyInstance){
            ORDER BY p.work_date,p.created_at,p.id
            FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
-        let legacyToApply=orderLegacyPaid;
         for(const row of productionRows.rows){
-          let rowRemaining=Number(row.remaining);
-          if(legacyToApply>0.009){
-            const legacyApplied=Math.min(legacyToApply,rowRemaining);
-            rowRemaining=Math.round((rowRemaining-legacyApplied)*100)/100;
-            legacyToApply=Math.round((legacyToApply-legacyApplied)*100)/100;
-          }
+          const rowRemaining=Number(row.remaining);
+          // Unallocated historical payments are counted against the order-level balance,
+          // but are intentionally not attributed to an individual production row.
+          // Keep this new payment's allocation tied only to the actual new payment.
           if(amountToAllocate<=0.009)break;
           const amount=Math.round(Math.min(amountToAllocate,rowRemaining)*100)/100;
           if(amount<=0)continue;
