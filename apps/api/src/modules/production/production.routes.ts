@@ -194,19 +194,81 @@ export async function productionRoutes(app: FastifyInstance) {
     preHandler: [authenticateRequest, requirePermission("production.view_own","own")]
   }, async (request) => {
     if (!request.user?.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+    const parsed=z.object({from:z.string().date().optional(),to:z.string().date().optional()}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","تاريخ عرض الإنتاج غير صحيح",422);
+    if(parsed.data.from&&parsed.data.to&&parsed.data.from>parsed.data.to)throw new AppError("INVALID_DATE_RANGE","تاريخ البداية لازم يكون قبل تاريخ النهاية",422);
+    const values:unknown[]=[request.user.employeeId];
+    const where=["p.employee_id=$1","p.status <> 'CANCELLED'"];
+    if(parsed.data.from){values.push(parsed.data.from);where.push(`p.work_date >= ${values.length}`);}
+    if(parsed.data.to){values.push(parsed.data.to);where.push(`p.work_date <= ${values.length}`);}
     const result = await pool.query(
-      `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,p.earning_amount,p.status,
+      `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,p.earning_amount,
+              COALESCE(p.bonus_amount,0) AS bonus_amount,COALESCE(p.deduction_amount,0) AS deduction_amount,
+              COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS net_earning,
+              p.total_earning_amount,p.status,
+              COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0) AS paid_amount,
+              GREATEST(COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)
+                - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
               pr.name AS product_name,st.name AS stage_name,sh.name AS shift_name,u.name AS unit_name
          FROM production_entries p
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
-        WHERE p.employee_id=$1 AND p.status <> 'CANCELLED'
-        ORDER BY p.work_date DESC,p.created_at DESC LIMIT 300`,
-      [request.user.employeeId]
+        WHERE ${where.join(" AND ")}
+        ORDER BY p.work_date DESC,p.created_at DESC LIMIT 1000`,
+      values
     );
-    return {data:result.rows};
+    const adjustmentValues:unknown[]=[request.user.employeeId];
+    const adjustmentWhere=["a.employee_id=$1"];
+    if(parsed.data.from){adjustmentValues.push(parsed.data.from);adjustmentWhere.push(`a.adjustment_date >= ${adjustmentValues.length}`);}
+    if(parsed.data.to){adjustmentValues.push(parsed.data.to);adjustmentWhere.push(`a.adjustment_date <= ${adjustmentValues.length}`);}
+    const adjustments=await pool.query(
+      `SELECT a.id,to_char(a.adjustment_date,'YYYY-MM-DD') AS adjustment_date,a.adjustment_type,a.amount,a.reason,
+              p.code AS production_code
+         FROM employee_earnings_adjustments a
+         LEFT JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE ${adjustmentWhere.join(" AND ")}
+        ORDER BY a.adjustment_date DESC,a.created_at DESC`,
+      adjustmentValues
+    );
+    const daily=await pool.query(
+      `WITH days AS (
+         SELECT p.work_date,
+                COALESCE(SUM(p.earning_amount) FILTER(WHERE p.status='APPROVED'),0) AS production_earned,
+                COALESCE(SUM(p.bonus_amount) FILTER(WHERE p.status='APPROVED'),0) AS production_bonus,
+                COALESCE(SUM(p.deduction_amount) FILTER(WHERE p.status='APPROVED'),0) AS production_deductions,
+                COUNT(*) FILTER(WHERE p.status='APPROVED')::int AS approved_count,
+                COUNT(*) FILTER(WHERE p.status='PENDING')::int AS pending_count
+           FROM production_entries p
+          WHERE p.employee_id=$1 AND p.status<>'CANCELLED'
+            AND ($2::date IS NULL OR p.work_date >= $2)
+            AND ($3::date IS NULL OR p.work_date <= $3)
+          GROUP BY p.work_date
+       ), extras AS (
+         SELECT a.adjustment_date AS work_date,
+                COALESCE(SUM(a.amount) FILTER(WHERE a.adjustment_type='BONUS'),0) AS extra_bonus,
+                COALESCE(SUM(a.amount) FILTER(WHERE a.adjustment_type='DEDUCTION'),0) AS extra_deductions
+           FROM employee_earnings_adjustments a
+          WHERE a.employee_id=$1 AND a.production_entry_id IS NULL
+            AND ($2::date IS NULL OR a.adjustment_date >= $2)
+            AND ($3::date IS NULL OR a.adjustment_date <= $3)
+          GROUP BY a.adjustment_date
+       )
+       SELECT to_char(COALESCE(days.work_date,extras.work_date),'YYYY-MM-DD') AS work_date,
+              COALESCE(days.production_earned,0)::numeric(14,2) AS production_earned,
+              (COALESCE(days.production_bonus,0)+COALESCE(extras.extra_bonus,0))::numeric(14,2) AS bonuses,
+              (COALESCE(days.production_deductions,0)+COALESCE(extras.extra_deductions,0))::numeric(14,2) AS deductions,
+              (COALESCE(days.production_earned,0)+COALESCE(days.production_bonus,0)-COALESCE(days.production_deductions,0)
+                +COALESCE(extras.extra_bonus,0)-COALESCE(extras.extra_deductions,0))::numeric(14,2) AS net_earned,
+              COALESCE(days.approved_count,0)::int AS approved_count,COALESCE(days.pending_count,0)::int AS pending_count
+         FROM days FULL OUTER JOIN extras ON extras.work_date=days.work_date
+        ORDER BY COALESCE(days.work_date,extras.work_date) DESC`,
+      [request.user.employeeId,parsed.data.from??null,parsed.data.to??null]
+    );
+    return {data:result.rows,adjustments:adjustments.rows,daily:daily.rows,filters:parsed.data};
   });
 
   app.post("/api/production", {
