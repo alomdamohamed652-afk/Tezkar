@@ -1158,10 +1158,12 @@ export async function productionRoutes(app: FastifyInstance) {
           JOIN order_stages os ON os.id=p.order_stage_id
           JOIN production_orders o ON o.id=os.order_id
           LEFT JOIN LATERAL (
-            SELECT SUM(sa.amount) AS paid_amount
-              FROM employee_earnings_settlement_allocations sa
-              JOIN employee_earnings_settlements s ON s.id=sa.settlement_id
-             WHERE sa.production_entry_id=p.id
+            SELECT
+              COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa
+                         JOIN employee_earnings_settlements s ON s.id=sa.settlement_id
+                        WHERE sa.production_entry_id=p.id),0)
+              + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_order_allocations wpa
+                           WHERE wpa.production_entry_id=p.id),0) AS paid_amount
           ) a ON TRUE
          WHERE p.status='APPROVED'
       )
@@ -1184,9 +1186,10 @@ export async function productionRoutes(app: FastifyInstance) {
                           SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                         )),0)
              + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                          WHERE wp.employee_id=e.id AND NOT EXISTS(
-                            SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id
-                          )),0) AS unallocated_historical_payments
+                          WHERE wp.employee_id=e.id
+                            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+                            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                          ),0) AS unallocated_historical_payments
         FROM employees e
        WHERE e.is_active=TRUE AND ($1::uuid IS NULL OR e.id=$1)
        ORDER BY e.full_name
