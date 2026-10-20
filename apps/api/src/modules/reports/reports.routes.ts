@@ -99,8 +99,6 @@ export async function reportsRoutes(app: FastifyInstance) {
       params
     );
 
-    const limitParameter = params.length + 1;
-    const offsetParameter = params.length + 2;
     const result = await pool.query(
       `WITH filtered_production AS (
          SELECT p.id,p.work_date,p.code AS production_code,p.employee_id,p.product_id,p.stage_id,p.shift_id,
