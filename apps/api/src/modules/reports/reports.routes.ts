@@ -99,6 +99,8 @@ export async function reportsRoutes(app: FastifyInstance) {
       params
     );
 
+    const limitParameter = params.length + 1;
+    const offsetParameter = params.length + 2;
     const result = await pool.query(
       `WITH filtered_production AS (
          SELECT p.id,p.work_date,p.code AS production_code,p.employee_id,p.product_id,p.stage_id,p.shift_id,
@@ -162,8 +164,8 @@ export async function reportsRoutes(app: FastifyInstance) {
              FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id
          ) adj ON TRUE
         ORDER BY p.work_date DESC,p.created_at DESC,p.id
-        LIMIT $1 OFFSET $2`,
-      [q.limit, q.offset]
+        LIMIT ${limitParameter} OFFSET ${offsetParameter}`,
+      [...params, q.limit, q.offset]
     );
 
     const rows = result.rows;
