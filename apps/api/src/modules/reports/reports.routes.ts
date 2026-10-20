@@ -100,7 +100,16 @@ export async function reportsRoutes(app: FastifyInstance) {
     );
 
     const result = await pool.query(
-      `SELECT p.id,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.code AS production_code,
+      `WITH filtered_production AS (
+         SELECT p.id,p.work_date,p.code AS production_code,p.employee_id,p.product_id,p.stage_id,p.shift_id,
+                p.shift_leader_employee_id,p.order_stage_id,p.production_type_id,p.unit_id,p.quantity,p.hours_worked,
+                p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.rate_snapshot,p.earning_amount,
+                p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,p.created_at
+           FROM production_entries p
+           LEFT JOIN order_stages filter_os ON filter_os.id=p.order_stage_id
+           ${whereSql}
+       )
+       SELECT p.id,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.production_code,
               e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.id AS stage_id,st.name AS stage_name,
@@ -125,7 +134,7 @@ export async function reportsRoutes(app: FastifyInstance) {
                    WHEN COALESCE(unallocated.has_unallocated,FALSE) THEN 'UNALLOCATED'
                    ELSE 'UNPAID' END AS payment_status,
               p.status
-         FROM production_entries p
+         FROM filtered_production p
          JOIN employees e ON e.id=p.employee_id
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
@@ -152,7 +161,6 @@ export async function reportsRoutes(app: FastifyInstance) {
                   SUM(a.amount) FILTER (WHERE a.adjustment_type='DEDUCTION') AS deduction_total
              FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id
          ) adj ON TRUE
-        ${whereSql}
         ORDER BY p.work_date DESC,p.created_at DESC,p.id
         LIMIT $1 OFFSET $2`,
       [q.limit, q.offset]
