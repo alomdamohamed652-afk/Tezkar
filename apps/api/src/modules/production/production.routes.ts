@@ -199,8 +199,8 @@ export async function productionRoutes(app: FastifyInstance) {
     if(parsed.data.from&&parsed.data.to&&parsed.data.from>parsed.data.to)throw new AppError("INVALID_DATE_RANGE","تاريخ البداية لازم يكون قبل تاريخ النهاية",422);
     const values:unknown[]=[request.user.employeeId];
     const where=["p.employee_id=$1","p.status <> 'CANCELLED'"];
-    if(parsed.data.from){values.push(parsed.data.from);where.push(`p.work_date >= ${values.length}`);}
-    if(parsed.data.to){values.push(parsed.data.to);where.push(`p.work_date <= ${values.length}`);}
+    if(parsed.data.from){values.push(parsed.data.from);where.push("p.work_date >= $" + values.length);}
+    if(parsed.data.to){values.push(parsed.data.to);where.push("p.work_date <= $" + values.length);}
     const result = await pool.query(
       `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,p.earning_amount,
               COALESCE(p.bonus_amount,0) AS bonus_amount,COALESCE(p.deduction_amount,0) AS deduction_amount,
@@ -223,8 +223,8 @@ export async function productionRoutes(app: FastifyInstance) {
     );
     const adjustmentValues:unknown[]=[request.user.employeeId];
     const adjustmentWhere=["a.employee_id=$1"];
-    if(parsed.data.from){adjustmentValues.push(parsed.data.from);adjustmentWhere.push(`a.adjustment_date >= ${adjustmentValues.length}`);}
-    if(parsed.data.to){adjustmentValues.push(parsed.data.to);adjustmentWhere.push(`a.adjustment_date <= ${adjustmentValues.length}`);}
+    if(parsed.data.from){adjustmentValues.push(parsed.data.from);adjustmentWhere.push("a.adjustment_date >= $" + adjustmentValues.length);}
+    if(parsed.data.to){adjustmentValues.push(parsed.data.to);adjustmentWhere.push("a.adjustment_date <= $" + adjustmentValues.length);}
     const adjustments=await pool.query(
       `SELECT a.id,to_char(a.adjustment_date,'YYYY-MM-DD') AS adjustment_date,a.adjustment_type,a.amount,a.reason,
               p.code AS production_code
