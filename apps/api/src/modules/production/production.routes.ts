@@ -1282,6 +1282,14 @@ export async function productionRoutes(app: FastifyInstance) {
                        JOIN production_entries p ON p.id=a.production_entry_id
                        JOIN order_stages os ON os.id=p.order_stage_id
                       WHERE p.employee_id=$1 AND os.order_id=$2),0)
+          - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                       JOIN production_entries p ON p.id=a.production_entry_id
+                       JOIN order_stages os ON os.id=p.order_stage_id
+                      WHERE p.employee_id=$1 AND os.order_id=$2),0)
+          - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                       JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                      WHERE wp.employee_id=$1 AND ae.order_id=$2
+                        AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)
         END AS available
       `,[parsed.data.employeeId,parsed.data.orderId??null]);
       const available=Math.round(Number(earnings.rows[0].available)*100)/100;
@@ -1352,7 +1360,8 @@ export async function productionRoutes(app: FastifyInstance) {
       let allocationRemaining=parsed.data.grossAmount;
       const eligibleEntries=await client.query(`
         SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-          -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+          -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+          -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
           FROM production_entries p
           LEFT JOIN order_stages os ON os.id=p.order_stage_id
          WHERE p.employee_id=$1 AND p.status='APPROVED'
