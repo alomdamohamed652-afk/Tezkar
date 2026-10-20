@@ -158,7 +158,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         ${whereSql}
         ORDER BY p.work_date DESC,p.created_at DESC,p.id
         LIMIT ${limitParameter} OFFSET ${offsetParameter}`,
-      dataParams
+      [...params, q.limit, q.offset]
     );
 
     const rows = result.rows;
