@@ -684,6 +684,9 @@ export async function paymentsRoutes(app:FastifyInstance){
               FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS earned,
+            COALESCE((SELECT COUNT(*)::int FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
+              WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
+                AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
             COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
