@@ -13,7 +13,10 @@ const reportFilters = z.object({
   stageId: z.string().uuid().optional(),
   shiftId: z.string().uuid().optional(),
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED"]).optional(),
-  limit: z.coerce.number().int().min(1).max(5000).default(1000)
+  paymentStatus: z.enum(["PAID", "PARTIAL", "UNPAID", "UNALLOCATED"]).optional(),
+  groupBy: z.enum(["none", "employee", "machine", "order", "shift", "day"]).default("none"),
+  limit: z.coerce.number().int().min(1).max(5000).default(1000),
+  offset: z.coerce.number().int().min(0).default(0)
 }).refine(value => !value.from || !value.to || value.from <= value.to, {
   message: "تاريخ البداية يجب أن يكون قبل تاريخ النهاية"
 });
@@ -46,25 +49,92 @@ export async function reportsRoutes(app: FastifyInstance) {
     if (q.shiftId) add(q.shiftId, i => `p.shift_id = $${i}`);
     if (q.status) add(q.status, i => `p.status = $${i}`);
     else where.push("p.status <> 'CANCELLED'");
-    params.push(q.limit);
+    let whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+    if (q.paymentStatus) {
+      const paymentPredicates: Record<string,string> = {
+        PAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
+        PARTIAL: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)>0.009 AND COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) < COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
+        UNALLOCATED: "COALESCE(unallocated.has_unallocated,FALSE)",
+        UNPAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)<=0.009 AND NOT COALESCE(unallocated.has_unallocated,FALSE)"
+      };
+      where.push(paymentPredicates[q.paymentStatus]!);
+      whereSql = "WHERE " + where.join(" AND ");
+    }
+
+    // The count and totals use all of the same business filters (including payment state).
+    // Keep joins for allocation-based filters so pagination cannot hide matching rows.
+    const countJoins = `
+      LEFT JOIN order_stages os ON os.id=p.order_stage_id
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
+          AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+      ) unallocated ON TRUE`;
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
+      params
+    );
+    const summaryJoins = `
+      LEFT JOIN order_stages os ON os.id=p.order_stage_id
+      LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
+      LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+      ) unallocated ON TRUE`;
+    const summaryResult = await pool.query(
+      `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
+              COALESCE(SUM(p.hours_worked),0) AS hours,
+              COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))),0) AS earnings,
+              COALESCE(SUM(p.bonus_amount),0) AS bonuses,COALESCE(SUM(p.deduction_amount),0) AS deductions,
+              COALESCE(SUM(scrap.scrap_quantity),0) AS scrap
+         FROM production_entries p ${summaryJoins}
+        ${whereSql}`,
+      params
+    );
 
     const result = await pool.query(
-      `SELECT p.id,p.work_date,p.code AS production_code,
+      `WITH filtered_production AS (
+         SELECT p.id,p.work_date,p.code AS production_code,p.employee_id,p.product_id,p.stage_id,p.shift_id,
+                p.shift_leader_employee_id,p.order_stage_id,p.production_type_id,p.unit_id,p.quantity,p.hours_worked,
+                p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.rate_snapshot,p.earning_amount,
+                p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,p.created_at
+           FROM production_entries p
+           LEFT JOIN order_stages filter_os ON filter_os.id=p.order_stage_id
+           ${whereSql}
+       )
+       SELECT p.id,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.production_code,
               e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
               pr.code AS product_code,pr.name AS product_name,
               st.id AS stage_id,st.name AS stage_name,
               sh.id AS shift_id,sh.name AS shift_name,
               sle.full_name AS shift_leader_name,
               po.id AS order_id,po.code AS order_code,po.order_name AS order_name,
+              pt.name AS machine_name,
               p.quantity,u.name AS unit_name,p.hours_worked,
               p.wage_type_code_snapshot AS wage_type_code,
               p.wage_type_method_snapshot AS wage_type_method,
               p.rate_snapshot,p.earning_amount AS base_earning_amount,
               p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS earning_amount,
               p.bonus_amount,p.deduction_amount,
-              p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS total_earning_amount,
+              COALESCE(adj.bonus_total,COALESCE(p.bonus_amount,0)) AS bonus_total,
+              COALESCE(adj.deduction_total,COALESCE(p.deduction_amount,0)) AS deduction_total,
+              COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)) AS total_earning_amount,
+              COALESCE(scrap.scrap_quantity,0) AS scrap_quantity,COALESCE(scrap.scrap_types,'') AS scrap_types,
+              COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) AS paid_amount,
+              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-COALESCE(pa.paid_amount,0)-COALESCE(sa.paid_amount,0),0) AS remaining_amount,
+              CASE WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009 THEN 'PAID'
+                   WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)>0.009 THEN 'PARTIAL'
+                   WHEN COALESCE(unallocated.has_unallocated,FALSE) THEN 'UNALLOCATED'
+                   ELSE 'UNPAID' END AS payment_status,
               p.status
-         FROM production_entries p
+         FROM filtered_production p
          JOIN employees e ON e.id=p.employee_id
          JOIN products pr ON pr.id=p.product_id
          JOIN stages st ON st.id=p.stage_id
@@ -73,12 +143,60 @@ export async function reportsRoutes(app: FastifyInstance) {
          LEFT JOIN employees sle ON sle.id=p.shift_leader_employee_id
          LEFT JOIN order_stages os ON os.id=p.order_stage_id
          LEFT JOIN production_orders po ON po.id=os.order_id
-        ${where.length ? "WHERE " + where.join(" AND ") : ""}
-        ORDER BY p.work_date DESC,p.created_at DESC
-        LIMIT $${params.length}`,
+         LEFT JOIN production_types pt ON pt.id=p.production_type_id
+         LEFT JOIN LATERAL (
+           SELECT SUM(s.quantity) AS scrap_quantity,string_agg(DISTINCT s.scrap_type,', ' ORDER BY s.scrap_type) AS scrap_types
+             FROM production_scrap_records s WHERE s.production_entry_id=p.id
+         ) scrap ON TRUE
+         LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
+         LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
+             JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
+              AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+         ) unallocated ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT SUM(a.amount) FILTER (WHERE a.adjustment_type='BONUS') AS bonus_total,
+                  SUM(a.amount) FILTER (WHERE a.adjustment_type='DEDUCTION') AS deduction_total
+             FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id
+         ) adj ON TRUE
+        ORDER BY p.work_date DESC,p.created_at DESC,p.id`,
       params
     );
-    return { data: result.rows };
+
+    const rows = result.rows;
+    const count = Number(countResult.rows[0]?.total ?? 0);
+    const groupExpression: Record<string,string> = {
+      employee: "e.full_name",
+      machine: "COALESCE(pt.name,pr.name)",
+      order: "COALESCE(po.code || ' — ' || po.order_name,'بدون طلبية')",
+      shift: "sh.name",
+      day: "to_char(p.work_date,'YYYY-MM-DD')"
+    };
+    const groups = q.groupBy === "none" ? [] : (await pool.query(
+      `SELECT ${groupExpression[q.groupBy]} AS group_name,COUNT(*)::int AS entries,
+              COALESCE(SUM(p.quantity),0) AS quantity,
+              COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))),0) AS earnings,
+              COALESCE(SUM(p.hours_worked),0) AS hours
+         FROM production_entries p JOIN employees e ON e.id=p.employee_id
+         JOIN products pr ON pr.id=p.product_id JOIN shifts sh ON sh.id=p.shift_id
+         LEFT JOIN order_stages os ON os.id=p.order_stage_id LEFT JOIN production_orders po ON po.id=os.order_id
+         LEFT JOIN production_types pt ON pt.id=p.production_type_id
+         LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
+         LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
+           JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+           WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
+             AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+         ) unallocated ON TRUE
+        ${whereSql}
+        GROUP BY 1 ORDER BY 1`,
+      params
+    )).rows;
+    return { data: rows, pagination: {total:count,limit:q.limit,offset:q.offset,hasMore:q.offset+rows.length<count},
+      summary:summaryResult.rows[0], groups, meta:{from:q.from??null,to:q.to??null,generatedAt:new Date().toISOString(),groupBy:q.groupBy} };
   });
 
   app.get("/api/reports/employee-earnings", { preHandler: [authenticateRequest, requirePermission("reports.view")] }, async request => {
@@ -138,4 +256,5 @@ export async function reportsRoutes(app: FastifyInstance) {
     const r = await pool.query(`SELECT a.id,a.occurred_at,a.action,a.module,a.entity_type,a.entity_id,a.metadata,u.username,e.full_name AS employee_name,a.ip_address FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id LEFT JOIN employees e ON e.id=a.actor_employee_id ORDER BY a.occurred_at DESC LIMIT $1`, [q.data.limit]);
     return { data:r.rows };
   });
+
 }
