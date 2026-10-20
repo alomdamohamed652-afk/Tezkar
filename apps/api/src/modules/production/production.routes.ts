@@ -154,10 +154,12 @@ export async function productionRoutes(app: FastifyInstance) {
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
-                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-                  JOIN order_stages os2 ON os2.id=p.order_stage_id
-                  WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
-                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
+                  LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                  LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
+                  LEFT JOIN order_stages os2 ON os2.id=p.order_stage_id
+                  WHERE wp.employee_id=p.employee_id AND es.id IS NULL
+                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                    AND (ae.id IS NULL OR ae.order_id=os2.order_id)) THEN 'UNALLOCATED'
                 WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
                    + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
                    >= COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID'
@@ -1219,6 +1221,7 @@ export async function productionRoutes(app: FastifyInstance) {
                           WHERE wp.employee_id=e.id
                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
                             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                            AND NOT EXISTS(SELECT 1 FROM accounting_expenses ae WHERE ae.idempotency_key=wp.idempotency_key)
                           ),0) AS unallocated_historical_payments
         FROM employees e
        WHERE e.is_active=TRUE AND ($1::uuid IS NULL OR e.id=$1)
