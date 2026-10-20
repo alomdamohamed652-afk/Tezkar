@@ -22,8 +22,10 @@ const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد
 const methodLabel:Record<string,string>={PER_PIECE:"بالقطعة",PER_1000:"بالألف",PER_DAY:"باليومية / الوردية",PER_HOUR:"بالساعة",PERCENTAGE:"بالنسبة"};
 
 function csvCell(value:unknown){const text=String(value??"");return '"' + text.replace(/"/g,'""') + '"';}
-function downloadCsv(filename:string,headers:string[],rows:unknown[][]){
- const content="\\uFEFF"+[headers,...rows].map(row=>row.map(csvCell).join(",")).join("\\r\\n");
+
+// CSV export metadata is kept in the same UTF-8 file ahead of the detail rows.
+function downloadCsv(filename:string,headers:string[],rows:unknown[][],metadata:unknown[][]=[]){
+ const content="\\uFEFF"+[...metadata,...(metadata.length?[[]]:[]),headers,...rows].map(row=>row.map(csvCell).join(",")).join("\\r\\n");
  const blob=new Blob([content],{type:"text/csv;charset=utf-8;"});
  const url=URL.createObjectURL(blob);const link=document.createElement("a");
  link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
@@ -156,4 +158,5 @@ export default function ReportsPage(){
   </main>
  </div>;
 }
+
 
