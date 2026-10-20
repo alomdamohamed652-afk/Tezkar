@@ -1144,8 +1144,8 @@ export async function productionRoutes(app: FastifyInstance) {
     const q=z.object({orderId:z.string().uuid().optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر حساب الطلبيات غير صحيحة",422);
     const values:unknown[]=[];const filters:string[]=[];
-    if(q.data.orderId){values.push(q.data.orderId);filters.push(`order_id=${values.length}`);}
-    if(q.data.employeeId){values.push(q.data.employeeId);filters.push(`employee_id=${values.length}`);}
+    if(q.data.orderId){values.push(q.data.orderId);filters.push("order_id=$"+values.length);}
+    if(q.data.employeeId){values.push(q.data.employeeId);filters.push("employee_id=$"+values.length);}
     const result=await pool.query(`
       WITH production_due AS (
         SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
