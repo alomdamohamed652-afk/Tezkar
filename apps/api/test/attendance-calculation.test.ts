@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateWorkedMinutes, selectAttendanceDayEvents, suggestAttendanceCorrection, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
+import { belongsToAttendanceShift, calculateWorkedMinutes, selectAttendanceDayEvents, suggestAttendanceCorrection, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
 
 function punch(id: string, status: string, minute: number, extra: Partial<AttendancePunchEvent> = {}): AttendancePunchEvent {
   return {
@@ -153,4 +153,16 @@ test("worked minutes correctly span midnight", () => {
     { status: "IN", punch_at: "2026-10-15T20:00:00.000Z" },
     { status: "OUT", punch_at: "2026-10-16T04:00:00.000Z" },
   ]), 480);
+});
+
+
+test("a mislabelled IN close to an overnight shift end is assigned to the previous shift for review", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-10-16",
+    punchMinute: 7 * 60,
+    punchStatus: "IN",
+    shiftDate: "2026-10-15",
+    overnight: true,
+    scheduledEndMinute: 7 * 60,
+  }), true);
 });
