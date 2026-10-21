@@ -29,9 +29,13 @@ export function belongsToAttendanceShift(input: {
   nextDay.setUTCDate(nextDay.getUTCDate() + 1);
   const nextDate = nextDay.toISOString().slice(0, 10);
   const isCheckout = input.punchStatus === "OUT" || input.punchStatus === "OVERTIME_OUT";
+  const mayBeMislabelledCheckout = input.punchStatus === "IN"
+    && input.scheduledEndMinute !== null
+    && input.punchMinute >= input.scheduledEndMinute - 240
+    && input.punchMinute <= input.scheduledEndMinute + 120;
   return input.overnight
     && input.punchLocalDate === nextDate
-    && isCheckout
+    && (isCheckout || mayBeMislabelledCheckout)
     && input.scheduledEndMinute !== null
     && input.punchMinute <= input.scheduledEndMinute + 120;
 }
