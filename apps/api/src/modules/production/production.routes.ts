@@ -94,7 +94,7 @@ export async function productionRoutes(app: FastifyInstance) {
         WHERE l.is_active=TRUE AND w.is_active=TRUE
         ORDER BY w.name,l.code`
     );
-    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
+    return { data: result.rows };
   });
 
   app.get("/api/production", {
