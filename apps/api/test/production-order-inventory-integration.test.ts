@@ -50,13 +50,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes }, { productionScrapRoutes },
-      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { paymentsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/production/production-scrap.routes.js"), import("../src/modules/orders/orders.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/coding/coding.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
-      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
+      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/payments/payments.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
     app = Fastify();
@@ -75,6 +75,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
     await app.register(reportsRoutes);
+    await app.register(paymentsRoutes);
 
     async function makeUser(label: string, withEmployee: boolean) {
       let employeeId: string | null = null;
@@ -1594,6 +1595,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(priceHistory.json().data[0].affected[0].delta_amount), 50);
     assert.equal(priceHistory.json().data[1].reason, "Integration unpaid price");
     assert.equal(priceHistory.json().data[2].reason, "Integration new-only price");
+    const employeeStatement = await app.inject({
+      method: "GET", url: "/api/worker-payments/employee-statement?employeeId=" + submitterEmployee,
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(employeeStatement.statusCode, 200, employeeStatement.body);
+    assert.equal(employeeStatement.json().data.employee.id, submitterEmployee);
+    assert.ok(employeeStatement.json().data.production.some((row: {id:string}) => row.id === priceProductionId),
+      "employee statement must include the worker's approved production records");
+    assert.equal(Number(employeeStatement.json().data.totals.approvedEarnings), 600,
+      "employee statement approved earnings must reflect the updated net production values");
+
 
     // A later price reduction must still be recorded when a worker was already
     // paid more than the revised entitlement and has no remaining balance to absorb it.
