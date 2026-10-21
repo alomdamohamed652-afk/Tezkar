@@ -1,29 +1,60 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
+import {formatMoney} from "../../lib/format";
 
 type Order = { id: string; code: string; order_name: string; status?: string };
 type Profit = {
-  order: { id: string; code: string; order_name: string; customer_name: string | null; status: string };
-  revenue: number; expenses: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
+  order: { id: string; code: string; order_name: string; customer_name: string | null; status: string; accrued_revenue?: number };
+  accruedRevenue?: number; revenue: number; expenses: number; administrativeAllocation?: number; materialCost: number; laborCost: number; totalCost: number; profit: number; marginPercent: number | null;
 };
-type Expense = { id: string; code: string; order_code: string | null; category: string; description: string; amount: number; expense_date: string };
-type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null };
+type Employee = {id:string;full_name:string;code:string};
+type AccountingPeriod = {id:string;code:string;name:string;period_start:string;period_end:string;status:"OPEN"|"UNDER_REVIEW"|"READY_FOR_APPROVAL"|"CLOSED";allocation_count:number;allocated_amount:number};
+type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
+type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
+type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];openingBalances?:Array<{balance_type:string;entity_key:string;balance:Record<string,unknown>;source_period_id:string;created_at:string}>;orders:Order[]};
+type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
+type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
+type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
+type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
+const localDateInput=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل من عميل","MANUAL":"إيراد مسجل يدويًا","BANK_TRANSFER":"تحويل بنكي","OTHER":"إيراد آخر","EXTERNAL_CUSTODY_TOP_UP":"تمويل عهدة خارجي (ليس إيراد مبيعات)" } as Record<string,string>)[source]||source);
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"admin-expenses"|"profitability"|"periods"|"orders"|"custody">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
   const [expenses,setExpenses]=useState<Expense[]>([]);
   const [revenues,setRevenues]=useState<Revenue[]>([]);
-  const [eForm,setEForm]=useState({category:"تشغيل",description:"",amount:"",orderId:""});
+  const [orderFinance,setOrderFinance]=useState<OrderFinanceRow[]>([]);
+  const [cashTransactions,setCashTransactions]=useState<CashTx[]>([]);
+  const [eForm,setEForm]=useState({category:"مصاريف لخدمة المصنع",description:"",amount:"",expenseDate:new Date().toISOString().slice(0,10),orderId:"",orderStageId:"",expenseType:"DIRECT" as "DIRECT"|"ADMINISTRATIVE",paidFromEmployeeId:""});
+  const [adminExpenseFrom,setAdminExpenseFrom]=useState("");
+  const [adminExpenseTo,setAdminExpenseTo]=useState("");
+  const [adminExpenseCategory,setAdminExpenseCategory]=useState("ALL");
+  const [adminExpenseSearch,setAdminExpenseSearch]=useState("");
+  const [expenseStages,setExpenseStages]=useState<Array<{id:string;stage_name:string;sequence_no:number;status:string}>>([]);
+  const [topUpForm,setTopUpForm]=useState({employeeId:"",amount:"",transactionDate:new Date().toISOString().slice(0,10),description:"إضافة رصيد عهدة من خارج حسابات الشركة",notes:""});
   const [rForm,setRForm]=useState({orderId:"",amount:"",source:"MANUAL",notes:""});
+  const [collectionForm,setCollectionForm]=useState({orderId:"",employeeId:"",amount:"",description:"تحصيل من العميل",notes:""});
+  const collectionIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
+  const expenseIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
+  const revenueIdempotency=useRef<{fingerprint:string;key:string}|null>(null);
+  const [employees,setEmployees]=useState<Employee[]>([]);
+  const [periods,setPeriods]=useState<AccountingPeriod[]>([]);
+  const [dashboardPeriodId,setDashboardPeriodId]=useState("");
+  const [dashboardFrom,setDashboardFrom]=useState(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));
+  const [dashboardTo,setDashboardTo]=useState(localDateInput(new Date()));
+  const [selectedPeriodId,setSelectedPeriodId]=useState("");
+  const [periodDetail,setPeriodDetail]=useState<PeriodDetail|null>(null);
+  const [periodForm,setPeriodForm]=useState({name:"",periodStart:new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().slice(0,10),periodEnd:new Date().toISOString().slice(0,10),notes:""});
+  const [periodSaving,setPeriodSaving]=useState(false);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
 
@@ -35,10 +66,91 @@ export default function AccountingPage() {
         api<{data:Expense[]}>("/api/accounting/expenses"),
         api<{data:Revenue[]}>("/api/accounting/revenues")
       ]);
-      setOrders(o.data);setExpenses(e.data);setRevenues(r.data);
+      setOrders(o.data);setExpenses(e.data);setRevenues(r.data.filter(x=>x.source!=="EXTERNAL_CUSTODY_TOP_UP"));
+      if(has("finance.profitability.view"))void loadOrderFinance("");
+      if(has("cash_custody.view")||has("cash_custody.view_own"))api<{data:CashTx[]}>("/api/cash-custody").then(x=>setCashTransactions(x.data)).catch(()=>{});
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
+  useEffect(()=>{
+    let active=true;
+    if(!eForm.orderId||eForm.expenseType!=="DIRECT"){setExpenseStages([]);return;}
+    api<{data:{stages:Array<{id:string;stage_name:string;sequence_no:number;status:string}>}}>(`/api/orders/${eForm.orderId}`)
+      .then(r=>{if(active)setExpenseStages(r.data.stages||[])})
+      .catch(()=>{if(active)setExpenseStages([])});
+    return()=>{active=false};
+  },[eForm.orderId,eForm.expenseType]);
+  useEffect(()=>{
+    let active=true;
+    api<{data:Employee[]}>("/api/custodies/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
+    if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
+    return()=>{active=false};
+  },[has]);
+  async function loadOrderFinance(periodId=dashboardPeriodId) {
+    try {
+      const suffix=periodId?"?periodId="+encodeURIComponent(periodId):"";
+      const result=await api<{data:OrderFinanceRow[]}>("/api/accounting/orders-dashboard"+suffix);
+      setOrderFinance(result.data);
+    } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل تحليل الطلبيات"); }
+  }
+
+  async function loadPeriods(){
+    if(!has("finance.period_close.view"))return;
+    try{setPeriods((await api<{data:AccountingPeriod[]}>("/api/accounting/periods")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل فترات التصفية")}
+  }
+  async function loadPeriodDetail(id:string){
+    setSelectedPeriodId(id);setPeriodDetail(null);if(!id)return;
+    try{setPeriodDetail((await api<{data:PeriodDetail}>("/api/accounting/periods/"+id)).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تفاصيل التصفية")}
+  }
+  async function createPeriod(){
+    setError("");setMessage("");
+    try{
+      const r=await api<{data:AccountingPeriod}>("/api/accounting/periods",{method:"POST",body:JSON.stringify(periodForm)});
+      setPeriodForm(v=>({...v,name:"",notes:""}));await loadPeriods();await loadPeriodDetail(r.data.id);setMessage("تم إنشاء فترة التصفية");
+    }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء فترة التصفية")}
+  }
+  async function autoAllocate(){
+    if(!selectedPeriodId)return;setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/auto-allocate",{method:"POST",body:"{}"});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تم توزيع المصروفات الإدارية حسب تكلفة الطلبيات، ويمكنك تعديل التوزيع قبل الإقفال");}
+    catch(e){setError(e instanceof Error?e.message:"تعذر توزيع المصروفات الإدارية")}finally{setPeriodSaving(false)}
+  }
+  async function saveAllocations(){
+    if(!selectedPeriodId||!periodDetail)return;setPeriodSaving(true);setError("");setMessage("");
+    try{
+      await api("/api/accounting/periods/"+selectedPeriodId+"/allocations",{method:"PUT",body:JSON.stringify({allocations:periodDetail.allocations.map(a=>({expenseId:a.expense_id,orderId:a.order_id,amount:Number(a.amount)}))})});
+      await loadPeriodDetail(selectedPeriodId);setMessage("تم حفظ توزيع المصروفات");
+    }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ توزيع المصروفات")}finally{setPeriodSaving(false)}
+  }
+  async function closePeriod(){
+    if(!selectedPeriodId||!periodDetail)return;
+    const status=periodDetail.period.status;
+    const action=status==="OPEN"?"submit-review":status==="UNDER_REVIEW"?"approve-review":"close";
+    const confirmText=action==="submit-review"?"إرسال الفترة للمراجعة المحاسبية؟":action==="approve-review"?"اعتماد المراجعة المحاسبية وتجهيز الفترة لاعتماد المدير؟":"تأكيد الإقفال النهائي؟";
+    if(!window.confirm(confirmText))return;
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/"+action,{method:"POST",body:"{}"});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage(action==="submit-review"?"تم إرسال الفترة للمراجعة":action==="approve-review"?"تم اعتماد المراجعة المحاسبية، وتنتظر اعتماد المدير":"تم إقفال الفترة المالية بنجاح")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ خطوة التصفية")}finally{setPeriodSaving(false)}
+  }
+
+  async function returnPeriodForCorrections(){
+    if(!selectedPeriodId||!periodDetail)return;
+    const reason=window.prompt("اكتب سبب إعادة الفترة للتعديل (10 أحرف على الأقل):");
+    if(reason===null)return;
+    if(reason.trim().length<10){setError("سبب الإعادة يجب ألا يقل عن 10 أحرف");return;}
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/return-for-corrections",{method:"POST",body:JSON.stringify({reason})});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تمت إعادة الفترة للتعديل وتسجيل السبب")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر إعادة الفترة للتعديل")}finally{setPeriodSaving(false)}
+  }
+
+  async function reopenPeriod(){
+    if(!selectedPeriodId||!periodDetail)return;
+    const reason=window.prompt("اكتب سبب إعادة فتح الفترة (10 أحرف على الأقل):");
+    if(reason===null)return;
+    if(reason.trim().length<10){setError("سبب إعادة الفتح يجب ألا يقل عن 10 أحرف");return;}
+    setPeriodSaving(true);setError("");setMessage("");
+    try{await api("/api/accounting/periods/"+selectedPeriodId+"/reopen",{method:"POST",body:JSON.stringify({reason})});await loadPeriodDetail(selectedPeriodId);await loadPeriods();setMessage("تمت إعادة فتح الفترة مع تسجيل السبب")}
+    catch(e){setError(e instanceof Error?e.message:"تعذر إعادة فتح الفترة")}finally{setPeriodSaving(false)}
+  }
 
   async function loadProfit(id:string) {
     setOrderId(id);setProfit(null);if(!id)return;
@@ -48,24 +160,83 @@ export default function AccountingPage() {
 
   async function addExpense() {
     setError("");setMessage("");
+    const payload={orderId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderId||null),orderStageId:eForm.expenseType==="ADMINISTRATIVE"?null:(eForm.orderStageId||null),category:eForm.category,description:eForm.description,amount:Number(eForm.amount),expenseDate:eForm.expenseDate,expenseType:eForm.expenseType,paidFromEmployeeId:eForm.paidFromEmployeeId&&eForm.paidFromEmployeeId!=="HISTORICAL"?eForm.paidFromEmployeeId:null,historicalSettlement:eForm.paidFromEmployeeId==="HISTORICAL"};
+    const fingerprint=JSON.stringify(payload);
+    const previous=expenseIdempotency.current;
+    const operationKey=previous?.fingerprint===fingerprint?previous.key:crypto.randomUUID();
+    expenseIdempotency.current={fingerprint,key:operationKey};
     try {
-      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({orderId:eForm.orderId||null,category:eForm.category,description:eForm.description,amount:Number(eForm.amount)})});
-      setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف");await load();if(orderId)await loadProfit(orderId);
+      await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:operationKey})});
+      expenseIdempotency.current=null;
+      setEForm(v=>({...v,description:"",amount:""}));setMessage("تم تسجيل المصروف"+(eForm.paidFromEmployeeId&&eForm.paidFromEmployeeId!=="HISTORICAL"?" وتم خصمه من عهدة الموظف":eForm.paidFromEmployeeId==="HISTORICAL"?" كتسوية سجل قديم بدون خصم عهدة":""));await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المصروف")}
+  }
+
+  async function addExternalTopUp(){
+    setError("");setMessage("");
+    if(!topUpForm.employeeId||!topUpForm.amount||!topUpForm.description.trim()){setError("اختر الموظف واكتب المبلغ والبيان");return;}
+    try{
+      await api("/api/cash-custody/top-ups",{method:"POST",body:JSON.stringify({employeeId:topUpForm.employeeId,amount:Number(topUpForm.amount),transactionDate:topUpForm.transactionDate,description:topUpForm.description.trim(),notes:topUpForm.notes.trim()||null})});
+      setTopUpForm(v=>({...v,amount:"",notes:""}));
+      setMessage("تمت إضافة رصيد العهدة كتمويل، دون تسجيله كإيراد مبيعات.");
+      await load();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر إضافة رصيد العهدة")}
+  }
+
+  async function addOrderCollection(){
+    setError("");setMessage("");
+    if(!collectionForm.orderId||(!has("cash_custody.order_collection")&&!has("cash_custody.order_collection_own"))||(has("cash_custody.order_collection")&&!collectionForm.employeeId)||!collectionForm.amount||!collectionForm.description.trim()){
+      setError("اختر الطلبية والموظف واكتب المبلغ والبيان");return;
+    }
+    const payload={orderId:collectionForm.orderId,employeeId:has("cash_custody.order_collection")?collectionForm.employeeId:undefined,amount:Number(collectionForm.amount),description:collectionForm.description.trim(),notes:collectionForm.notes.trim()||null};
+    const fingerprint=JSON.stringify(payload);
+    if(!collectionIdempotency.current||collectionIdempotency.current.fingerprint!==fingerprint){
+      collectionIdempotency.current={fingerprint,key:crypto.randomUUID()};
+    }
+    try{
+      await api("/api/cash-custody/order-collections",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:collectionIdempotency.current.key})});
+      collectionIdempotency.current=null;
+      setCollectionForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل تحصيل العميل كإيراد للطلبية ووارد في عهدة الموظف");await load();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل التحصيل")}
   }
 
   async function addRevenue() {
     setError("");setMessage("");
+    const payload={orderId:rForm.orderId||null,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null};
+    const fingerprint=JSON.stringify(payload);
+    const previous=revenueIdempotency.current;
+    const operationKey=previous?.fingerprint===fingerprint?previous.key:crypto.randomUUID();
+    revenueIdempotency.current={fingerprint,key:operationKey};
     try {
-      await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({orderId:rForm.orderId||null,amount:Number(rForm.amount),source:rForm.source,notes:rForm.notes||null})});
+      await api("/api/accounting/revenues",{method:"POST",body:JSON.stringify({...payload,idempotencyKey:operationKey})});
+      revenueIdempotency.current=null;
       setRForm(v=>({...v,amount:"",notes:""}));setMessage("تم تسجيل الإيراد");await load();if(orderId)await loadProfit(orderId);
     } catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإيراد")}
   }
 
   const activeOrders=useMemo(()=>orders.filter(o=>o.status!=="COMPLETED"&&o.status!=="CANCELLED"),[orders]);
-  const n=(x:number|null|undefined)=>Number(x||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
-  const totalIn=useMemo(()=>revenues.reduce((s,x)=>s+Number(x.amount||0),0),[revenues]);
-  const totalOut=useMemo(()=>expenses.reduce((s,x)=>s+Number(x.amount||0),0),[expenses]);
+  const n=(x:number|null|undefined)=>formatMoney(x||0);
+  const dashboardRevenues=useMemo(()=>revenues.filter(x=>(!dashboardFrom||x.revenue_date>=dashboardFrom)&&(!dashboardTo||x.revenue_date<=dashboardTo)),[revenues,dashboardFrom,dashboardTo]);
+  const dashboardExpenses=useMemo(()=>expenses.filter(x=>(!dashboardFrom||x.expense_date>=dashboardFrom)&&(!dashboardTo||x.expense_date<=dashboardTo)),[expenses,dashboardFrom,dashboardTo]);
+  const totalIn=useMemo(()=>dashboardRevenues.reduce((s,x)=>s+Number(x.amount||0),0),[dashboardRevenues]);
+  const totalOut=useMemo(()=>dashboardExpenses.reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const directExpenseTotal=useMemo(()=>dashboardExpenses.filter(x=>x.expense_type!=="ADMINISTRATIVE").reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const administrativeExpenseTotal=useMemo(()=>dashboardExpenses.filter(x=>x.expense_type==="ADMINISTRATIVE").reduce((s,x)=>s+Number(x.amount||0),0),[dashboardExpenses]);
+  const custodyTotals=useMemo(()=>{
+    const incoming=cashTransactions.filter(tx=>tx.direction==="IN").reduce((sum,tx)=>sum+Number(tx.amount||0),0);
+    const outgoing=cashTransactions.filter(tx=>tx.direction==="OUT").reduce((sum,tx)=>sum+Number(tx.amount||0),0);
+    const latest=new Map<string,number>();
+    for(const tx of cashTransactions){const key=tx.employee_id||tx.employee_name;if(!latest.has(key))latest.set(key,Number(tx.balance||0));}
+    return {incoming,outgoing,available:[...latest.values()].reduce((sum,balance)=>sum+balance,0)};
+  },[cashTransactions]);
+  const latestCashBalances=useMemo(()=>{
+    const latest=new Map<string,number>();
+    for(const tx of cashTransactions){
+      const key=tx.employee_id||tx.employee_name;
+      if(!latest.has(key))latest.set(key,Number(tx.balance||0));
+    }
+    return [...latest.values()].reduce((sum,balance)=>sum+balance,0);
+  },[cashTransactions]);
   const net=totalIn-totalOut;
 
   return <div className="app-shell">
@@ -80,27 +251,45 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
+      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>}
       <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
+      {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>{setTab("orders");void loadPeriods()}}>كل الطلبيات والتحليل</button>}
+      {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
+      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
      </div>
 
      {tab==="dashboard"&&<>
+      <section className="card" style={{marginBottom:16}}>
+       <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));setDashboardTo(localDateInput(new Date()));}}>هذا الشهر</button></div>
+       <div className="form-grid finance-four-grid" style={{padding:"0 16px 16px"}}>
+        <label>من تاريخ<input type="date" value={dashboardFrom} max={dashboardTo||undefined} onChange={e=>setDashboardFrom(e.target.value)}/></label>
+        <label>إلى تاريخ<input type="date" value={dashboardTo} min={dashboardFrom||undefined} onChange={e=>setDashboardTo(e.target.value)}/></label>
+       </div>
+      </section>
       <div className="stats finance-stats">
-       <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{revenues.length} حركة إيراد محملة</div></article>
-       <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{expenses.length} حركة مصروف محملة</div></article>
+       <article className="card stat accent"><div className="stat-label">إجمالي الداخل</div><div className="stat-value">{n(totalIn)}</div><div className="stat-note">{dashboardRevenues.length} حركة خلال الفترة المحددة</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي الخارج</div><div className="stat-value">{n(totalOut)}</div><div className="stat-note">{dashboardExpenses.length} حركة خلال الفترة المحددة</div></article>
        <article className="card stat"><div className="stat-label">الصافي</div><div className="stat-value">{n(net)}</div><div className="stat-note">الداخل − الخارج</div></article>
        <article className="card stat neutral"><div className="stat-label">الطلبات</div><div className="stat-value">{orders.length}</div><div className="stat-note">متاحة للتحليل المالي</div></article>
+       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<>
+        <article className="card stat accent"><div className="stat-label">إجمالي العهد الداخل</div><div className="stat-value">{n(custodyTotals.incoming)}</div><div className="stat-note">إجمالي حركات التمويل والتحصيل والتحويلات الواردة الظاهرة</div></article>
+        <article className="card stat warning"><div className="stat-label">إجمالي العهد الخارج</div><div className="stat-value">{n(custodyTotals.outgoing)}</div><div className="stat-note">إجمالي الصرف والمصروفات والتحويلات الصادرة الظاهرة</div></article>
+        <article className="card stat"><div className="stat-label">المتاح في العهد</div><div className="stat-value">{n(custodyTotals.available)}</div><div className="stat-note">مجموع آخر رصيد لكل موظف ضمن صلاحياتك</div></article>
+       </>}
+       <article className="card stat"><div className="stat-label">المصروفات المباشرة</div><div className="stat-value">{n(directExpenseTotal)}</div><div className="stat-note">مصروفات مرتبطة بتشغيل أو طلبية</div></article>
+       <article className="card stat warning"><div className="stat-label">المصروفات الإدارية</div><div className="stat-value">{n(administrativeExpenseTotal)}</div><div className="stat-note">قبل توزيعها في التصفية المالية</div></article>
       </div>
       <div className="grid">
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الداخل</h2><button className="link-button" onClick={()=>setTab("in")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {revenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.source}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
-         {!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}
+         {dashboardRevenues.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}
+         {!dashboardRevenues.length&&<tr><td colSpan={5}>لا توجد إيرادات خلال الفترة المحددة.</td></tr>}
         </tbody></table></div>
        </section>
        <section className="card"><div className="card-header"><h2 className="card-title">آخر الخارج</h2><button className="link-button" onClick={()=>setTab("out")}>عرض الكل</button></div>
         <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>
-         {expenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
-         {!expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات.</td></tr>}
+         {dashboardExpenses.slice(0,8).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}{x.stage_name?" — "+x.stage_name:""}</td><td>{x.category}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}
+         {!dashboardExpenses.length&&<tr><td colSpan={5}>لا توجد مصروفات خلال الفترة المحددة.</td></tr>}
         </tbody></table></div>
        </section>
       </div>
@@ -108,6 +297,17 @@ export default function AccountingPage() {
 
      {tab==="in"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">الداخل — الإيرادات</h2><div className="form-hint">الإيرادات المرتبطة بالطلبات والواردات العامة أو الإدارية من المدير المالي.</div></div></div>
+      {(has("cash_custody.order_collection")||has("cash_custody.order_collection_own"))&&<section className="card nested-card">
+       <div className="card-header"><div><h3 className="card-title">تحصيل عميل على عهدة موظف</h3><div className="form-hint">يسجل إيراد الطلبية ووارد العهدة في حركة واحدة، من غير تكرار عند تحويل الأموال لاحقًا.</div></div></div>
+       <div className="form-grid finance-four-grid">
+        <label>الطلبية<select value={collectionForm.orderId} onChange={e=>setCollectionForm({...collectionForm,orderId:e.target.value})}><option value="">اختر الطلبية</option>{orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
+        {has("cash_custody.order_collection")&&<label>الموظف المستلم<select value={collectionForm.employeeId} onChange={e=>setCollectionForm({...collectionForm,employeeId:e.target.value})}><option value="">اختر الموظف</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>}
+        <label>المبلغ<input type="number" min="0.01" step="0.01" value={collectionForm.amount} onChange={e=>setCollectionForm({...collectionForm,amount:e.target.value})}/></label>
+        <label>البيان<input value={collectionForm.description} onChange={e=>setCollectionForm({...collectionForm,description:e.target.value})}/></label>
+        <label>ملاحظات اختيارية<input value={collectionForm.notes} onChange={e=>setCollectionForm({...collectionForm,notes:e.target.value})}/></label>
+       </div>
+       <div className="form-actions"><button className="primary-button" onClick={addOrderCollection}>تسجيل التحصيل وإضافته للعهدة</button></div>
+      </section>}
       {has("finance.revenues.create")&&<div className="form-grid finance-four-grid">
        <label>الطلبية <span className="optional">اختياري</span><select value={rForm.orderId} onChange={e=>setRForm({...rForm,orderId:e.target.value})}><option value="">وارد عام / إداري</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={rForm.amount} onChange={e=>setRForm({...rForm,amount:e.target.value})}/></label>
@@ -115,26 +315,126 @@ export default function AccountingPage() {
        <label>ملاحظات<input value={rForm.notes} onChange={e=>setRForm({...rForm,notes:e.target.value})}/></label>
       </div>}
       {has("finance.revenues.create")&&<div className="form-actions"><button className="primary-button" onClick={addRevenue}>تسجيل الإيراد</button></div>}
-      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>{revenues.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code}</td><td>{x.source}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td></tr>)}{!revenues.length&&<tr><td colSpan={5}>لا توجد إيرادات.</td></tr>}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>المصدر</th><th>المبلغ</th><th>التاريخ</th><th>الملاحظات</th><th>سجل بواسطة</th></tr></thead><tbody>{revenues.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{revenueSourceLabel(x.source)}</td><td className="money">{n(x.amount)}</td><td>{x.revenue_date}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!revenues.length&&<tr><td colSpan={7}>لا توجد إيرادات.</td></tr>}</tbody></table></div>
      </section>}
 
      {tab==="out"&&<section className="card">
-      <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة والمصروفات المرتبطة بالطلبات.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">الخارج — المصروفات</h2><div className="form-hint">المصروفات العامة أو المرتبطة بطلبية ومرحلة محددة. لو بتسدد مستحقات عمال مسجلة بالفعل، استخدم مدفوعات العمال بدل تسجيل مصروف جديد لتجنب تكرار التكلفة.</div></div></div>
       {has("finance.expenses.create")&&<div className="form-grid finance-four-grid">
-       <label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
-       <label>التصنيف<input value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}/></label>
+       <label>نوع المصروف<select value={eForm.expenseType} onChange={e=>setEForm({...eForm,expenseType:e.target.value as "DIRECT"|"ADMINISTRATIVE",orderId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderId,orderStageId:e.target.value==="ADMINISTRATIVE"?"":eForm.orderStageId})}><option value="DIRECT">مصروف مباشر</option><option value="ADMINISTRATIVE">مصروف إداري — يوزع وقت التصفية</option></select></label>
+       {eForm.expenseType==="DIRECT"&&<label>الطلبية <span className="optional">اختياري</span><select value={eForm.orderId} onChange={e=>setEForm({...eForm,orderId:e.target.value,orderStageId:""})}><option value="">مصروف عام</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>}
+        {eForm.expenseType==="DIRECT"&&eForm.orderId&&<label>مرحلة الإنتاج <span className="optional">اختياري</span><select value={eForm.orderStageId} onChange={e=>setEForm({...eForm,orderStageId:e.target.value})}><option value="">تكلفة على الطلبية بالكامل</option>{expenseStages.filter(s=>s.status!=="CANCELLED").map(s=><option key={s.id} value={s.id}>{s.sequence_no}. {s.stage_name}</option>)}</select></label>}
+       <label>مصدر المصروف<select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value})}><option value="">مصروف عادي — بدون خصم عهدة</option><option value="HISTORICAL">تسوية سجل قديم — بدون عهدة</option>{employees.map(e=><option key={e.id} value={e.id}>من عهدة: {e.full_name}</option>)}</select></label>
+       {eForm.paidFromEmployeeId==="HISTORICAL"&&<div className="form-hint" style={{gridColumn:"1/-1"}}>تسوية سجل قديم: لازم تاريخ المصروف يقع داخل فترة مالية مفتوحة. سيتم تسجيله في السجلات والتقارير دون إنشاء حركة خصم من عهدة أي موظف.</div>}
+       <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
        <label>الوصف<input value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value})}/></label>
+       <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value})}/></label>
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
       </div>}
       {has("finance.expenses.create")&&<div className="form-actions"><button className="primary-button" onClick={addExpense}>تسجيل المصروف</button></div>}
-      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td></tr>)}{!expenses.length&&<tr><td colSpan={6}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={7}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
      </section>}
 
+     {tab==="admin-expenses"&&has("finance.expenses.view")&&<section className="card">
+      <div className="card-header"><div><h2 className="card-title">المصروفات الإدارية</h2><div className="form-hint">سجل كل مصروف ببيان مستقل. عند تصفية الفترة يوزع النظام الإجمالي افتراضيًا على الطلبيات حسب تكلفة كل طلبية، ويمكن تعديل الأنصبة قبل الإقفال.</div></div><span className="count-badge">{expenses.filter(x=>x.expense_type==="ADMINISTRATIVE").length}</span></div>
+      {has("finance.expenses.create")&&<div className="card-body">
+       <div className="form-grid finance-four-grid">
+        <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
+        <label>البيان التفصيلي<input required value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})} placeholder="مثال: فاتورة كهرباء شهر أكتوبر"/></label>
+        <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
+        <label>المبلغ<input required type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
+        <label>مصدر المصروف <select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value,expenseType:"ADMINISTRATIVE"})}><option value="">مصروف عادي — بدون خصم عهدة</option><option value="HISTORICAL">تسوية سجل قديم — بدون عهدة</option>{employees.map(e=><option key={e.id} value={e.id}>من عهدة: {e.full_name}</option>)}</select></label>{eForm.paidFromEmployeeId==="HISTORICAL"&&<div className="form-hint" style={{gridColumn:"1/-1"}}>تسوية سجل قديم: لازم تاريخ المصروف يقع داخل فترة مالية مفتوحة. سيتم تسجيله في السجلات والتقارير دون إنشاء حركة خصم من عهدة أي موظف.</div>}
+       </div>
+       <div className="form-actions"><button className="primary-button" onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""}));void addExpense()}} disabled={!eForm.description.trim()||!eForm.amount||Number(eForm.amount)<=0}>تسجيل المصروف الإداري</button></div>
+      </div>}
+      <div className="card-body">
+       <h3 className="card-title">فلاتر المصروفات</h3>
+       <div className="form-grid finance-four-grid">
+        <label>من تاريخ<input type="date" value={adminExpenseFrom} onChange={e=>setAdminExpenseFrom(e.target.value)}/></label>
+        <label>إلى تاريخ<input type="date" value={adminExpenseTo} onChange={e=>setAdminExpenseTo(e.target.value)}/></label>
+        <label>التصنيف<select value={adminExpenseCategory} onChange={e=>setAdminExpenseCategory(e.target.value)}><option value="ALL">كل التصنيفات</option>{Array.from(new Set(expenses.filter(x=>x.expense_type==="ADMINISTRATIVE").map(x=>x.category))).sort().map(c=><option key={c} value={c}>{c}</option>)}</select></label>
+        <label>بحث في البيان أو الكود<input value={adminExpenseSearch} onChange={e=>setAdminExpenseSearch(e.target.value)} placeholder="اكتب جزءًا من البيان أو الكود"/></label>
+       </div>
+       <div className="form-actions"><button className="secondary-btn" onClick={()=>{setAdminExpenseFrom("");setAdminExpenseTo("");setAdminExpenseCategory("ALL");setAdminExpenseSearch("")}}>مسح الفلاتر</button><strong>عدد النتائج: {expenses.filter(x=>x.expense_type==="ADMINISTRATIVE"&&(!adminExpenseFrom||x.expense_date>=adminExpenseFrom)&&(!adminExpenseTo||x.expense_date<=adminExpenseTo)&&(adminExpenseCategory==="ALL"||x.category===adminExpenseCategory)&&(!adminExpenseSearch||(x.description+" "+x.code+" "+x.category).toLowerCase().includes(adminExpenseSearch.toLowerCase()))).length}</strong></div>
+       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التصنيف</th><th>البيان التفصيلي</th><th>المبلغ</th><th>التاريخ</th><th>دفع من عهدة</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.filter(x=>x.expense_type==="ADMINISTRATIVE"&&(!adminExpenseFrom||x.expense_date>=adminExpenseFrom)&&(!adminExpenseTo||x.expense_date<=adminExpenseTo)&&(adminExpenseCategory==="ALL"||x.category===adminExpenseCategory)&&(!adminExpenseSearch||(x.description+" "+x.code+" "+x.category).toLowerCase().includes(adminExpenseSearch.toLowerCase()))).map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.paid_from_employee_id?employees.find(e=>e.id===x.paid_from_employee_id)?.full_name||"موظف":"—"}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.some(x=>x.expense_type==="ADMINISTRATIVE")&&<tr><td colSpan={7}>لا توجد مصروفات إدارية مسجلة.</td></tr>}</tbody></table></div>
+      </div>
+     </section>}
+
+     {tab==="periods"&&has("finance.period_close.view")&&<section className="card">
+      <div className="card-header"><div><h2 className="card-title">تصفية وإقفال الفترة المالية</h2><div className="form-hint">المصروفات الإدارية تتجمع خلال الفترة، ثم توزع افتراضيًا بنسبة تكلفة كل طلبية. تقدر تعدل التوزيع قبل الإقفال.</div></div></div>
+      {has("finance.period_close.create")&&<div className="card-body">
+       <h3 className="card-title">إنشاء فترة جديدة</h3>
+       <div className="form-grid finance-four-grid">
+        <label>اسم الفترة<input value={periodForm.name} onChange={e=>setPeriodForm({...periodForm,name:e.target.value})} placeholder="مثال: تصفية أكتوبر ٢٠٢٦"/></label>
+        <label>من تاريخ<input type="date" value={periodForm.periodStart} onChange={e=>setPeriodForm({...periodForm,periodStart:e.target.value})}/></label>
+        <label>إلى تاريخ<input type="date" value={periodForm.periodEnd} onChange={e=>setPeriodForm({...periodForm,periodEnd:e.target.value})}/></label>
+        <label>ملاحظات<input value={periodForm.notes} onChange={e=>setPeriodForm({...periodForm,notes:e.target.value})}/></label>
+       </div>
+       <div className="form-actions"><button className="primary-button" onClick={createPeriod}>إنشاء الفترة</button></div>
+      </div>}
+      <div className="card-body">
+       <label className="finance-select">الفترة المسجلة<select value={selectedPeriodId} onChange={e=>void loadPeriodDetail(e.target.value)}><option value="">اختر فترة مالية</option>{periods.map(p=><option key={p.id} value={p.id}>{p.name} — {p.period_start} إلى {p.period_end} — {p.status==="CLOSED"?"مقفلة":p.status==="READY_FOR_APPROVAL"?"بانتظار اعتماد المدير":p.status==="UNDER_REVIEW"?"قيد المراجعة":"مفتوحة"}</option>)}</select></label>
+       {periodDetail&&<>
+        <div className="detail-grid finance-detail"><div><b>الفترة</b><span>{periodDetail.period.name}</span></div><div><b>المصروفات الإدارية</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>الموزع</b><span>{n(periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>الحالة</b><span>{periodDetail.period.status==="CLOSED"?"مقفلة":periodDetail.period.status==="READY_FOR_APPROVAL"?"بانتظار اعتماد المدير":periodDetail.period.status==="UNDER_REVIEW"?"قيد المراجعة المحاسبية":"مفتوحة"}</span></div></div>
+        {(periodDetail.openingBalances?.length??0)>0&&<><h3 className="card-title">الأرصدة الافتتاحية المُرحّلة</h3><div className="form-hint">أرصدة من الفترة السابقة، وليست حركات قبض أو صرف جديدة.</div><div className="table-wrap"><table><thead><tr><th>نوع الرصيد</th><th>المعرّف</th><th>تفاصيل الرصيد</th><th>الفترة المصدر</th></tr></thead><tbody>{(periodDetail.openingBalances??[]).map((x,i)=><tr key={x.balance_type+":"+x.entity_key+":"+i}><td>{x.balance_type}</td><td className="mono">{x.entity_key}</td><td><code>{JSON.stringify(x.balance)}</code></td><td className="mono">{x.source_period_id}</td></tr>)}</tbody></table></div></>}
+        <h3 className="card-title">المصروفات الإدارية داخل الفترة</h3>
+        <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الكود</th><th>التصنيف</th><th>البيان</th><th>القيمة</th></tr></thead><tbody>{periodDetail.expenses.map(x=><tr key={x.id}><td>{x.expense_date}</td><td className="mono">{x.code}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td></tr>)}{!periodDetail.expenses.length&&<tr><td colSpan={5}>لا توجد مصروفات إدارية في الفترة المحددة.</td></tr>}</tbody></table></div>
+        <div className="card-header"><div><h3 className="card-title">توزيع المصروفات على الطلبيات</h3><div className="form-hint">عدّل المبالغ يدويًا إذا لزم الأمر، مع الحفاظ على إجمالي كل مصروف مساويًا لقيمته الأصلية.</div></div></div>
+        <div className="detail-grid finance-detail"><div><b>إجمالي المصروفات</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>إجمالي الموزع</b><span>{n(periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div><div><b>المتبقي</b><span>{n(periodDetail.expenses.reduce((s,x)=>s+Number(x.amount),0)-periodDetail.allocations.reduce((s,x)=>s+Number(x.amount),0))}</span></div></div>
+        <div className="table-wrap"><table><thead><tr><th>المصروف</th><th>الطلبية المستفيدة</th><th>المبلغ الموزع</th><th>إجراء</th></tr></thead><tbody>{periodDetail.allocations.map((a,i)=><tr key={a.id}><td>{a.expense_code} — {a.expense_description}</td><td><select disabled={periodDetail.period.status==="CLOSED"} value={a.order_id} onChange={e=>{const order=periodDetail.orders.find(o=>o.id===e.target.value);setPeriodDetail(d=>d?({...d,allocations:d.allocations.map((x,j)=>j===i?({...x,order_id:e.target.value,order_code:order?.code||"",order_name:order?.order_name||""}):x)}):d)}}>{periodDetail.orders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></td><td><input type="number" min="0" step="0.01" disabled={periodDetail.period.status==="CLOSED"} value={a.amount} onChange={e=>setPeriodDetail(d=>d?({...d,allocations:d.allocations.map((x,j)=>j===i?({...x,amount:Number(e.target.value)}):x)}):d)}/></td><td><button type="button" className="secondary-button" disabled={periodDetail.period.status==="CLOSED"} onClick={()=>setPeriodDetail(d=>d?({...d,allocations:d.allocations.filter((_,j)=>j!==i)}):d)}>حذف</button></td></tr>)}{!periodDetail.allocations.length&&<tr><td colSpan={4}>لم يتم إنشاء صفوف توزيع بعد. أضف توزيعًا لكل مصروف أو استخدم التوزيع التلقائي.</td></tr>}</tbody></table></div>
+        {periodDetail.period.status==="OPEN"&&has("finance.period_close.create")&&periodDetail.expenses.length>0&&<div className="form-actions" style={{flexWrap:"wrap"}}>{periodDetail.expenses.map(expense=><button key={expense.id} type="button" className="secondary-button" disabled={periodSaving||!periodDetail.orders.length} onClick={()=>setPeriodDetail(d=>{if(!d)return d;const order=d.orders[0];if(!order)return d;return {...d,allocations:[...d.allocations,{id:"draft-"+crypto.randomUUID(),expense_id:expense.id,order_id:order.id,amount:0,expense_code:expense.code,expense_description:expense.description,order_code:order.code,order_name:order.order_name}]}})}>إضافة توزيع: {expense.code}</button>)}</div>}
+        {periodDetail.period.status==="OPEN"&&has("finance.period_close.create")&&<div className="form-actions">
+         <button className="secondary-button" disabled={periodSaving||!periodDetail.expenses.length} onClick={autoAllocate}>توزيع تلقائي حسب التكلفة</button>
+         <button className="secondary-button" disabled={periodSaving||!periodDetail.allocations.length} onClick={saveAllocations}>حفظ التوزيع المعدّل</button>
+         {has("finance.period_close.review")&&<button className="primary-button" disabled={periodSaving||(periodDetail.expenses.length>0&&!periodDetail.allocations.length)} onClick={closePeriod}>إرسال للمراجعة المحاسبية</button>}
+        </div>}
+       </>}
+      </div>
+     </section>}
+     {periodDetail?.period.status==="CLOSED"&&has("finance.period_close.reopen")&&<section className="card"><div className="form-actions"><button className="secondary-button" disabled={periodSaving} onClick={reopenPeriod}>إعادة فتح الفترة (صلاحية خاصة)</button><button className="secondary-button" onClick={async()=>{try{const r=await api<{data:{report:unknown;report_sha256:string;snapshot_no:number;integrityVerified:boolean}}>("/api/accounting/periods/"+selectedPeriodId+"/report");window.alert(JSON.stringify(r.data.report,null,2));setMessage("تقرير الإقفال رقم "+r.data.snapshot_no+" — "+(r.data.integrityVerified?"تم التحقق من سلامة البصمة":"تحذير: فشل التحقق من سلامة التقرير")+". SHA-256: "+r.data.report_sha256);setError("")}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تقرير الإقفال")}}}>عرض بيانات تقرير الإقفال</button></div></section>}
+     {periodDetail&&(periodDetail.period.status==="UNDER_REVIEW"&&has("finance.period_close.review")||periodDetail.period.status==="READY_FOR_APPROVAL"&&has("finance.period_close.approve"))&&<section className="card"><div className="form-actions"><button className="primary-button" disabled={periodSaving} onClick={closePeriod}>{periodDetail.period.status==="UNDER_REVIEW"?"اعتماد المراجعة المحاسبية":"الإقفال النهائي"}</button>{has("finance.period_close.review")&&<button className="secondary-button" disabled={periodSaving} onClick={returnPeriodForCorrections}>إعادة للتعديل مع توثيق السبب</button>}</div></section>}
+     {tab==="orders"&&has("finance.profitability.view")&&<section className="card">
+      <div className="card-header"><div><h2 className="card-title">لوحة كل الطلبيات</h2><div className="form-hint">الإيرادات والتكاليف المباشرة والإدارية وتكلفة المخزون وأجور الإنتاج وصافي الربح لكل طلبية. التحصيل النقدي لا يُضاف مرة ثانية للإيرادات.{dashboardPeriodId?" التقرير يعرض الحركات والتكاليف المؤرخة داخل الفترة المختارة؛ قيمة العقد المعروضة إجمالية للطلبية وليست إيرادًا محققًا داخل الفترة.":" قيمة العقد تمثل الإيراد المستحق تعاقديًا، بينما الإيراد المسجل هو ما تم تسجيله فعليًا."}</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث البيانات</button></div>
+      <div className="stats finance-stats">
+       <article className="card stat"><div className="stat-label">عدد الطلبيات</div><div className="stat-value">{orderFinance.length}</div></article>
+       <article className="card stat accent"><div className="stat-label">{dashboardPeriodId?"إجمالي قيمة العقود (مرجعي)":"الإيراد المستحق تعاقديًا"}</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.accrued_revenue||0),0))}</div></article><article className="card stat"><div className="stat-label">الإيراد المسجل</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.revenue||0),0))}</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي التكلفة</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.total_cost||0),0))}</div></article>
+       <article className="card stat"><div className="stat-label">صافي الربح</div><div className="stat-value">{n(orderFinance.reduce((sum,x)=>sum+Number(x.profit||0),0))}</div></article>
+      </div>
+      <div className="table-wrap"><table><thead><tr><th>كود الطلبية</th><th>اسم الطلبية</th><th>العميل</th><th>الحالة</th><th>{dashboardPeriodId?"قيمة العقد الإجمالية":"الإيراد المستحق"}</th><th>الإيراد المسجل</th><th>مصروف مباشر</th><th>توزيع إداري مُقفل</th><th>تكلفة مخزون</th><th>أجور إنتاج</th><th>إجمالي التكلفة</th><th>صافي الربح</th><th>الهامش</th></tr></thead><tbody>
+       {orderFinance.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_name}</td><td>{x.customer_name||"—"}</td><td>{x.status}</td><td className="money">{n(x.accrued_revenue)}</td><td className="money">{n(x.revenue)}</td><td className="money">{n(x.direct_expenses)}</td><td className="money">{n(x.administrative_allocation)}</td><td className="money">{n(x.material_cost)}</td><td className="money">{n(x.labor_cost)}</td><td className="money">{n(x.total_cost)}</td><td className="money">{n(x.profit)}</td><td>{x.margin_percent==null?"—":n(x.margin_percent)+"%"}</td></tr>)}
+       {!orderFinance.length&&<tr><td colSpan={12}>لا توجد بيانات طلبيات متاحة أو لا توجد صلاحية التحليل المالي.</td></tr>}
+      </tbody></table></div>
+     </section>}
+     {tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own"))&&<section className="card">
+      {has("cash_custody.create")&&has("finance.expenses.create")&&<section className="nested-card">
+       <div className="card-header"><div><h2 className="card-title">إضافة رصيد عهدة من خارج حسابات الشركة</h2><div className="form-hint">للمدير المالي فقط. تزيد رصيد الموظف كتمويل للعهدة، ولا تُسجل إيراد مبيعات أو تحصيلًا من عميل.</div></div></div>
+       <div className="form-grid finance-four-grid">
+        <label>الموظف<select value={topUpForm.employeeId} onChange={e=>setTopUpForm({...topUpForm,employeeId:e.target.value})}><option value="">اختر صاحب العهدة</option>{employees.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+        <label>المبلغ<input type="number" min="0.01" step="0.01" value={topUpForm.amount} onChange={e=>setTopUpForm({...topUpForm,amount:e.target.value})}/></label>
+        <label>التاريخ<input type="date" value={topUpForm.transactionDate} onChange={e=>setTopUpForm({...topUpForm,transactionDate:e.target.value})}/></label>
+        <label>البيان<input value={topUpForm.description} onChange={e=>setTopUpForm({...topUpForm,description:e.target.value})}/></label>
+        <label>ملاحظات <span className="optional">اختياري</span><input value={topUpForm.notes} onChange={e=>setTopUpForm({...topUpForm,notes:e.target.value})}/></label>
+       </div>
+       <div className="form-actions"><button className="primary-button" onClick={addExternalTopUp}>إضافة الرصيد</button></div>
+      </section>}
+      <div className="card-header"><div><h2 className="card-title">سجل حركة العهدة النقدية</h2><div className="form-hint">كل وارد وصادر وتحويل، مع الموظف والبيان والطلبية إن وجدت واسم الحساب الذي سجّل الحركة. العهدة لا تُجمع مرة أخرى ضمن إيرادات الشركة.</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث</button></div>
+      <div className="stats finance-stats">
+       <article className="card stat accent"><div className="stat-label">إجمالي الوارد المعروض</div><div className="stat-value">{n(cashTransactions.filter(x=>x.direction==="IN").reduce((sum,x)=>sum+Number(x.amount||0),0))}</div></article>
+       <article className="card stat warning"><div className="stat-label">إجمالي الصادر المعروض</div><div className="stat-value">{n(cashTransactions.filter(x=>x.direction==="OUT").reduce((sum,x)=>sum+Number(x.amount||0),0))}</div></article>
+       <article className="card stat"><div className="stat-label">صافي الحركة المعروضة</div><div className="stat-value">{n(cashTransactions.reduce((sum,x)=>sum+(x.direction==="IN"?1:-1)*Number(x.amount||0),0))}</div></article>
+       <article className="card stat neutral"><div className="stat-label">عدد الحركات</div><div className="stat-value">{cashTransactions.length}</div></article>
+      </div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>التاريخ</th><th>الاتجاه</th><th>الموظف</th><th>الطلبية / التحويل / طلب القبض</th><th>بيان الحركة</th><th>ملاحظات</th><th>المسجل بواسطة</th><th>الرصيد التراكمي</th><th>المبلغ</th></tr></thead><tbody>
+       {cashTransactions.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.transaction_date}</td><td>{x.direction==="IN"?"وارد للعهدة":"صادر من العهدة"}</td><td>{x.employee_name}</td><td>{x.source_type==="EXTERNAL_TOP_UP"?"إضافة رصيد خارجي":x.payment_request_code?"طلب قبض "+x.payment_request_code:x.order_code?x.order_code+" — "+(x.order_name||""):x.transfer_code||"—"}</td><td>{x.description}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"غير مسجل"}</td><td className="money">{n(x.balance)}</td><td className="money">{n(x.amount)}</td></tr>)}
+       {!cashTransactions.length&&<tr><td colSpan={10}>لا توجد حركات عهدة ظاهرة حسب صلاحيات الحساب.</td></tr>}
+      </tbody></table></div>
+     </section>}
      {tab==="profitability"&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">ربحية الطلبية</h2><div className="form-hint">الإيراد − تكلفة المخزون − أجور الإنتاج − المصروفات المباشرة.</div></div></div>
       <div className="card-body"><label className="finance-select">الطلبية<select value={orderId} onChange={e=>void loadProfit(e.target.value)}><option value="">اختر الطلبية</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
       {profit&&<><div className="stats finance-stats"><article className="card stat"><div className="stat-label">الإيراد</div><div className="stat-value">{n(profit.revenue)}</div></article><article className="card stat warning"><div className="stat-label">تكلفة المخزون</div><div className="stat-value">{n(profit.materialCost)}</div></article><article className="card stat neutral"><div className="stat-label">أجور الإنتاج</div><div className="stat-value">{n(profit.laborCost)}</div></article><article className="card stat accent"><div className="stat-label">صافي الربح</div><div className="stat-value">{n(profit.profit)}</div><div className="stat-note">{profit.marginPercent==null?"—":"هامش "+n(profit.marginPercent)+"%"}</div></article></div>
-       <div className="detail-grid finance-detail"><div><b>إجمالي التكلفة</b><span>{n(profit.totalCost)}</span></div><div><b>مصروفات مباشرة</b><span>{n(profit.expenses)}</span></div><div><b>حالة الطلب</b><span>{profit.order.status}</span></div></div></>}
+       <div className="detail-grid finance-detail"><div><b>إجمالي التكلفة</b><span>{n(profit.totalCost)}</span></div><div><b>المصروفات والتوزيع الإداري</b><span>{n(profit.expenses)}</span></div><div><b>نصيب المصروفات الإدارية</b><span>{n(profit.administrativeAllocation||0)}</span></div><div><b>الإيراد المستحق تعاقديًا</b><span>{n(profit.accruedRevenue??profit.order.accrued_revenue??0)}</span></div><div><b>الإيراد المسجل</b><span>{n(profit.revenue)}</span></div><div><b>حالة الطلب</b><span>{profit.order.status}</span></div></div></>}
       </div>
      </section>}
     </section>

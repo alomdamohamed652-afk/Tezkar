@@ -4,8 +4,9 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { createInventoryLot } from "./inventory-lots.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const line=z.object({
   productId:z.string().uuid(),
@@ -61,10 +62,12 @@ export async function receiptRoutes(app:FastifyInstance){
   return {data:{receipt:receipt.rows[0],lines:lines.rows}};
  });
 
- app.post("/api/warehouse/receipts",{preHandler:[authenticateRequest,requirePermission("warehouse.move")]},async(request,reply)=>{
+ app.post("/api/warehouse/receipts",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.move","all"],["warehouse.receipt.create","all"])]},async(request,reply)=>{
   const p=schema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الاستلام غير صحيحة",422);
   const row=await withTransaction(async client=>{
-   const r=await client.query("INSERT INTO warehouse_receipts(receipt_date,source,notes,created_by) VALUES($1,$2,$3,$4) RETURNING *",[p.data.receiptDate??new Date().toISOString().slice(0,10),p.data.source,p.data.notes??null,request.user!.userId]);
+   const receiptDate=p.data.receiptDate??new Date().toISOString().slice(0,10);
+   await assertAccountingPeriodOpen(client,receiptDate);
+   const r=await client.query("INSERT INTO warehouse_receipts(receipt_date,source,notes,created_by) VALUES($1,$2,$3,$4) RETURNING *",[receiptDate,p.data.source,p.data.notes??null,request.user!.userId]);
    for(const item of p.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[item.productId]);
     if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",422);
