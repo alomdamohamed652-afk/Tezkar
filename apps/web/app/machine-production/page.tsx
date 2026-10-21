@@ -34,7 +34,7 @@ export default function MachineProductionPage(){
   (!filterFrom||x.work_date>=filterFrom)&&
   (!filterTo||x.work_date<=filterTo)
  ),[rows,filterMachine,filterEmployee,filterOrder,filterStage,filterType,filterStatus,filterFrom,filterTo]);
- const machineTotals=useMemo(()=>visibleRows.reduce((a,x)=>{const q=Number(x.quantity)||0;if(x.status==="CANCELLED")a.cancelled+=q;else a.added+=q;return a},{added:0,cancelled:0}),[visibleRows]);
+ const machineTotals=useMemo(()=>visibleRows.reduce((a,x)=>{const q=Number(x.quantity)||0;a.added+=q;if(x.status==="CANCELLED")a.cancelled+=q;return a},{added:0,cancelled:0}),[visibleRows]);
  const machineNet=machineTotals.added-machineTotals.cancelled;
  function selectOrder(v:string){setOrderId(v);setOrderStage("");setProduct("")}
  function selectOrderStage(v:string){setOrderStage(v);const stage=orderStages.find(s=>s.id===v);setProduct(stage?.output_product_id||"")}
@@ -62,7 +62,7 @@ export default function MachineProductionPage(){
  <label>إلى تاريخ<input type="date" value={filterTo} onChange={e=>setFilterTo(e.target.value)}/></label>
  </div><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>{setFilterMachine("");setFilterEmployee("");setFilterOrder("");setFilterStage("");setFilterType("");setFilterStatus("");setFilterFrom("");setFilterTo("")}}>مسح الفلاتر</button><span className="form-hint">النتائج المطابقة: {visibleRows.length} سجل</span></div></div>
  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:12,marginBottom:16}}>
- <div className="card"><div className="form-hint">إجمالي الإنتاج النشط (+)</div><strong>{formatQuantity(machineTotals.added,0)}</strong></div>
+ <div className="card"><div className="form-hint">إجمالي الكميات المسجلة (+)</div><strong>{formatQuantity(machineTotals.added,0)}</strong></div>
  <div className="card"><div className="form-hint">الكميات الملغاة / المطروحة (−)</div><strong>{formatQuantity(machineTotals.cancelled,0)}</strong></div>
  <div className="card"><div className="form-hint">صافي الإنتاج</div><strong>{formatQuantity(machineNet,0)}</strong></div>
  </div><div className="table-wrap"><table><thead><tr><th>الماكينة</th><th>المنتج</th><th>نوع الإنتاج</th><th>الموظف</th><th>الطلب</th><th>المرحلة</th><th>الكمية</th><th>التاريخ</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>{visibleRows.map(x=><tr key={x.id}><td>{x.machine_name}</td><td>{x.product_name}</td><td>{x.production_type_name||"—"}</td><td>{x.employee_name??"—"}</td><td>{x.order_name||"—"}</td><td>{x.stage_name||"—"}</td><td>{formatQuantity(x.quantity,0)}</td><td>{String(x.work_date).slice(0,10)}</td><td>{x.status==="CANCELLED"?"ملغي":"نشط"}{x.status==="CANCELLED"&&x.cancellation_reason?<div className="form-hint">{x.cancellation_reason}</div>:null}</td><td>{x.status==="ACTIVE"&&has("machine_production.cancel")?<button className="danger-button" onClick={()=>void cancelProduction(x)}>التراجع عن السجل</button>:x.status==="CANCELLED"?"—":"لا توجد صلاحية"}</td></tr>)}</tbody></table></div></section>
