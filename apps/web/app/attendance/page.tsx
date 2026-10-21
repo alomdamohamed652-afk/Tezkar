@@ -62,6 +62,8 @@ function exportEmployeeReport(){
   lateMinutes:rows.reduce((n,r)=>n+(Number(r.lateMinutes)||0),0),
   earlyMinutes:rows.reduce((n,r)=>n+(Number(r.earlyMinutes)||0),0),
   overtimeMinutes:rows.reduce((n,r)=>n+(Number(r.overtimeMinutes)||0),0),
+  workedMinutes:rows.reduce((n,r)=>n+(Number(r.workedMinutes)||0),0),
+  workedHours:Math.round(rows.reduce((n,r)=>n+(Number(r.workedMinutes)||0),0)/60*100)/100,
   missingPunchDays:rows.filter(r=>r.status==="MISSING_PUNCH").length,
   duplicatePunches:rows.reduce((n,r)=>n+(Number(r.duplicatePunchCount)||0),0),
   suspiciousPunches:rows.reduce((n,r)=>n+(Number(r.suspiciousCount)||0),0),
