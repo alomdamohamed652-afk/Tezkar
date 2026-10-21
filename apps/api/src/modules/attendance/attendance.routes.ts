@@ -176,12 +176,12 @@ export async function attendanceRoutes(app:FastifyInstance){
     const expectedEnd=end===null?null:(overnight?end+1440:end);
     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
     let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
-    const needsReview=selectedEvents.needsReview;
     const correctionSuggestions=ordered.flatMap(p=>{
      const punchMinute=overnight&&p.localDate===addDateKey(date,1)?p.minute+1440:p.minute;
      const suggestion=suggestAttendanceCorrection({punchStatus:p.originalStatus,punchMinute,scheduledStartMinute:start,scheduledEndMinute:expectedEnd,alreadyReviewed:p.correction_decision==="APPLIED"||p.correction_decision==="KEPT"});
      return suggestion?[{id:p.id,punch_at:p.punch_at,originalStatus:p.originalStatus,suggestedStatus:suggestion.suggestedStatus,reason:suggestion.reason,confidence:suggestion.confidence,decision:p.correction_decision}]:[];
     });
+    const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0;
     const workedMinutes=calculateWorkedMinutes(ordered.filter(p=>!selectedEvents.duplicateIds.includes(p.id)).map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
     let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
     report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,lateMinutes,earlyMinutes,overtimeMinutes,workedMinutes,correctionSuggestions,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length});
