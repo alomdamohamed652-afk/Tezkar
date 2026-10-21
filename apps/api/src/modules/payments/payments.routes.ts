@@ -734,7 +734,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     const parsed=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار العامل غير صحيح",422);
     const actor=await isWorker(request.user!.userId);
-    const employeeId=employeeId??(actor?.is_worker?actor.employee_id:null);
+    const employeeId=parsed.data.employeeId??(actor?.is_worker?actor.employee_id:null);
     if(!employeeId)throw new AppError("EMPLOYEE_REQUIRED","اختار العامل لعرض كشف الحساب",422);
     const client=await pool.connect();
     try{
