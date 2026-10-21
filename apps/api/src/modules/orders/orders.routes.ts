@@ -734,17 +734,14 @@ export async function orderRoutes(app: FastifyInstance) {
         const currentQty=Number(balance.rows[0]?.quantity??0);
         const currentValue=Number(balance.rows[0]?.inventory_value??0);
         const currentAvg=Number(balance.rows[0]?.avg_unit_cost??0);
-        const costBasis=await client.query(
-          "SELECT COALESCE(SUM(inventory_value),0) AS value,COALESCE(SUM(quantity),0) AS quantity FROM stock_balances WHERE product_id=$1 AND quantity>0",
-          [parsed.data.productId]
-        );
-        const knownQty=Number(costBasis.rows[0]?.quantity??0);
-        const unitCost=knownQty>0?Math.max(0,Number(costBasis.rows[0]?.value??0)/knownQty):currentAvg;
+        // Machine output adds physical stock only. It is not a purchase or worker-paid
+        // production entry, so it must not add inventory value or change the average cost.
+        const unitCost=0;
         const quantity=parsed.data.quantity;
-        const totalCost=quantity*unitCost;
+        const totalCost=0;
         const nextQty=currentQty+quantity;
-        const nextValue=currentValue+totalCost;
-        const nextAvg=nextQty>0?nextValue/nextQty:0;
+        const nextValue=currentValue;
+        const nextAvg=currentAvg;
         if (balance.rowCount) {
           await client.query("UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
             [nextQty,nextValue,nextAvg,parsed.data.productId,warehouse.rows[0].id,location.rows[0].id]);
