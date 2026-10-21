@@ -139,7 +139,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    const original=String(before.rows[0].status);
    if(parsed.data.decision==="APPLY"&&(!["IN","OUT"].includes(original)||parsed.data.suggestedStatus===original))throw new AppError("ATTENDANCE_CORRECTION_INVALID","نوع التصحيح لا يتوافق مع البصمة الأصلية",422);
    const updated=await client.query(
-    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_note=$4,correction_reviewed_by=$5,correction_reviewed_at=now() WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_note,correction_reviewed_by,correction_reviewed_at",
+    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_note=$4,correction_reviewed_by=$5,correction_reviewed_at=now(),review_status='APPROVED',reviewed_by=$5,reviewed_at=now() WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_note,correction_reviewed_by,correction_reviewed_at,review_status",
     [id,parsed.data.decision==="APPLY"?parsed.data.suggestedStatus:null,parsed.data.decision==="APPLY"?"APPLIED":"KEPT",parsed.data.note??null,request.user!.userId]
    );
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"attendance_punch_correction",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:before.rows[0],afterData:updated.rows[0],metadata:{decision:parsed.data.decision,suggestedStatus:parsed.data.suggestedStatus??null,note:parsed.data.note??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
