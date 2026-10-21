@@ -63,8 +63,8 @@ export default function ProductionPage(){
   const params=new URLSearchParams({limit:"100",page:String(recordPage)});
   if(recordRangeMode==="TODAY"){params.set("from",localDateKey());params.set("to",localDateKey())}
   if(recordRangeMode==="WEEK"){params.set("from",recordWeekStart);params.set("to",recordWeekEnd)}
-  if(recordRangeMode==="MONTH"&&/^\\d{4}-\\d{2}$/.test(recordMonth)){const [y,m]=recordMonth.split("-").map(Number);params.set("from",`${recordMonth}-01`);params.set("to",`${recordMonth}-${String(new Date(y,m,0).getDate()).padStart(2,"0")}`)}
-  if(recordRangeMode==="YEAR"&&/^\\d{4}$/.test(recordYear)){params.set("from",`${recordYear}-01-01`);params.set("to",`${recordYear}-12-31`)}
+  if(recordRangeMode==="MONTH"&&/^\d{4}-\d{2}$/.test(recordMonth)){const [y,m]=recordMonth.split("-").map(Number);params.set("from",`${recordMonth}-01`);params.set("to",`${recordMonth}-${String(new Date(y,m,0).getDate()).padStart(2,"0")}`)}
+  if(recordRangeMode==="YEAR"&&/^\d{4}$/.test(recordYear)){params.set("from",`${recordYear}-01-01`);params.set("to",`${recordYear}-12-31`)}
   if(recordRangeMode==="RANGE"&&recordFrom&&recordTo&&recordFrom<=recordTo){params.set("from",recordFrom);params.set("to",recordTo)}
   if(status)params.set("status",status);
   if(recordEmployeeFilter)params.set("employeeId",recordEmployeeFilter);
