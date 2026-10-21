@@ -71,6 +71,8 @@ export async function api<T>(
       else if (cleanPath.includes("/approve")) { title = "تم الاعتماد"; message = "تم اعتماد العملية بنجاح."; }
       else if (cleanPath.includes("/reject")) { title = "تم الرفض"; message = "تم تسجيل الرفض بنجاح."; }
       else if (cleanPath.includes("machine-production") && method === "POST") { title = "تم تسجيل إنتاج الماكينة"; message = "تمت إضافة إنتاج الماكينة بنجاح."; }
+      else if (cleanPath === "/api/machines" && method === "POST") { title = "تمت إضافة الماكينة"; message = "تمت إضافة الماكينة إلى قائمة الماكينات."; }
+      else if (cleanPath.startsWith("/api/machines/") && method === "DELETE") { title = "تم تعطيل الماكينة"; message = "تم تعطيل الماكينة مع الاحتفاظ بسجلاتها السابقة."; }
       else if (cleanPath.includes("/production") && method === "PATCH") { title = "تم تعديل الإنتاج"; message = "تم حفظ تعديلات سجل الإنتاج."; }
       else if (method === "POST") { title = "تمت الإضافة بنجاح"; message = "تم تنفيذ الإضافة المطلوبة."; }
       else if (method === "PATCH" || method === "PUT") { title = "تم التعديل بنجاح"; message = "تم حفظ التعديلات."; }
