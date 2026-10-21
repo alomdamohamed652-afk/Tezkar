@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { belongsToAttendanceShift, selectAttendanceDayEvents } from "./attendance-calculation.js";
+import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
@@ -30,7 +31,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   if(q.from){args.push(q.from);where.push(`(p.punch_at AT TIME ZONE 'Africa/Cairo')::date >= ${args.length}::date`);}
   if(q.to){args.push(q.to);where.push(`(p.punch_at AT TIME ZONE 'Africa/Cairo')::date <= ${args.length}::date`);}
   if(q.review&&["PENDING","AUTO_ACCEPTED","APPROVED","REJECTED"].includes(q.review)){args.push(q.review);where.push(`p.review_status=$${args.length}`);}
-  const rows=await pool.query(`SELECT p.id,p.device_code,p.punch_at,p.status,p.verify_method,p.suspicious,p.duplicate_of,p.review_status,p.location_id,p.card_no,p.id_number,e.id employee_id,e.full_name employee_name,e.code employee_code,b.source_name FROM attendance_punches p LEFT JOIN employees e ON e.id=p.employee_id LEFT JOIN attendance_import_batches b ON b.id=p.batch_id ${where.length?"WHERE "+where.join(" AND"):""} ORDER BY p.punch_at DESC LIMIT 1000`,args);
+  const rows=await pool.query(`SELECT p.id,p.device_code,p.punch_at,p.status,p.verify_method,p.suspicious,p.duplicate_of,p.review_status,p.corrected_status,p.correction_decision,p.correction_reviewed_at,p.location_id,p.card_no,p.id_number,e.id employee_id,e.full_name employee_name,e.code employee_code,b.source_name FROM attendance_punches p LEFT JOIN employees e ON e.id=p.employee_id LEFT JOIN attendance_import_batches b ON b.id=p.batch_id ${where.length?"WHERE "+where.join(" AND"):""} ORDER BY p.punch_at DESC LIMIT 1000`,args);
   const summary=await pool.query("SELECT count(*)::int total,count(*) FILTER(WHERE review_status='PENDING')::int pending,count(*) FILTER(WHERE suspicious)::int suspicious,count(*) FILTER(WHERE employee_id IS NULL)::int unknown FROM attendance_punches");
   const batches=await pool.query("SELECT id,source_name,total_rows,inserted_rows,duplicate_rows,suspicious_rows,unknown_rows,created_at FROM attendance_import_batches ORDER BY created_at DESC LIMIT 20");
   return {data:rows.rows,summary:summary.rows[0],batches:batches.rows};
@@ -127,6 +128,28 @@ export async function attendanceRoutes(app:FastifyInstance){
   if(!z.string().uuid().safeParse(id).success||!p.success)throw new AppError("VALIDATION_ERROR","قرار المراجعة غير صحيح",422);
   const reviewed=await withTransaction(async client=>{const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,suspicious,review_status FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);if(!before.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","الحركة غير موجودة",404);const r=await client.query("UPDATE attendance_punches SET review_status=$2,reviewed_by=$3,reviewed_at=now() WHERE id=$1 RETURNING id,review_status,reviewed_at",[id,p.data.decision,request.user!.userId]);await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"review",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:before.rows[0],afterData:r.rows[0],metadata:{decision:p.data.decision},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});return r.rows[0];});return {data:reviewed};
  }); 
+
+ app.post("/api/attendance/punches/:id/correction",{preHandler:[authenticateRequest,requirePermission("attendance.review")]},async request=>{
+  const id=(request.params as {id:string}).id;
+  const parsed=z.object({decision:z.enum(["APPLY_SUGGESTION","KEEP_ORIGINAL"]),suggestedStatus:z.enum(["IN","OUT"])}).safeParse(request.body);
+  if(!z.string().uuid().safeParse(id).success||!parsed.success)throw new AppError("VALIDATION_ERROR","قرار تصحيح البصمة غير صحيح",422);
+  const result=await withTransaction(async client=>{
+   const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,correction_decision FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
+   if(!before.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","حركة البصمة غير موجودة",404);
+   const old=before.rows[0];
+   if(old.correction_decision)throw new AppError("ATTENDANCE_CORRECTION_ALREADY_REVIEWED","تم حسم تصحيح هذه البصمة بالفعل. راجع سجل التدقيق قبل أي تعديل جديد.",409);
+   if(!["IN","OUT"].includes(old.status)||parsed.data.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","التصحيح المقترح يجب أن يعكس دخولًا إلى خروج أو العكس.",422);
+   const corrected=parsed.data.decision==="APPLY_SUGGESTION"?parsed.data.suggestedStatus:null;
+   const updated=await client.query(
+    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_reviewed_by=$4,correction_reviewed_at=now() WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at",
+    [id,corrected,parsed.data.decision==="APPLY_SUGGESTION"?"APPLIED":"KEPT_ORIGINAL",request.user!.userId]
+   );
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPLY_SUGGESTION"?"apply_attendance_correction":"keep_original_attendance_punch",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:old,afterData:updated.rows[0],metadata:{decision:parsed.data.decision,suggestedStatus:parsed.data.suggestedStatus,originalStatus:old.status},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return updated.rows[0];
+  });
+  return {data:result};
+ });
+
  app.get("/api/attendance/report",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
   const q=request.query as {from?:string;to?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
   if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
@@ -136,7 +159,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$1::date) ORDER BY employee_id,weekday,effective_from",[dates.data.from,dates.data.to])).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
   // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
-  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,verify_method,suspicious,review_status FROM attendance_punches WHERE (punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2) AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
+  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at,verify_method,suspicious,review_status FROM attendance_punches WHERE (punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2) AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
   const punches=raw.map(p=>({...p,localDate:cairoDateKey(new Date(p.punch_at)),minute:cairoMinute(new Date(p.punch_at))}));
   const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
   for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
@@ -145,9 +168,10 @@ export async function attendanceRoutes(app:FastifyInstance){
     const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
     const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:schedules.find(s=>s.employee_id===employee.id&&s.weekday===weekday&&s.effective_from<=date&&(!s.effective_to||s.effective_to>=date));
     const noSchedule=!schedule;const dayOff=Boolean(schedule?.is_day_off);const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
-    const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.status,shiftDate:date,overnight,scheduledEndMinute:end}));
+    const assigned=punches.filter(p=>p.employee_id===employee.id&&!used.has(p.id)&&belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.corrected_status??p.status,shiftDate:date,overnight,scheduledEndMinute:end}));
     assigned.forEach(p=>used.add(p.id));
-    const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
+    const correctionSuggestions=(!dayOff&&start!==null&&end!==null)?suggestBoundaryPunchCorrections({punches:assigned,shiftDate:date,startMinute:start,endMinute:end,overnight}):[];
+    const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime()).map(p=>({...p,status:p.corrected_status??p.status}));
     const selectedEvents=selectAttendanceDayEvents(ordered);
     const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
     const otIn=selectedEvents.otIn;const otOut=selectedEvents.otOut;
@@ -155,13 +179,14 @@ export async function attendanceRoutes(app:FastifyInstance){
     const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
     const expectedEnd=end===null?null:(overnight?end+1440:end);
     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
+    const workedMinutes=inMinute!==null&&outMinute!==null?Math.max(0,outMinute-inMinute):0;
     let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
     const needsReview=selectedEvents.needsReview;
     let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
-    report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length});
+    report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length});
    }
   }
-  const totals={rows:report.length,absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
+  const totals={rows:report.length,totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
   return {data:report,summary:totals};
  });
 
