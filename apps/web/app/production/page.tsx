@@ -295,9 +295,9 @@ export default function ProductionPage(){
     <div className="form-hint" style={{gridColumn:"1/-1"}}>الإجمالي: {formatQuantity(Number(normalizeNumber(quantity||"0")),3)} · الهالك: {formatQuantity(Number(normalizeNumber(scrapQuantity||"0")),3)} · المتاح للتسليم: {formatQuantity(Math.max(0,Number(normalizeNumber(quantity||"0"))-Number(normalizeNumber(scrapQuantity||"0"))),3)}. أجر القطعة يُحسب على السليم فقط.</div></>}
     {canViewProductionFinancials&&resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={!has("production.rate_override") || Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":has("production.rate_override")?"السعر الحالي من التسعير العام ويمكن تعديله بصلاحيتك.":"السعر الحالي من تسعير المرحلة العام؛ تعديل السعر يحتاج صلاحية منفصلة."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
     <div className="form-hint" style={{gridColumn:"1/-1"}}>وجهة التخزين تُحدد تلقائيًا حسب مرحلة الطلب؛ لا يتم اختيار مخزن يدويًا عند تسجيل الإنتاج.</div>
-    {canViewProductionFinancials&&resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
+    {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
     {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
-    {canViewProductionFinancials&&has("production.adjustments.create")&&<div className="production-adjustment-box">
+    {has("production.adjustments.create")&&<div className="production-adjustment-box">
       <div className="production-adjustment-title">تعديل مستحق الإنتاج <span>اختياري</span></div>
       <div className="production-adjustment-grid">
         <label>بونص<input inputMode="decimal" value={bonusAmount} onChange={e=>setBonusAmount(e.target.value)} placeholder="٠"/></label>
@@ -305,10 +305,10 @@ export default function ProductionPage(){
         <label>خصم<input inputMode="decimal" value={deductionAmount} onChange={e=>setDeductionAmount(e.target.value)} placeholder="٠"/></label>
         <label>بيان الخصم<input value={deductionReason} onChange={e=>setDeductionReason(e.target.value)} placeholder="مثال: هالك زائد"/></label>
       </div>
-      <div className="production-total-preview">
+      {canViewProductionFinancials&&<div className="production-total-preview">
         <span>إجمالي مستحق العامل</span>
         <strong>{formatMoney(calculatedBase + Number(normalizeNumber(bonusAmount||"0")) - Number(normalizeNumber(deductionAmount||"0")))}</strong>
-      </div>
+      </div>}
     </div>}
    </div>
    <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ التسجيل...":"تسجيل الإنتاج"}</button></div>
