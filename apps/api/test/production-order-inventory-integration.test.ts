@@ -1607,13 +1607,15 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.ok(statementOrder, "employee statement must include the price-change order");
     assert.equal(Number(statementOrder.approved_earned), 600,
       "order statement earnings must reflect updated net production values");
-    await apiPool.query("UPDATE users SET employee_id=$1 WHERE id=$2",[submitterEmployee,limitedUser.userId]);
+    const workerFixture=await apiPool.query("INSERT INTO employees(full_name) VALUES('Worker statement access test') RETURNING id");
+    const workerFixtureId=workerFixture.rows[0].id as string;
+    await apiPool.query("UPDATE users SET employee_id=$1 WHERE id=$2",[workerFixtureId,limitedUser.userId]);
     await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[limitedUser.userId]);
     const workerOwnStatement=await app.inject({
       method:"GET",url:"/api/worker-payments/employee-statement",headers:{cookie:limitedUser.cookie}
     });
     assert.equal(workerOwnStatement.statusCode,200,workerOwnStatement.body);
-    assert.equal(workerOwnStatement.json().data.employee.id,submitterEmployee,
+    assert.equal(workerOwnStatement.json().data.employee.id,workerFixtureId,
       "worker account should default to the authenticated worker's own employee record");
     const workerOtherStatement=await app.inject({
       method:"GET",url:"/api/worker-payments/employee-statement?employeeId="+approverEmployee,
