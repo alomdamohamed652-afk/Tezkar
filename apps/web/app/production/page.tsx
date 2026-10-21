@@ -192,7 +192,7 @@ export default function ProductionPage(){
   if(deductionAmount>0&&!v.deductionReason.trim()){setError("بيان الخصم مطلوب.");return}
   setEditSaving(true);setError("");
   try{
-    await api("/api/production/"+editTarget.id,{method:"PATCH",body:JSON.stringify({employeeId:v.employeeId,orderStageId:v.orderStageId||null,productId:v.productId,stageId:v.stageId,productionTypeId:v.productionTypeId||null,shiftId:v.shiftId,shiftLeaderEmployeeId:v.shiftLeaderEmployeeId||null,workDate:v.workDate,quantity,baseAmount:v.baseAmount===""?null:Number(normalizeNumber(v.baseAmount)),hoursWorked:v.hoursWorked===""?null:Number(normalizeNumber(v.hoursWorked)),rateOverride:has("production.rate_override")&&v.rateOverride!==""?Number(normalizeNumber(v.rateOverride)):null,bonusAmount,bonusReason:bonusAmount?v.bonusReason.trim():null,deductionAmount,deductionReason:deductionAmount?v.deductionReason.trim():null})});
+    await api("/api/production/"+editTarget.id,{method:"PATCH",body:JSON.stringify({employeeId:v.employeeId,orderStageId:v.orderStageId||null,productId:v.productId,stageId:v.stageId,productionTypeId:v.productionTypeId||null,shiftId:v.shiftId,shiftLeaderEmployeeId:v.shiftLeaderEmployeeId||null,workDate:v.workDate,quantity,hoursWorked:v.hoursWorked===""?null:Number(normalizeNumber(v.hoursWorked)),...(canViewProductionFinancials?{baseAmount:v.baseAmount===""?null:Number(normalizeNumber(v.baseAmount)),rateOverride:has("production.rate_override")&&v.rateOverride!==""?Number(normalizeNumber(v.rateOverride)):null,bonusAmount,bonusReason:bonusAmount?v.bonusReason.trim():null,deductionAmount,deductionReason:deductionAmount?v.deductionReason.trim():null}:{})})});
     setEditTarget(null);await load();await loadAdjustments();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تعديل سجل الإنتاج")}
   finally{setEditSaving(false)}
@@ -293,11 +293,11 @@ export default function ProductionPage(){
     {!isShiftWage&&<><label>كمية الهالك الإضافي<input inputMode="decimal" value={scrapQuantity} onChange={e=>setScrapQuantity(e.target.value)} placeholder="٠"/></label>
     {Number(normalizeNumber(scrapQuantity||"0"))>0&&<><label>نوع الهالك<select value={scrapType} onChange={e=>setScrapType(e.target.value as typeof scrapType)}><option value="WORKER_SCRAP">هالك من العامل</option><option value="MANUFACTURING_DEFECT">هالك عيب صناعة</option></select></label><label>سبب / ملاحظات الهالك<input value={scrapNotes} onChange={e=>setScrapNotes(e.target.value)} maxLength={1000} placeholder="اختياري"/></label></>}
     <div className="form-hint" style={{gridColumn:"1/-1"}}>الإجمالي: {formatQuantity(Number(normalizeNumber(quantity||"0")),3)} · الهالك: {formatQuantity(Number(normalizeNumber(scrapQuantity||"0")),3)} · المتاح للتسليم: {formatQuantity(Math.max(0,Number(normalizeNumber(quantity||"0"))-Number(normalizeNumber(scrapQuantity||"0"))),3)}. أجر القطعة يُحسب على السليم فقط.</div></>}
-    {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={!has("production.rate_override") || Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":has("production.rate_override")?"السعر الحالي من التسعير العام ويمكن تعديله بصلاحيتك.":"السعر الحالي من تسعير المرحلة العام؛ تعديل السعر يحتاج صلاحية منفصلة."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
+    {canViewProductionFinancials&&resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={!has("production.rate_override") || Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":has("production.rate_override")?"السعر الحالي من التسعير العام ويمكن تعديله بصلاحيتك.":"السعر الحالي من تسعير المرحلة العام؛ تعديل السعر يحتاج صلاحية منفصلة."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
     <div className="form-hint" style={{gridColumn:"1/-1"}}>وجهة التخزين تُحدد تلقائيًا حسب مرحلة الطلب؛ لا يتم اختيار مخزن يدويًا عند تسجيل الإنتاج.</div>
-    {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
+    {canViewProductionFinancials&&resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
     {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
-    <div className="production-adjustment-box">
+    {canViewProductionFinancials&&has("production.adjustments.create")&&<div className="production-adjustment-box">
       <div className="production-adjustment-title">تعديل مستحق الإنتاج <span>اختياري</span></div>
       <div className="production-adjustment-grid">
         <label>بونص<input inputMode="decimal" value={bonusAmount} onChange={e=>setBonusAmount(e.target.value)} placeholder="٠"/></label>
@@ -309,7 +309,7 @@ export default function ProductionPage(){
         <span>إجمالي مستحق العامل</span>
         <strong>{formatMoney(calculatedBase + Number(normalizeNumber(bonusAmount||"0")) - Number(normalizeNumber(deductionAmount||"0")))}</strong>
       </div>
-    </div>
+    </div>}
    </div>
    <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ التسجيل...":"تسجيل الإنتاج"}</button></div>
   </form>}
