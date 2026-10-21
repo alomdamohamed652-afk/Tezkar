@@ -19,6 +19,12 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
 const LOGIN_MAX_TRACKED_KEYS = 10_000;
 
+function normalizeLoginIdentifier(value:string){
+  return value.trim()
+    .replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g,d=>String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
+}
+
 function loginKey(request: { ip: string }, username: string) {
   return request.ip + ":" + username.toLowerCase();
 }
@@ -95,12 +101,13 @@ export async function authRoutes(app: FastifyInstance) {
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات تسجيل الدخول غير صحيحة", 422);
 
-    assertLoginAllowed(request, parsed.data.username);
+    const loginIdentifier = normalizeLoginIdentifier(parsed.data.username);
+    assertLoginAllowed(request, loginIdentifier);
 
     let result;
     try {
       result = await withTransaction(async (client) => {
-        const user = await authenticate(client, parsed.data.username, parsed.data.password);
+        const user = await authenticate(client, loginIdentifier, parsed.data.password);
         const session = await createSession(client, user);
         await writeAudit(client, {
           actorUserId: user.userId,
@@ -115,12 +122,12 @@ export async function authRoutes(app: FastifyInstance) {
         await client.query("DELETE FROM user_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL");
         return { user, session };
       });
-      clearLoginFailures(request, parsed.data.username);
+      clearLoginFailures(request, loginIdentifier);
     } catch (error) {
       // Only invalid credentials should count toward the login lockout.
       // Database, session, and audit failures must not lock out a legitimate user.
       if (error instanceof AppError && error.code === "INVALID_CREDENTIALS") {
-        recordLoginFailure(request, parsed.data.username);
+        recordLoginFailure(request, loginIdentifier);
       }
       throw error;
     }
