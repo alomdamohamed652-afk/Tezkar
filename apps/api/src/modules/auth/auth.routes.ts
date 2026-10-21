@@ -281,7 +281,7 @@ export async function authRoutes(app: FastifyInstance) {
       throw new AppError("FORBIDDEN", "هذه الصفحة متاحة للإدارة فقط", 403);
     }
     const result = await pool.query(
-      "SELECT u.id, u.username, e.full_name, u.is_active, u.last_login_at, COUNT(DISTINCT COALESCE(s.device_id, s.id::text)) FILTER (WHERE s.revoked_at IS NULL AND s.expires_at > now())::int AS active_devices, COALESCE((SELECT COUNT(*)::int FROM audit_log al WHERE al.actor_user_id = u.id AND al.created_at >= now() - interval '30 days'), 0) AS actions_30d, COALESCE(json_agg(DISTINCT jsonb_build_object('deviceName',s.device_name,'deviceType',s.device_type,'browser',s.browser_name,'os',s.os_name,'ip',host(s.ip_address),'lastSeenAt',s.last_seen_at)) FILTER (WHERE s.id IS NOT NULL AND s.revoked_at IS NULL AND s.expires_at > now()), '[]'::json) AS devices FROM users u LEFT JOIN employees e ON e.id = u.employee_id LEFT JOIN user_sessions s ON s.user_id = u.id GROUP BY u.id, e.full_name ORDER BY actions_30d DESC, active_devices DESC, u.username ASC LIMIT 500"
+      "SELECT u.id, u.username, e.full_name, u.is_active, u.last_login_at, COUNT(DISTINCT COALESCE(s.device_id, s.id::text)) FILTER (WHERE s.revoked_at IS NULL AND s.expires_at > now())::int AS active_devices, COALESCE((SELECT COUNT(*)::int FROM audit_log al WHERE al.actor_user_id = u.id AND al.occurred_at >= now() - interval '30 days'), 0) AS actions_30d, COALESCE(json_agg(DISTINCT jsonb_build_object('deviceName',s.device_name,'deviceType',s.device_type,'browser',s.browser_name,'os',s.os_name,'ip',host(s.ip_address),'lastSeenAt',s.last_seen_at)) FILTER (WHERE s.id IS NOT NULL AND s.revoked_at IS NULL AND s.expires_at > now()), '[]'::json) AS devices FROM users u LEFT JOIN employees e ON e.id = u.employee_id LEFT JOIN user_sessions s ON s.user_id = u.id GROUP BY u.id, e.full_name ORDER BY actions_30d DESC, active_devices DESC, u.username ASC LIMIT 500"
     );
     return { data: result.rows };
   });
@@ -297,7 +297,7 @@ export async function authRoutes(app: FastifyInstance) {
       username: z.string().trim().max(100).optional()
     }).parse(request.query);
     const result = await pool.query(
-      "SELECT al.id, al.created_at, al.action, al.module, al.entity_type, al.entity_id, al.ip_address, al.user_agent, al.metadata, u.username, e.full_name FROM audit_log al LEFT JOIN users u ON u.id = al.actor_user_id LEFT JOIN employees e ON e.id = al.actor_employee_id WHERE ($1::text IS NULL OR u.username ILIKE '%' || $1 || '%') ORDER BY al.created_at DESC LIMIT $2 OFFSET $3",
+      "SELECT al.id, al.occurred_at AS created_at, al.action, al.module, al.entity_type, al.entity_id, al.ip_address, al.user_agent, al.metadata, u.username, e.full_name FROM audit_log al LEFT JOIN users u ON u.id = al.actor_user_id LEFT JOIN employees e ON e.id = al.actor_employee_id WHERE ($1::text IS NULL OR u.username ILIKE '%' || $1 || '%') ORDER BY al.occurred_at DESC LIMIT $2 OFFSET $3",
       [query.username ?? null, query.limit, (query.page - 1) * query.limit]
     );
     return { data: result.rows, page: query.page, limit: query.limit };
