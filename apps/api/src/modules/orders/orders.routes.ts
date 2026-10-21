@@ -584,8 +584,8 @@ export async function orderRoutes(app: FastifyInstance) {
               const credit=item.delta>0?item.delta:0;
               const debit=item.delta<0?Math.abs(item.delta):0;
               await client.query(
-                "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
-                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+                "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5,$6)",
+                [item.employee_id,credit,debit,item.id,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
               );
             }
           }
