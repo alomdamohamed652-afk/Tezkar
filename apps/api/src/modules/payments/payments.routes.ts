@@ -76,12 +76,12 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
   if(Number(totals.rows[0]?.approved_count??0)>0) {
     const available=Number(totals.rows[0].production_earned)+Number(totals.rows[0].adjustments)
       -Number(totals.rows[0].settled)-Number(totals.rows[0].legacy_paid);
-    return Math.max(0,Math.round(available*100)/100);
+    return Math.round(available*100)/100;
   }
   // Imported ledger-only balances remain supported where no approved production rows exist.
   const balance=await getBalance(client,employeeId);
   const outstanding=await getOutstandingAdvanceAmount(client,employeeId);
-  return Math.max(0,Math.round((balance+outstanding)*100)/100);
+  return Math.round((balance+outstanding)*100)/100;
 }
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
   const r=await client.query(`
@@ -199,10 +199,10 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
-  if(input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
+  if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
   const payment=await client.query(
@@ -607,7 +607,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       method: z.string().trim().min(1).max(50).default("CASH"),
       transferReference: z.string().trim().max(120).nullable().optional(),
       advanceRepaymentAmount: z.number().nonnegative().default(0),
-      notes: z.string().trim().max(500).nullable().optional()
+      notes: z.string().trim().max(500).nullable().optional(),
+      allowOverpayment: z.boolean().default(false)
     }).superRefine((value, ctx) => {
       if (value.settlementSource === "CURRENT_CUSTODY" && !value.cashCustodyEmployeeId) {
         ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
@@ -638,7 +639,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         method: parsed.data.method,
         transferReference: parsed.data.transferReference ?? null,
         advanceRepaymentAmount: parsed.data.advanceRepaymentAmount,
-        notes: parsed.data.notes ?? null
+        notes: parsed.data.notes ?? null,
+        allowOverpayment: parsed.data.allowOverpayment
       });
       const prior = await client.query(
         `SELECT wp.*,
@@ -701,11 +703,11 @@ export async function paymentsRoutes(app:FastifyInstance){
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
         orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-orderLegacyPaid);
         if(orderProductionCount>0){
-          if(parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
-        }else if(parsed.data.amount>available+0.009){
+          if(!parsed.data.allowOverpayment&&parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
+        }else if(!parsed.data.allowOverpayment&&parsed.data.amount>available+0.009){
           throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
         }
-      } else if(parsed.data.amount > available + 0.009) {
+      } else if(!parsed.data.allowOverpayment && parsed.data.amount > available + 0.009) {
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
       }
 
@@ -737,7 +739,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         manualRepaymentAmount: parsed.data.advanceRepaymentAmount,
         idempotencyKey: parsed.data.idempotencyKey,
         idempotencyFingerprint: fingerprint,
-        skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY"
+        skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
+        allowOverpayment: parsed.data.allowOverpayment
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
@@ -761,7 +764,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
           amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
         }
-        if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
+        if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0 && !parsed.data.allowOverpayment)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
         const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
         await client.query(
           `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
