@@ -4,12 +4,17 @@ import { AppError } from "../../http/errors.js";
 
 const WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURES = 8;
+let lastPrunedAt = 0;
 
 function keyFor(ip: string, username: string) {
   return createHash("sha256").update(ip + ":" + username.trim().toLowerCase()).digest("hex");
 }
 
 export async function assertPersistentLoginAllowed(ip: string, username: string): Promise<void> {
+  if (Date.now() - lastPrunedAt > 60 * 60 * 1000) {
+    await prunePersistentLoginFailures();
+    lastPrunedAt = Date.now();
+  }
   const result = await pool.query(
     "SELECT blocked_until FROM auth_login_attempts WHERE attempt_key = $1",
     [keyFor(ip, username)]
