@@ -652,14 +652,19 @@ export async function paymentsRoutes(app:FastifyInstance){
     const parsed=z.object({orderId:z.string().uuid(),orderStageId:z.string().uuid().optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختر الطلبية والمرحلة بشكل صحيح",422);
     return {data:await withTransaction(async client=>{
+      const owner=await client.query("SELECT employee_id FROM worker_payments WHERE id=$1",[id]);
+      if(!owner.rowCount)throw new AppError("HISTORICAL_PAYMENT_NOT_FOUND","الدفعة القديمة غير موجودة",404);
+      // Serialize allocations for one employee so two concurrent historical payments
+      // cannot consume the same remaining production earnings.
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[owner.rows[0].employee_id]);
       const paymentResult=await client.query(`
         SELECT wp.*,e.full_name AS employee_name,ae.id AS expense_id,ae.order_id,ae.order_stage_id,
                to_char(wp.created_at,'YYYY-MM-DD') AS payment_date
           FROM worker_payments wp
           JOIN employees e ON e.id=wp.employee_id
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-         WHERE wp.id=$1 FOR UPDATE OF wp
-      `,[id]);
+         WHERE wp.id=$1 AND wp.employee_id=$2 FOR UPDATE OF wp
+      `,[id,owner.rows[0].employee_id]);
       if(!paymentResult.rowCount)throw new AppError("HISTORICAL_PAYMENT_NOT_FOUND","الدفعة القديمة غير موجودة",404);
       const payment=paymentResult.rows[0];
       const amount=Math.round(Number(payment.gross_amount)*100)/100;
