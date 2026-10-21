@@ -538,6 +538,9 @@ export async function orderRoutes(app: FastifyInstance) {
       );
       let affected=0,totalDelta=0;
       if(parsed.data.scope!=="NEW_ONLY"){
+        // Serialize price recalculation against payouts by locking affected employees first,
+        // using the same employee-before-production lock order as settlement operations.
+        await client.query("SELECT e.id FROM employees e WHERE e.id IN (SELECT DISTINCT pe.employee_id FROM production_entries pe WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')) ORDER BY e.id FOR UPDATE",[parsed.data.orderStageId]);
         const entries=await client.query(
           `SELECT pe.id,pe.employee_id,pe.status,pe.quantity,pe.hours_worked,pe.base_amount,
                   pe.wage_type_method_snapshot,pe.rate_snapshot,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,
