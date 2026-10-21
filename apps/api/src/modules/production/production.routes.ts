@@ -1363,6 +1363,17 @@ export async function productionRoutes(app: FastifyInstance) {
                           WHERE wp.employee_id=e.id
                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
                             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                            AND (
+                              NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                              OR COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                              OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                                LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                                WHERE wpa.worker_payment_id=wp.id AND ae.order_id IS NOT NULL
+                                  AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
+                                    OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                            )
                           ),0) AS unallocated_historical_payments
         FROM employees e
        WHERE e.is_active=TRUE AND ($1::uuid IS NULL OR e.id=$1)
