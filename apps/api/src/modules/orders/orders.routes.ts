@@ -566,13 +566,22 @@ export async function orderRoutes(app: FastifyInstance) {
           );
           if(item.status==="PENDING"){
             await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
-          }else if(Math.abs(item.delta)>=0.005){
-            const credit=item.delta>0?item.delta:0;
-            const debit=item.delta<0?Math.abs(item.delta):0;
+          }else {
+            // Update the approved production source row as well as its immutable delta ledger.
+            // This keeps production reports, order balances, future settlements and the worker
+            // ledger aligned even when the entry was already approved or paid.
             await client.query(
-              "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
-              [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+              "UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",
+              [newRate,item.revised,item.id]
             );
+            if(Math.abs(item.delta)>=0.005){
+              const credit=item.delta>0?item.delta:0;
+              const debit=item.delta<0?Math.abs(item.delta):0;
+              await client.query(
+                "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
+                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+              );
+            }
           }
           affected++;
           totalDelta+=item.delta;
