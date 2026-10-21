@@ -763,7 +763,6 @@ export async function paymentsRoutes(app:FastifyInstance){
             LEFT JOIN production_types pt ON pt.id=p.production_type_id
            WHERE p.employee_id=$1
            ORDER BY p.work_date DESC,p.created_at DESC,p.id
-           LIMIT 1000
         `,[employeeId]),
         client.query(`
           SELECT o.id AS order_id,o.code AS order_code,o.order_name,
@@ -810,7 +809,6 @@ export async function paymentsRoutes(app:FastifyInstance){
             LEFT JOIN stages s ON s.id=os.stage_id
            WHERE wp.employee_id=$1
            ORDER BY wp.created_at DESC,wp.id
-           LIMIT 500
         `,[employeeId]),
         client.query(`
           SELECT pc.id,pc.code AS price_change_code,pc.created_at,pc.reason,pc.previous_rate,pc.new_rate,
@@ -824,7 +822,6 @@ export async function paymentsRoutes(app:FastifyInstance){
             JOIN stages s ON s.id=os.stage_id
            WHERE pci.employee_id=$1
            ORDER BY pc.created_at DESC,pc.id DESC
-           LIMIT 300
         `,[employeeId]),
         client.query(`
           SELECT
