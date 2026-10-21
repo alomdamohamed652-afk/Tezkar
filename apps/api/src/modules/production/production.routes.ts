@@ -148,9 +148,11 @@ export async function productionRoutes(app: FastifyInstance) {
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
               p.total_earning_amount,p.status,
               COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                 + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0) AS paid_amount,
               GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
                 - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
@@ -159,9 +161,11 @@ export async function productionRoutes(app: FastifyInstance) {
                   WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
                     AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
                 WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                    + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
                    >= COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID'
                 WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                    + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)>0.009 THEN 'PARTIAL'
                 ELSE 'UNPAID'
               END AS payment_status,
@@ -202,15 +206,17 @@ export async function productionRoutes(app: FastifyInstance) {
     if(parsed.data.from){values.push(parsed.data.from);where.push("p.work_date >= $" + values.length);}
     if(parsed.data.to){values.push(parsed.data.to);where.push("p.work_date <= $" + values.length);}
     const result = await pool.query(
-      `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,p.earning_amount,
+      `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.stage_id,p.quantity,p.earning_amount,
               COALESCE(p.bonus_amount,0) AS bonus_amount,COALESCE(p.deduction_amount,0) AS deduction_amount,
-              COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0) AS net_earning,
+              COALESCE(p.total_earning_amount,COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)) AS net_earning,
               p.total_earning_amount,p.status,
               COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-                + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0) AS paid_amount,
-              GREATEST(COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)
+                + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0) AS paid_amount,
+              GREATEST(COALESCE(p.total_earning_amount,COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-                - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
+                - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0),0) AS remaining_amount,
               pr.name AS product_name,st.name AS stage_name,sh.name AS shift_name,u.name AS unit_name
          FROM production_entries p
          JOIN products pr ON pr.id=p.product_id

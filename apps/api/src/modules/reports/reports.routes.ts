@@ -52,10 +52,10 @@ export async function reportsRoutes(app: FastifyInstance) {
     let whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
     if (q.paymentStatus) {
       const paymentPredicates: Record<string,string> = {
-        PAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
-        PARTIAL: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)>0.009 AND COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) < COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
+        PAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
+        PARTIAL: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0)>0.009 AND COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0) < COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009",
         UNALLOCATED: "COALESCE(unallocated.has_unallocated,FALSE)",
-        UNPAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)<=0.009 AND NOT COALESCE(unallocated.has_unallocated,FALSE)"
+        UNPAID: "COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0)<=0.009 AND NOT COALESCE(unallocated.has_unallocated,FALSE)"
       };
       where.push(paymentPredicates[q.paymentStatus]!);
       whereSql = "WHERE " + where.join(" AND ");
@@ -67,11 +67,13 @@ export async function reportsRoutes(app: FastifyInstance) {
       LEFT JOIN order_stages os ON os.id=p.order_stage_id
       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)) wa ON TRUE
       LEFT JOIN LATERAL (
         SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
           AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+           AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
@@ -82,11 +84,13 @@ export async function reportsRoutes(app: FastifyInstance) {
       LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)) wa ON TRUE
       LEFT JOIN LATERAL (
         SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
     const summaryResult = await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
@@ -127,10 +131,10 @@ export async function reportsRoutes(app: FastifyInstance) {
               COALESCE(adj.deduction_total,COALESCE(p.deduction_amount,0)) AS deduction_total,
               COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)) AS total_earning_amount,
               COALESCE(scrap.scrap_quantity,0) AS scrap_quantity,COALESCE(scrap.scrap_types,'') AS scrap_types,
-              COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) AS paid_amount,
-              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-COALESCE(pa.paid_amount,0)-COALESCE(sa.paid_amount,0),0) AS remaining_amount,
-              CASE WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009 THEN 'PAID'
-                   WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)>0.009 THEN 'PARTIAL'
+              COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0) AS paid_amount,
+              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-COALESCE(pa.paid_amount,0)-COALESCE(sa.paid_amount,0)-COALESCE(wa.paid_amount,0),0) AS remaining_amount,
+              CASE WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009 THEN 'PAID'
+                   WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0)>0.009 THEN 'PARTIAL'
                    WHEN COALESCE(unallocated.has_unallocated,FALSE) THEN 'UNALLOCATED'
                    ELSE 'UNPAID' END AS payment_status,
               p.status
@@ -150,11 +154,13 @@ export async function reportsRoutes(app: FastifyInstance) {
          ) scrap ON TRUE
          LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
          LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)) wa ON TRUE
          LEFT JOIN LATERAL (
            SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
              JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
             WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
               AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+           AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
          ) unallocated ON TRUE
          LEFT JOIN LATERAL (
            SELECT SUM(a.amount) FILTER (WHERE a.adjustment_type='BONUS') AS bonus_total,
@@ -185,11 +191,13 @@ export async function reportsRoutes(app: FastifyInstance) {
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
          LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id) pa ON TRUE
          LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
+       LEFT JOIN LATERAL (SELECT SUM(a.amount) AS paid_amount FROM worker_payment_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)) wa ON TRUE
          LEFT JOIN LATERAL (
            SELECT BOOL_OR(TRUE) AS has_unallocated FROM worker_payments wp
            JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
            WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
              AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+           AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
          ) unallocated ON TRUE
         ${whereSql}
         GROUP BY 1 ORDER BY 1`,
