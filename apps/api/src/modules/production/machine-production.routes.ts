@@ -54,7 +54,7 @@ export async function machineProductionCancellationRoutes(app: FastifyInstance) 
           throw new AppError("MACHINE_PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع عن الإنتاج لأن جزءًا منه تم صرفه أو استهلاكه. عالج الحركات التابعة أولًا.",409);
         }
         const balance=await client.query(
-          "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+          "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
           [lot.product_id,lot.warehouse_id,lot.location_id]
         );
         if (!balance.rowCount || Number(balance.rows[0].quantity)+0.0005<originalQty) {
@@ -63,7 +63,7 @@ export async function machineProductionCancellationRoutes(app: FastifyInstance) 
         const nextQty=Number(balance.rows[0].quantity)-originalQty;
         const removedValue=Number(lot.unit_cost)*originalQty;
         const nextValue=Math.max(0,Number(balance.rows[0].inventory_value)-removedValue);
-        const nextAvg=nextQty>0?nextValue/nextQty:0;
+        const nextAvg=nextQty>0?(Number(lot.unit_cost)<=0.000001?Number(balance.rows[0].avg_unit_cost??0):nextValue/nextQty):0;
         await client.query(
           "UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
           [nextQty,nextValue,nextAvg,lot.product_id,lot.warehouse_id,lot.location_id]
