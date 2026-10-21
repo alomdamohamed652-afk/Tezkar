@@ -21,3 +21,5 @@ CREATE TABLE IF NOT EXISTS auth_login_attempts (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS auth_login_attempts_updated_idx ON auth_login_attempts(updated_at);
+
+ALTER TABLE auth_login_attempts ENABLE ROW LEVEL SECURITY;
