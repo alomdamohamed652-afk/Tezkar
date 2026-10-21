@@ -9,6 +9,7 @@ import { authenticateRequest } from "./auth.middleware.js";
 import { isFirstRunSetupRequired } from "./auth.repository.js";
 import { createSession, revokeSession } from "./session.service.js";
 import { env } from "../../config.js";
+import { assertPersistentLoginAllowed, recordPersistentLoginFailure, clearPersistentLoginFailures } from "./login-throttle.service.js";
 
 const loginSchema = z.object({
   username: z.string().trim().min(1).max(100),
@@ -97,6 +98,7 @@ export async function authRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات تسجيل الدخول غير صحيحة", 422);
 
     assertLoginAllowed(request, parsed.data.username);
+    await assertPersistentLoginAllowed(request.ip, parsed.data.username);
 
     let result;
     try {
@@ -121,11 +123,16 @@ export async function authRoutes(app: FastifyInstance) {
         return { user, session };
       });
       clearLoginFailures(request, parsed.data.username);
+      await clearPersistentLoginFailures(request.ip, parsed.data.username);
     } catch (error) {
       // Only invalid credentials should count toward the login lockout.
       // Database, session, and audit failures must not lock out a legitimate user.
       if (error instanceof AppError && error.code === "INVALID_CREDENTIALS") {
         recordLoginFailure(request, parsed.data.username);
+        await recordPersistentLoginFailure(request.ip, parsed.data.username);
+        try {
+          await pool.query("INSERT INTO audit_log (actor_user_id, actor_employee_id, action, module, entity_type, ip_address, user_agent, metadata) VALUES (NULL, NULL, $1, $2, $3, $4, $5, $6)", ["login_failed", "auth", "user", request.ip, request.headers["user-agent"] ?? null, { username: parsed.data.username.toLowerCase() }]);
+        } catch { /* keep the same credential response even if audit storage is temporarily unavailable */ }
       }
       throw error;
     }
