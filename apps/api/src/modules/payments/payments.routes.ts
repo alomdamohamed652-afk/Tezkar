@@ -619,6 +619,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
       }
+      if (value.allowOverpayment && (value.settlementSource !== "PREVIOUS_CUSTODY" || !value.orderId)) {
+        ctx.addIssue({ code: "custom", path: ["allowOverpayment"], message: "القبض بأكثر من المستحق متاح فقط في تسوية عهدة سابقة مرتبطة بطلبية" });
+      }
       if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(value.method) && !value.transferReference?.trim()) {
         ctx.addIssue({ code: "custom", path: ["transferReference"], message: "رقم التحويل مطلوب لطريقة الدفع المختارة" });
       }
