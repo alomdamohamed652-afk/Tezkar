@@ -234,7 +234,7 @@ export default function ProductionPage(){
   try{
    await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({
     orderId:legacyOrderId,category:legacyExpenseCategory,description:legacyExpenseDescription.trim(),amount,
-    expenseDate:legacyExpenseDate||localDateKey(),expenseType:"DIRECT",historicalSettlement:true,
+    expenseDate:legacyExpenseDate||localDateKey(),expenseType:"DIRECT",historicalSettlement:false,
     paymentMethod:"CASH",idempotencyKey:crypto.randomUUID()
    })});
    setLegacyExpenseDescription("");setLegacyExpenseAmount("");setError("");
