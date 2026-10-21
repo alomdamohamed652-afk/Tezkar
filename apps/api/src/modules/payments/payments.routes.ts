@@ -586,13 +586,29 @@ export async function paymentsRoutes(app:FastifyInstance){
         });
         reconciledCount++;
       }
+      // Report every unresolved historical payment, including payments without an order link
+      // and legacy allocations that are incomplete or point to the wrong production record.
+      // These require explicit review; never guess an order from the employee alone.
       const unresolved = await client.query(`
-        SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
+        SELECT COUNT(*)::int AS count,
+               COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
           FROM worker_payments wp
-          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-         WHERE ae.order_id IS NOT NULL
-           AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+         WHERE NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+           AND (
+             NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+             OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+             OR EXISTS(
+               SELECT 1 FROM worker_payment_allocations wpa
+               LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+               LEFT JOIN order_stages os ON os.id=p.order_stage_id
+               LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+               WHERE wpa.worker_payment_id=wp.id
+                 AND (p.id IS NULL OR p.employee_id<>wp.employee_id
+                   OR (ae.order_id IS NOT NULL AND os.order_id IS DISTINCT FROM ae.order_id)
+                   OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id))
+             )
+           )
       `);
       return {reconciledCount,skippedCount:skipped.length,skipped:skipped.slice(0,50),unresolvedCount:Number(unresolved.rows[0]?.count??0),unresolvedAmount:Number(unresolved.rows[0]?.amount??0)};
     });
@@ -625,7 +641,6 @@ export async function paymentsRoutes(app:FastifyInstance){
                         OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
          )
        ORDER BY wp.created_at,wp.id
-       LIMIT 300
     `);
     return {data:result.rows};
   });
