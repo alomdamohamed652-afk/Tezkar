@@ -48,10 +48,10 @@ await app.register(cookie, { secret: env.SESSION_SECRET });
 
 
 app.addHook("onResponse", async (request, reply) => {
-  if (reply.statusCode >= 400) return;
   const route = request.routeOptions.url ?? request.url.split("?")[0] ?? request.url;
+  const isRead = ["GET", "HEAD", "OPTIONS"].includes(request.method);
   const sensitiveRead = request.method === "GET" && (/^\/api\/admin\/security/.test(route) || route === "/api/account/profile" || route === "/api/auth/sessions");
-  if (["GET", "HEAD", "OPTIONS"].includes(request.method) && !sensitiveRead) return;
+  if (isRead && (!sensitiveRead || reply.statusCode >= 400)) return;
   const actor = (request as typeof request & { user?: SessionUser | null }).user ?? null;
   const moduleName = route.split("/").filter(Boolean)[1] ?? "api";
   const client = await pool.connect().catch(() => null);
@@ -69,7 +69,7 @@ app.addHook("onResponse", async (request, reply) => {
       requestId: request.id,
       ipAddress: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
-      metadata: { statusCode: reply.statusCode }
+      metadata: { statusCode: reply.statusCode, failed: reply.statusCode >= 400 }
     });
   } catch (error) {
     app.log.error({ err: error, route, method: request.method }, "Failed to write mutation audit log");
