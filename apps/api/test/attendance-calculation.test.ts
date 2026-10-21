@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
+import { calculateWorkedMinutes, selectAttendanceDayEvents, suggestAttendanceCorrection, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
 
 function punch(id: string, status: string, minute: number, extra: Partial<AttendancePunchEvent> = {}): AttendancePunchEvent {
   return {
@@ -96,4 +96,61 @@ test("multiple overtime punches within the duplicate window collapse to one but 
   assert.equal(result.multipleOvertimeIns, false);
   assert.deepEqual(result.duplicateIds, ["ot-in-2"]);
   assert.equal(result.needsReview, true);
+});
+
+
+test("a checkout at the scheduled start is proposed as clock-in, not silently changed", () => {
+  const suggestion = suggestAttendanceCorrection({
+    punchStatus: "OUT",
+    punchMinute: 15 * 60,
+    scheduledStartMinute: 15 * 60,
+    scheduledEndMinute: 23 * 60,
+  });
+  assert.equal(suggestion?.suggestedStatus, "IN");
+  assert.equal(suggestion?.confidence, "HIGH");
+});
+
+test("a clock-in at the scheduled end is proposed as clock-out", () => {
+  const suggestion = suggestAttendanceCorrection({
+    punchStatus: "IN",
+    punchMinute: 23 * 60,
+    scheduledStartMinute: 15 * 60,
+    scheduledEndMinute: 23 * 60,
+  });
+  assert.equal(suggestion?.suggestedStatus, "OUT");
+});
+
+test("correctly labelled punches and already decided corrections do not get suggestions", () => {
+  assert.equal(suggestAttendanceCorrection({
+    punchStatus: "IN", punchMinute: 15 * 60,
+    scheduledStartMinute: 15 * 60, scheduledEndMinute: 23 * 60,
+  }), null);
+  assert.equal(suggestAttendanceCorrection({
+    punchStatus: "OUT", punchMinute: 15 * 60,
+    scheduledStartMinute: 15 * 60, scheduledEndMinute: 23 * 60,
+    alreadyReviewed: true,
+  }), null);
+});
+
+test("ambiguous middle-of-shift punches are not guessed", () => {
+  assert.equal(suggestAttendanceCorrection({
+    punchStatus: "OUT", punchMinute: 19 * 60,
+    scheduledStartMinute: 15 * 60, scheduledEndMinute: 23 * 60,
+  }), null);
+});
+
+test("worked minutes include complete regular and overtime pairs", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "IN", punch_at: "2026-10-15T13:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-15T21:00:00.000Z" },
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T21:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T22:30:00.000Z" },
+  ]), 570);
+});
+
+test("worked minutes correctly span midnight", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "IN", punch_at: "2026-10-15T20:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-16T04:00:00.000Z" },
+  ]), 480);
 });
