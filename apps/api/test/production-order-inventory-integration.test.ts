@@ -1608,6 +1608,9 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.ok(employeeStatement.json().data.ledgerEntries.some((row: {entry_type:string;production_code:string|null}) =>
       row.entry_type === "PRODUCTION_APPROVAL" && row.production_code !== null),
       "ledger should identify production approval entries by production code");
+    assert.ok(employeeStatement.json().data.ledgerEntries.some((row: {entry_type:string;production_code:string|null;notes:string}) =>
+      row.entry_type === "ADJUSTMENT" && row.production_code !== null && row.notes.includes("Integration all price")),
+      "price-change ledger adjustments should be linked to the affected production record");
     const statementOrder = employeeStatement.json().data.orders.find((row: {order_id:string}) => row.order_id === priceOrderId);
     assert.ok(statementOrder, "employee statement must include the price-change order");
     assert.equal(Number(statementOrder.approved_earned), 600,
