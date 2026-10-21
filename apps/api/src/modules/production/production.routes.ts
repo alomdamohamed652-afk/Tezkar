@@ -138,9 +138,9 @@ export async function productionRoutes(app: FastifyInstance) {
       params.push(query.data.orderId);
       where.push(`EXISTS (SELECT 1 FROM order_stages os_filter WHERE os_filter.id=p.order_stage_id AND os_filter.order_id=$${params.length})`);
     }
-    if (query.data.stageId) { params.push(query.data.stageId); where.push(`p.stage_id=${params.length}`); }
-    if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= ${params.length}`); }
-    if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= ${params.length}`); }
+    if (query.data.stageId) { params.push(query.data.stageId); where.push(`p.stage_id=$${params.length}`); }
+    if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
+    if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
 
     const paymentStatusSql = `CASE
       WHEN EXISTS(SELECT 1 FROM worker_payments wp
