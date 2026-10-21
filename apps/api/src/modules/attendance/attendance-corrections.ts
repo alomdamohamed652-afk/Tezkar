@@ -50,7 +50,7 @@ export function suggestBoundaryPunchCorrections(input: {
   const hasBoundaryPair = eligible.some((p) => nearStart(p) && eligible.some((other) => other.id !== p.id && nearEnd(other)));
   if (!hasBoundaryPair) return [];
 
-  return eligible.flatMap((p) => {
+  return eligible.flatMap<SuggestedPunchCorrection>((p) => {
     if (p.status === "OUT" && nearStart(p)) {
       return [{
         id: p.id, punchAt: p.punch_at, originalStatus: "OUT" as const,
