@@ -41,7 +41,9 @@ export async function authenticateRequest(
       "POST /api/account/change-password",
       "GET /api/account/profile",
       "GET /api/auth/me",
-      "POST /api/auth/logout"
+      "GET /api/auth/sessions",
+      "POST /api/auth/logout",
+      "POST /api/auth/logout-all"
     ]);
     const path = request.url.split("?")[0];
     if (!allowed.has(`${request.method} ${path}`)) {
