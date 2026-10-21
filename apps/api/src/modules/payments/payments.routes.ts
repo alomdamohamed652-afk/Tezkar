@@ -787,8 +787,12 @@ export async function paymentsRoutes(app:FastifyInstance){
           SELECT wp.id,wp.gross_amount,wp.amount AS cash_paid_amount,wp.advance_repayment_amount,
                  wp.method,wp.created_at,es.settlement_date,
                  o.code AS order_code,o.order_name,s.name AS stage_name,
-                 COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
-                 + COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0) AS allocated_amount,
+                 CASE
+                   WHEN es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+                   WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+                     THEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
+                   ELSE COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0)
+                 END AS allocated_amount,
                  CASE WHEN es.id IS NOT NULL THEN 'SETTLED'
                       WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
                         OR EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
