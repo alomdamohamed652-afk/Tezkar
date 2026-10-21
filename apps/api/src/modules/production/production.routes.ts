@@ -147,7 +147,18 @@ export async function productionRoutes(app: FastifyInstance) {
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         JOIN order_stages os2 ON os2.id=p.order_stage_id
         WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
-          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                    AND (
+                      NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id)
+                      OR COALESCE((SELECT SUM(legacy_wpa.amount) FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                      OR EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa
+                        LEFT JOIN production_entries legacy_p ON legacy_p.id=legacy_wpa.production_entry_id
+                        LEFT JOIN order_stages legacy_os ON legacy_os.id=legacy_p.order_stage_id
+                        WHERE legacy_wpa.worker_payment_id=wp.id
+                          AND (legacy_p.id IS NULL OR legacy_p.employee_id<>wp.employee_id
+                            OR legacy_os.order_id IS DISTINCT FROM ae.order_id
+                            OR (ae.order_stage_id IS NOT NULL AND legacy_p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                    )) THEN 'UNALLOCATED'
       WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
         + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
         + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
@@ -186,7 +197,18 @@ export async function productionRoutes(app: FastifyInstance) {
                   JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
                   JOIN order_stages os2 ON os2.id=p.order_stage_id
                   WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
-                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
+                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                    AND (
+                      NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id)
+                      OR COALESCE((SELECT SUM(legacy_wpa.amount) FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                      OR EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa
+                        LEFT JOIN production_entries legacy_p ON legacy_p.id=legacy_wpa.production_entry_id
+                        LEFT JOIN order_stages legacy_os ON legacy_os.id=legacy_p.order_stage_id
+                        WHERE legacy_wpa.worker_payment_id=wp.id
+                          AND (legacy_p.id IS NULL OR legacy_p.employee_id<>wp.employee_id
+                            OR legacy_os.order_id IS DISTINCT FROM ae.order_id
+                            OR (ae.order_stage_id IS NOT NULL AND legacy_p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                    )) THEN 'UNALLOCATED'
                 WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
                 + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                    + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
