@@ -259,7 +259,7 @@ export default function ProductionPage(){
    <article className="card stat warning"><div className="stat-label">بانتظار المراجعة</div><div className="stat-value">{formatInteger(pendingCount)}</div><div className="stat-note">يحتاج اعتماد أو رفض</div></article>
    <article className="card stat neutral"><div className="stat-label">صافي التعديلات</div><div className="stat-value">{formatMoney(adjustments.reduce((s,x)=>s+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0))}</div><div className="stat-note">بونص ناقص خصومات</div></article>
   </div>)}
-  {canSettleWorkers&&<section className="card legacy-settlement-panel">
+  {canSettleWorkers&&<details className="card legacy-settlement-panel finance-tools-disclosure"><summary><span><strong>تسوية مستحقات العمال — العهدة السابقة</strong><small>تسجيل سند قبض وربطه بالطلبية وترحيل أي زيادة على حساب العامل.</small></span><span className="disclosure-action">فتح نموذج التسوية</span></summary><div className="disclosure-content">
    <div className="card-header"><div><h2 className="card-title">تسوية مستحقات العمال — العهدة السابقة</h2><p className="form-hint">سند القبض يُحمّل على الطلبية المختارة. لو صرفت أكثر من رصيد العامل، الزيادة تُرحّل كرصيد مدين وتُخصم من إنتاجه اللاحق.</p></div></div>
    <form className="card-body" onSubmit={submitPreviousCustodyPayout}>
     <div className="production-grid">
@@ -272,8 +272,8 @@ export default function ProductionPage(){
     <div className="form-hint">بدون تفعيل الاختيار، النظام يرفض أي مبلغ يتجاوز المتبقي المستحق. عند تفعيله، الزيادة تُسجل على حساب العامل وتقلل مستحقاته القادمة تلقائيًا.</div>
     <div className="form-actions"><button className="primary-button" disabled={payoutSaving}>{payoutSaving?"جارٍ تسجيل السند…":"تسجيل سند القبض"}</button></div>
    </form>
-  </section>}
-  {canAddLegacyExpense&&<section className="card legacy-settlement-panel">
+  </div></details>}
+  {canAddLegacyExpense&&<details className="card legacy-settlement-panel finance-tools-disclosure"><summary><span><strong>إضافة مصروف من العهدة القديمة</strong><small>تسجيل فرق الأجور أو المصروفات القديمة وربطها بطلبية.</small></span><span className="disclosure-action">فتح نموذج المصروف</span></summary><div className="disclosure-content">
    <div className="card-header"><div><h2 className="card-title">إضافة مصروف من العهدة القديمة على طلبية</h2><p className="form-hint">سجّل فرق أجور العمالة أو أي مصروف قديم بالبيان والقيمة والطلبية، من غير إنشاء عهدة قديمة وهمية على النظام.</p></div></div>
    <form className="card-body" onSubmit={submitLegacyOrderExpense}>
     <div className="production-grid">
@@ -286,7 +286,7 @@ export default function ProductionPage(){
     <div className="form-hint">يُسجل المصروف في دفتر المصروفات ويرتبط بالطلبية المحددة. اختار تاريخًا داخل فترة مالية مفتوحة لإتمام القيد.</div>
     <div className="form-actions"><button className="primary-button" disabled={legacyExpenseSaving}>{legacyExpenseSaving?"جارٍ تسجيل المصروف…":"إضافة المصروف للطلبية"}</button></div>
    </form>
-  </section>}
+  </div></details>}
   {has("production.create")&&<form className="card production-form" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل إنتاج عامل</h2><span className="form-hint">الاسم فقط يظهر للمستخدم؛ الأكواد تستخدم داخليًا.</span></div></div>
    <div className="production-grid">
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
