@@ -147,6 +147,8 @@ export async function productionRoutes(app: FastifyInstance) {
       filterParams
     );
     const total = Number(countResult.rows[0]?.total ?? 0);
+    const weeksResult = await pool.query("SELECT COUNT(DISTINCT date_trunc('week', work_date))::int AS total_weeks FROM production_entries WHERE status <> 'CANCELLED'");
+    const totalWeeks = Number(weeksResult.rows[0]?.total_weeks ?? 0);
     params.push(query.data.limit, (query.data.page - 1) * query.data.limit);
 
     const result = await pool.query(
@@ -204,9 +206,9 @@ export async function productionRoutes(app: FastifyInstance) {
     finally{permissionClient.release()}
     if(!canViewFinancials){
       const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
-      return {data, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
+      return {data, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks};
     }
-    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
+    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks };
   });
 
   app.get("/api/production/my", {
