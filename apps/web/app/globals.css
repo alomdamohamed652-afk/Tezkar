@@ -1664,3 +1664,15 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .attendance-correction-item>span{font-weight:700;font-size:.88rem;line-height:1.7}
 .attendance-correction-item>small{font-size:.8rem;color:var(--muted-color,#64748b);line-height:1.7}
 .attendance-correction-item .row-actions{display:flex;flex-wrap:wrap;gap:8px}
+
+/* Keep exceptional legacy-finance tools out of the primary production workflow until opened. */
+.finance-tools-disclosure{overflow:hidden}
+.finance-tools-disclosure>summary{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 22px;cursor:pointer;list-style:none}
+.finance-tools-disclosure>summary::-webkit-details-marker{display:none}
+.finance-tools-disclosure>summary>span:first-child{display:flex;flex-direction:column;gap:5px;min-width:0}
+.finance-tools-disclosure>summary strong{font-size:15px;color:var(--text-primary,#172033)}
+.finance-tools-disclosure>summary small{font-size:12px;line-height:1.7;color:var(--text-secondary,#64748b)}
+.finance-tools-disclosure .disclosure-action{flex-shrink:0;color:var(--primary,#2563eb);font-size:13px;font-weight:700}
+.finance-tools-disclosure[open]>summary{border-bottom:1px solid var(--border,#e2e8f0);background:var(--surface-muted,#f8fafc)}
+.finance-tools-disclosure .disclosure-content{padding:0 0 8px}
+@media(max-width:640px){.finance-tools-disclosure>summary{padding:14px;align-items:flex-start}.finance-tools-disclosure .disclosure-action{font-size:12px}}
