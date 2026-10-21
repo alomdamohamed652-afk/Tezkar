@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -101,7 +102,11 @@ export async function authRoutes(app: FastifyInstance) {
     try {
       result = await withTransaction(async (client) => {
         const user = await authenticate(client, parsed.data.username, parsed.data.password);
-        const session = await createSession(client, user);
+        const rawAgent = request.headers["user-agent"];
+        const userAgent = Array.isArray(rawAgent) ? rawAgent[0] : rawAgent ?? null;
+        const rawDeviceId = request.headers["x-tezkar-device-id"];
+        const deviceId = (Array.isArray(rawDeviceId) ? rawDeviceId[0] : rawDeviceId)?.slice(0, 128) ?? null;
+        const session = await createSession(client, user, { deviceId, ipAddress: request.ip, userAgent });
         await writeAudit(client, {
           actorUserId: user.userId,
           actorEmployeeId: user.employeeId,
@@ -243,4 +248,24 @@ export async function authRoutes(app: FastifyInstance) {
       client.release();
     }
   });
+  app.get("/api/auth/sessions", { preHandler: authenticateRequest }, async (request) => {
+    const token = request.cookies.tezkar_session;
+    const tokenHash = token ? createHash("sha256").update(token).digest("hex") : "";
+    const result = await pool.query(
+      "SELECT id, device_id, device_name, device_type, browser_name, os_name, host(ip_address) AS ip_address, last_seen_at, expires_at, (token_hash = $2) AS is_current FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY last_seen_at DESC NULLS LAST",
+      [request.user!.userId, tokenHash]
+    );
+    return { data: result.rows };
+  });
+
+  app.post("/api/auth/logout-all", { preHandler: authenticateRequest }, async (request, reply) => {
+    const revoked = await withTransaction(async (client) => {
+      const result = await client.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()", [request.user!.userId]);
+      await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "logout_all_devices", module: "auth", entityType: "user", entityId: request.user!.userId, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null, metadata: { revokedSessions: result.rowCount ?? 0 } });
+      return result.rowCount ?? 0;
+    });
+    reply.clearCookie("tezkar_session", { path: "/" });
+    return { data: { success: true, revokedSessions: revoked, message: "تم تسجيل الخروج من جميع الأجهزة" } };
+  });
+
 }
