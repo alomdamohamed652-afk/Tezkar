@@ -1603,8 +1603,10 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(employeeStatement.json().data.employee.id, submitterEmployee);
     assert.ok(employeeStatement.json().data.production.some((row: {id:string}) => row.id === priceProductionId),
       "employee statement must include the worker's approved production records");
-    assert.equal(Number(employeeStatement.json().data.totals.approvedEarnings), 600,
-      "employee statement approved earnings must reflect the updated net production values");
+    const statementOrder = employeeStatement.json().data.orders.find((row: {order_id:string}) => row.order_id === priceOrderId);
+    assert.ok(statementOrder, "employee statement must include the price-change order");
+    assert.equal(Number(statementOrder.approved_earned), 600,
+      "order statement earnings must reflect updated net production values");
 
 
     // A later price reduction must still be recorded when a worker was already
