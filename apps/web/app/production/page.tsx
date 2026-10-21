@@ -51,7 +51,7 @@ export default function ProductionPage(){
     api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
     api<{data:Entry[]}>("/api/production")
    ]);
-   setEmployees(e.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
+   setEmployees(e.data);setStages(s.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
