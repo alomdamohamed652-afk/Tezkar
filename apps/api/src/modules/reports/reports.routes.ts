@@ -90,6 +90,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
     const summaryResult = await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
@@ -131,7 +132,7 @@ export async function reportsRoutes(app: FastifyInstance) {
               COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0)) AS total_earning_amount,
               COALESCE(scrap.scrap_quantity,0) AS scrap_quantity,COALESCE(scrap.scrap_types,'') AS scrap_types,
               COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0) AS paid_amount,
-              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-COALESCE(pa.paid_amount,0)-COALESCE(sa.paid_amount,0),0) AS remaining_amount,
+              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-COALESCE(pa.paid_amount,0)-COALESCE(sa.paid_amount,0)-COALESCE(wa.paid_amount,0),0) AS remaining_amount,
               CASE WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0) >= COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0),0)-0.009 THEN 'PAID'
                    WHEN COALESCE(pa.paid_amount,0)+COALESCE(sa.paid_amount,0)+COALESCE(wa.paid_amount,0)>0.009 THEN 'PARTIAL'
                    WHEN COALESCE(unallocated.has_unallocated,FALSE) THEN 'UNALLOCATED'
