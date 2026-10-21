@@ -55,7 +55,7 @@ export default function MachineProductionPage(){
  <label>الماكينة<SearchableSelect value={filterMachine} onChange={setFilterMachine} options={opts(machines)} placeholder="كل الماكينات"/></label>
  <label>الموظف<SearchableSelect value={filterEmployee} onChange={setFilterEmployee} options={opts(employees)} placeholder="كل الموظفين"/></label>
  <label>الطلبية<SearchableSelect value={filterOrder} onChange={v=>{setFilterOrder(v);setFilterStage("")}} options={orderOpts} placeholder="كل الطلبيات"/></label>
- <label>المرحلة<SearchableSelect value={filterStage} onChange={setFilterStage} options={Array.from(new Map(rows.filter(x=>x.order_stage_id&&x.stage_name&&(!filterOrder||x.order_id===filterOrder)).map(x=>[x.order_stage_id,{value:x.order_stage_id,label:x.stage_name!,meta:(x.order_code||"")+" · "+(x.order_name||"")}])).values()} placeholder="كل المراحل"/></label>
+ <label>المرحلة<SearchableSelect value={filterStage} onChange={setFilterStage} options={Array.from(new Map(rows.filter(x=>x.order_stage_id&&x.stage_name&&(!filterOrder||x.order_id===filterOrder)).map(x=>[x.order_stage_id,{value:x.order_stage_id,label:x.stage_name!,meta:(x.order_code||"")+" · "+(x.order_name||"")}])).values())} placeholder="كل المراحل"/></label>
  <label>نوع الإنتاج<SearchableSelect value={filterType} onChange={setFilterType} options={opts(types)} placeholder="كل أنواع الإنتاج"/></label>
  <label>حالة السجل<select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}><option value="">كل الحالات</option><option value="ACTIVE">نشط فقط</option><option value="CANCELLED">ملغي فقط</option></select></label>
  <label>من تاريخ<input type="date" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)}/></label>
