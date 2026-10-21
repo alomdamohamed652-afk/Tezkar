@@ -35,7 +35,7 @@ async function upsertFailure(ip: string, username: string, maxFailures: number):
 
 export async function recordPersistentLoginFailure(ip: string, username: string): Promise<void> {
   await upsertFailure(ip, username.trim().toLowerCase(), MAX_FAILURES);
-  await upsertFailure(ip, "__ip__", 30);
+  await upsertFailure(ip, "__ip__", 60);
 }
 
 export async function clearPersistentLoginFailures(ip: string, username: string): Promise<void> {
