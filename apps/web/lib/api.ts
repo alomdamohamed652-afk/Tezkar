@@ -74,12 +74,12 @@ export async function api<T>(
       else if (cleanPath === "/api/machines" && method === "POST") { title = "تمت إضافة الماكينة"; message = "تمت إضافة الماكينة إلى قائمة الماكينات."; }
       else if (cleanPath.startsWith("/api/machines/") && method === "DELETE") { title = "تم تعطيل الماكينة"; message = "تم تعطيل الماكينة مع الاحتفاظ بسجلاتها السابقة."; }
       else if (cleanPath.includes("/production") && method === "PATCH") { title = "تم تعديل الإنتاج"; message = "تم حفظ تعديلات سجل الإنتاج."; }
-      else if (cleanPath.startsWith("/api/orders") && method === "POST") { title = "تمت إضافة الطلبية"; message = "تم حفظ بيانات الطلبية بنجاح."; }
-      else if (cleanPath.startsWith("/api/employees") && method === "POST") { title = "تمت إضافة الموظف"; message = "تم حفظ بيانات الموظف بنجاح."; }
+      else if (cleanPath === "/api/orders" && method === "POST") { title = "تمت إضافة الطلبية"; message = "تم حفظ بيانات الطلبية بنجاح."; }
+      else if (cleanPath === "/api/employees" && method === "POST") { title = "تمت إضافة الموظف"; message = "تم حفظ بيانات الموظف بنجاح."; }
       else if (cleanPath.includes("/production/scrap") && method === "POST") { title = "تم تسجيل الهالك"; message = "تم حفظ سجل الهالك بنجاح."; }
       else if (cleanPath.includes("/accounting/expenses") && method === "POST") { title = "تم تسجيل المصروف"; message = "تم حفظ المصروف وربطه بالقيد المحدد."; }
-      else if (cleanPath.startsWith("/api/tasks") && method === "POST") { title = "تمت إضافة المهمة"; message = "تم حفظ المهمة بنجاح."; }
-      else if (cleanPath.startsWith("/api/custody") && method === "POST") { title = "تم تسجيل حركة العهدة"; message = "تم حفظ حركة العهدة بنجاح."; }
+      else if (cleanPath === "/api/tasks" && method === "POST") { title = "تمت إضافة المهمة"; message = "تم حفظ المهمة بنجاح."; }
+      else if (cleanPath === "/api/custody" && method === "POST") { title = "تم تسجيل حركة العهدة"; message = "تم حفظ حركة العهدة بنجاح."; }
       else if (method === "POST") { title = "تمت الإضافة بنجاح"; message = "تم تنفيذ الإضافة المطلوبة."; }
       else if (method === "PATCH" || method === "PUT") { title = "تم التعديل بنجاح"; message = "تم حفظ التعديلات."; }
       else if (method === "DELETE") { title = "تم الحذف بنجاح"; message = "تم حذف السجل المطلوب."; }
