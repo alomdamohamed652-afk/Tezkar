@@ -6,7 +6,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { belongsToAttendanceShift, selectAttendanceDayEvents } from "./attendance-calculation.js";
+import { belongsToAttendanceShift, calculateWorkedMinutes, selectAttendanceDayEvents } from "./attendance-calculation.js";
 import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
@@ -185,7 +185,7 @@ export async function attendanceRoutes(app:FastifyInstance){
     const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
     const expectedEnd=end===null?null:(overnight?end+1440:end);
     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
-    const workedMinutes=inMinute!==null&&outMinute!==null?Math.max(0,outMinute-inMinute):0;
+    const workedMinutes=calculateWorkedMinutes(ordered.filter(p=>!selectedEvents.duplicateIds.includes(p.id)).map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
     let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
     const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0;
     let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
