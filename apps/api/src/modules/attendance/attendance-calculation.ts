@@ -113,3 +113,27 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     multipleOvertimeOuts: overtimeOuts.length > 1,
   };
 }
+
+
+/**
+ * Calculate actual worked time from complete punch pairs, including separately
+ * recorded overtime. This supports employees who work multiple shifts in one
+ * Cairo workday; the report's first-in/last-out fields remain display summaries.
+ */
+export function calculateWorkedMinutes(events: readonly { status: string; punch_at: string }[]): number {
+  const sorted = [...events].sort((a, b) => new Date(a.punch_at).getTime() - new Date(b.punch_at).getTime());
+  let total = 0;
+  for (const [inStatus, outStatus] of [["IN", "OUT"], ["OVERTIME_IN", "OVERTIME_OUT"]] as const) {
+    let openAt: number | null = null;
+    for (const event of sorted) {
+      const at = new Date(event.punch_at).getTime();
+      if (event.status === inStatus) {
+        if (openAt === null) openAt = at;
+      } else if (event.status === outStatus && openAt !== null && at >= openAt) {
+        total += Math.floor((at - openAt) / 60000);
+        openAt = null;
+      }
+    }
+  }
+  return total;
+}

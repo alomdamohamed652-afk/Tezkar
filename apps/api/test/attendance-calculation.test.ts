@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
+import { calculateWorkedMinutes, selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
 import { suggestBoundaryPunchCorrections, type PunchCorrectionCandidate } from "../src/modules/attendance/attendance-corrections.js";
 
 function punch(id: string, status: string, minute: number, extra: Partial<AttendancePunchEvent> = {}): AttendancePunchEvent {
@@ -176,4 +176,24 @@ test("does not suggest a correction for a single punch on a short shift", () => 
     overnight: false,
   });
   assert.deepEqual(suggestions, []);
+});
+
+
+test("worked hours sum separate completed shifts rather than spanning breaks", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "IN", punch_at: "2026-10-15T06:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-15T10:00:00.000Z" },
+    { status: "IN", punch_at: "2026-10-15T12:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-15T16:00:00.000Z" },
+  ]), 480);
+});
+
+test("worked hours include completed overtime pairs and ignore incomplete pairs", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "IN", punch_at: "2026-10-15T06:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-15T14:00:00.000Z" },
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T14:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T15:30:00.000Z" },
+    { status: "IN", punch_at: "2026-10-15T17:00:00.000Z" },
+  ]), 570);
 });
