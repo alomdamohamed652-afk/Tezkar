@@ -1574,8 +1574,8 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT id,earning_amount FROM production_entries WHERE id=ANY($1::uuid[]) ORDER BY id",
       [[priceProductionId,secondPriceProductionId]]
     );
-    assert.deepEqual(approvedSnapshots.rows.map((row: {earning_amount:string|number})=>Number(row.earning_amount)).sort((a:number,b:number)=>a-b),[200,220],
-      "approved production snapshots must remain unchanged after price changes");
+    assert.deepEqual(approvedSnapshots.rows.map((row: {earning_amount:string|number})=>Number(row.earning_amount)).sort((a:number,b:number)=>a-b),[300,300],
+      "all-scope price changes must update approved production earnings as well as the signed worker ledger delta");
     const allCredits = await apiPool.query(
       "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE '%Integration all price%'",
       [submitterEmployee]

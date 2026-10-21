@@ -726,6 +726,150 @@ export async function paymentsRoutes(app:FastifyInstance){
     })};
   });
 
+  // Complete employee statement for the finance settlement screen. Includes approved,
+  // pending and rejected work separately so pending production is visible but never payable.
+  app.get("/api/worker-payments/employee-statement", {
+    preHandler: [authenticateRequest]
+  }, async (request) => {
+    const parsed=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار العامل غير صحيح",422);
+    const actor=await isWorker(request.user!.userId);
+    const employeeId=parsed.data.employeeId??(actor?.is_worker?actor.employee_id:null);
+    if(!employeeId)throw new AppError("EMPLOYEE_REQUIRED","اختار العامل لعرض كشف الحساب",422);
+    const client=await pool.connect();
+    try{
+      const canManage=await hasPermission(client,request.user!.userId,"worker_payments.pay");
+      if(!canManage&&(!actor?.is_worker||actor.employee_id!==employeeId))throw new AppError("EMPLOYEE_STATEMENT_FORBIDDEN","يمكنك عرض كشف حسابك أنت فقط",403);
+      const employee=await client.query("SELECT id,code,full_name FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
+      const [production,orders,payments,priceChanges,totals]=await Promise.all([
+        client.query(`
+          SELECT p.id,p.code,p.work_date,p.quantity,p.earning_amount,p.total_earning_amount,
+                 p.bonus_amount,p.deduction_amount,p.status,p.rate_snapshot,p.wage_type_method_snapshot,
+                 o.id AS order_id,o.code AS order_code,o.order_name,
+                 os.id AS order_stage_id,os.sequence_no,s.name AS stage_name,
+                 COALESCE(pt.name,'') AS production_type_name,
+                 COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                 + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                 + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+                    JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
+                    WHERE wpa.production_entry_id=p.id
+                      AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+                      AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0) AS paid_amount
+            FROM production_entries p
+            LEFT JOIN order_stages os ON os.id=p.order_stage_id
+            LEFT JOIN production_orders o ON o.id=os.order_id
+            LEFT JOIN stages s ON s.id=p.stage_id
+            LEFT JOIN production_types pt ON pt.id=p.production_type_id
+           WHERE p.employee_id=$1
+           ORDER BY p.work_date DESC,p.created_at DESC,p.id
+           LIMIT 1000
+        `,[employeeId]),
+        client.query(`
+          SELECT o.id AS order_id,o.code AS order_code,o.order_name,
+                 COUNT(p.id)::int AS production_records,
+                 COUNT(p.id) FILTER(WHERE p.status='APPROVED')::int AS approved_records,
+                 COUNT(p.id) FILTER(WHERE p.status='PENDING')::int AS pending_records,
+                 COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='APPROVED'),0) AS approved_earned,
+                 COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='PENDING'),0) AS pending_earned,
+                 COALESCE(SUM(
+                   COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                   + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+                   + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+                      JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
+                      WHERE wpa.production_entry_id=p.id
+                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+                        AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+                 ) FILTER(WHERE p.status='APPROVED'),0) AS paid_against_approved
+            FROM production_entries p
+            JOIN order_stages os ON os.id=p.order_stage_id
+            JOIN production_orders o ON o.id=os.order_id
+           WHERE p.employee_id=$1 AND p.status<>'CANCELLED'
+           GROUP BY o.id,o.code,o.order_name
+           ORDER BY o.order_name,o.code
+        `,[employeeId]),
+        client.query(`
+          SELECT wp.id,wp.gross_amount,wp.amount AS cash_paid_amount,wp.advance_repayment_amount,
+                 wp.method,wp.created_at,es.settlement_date,
+                 o.code AS order_code,o.order_name,s.name AS stage_name,
+                 CASE
+                   WHEN es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+                   WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+                     THEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
+                   ELSE COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0)
+                 END AS allocated_amount,
+                 CASE WHEN es.id IS NOT NULL THEN 'SETTLED'
+                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+                        OR EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
+                      ELSE 'UNALLOCATED' END AS allocation_status
+            FROM worker_payments wp
+            LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            LEFT JOIN production_orders o ON o.id=ae.order_id
+            LEFT JOIN order_stages os ON os.id=ae.order_stage_id
+            LEFT JOIN stages s ON s.id=os.stage_id
+           WHERE wp.employee_id=$1
+           ORDER BY wp.created_at DESC,wp.id
+           LIMIT 500
+        `,[employeeId]),
+        client.query(`
+          SELECT pc.id,pc.code AS price_change_code,pc.created_at,pc.reason,pc.previous_rate,pc.new_rate,
+                 pci.previous_earning,pci.revised_earning,pci.delta_amount,
+                 pe.code AS production_code,pe.work_date,o.code AS order_code,o.order_name,s.name AS stage_name
+            FROM order_price_change_items pci
+            JOIN order_price_changes pc ON pc.id=pci.price_change_id
+            JOIN production_entries pe ON pe.id=pci.production_entry_id
+            JOIN production_orders o ON o.id=pc.order_id
+            JOIN order_stages os ON os.id=pc.order_stage_id
+            JOIN stages s ON s.id=os.stage_id
+           WHERE pci.employee_id=$1
+           ORDER BY pc.created_at DESC,pc.id DESC
+           LIMIT 300
+        `,[employeeId]),
+        client.query(`
+          SELECT
+            COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='APPROVED'),0) AS approved_earnings,
+            COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='PENDING'),0) AS pending_earnings,
+            COUNT(p.id) FILTER(WHERE p.status='APPROVED')::int AS approved_count,
+            COUNT(p.id) FILTER(WHERE p.status='PENDING')::int AS pending_count,
+            COALESCE((SELECT SUM(es.gross_amount) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
+              + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+                           WHERE wp.employee_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)),0) AS paid_gross,
+            COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+                       FROM employee_earnings_adjustments a LEFT JOIN production_entries ap ON ap.id=a.production_entry_id
+                      WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR ap.status='APPROVED')),0) AS adjustments
+          FROM production_entries p WHERE p.employee_id=$1
+        `,[employeeId])
+      ]);
+      const advances=await getOutstandingAdvanceAmount(client,employeeId);
+      const availableForSettlement=await getAvailableEarnings(client,employeeId);
+      const ledger=await getBalance(client,employeeId);
+      return {data:{
+        employee:employee.rows[0],
+        totals:{
+          approvedEarnings:Number(totals.rows[0]?.approved_earnings??0),
+          pendingEarnings:Number(totals.rows[0]?.pending_earnings??0),
+          approvedCount:Number(totals.rows[0]?.approved_count??0),
+          pendingCount:Number(totals.rows[0]?.pending_count??0),
+          paidGross:Number(totals.rows[0]?.paid_gross??0),
+          adjustments:Number(totals.rows[0]?.adjustments??0),
+          outstandingAdvances:advances,
+          availableForSettlement,
+          ledgerBalance:ledger
+        },
+        orders:orders.rows.map((row:any)=>({...row,
+          approved_earned:Number(row.approved_earned??0),
+          pending_earned:Number(row.pending_earned??0),
+          paid_against_approved:Number(row.paid_against_approved??0),
+          remaining:Number(row.approved_earned??0)-Number(row.paid_against_approved??0)
+        })),
+        production:production.rows,
+        payments:payments.rows,
+        priceChanges:priceChanges.rows
+      }};
+    }finally{client.release();}
+  });
+
   app.get("/api/worker-payments/settlement-summary", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
@@ -788,7 +932,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const settled = Number(settlements.rows[0]?.amount ?? 0);
       const legacyPaid = Number(legacyPayments.rows[0]?.amount ?? 0);
       const available = parsed.data.orderId
-        ? Math.max(0,Number(orderAccount.rows[0]?.earned??0)-Number(orderAccount.rows[0]?.allocated_paid??0)-Number(orderAccount.rows[0]?.legacy_order_paid??0))
+        ? Math.round((Number(orderAccount.rows[0]?.earned??0)-Number(orderAccount.rows[0]?.allocated_paid??0)-Number(orderAccount.rows[0]?.legacy_order_paid??0))*100)/100
         : await getAvailableEarnings(client, parsed.data.employeeId);
       return { data: {
         employee: employee.rows[0],

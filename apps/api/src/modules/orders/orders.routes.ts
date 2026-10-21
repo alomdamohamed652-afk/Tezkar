@@ -538,6 +538,9 @@ export async function orderRoutes(app: FastifyInstance) {
       );
       let affected=0,totalDelta=0;
       if(parsed.data.scope!=="NEW_ONLY"){
+        // Serialize price recalculation against payouts by locking affected employees first,
+        // using the same employee-before-production lock order as settlement operations.
+        await client.query("SELECT e.id FROM employees e WHERE e.id IN (SELECT DISTINCT pe.employee_id FROM production_entries pe WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')) ORDER BY e.id FOR UPDATE",[parsed.data.orderStageId]);
         const entries=await client.query(
           `SELECT pe.id,pe.employee_id,pe.status,pe.quantity,pe.hours_worked,pe.base_amount,
                   pe.wage_type_method_snapshot,pe.rate_snapshot,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,
@@ -553,6 +556,9 @@ export async function orderRoutes(app: FastifyInstance) {
         const proposed=entries.rows.map((entry:any)=>{
           const previous=Number(entry.effective_earning);
           const revised=calculateStageEarning(String(entry.wage_type_method_snapshot),newRate,entry);
+          if(revised+Number(entry.bonus_amount??0)+0.009<Number(entry.deduction_amount??0)){
+            throw new AppError("PRICE_CHANGE_BELOW_DEDUCTIONS","السعر الجديد سيجعل خصومات سجل الإنتاج أكبر من مستحقه؛ راجع الخصومات قبل تغيير السعر. لم يتم حفظ أي تعديل.",409);
+          }
           const delta=Math.round((revised-previous+Number.EPSILON)*100)/100;
           // A price correction may legitimately make the revised entitlement lower
           // than the amount already paid. Keep the full earnings delta in the ledger;
@@ -566,13 +572,22 @@ export async function orderRoutes(app: FastifyInstance) {
           );
           if(item.status==="PENDING"){
             await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
-          }else if(Math.abs(item.delta)>=0.005){
-            const credit=item.delta>0?item.delta:0;
-            const debit=item.delta<0?Math.abs(item.delta):0;
+          }else {
+            // Update the approved production source row as well as its immutable delta ledger.
+            // This keeps production reports, order balances, future settlements and the worker
+            // ledger aligned even when the entry was already approved or paid.
             await client.query(
-              "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
-              [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+              "UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",
+              [newRate,item.revised,item.id]
             );
+            if(Math.abs(item.delta)>=0.005){
+              const credit=item.delta>0?item.delta:0;
+              const debit=item.delta<0?Math.abs(item.delta):0;
+              await client.query(
+                "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
+                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+              );
+            }
           }
           affected++;
           totalDelta+=item.delta;
