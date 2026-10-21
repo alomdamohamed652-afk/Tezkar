@@ -599,6 +599,133 @@ export async function paymentsRoutes(app:FastifyInstance){
     return {data:result};
   });
 
+  // List historical payments that still need an explicit order allocation.
+  app.get("/api/worker-payments/historical-unallocated", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async () => {
+    const result = await pool.query(`
+      SELECT wp.id AS payment_id,wp.gross_amount,wp.created_at,wp.employee_id,
+             e.code AS employee_code,e.full_name AS employee_name,
+             ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,
+             COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0) AS production_allocated,
+             COALESCE((SELECT COUNT(*) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)::int AS production_allocation_count
+        FROM worker_payments wp
+        JOIN employees e ON e.id=wp.employee_id
+        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        LEFT JOIN production_orders o ON o.id=ae.order_id
+       WHERE NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+         AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         AND (
+           NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+           OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+           OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                      LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                      LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                      WHERE wpa.worker_payment_id=wp.id AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
+                        OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+         )
+       ORDER BY wp.created_at,wp.id
+       LIMIT 300
+    `);
+    return {data:result.rows};
+  });
+
+  app.get("/api/worker-payments/historical-allocation-stages", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed=z.object({orderId:z.string().uuid()}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار الطلبية غير صحيح",422);
+    const result=await pool.query(`
+      SELECT os.id,os.sequence_no,s.name AS stage_name,os.status
+        FROM order_stages os JOIN stages s ON s.id=os.stage_id
+       WHERE os.order_id=$1 AND os.status<>'CANCELLED'
+       ORDER BY os.sequence_no,os.id
+    `,[parsed.data.orderId]);
+    return {data:result.rows};
+  });
+
+  // Explicitly assign a historical payment to a chosen order. No cash or payment record is created.
+  app.post("/api/worker-payments/:id/allocate-historical", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({orderId:z.string().uuid(),orderStageId:z.string().uuid().optional()}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختر الطلبية والمرحلة بشكل صحيح",422);
+    return {data:await withTransaction(async client=>{
+      const owner=await client.query("SELECT employee_id FROM worker_payments WHERE id=$1",[id]);
+      if(!owner.rowCount)throw new AppError("HISTORICAL_PAYMENT_NOT_FOUND","الدفعة القديمة غير موجودة",404);
+      // Serialize allocations for one employee so two concurrent historical payments
+      // cannot consume the same remaining production earnings.
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[owner.rows[0].employee_id]);
+      const paymentResult=await client.query(`
+        SELECT wp.*,e.full_name AS employee_name,ae.id AS expense_id,ae.order_id,ae.order_stage_id,
+               to_char(wp.created_at,'YYYY-MM-DD') AS payment_date
+          FROM worker_payments wp
+          JOIN employees e ON e.id=wp.employee_id
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+         WHERE wp.id=$1 AND wp.employee_id=$2 FOR UPDATE OF wp
+      `,[id,owner.rows[0].employee_id]);
+      if(!paymentResult.rowCount)throw new AppError("HISTORICAL_PAYMENT_NOT_FOUND","الدفعة القديمة غير موجودة",404);
+      const payment=paymentResult.rows[0];
+      const amount=Math.round(Number(payment.gross_amount)*100)/100;
+      if(await client.query("SELECT 1 FROM employee_earnings_settlements WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_SETTLED","الدفعة مرتبطة بتسوية حديثة بالفعل",409);
+      if(await client.query("SELECT 1 FROM worker_payment_order_allocations WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة على طلبية بالفعل",409);
+      if(payment.order_id&&payment.order_id!==parsed.data.orderId)throw new AppError("HISTORICAL_PAYMENT_ORDER_MISMATCH","الدفعة مرتبطة محاسبيًا بطلبية مختلفة؛ لا يمكن تغييرها من هنا",409);
+      if(payment.order_stage_id&&payment.order_stage_id!==(parsed.data.orderStageId??null))throw new AppError("HISTORICAL_PAYMENT_STAGE_MISMATCH","الدفعة مرتبطة محاسبيًا بمرحلة مختلفة؛ اختر المرحلة المرتبطة بها",409);
+      const order=await client.query("SELECT id FROM production_orders WHERE id=$1 AND status<>'CANCELLED'",[parsed.data.orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة أو ملغاة",404);
+      if(parsed.data.orderStageId){
+        const stage=await client.query("SELECT id FROM order_stages WHERE id=$1 AND order_id=$2 AND status<>'CANCELLED'",[parsed.data.orderStageId,parsed.data.orderId]);
+        if(!stage.rowCount)throw new AppError("ORDER_STAGE_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);
+      }
+      const oldAllocations=await client.query(`
+        SELECT wpa.production_entry_id,wpa.amount,p.employee_id,os.order_id,p.order_stage_id
+          FROM worker_payment_allocations wpa
+          LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+          LEFT JOIN order_stages os ON os.id=p.order_stage_id
+         WHERE wpa.worker_payment_id=$1
+         ORDER BY p.work_date,p.created_at,p.id
+         FOR UPDATE OF wpa
+      `,[id]);
+      let remaining=amount;
+      if(oldAllocations.rowCount){
+        const oldTotal=oldAllocations.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+        const valid=oldAllocations.rows.every(row=>row.employee_id===payment.employee_id&&row.order_id===parsed.data.orderId&&(!parsed.data.orderStageId||row.order_stage_id===parsed.data.orderStageId));
+        if(!valid||Math.abs(oldTotal-amount)>0.009)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","توزيع الإنتاج القديم لا يطابق الموظف/الطلبية أو إجمالي الدفعة؛ يلزم مراجعة محاسبية يدوية",409);
+        for(const row of oldAllocations.rows){
+          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.production_entry_id,row.amount]);
+        }
+        remaining=0;
+      }else{
+        const eligible=await client.query(`
+          SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.production_entry_id=p.id
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)),0)
+            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+            FROM production_entries p JOIN order_stages os ON os.id=p.order_stage_id
+           WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
+             AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+           ORDER BY p.work_date,p.created_at,p.id
+           FOR UPDATE OF p
+        `,[payment.employee_id,parsed.data.orderId,parsed.data.orderStageId??null]);
+        const available=eligible.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0);
+        if(available+0.009<amount)throw new AppError("HISTORICAL_PAYMENT_EXCEEDS_ORDER_DUE",`المستحق المتاح في الطلبية/المرحلة ${available.toFixed(2)} ج.م فقط، أقل من مبلغ الدفعة ${amount.toFixed(2)} ج.م`,409);
+        for(const row of eligible.rows){
+          if(remaining<=0.009)break;
+          const take=Math.round(Math.min(remaining,Number(row.remaining??0))*100)/100;
+          if(take<=0)continue;
+          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.id,take]);
+          remaining=Math.round((remaining-take)*100)/100;
+        }
+        if(remaining>0.009)throw new AppError("HISTORICAL_ALLOCATION_INCOMPLETE","تعذر توزيع كامل الدفعة القديمة؛ تم إلغاء العملية لحماية الحسابات",409);
+      }
+      if(payment.expense_id)await client.query("UPDATE accounting_expenses SET order_id=$1,order_stage_id=COALESCE(order_stage_id,$2) WHERE id=$3",[parsed.data.orderId,parsed.data.orderStageId??null,payment.expense_id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"allocate_historical_worker_payment",module:"payments",entityType:"worker_payment",entityId:id,metadata:{employeeId:payment.employee_id,orderId:parsed.data.orderId,orderStageId:parsed.data.orderStageId??null,amount,allocationMode:oldAllocations.rowCount?"MIRRORED_EXISTING_ALLOCATION":"ALLOCATED_FIFO",expenseLinked:Boolean(payment.expense_id)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {paymentId:id,employeeName:payment.employee_name,amount,orderId:parsed.data.orderId,orderStageId:parsed.data.orderStageId??null};
+    })};
+  });
+
   app.get("/api/worker-payments/settlement-summary", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {

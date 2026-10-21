@@ -782,9 +782,10 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
     const r=await pool.query(
-      `SELECT mp.id,mp.code,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,mp.quantity,mp.notes,mp.status,mp.cancellation_reason,m.code AS machine_code,m.name AS machine_name,
-              p.code AS product_code,p.name AS product_name,e.full_name AS employee_name,
-              o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
+      `SELECT mp.id,mp.code,mp.machine_id,mp.employee_id,mp.order_stage_id,mp.production_type_id,
+              os.order_id,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,mp.quantity,mp.notes,mp.status,mp.cancellation_reason,
+              m.code AS machine_code,m.name AS machine_name,p.code AS product_code,p.name AS product_name,
+              e.full_name AS employee_name,o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
          FROM machine_productions mp
          JOIN machines m ON m.id=mp.machine_id
          JOIN products p ON p.id=mp.product_id
