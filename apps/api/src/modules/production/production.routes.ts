@@ -190,7 +190,7 @@ export async function productionRoutes(app: FastifyInstance) {
                 + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0) AS paid_amount,
               GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
                 - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
-                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+                - COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
@@ -292,7 +292,7 @@ export async function productionRoutes(app: FastifyInstance) {
               GREATEST(COALESCE(p.total_earning_amount,COALESCE(p.earning_amount,0)+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
                 - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
-                + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0),0) AS remaining_amount,
+                - COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0),0) AS remaining_amount,
               pr.name AS product_name,st.name AS stage_name,sh.name AS shift_name,u.name AS unit_name
          FROM production_entries p
          JOIN products pr ON pr.id=p.product_id
