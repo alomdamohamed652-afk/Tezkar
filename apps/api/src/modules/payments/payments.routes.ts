@@ -665,7 +665,6 @@ export async function paymentsRoutes(app:FastifyInstance){
       const amount=Math.round(Number(payment.gross_amount)*100)/100;
       if(await client.query("SELECT 1 FROM employee_earnings_settlements WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_SETTLED","الدفعة مرتبطة بتسوية حديثة بالفعل",409);
       if(await client.query("SELECT 1 FROM worker_payment_order_allocations WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة على طلبية بالفعل",409);
-      if(!payment.expense_id)throw new AppError("HISTORICAL_PAYMENT_EXPENSE_MISSING","لا يوجد قيد مصروف مرتبط بالدفعة؛ راجعها محاسبيًا قبل توزيعها",409);
       if(payment.order_id&&payment.order_id!==parsed.data.orderId)throw new AppError("HISTORICAL_PAYMENT_ORDER_MISMATCH","الدفعة مرتبطة محاسبيًا بطلبية مختلفة؛ لا يمكن تغييرها من هنا",409);
       if(payment.order_stage_id&&payment.order_stage_id!==(parsed.data.orderStageId??null))throw new AppError("HISTORICAL_PAYMENT_STAGE_MISMATCH","الدفعة مرتبطة محاسبيًا بمرحلة مختلفة؛ اختر المرحلة المرتبطة بها",409);
       const order=await client.query("SELECT id FROM production_orders WHERE id=$1 AND status<>'CANCELLED'",[parsed.data.orderId]);
@@ -716,8 +715,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         }
         if(remaining>0.009)throw new AppError("HISTORICAL_ALLOCATION_INCOMPLETE","تعذر توزيع كامل الدفعة القديمة؛ تم إلغاء العملية لحماية الحسابات",409);
       }
-      await client.query("UPDATE accounting_expenses SET order_id=$1,order_stage_id=COALESCE(order_stage_id,$2) WHERE id=$3",[parsed.data.orderId,parsed.data.orderStageId??null,payment.expense_id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"allocate_historical_worker_payment",module:"payments",entityType:"worker_payment",entityId:id,metadata:{employeeId:payment.employee_id,orderId:parsed.data.orderId,orderStageId:parsed.data.orderStageId??null,amount,allocationMode:oldAllocations.rowCount?"MIRRORED_EXISTING_ALLOCATION":"ALLOCATED_FIFO"},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      if(payment.expense_id)await client.query("UPDATE accounting_expenses SET order_id=$1,order_stage_id=COALESCE(order_stage_id,$2) WHERE id=$3",[parsed.data.orderId,parsed.data.orderStageId??null,payment.expense_id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"allocate_historical_worker_payment",module:"payments",entityType:"worker_payment",entityId:id,metadata:{employeeId:payment.employee_id,orderId:parsed.data.orderId,orderStageId:parsed.data.orderStageId??null,amount,allocationMode:oldAllocations.rowCount?"MIRRORED_EXISTING_ALLOCATION":"ALLOCATED_FIFO",expenseLinked:Boolean(payment.expense_id)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {paymentId:id,employeeName:payment.employee_name,amount,orderId:parsed.data.orderId,orderStageId:parsed.data.orderStageId??null};
     })};
   });
