@@ -1607,6 +1607,21 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.ok(statementOrder, "employee statement must include the price-change order");
     assert.equal(Number(statementOrder.approved_earned), 600,
       "order statement earnings must reflect updated net production values");
+    await apiPool.query("UPDATE users SET employee_id=$1 WHERE id=$2",[submitterEmployee,limitedUser.userId]);
+    await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[limitedUser.userId]);
+    const workerOwnStatement=await app.inject({
+      method:"GET",url:"/api/worker-payments/employee-statement",headers:{cookie:limitedUser.cookie}
+    });
+    assert.equal(workerOwnStatement.statusCode,200,workerOwnStatement.body);
+    assert.equal(workerOwnStatement.json().data.employee.id,submitterEmployee,
+      "worker account should default to the authenticated worker's own employee record");
+    const workerOtherStatement=await app.inject({
+      method:"GET",url:"/api/worker-payments/employee-statement?employeeId="+approverEmployee,
+      headers:{cookie:limitedUser.cookie}
+    });
+    assert.equal(workerOtherStatement.statusCode,403,
+      "worker must not be able to inspect another employee's financial statement");
+
 
 
     // A later price reduction must still be recorded when a worker was already
