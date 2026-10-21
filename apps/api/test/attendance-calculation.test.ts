@@ -166,3 +166,14 @@ test("does not suggest corrections without both boundary-side punches or after a
   assert.deepEqual(single, []);
   assert.deepEqual(decided, []);
 });
+
+test("does not suggest a correction for a single punch on a short shift", () => {
+  const suggestions = suggestBoundaryPunchCorrections({
+    punches: [correctionPunch("midpoint", "OUT", 17 * 60)],
+    shiftDate: "2026-10-15",
+    startMinute: 15 * 60,
+    endMinute: 19 * 60,
+    overnight: false,
+  });
+  assert.deepEqual(suggestions, []);
+});
