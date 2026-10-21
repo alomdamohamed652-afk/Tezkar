@@ -105,6 +105,7 @@ export async function productionRoutes(app: FastifyInstance) {
       employeeId: z.string().uuid().optional(),
       orderId: z.string().uuid().optional(),
       stageId: z.string().uuid().optional(),
+      paymentStatus: z.enum(["PAID","PARTIAL","UNPAID","UNALLOCATED"]).optional(),
       from: z.string().date().optional(),
       to: z.string().date().optional(),
       limit: z.coerce.number().int().min(1).max(200).default(100),
@@ -141,6 +142,34 @@ export async function productionRoutes(app: FastifyInstance) {
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
 
+    const paymentStatusSql = `CASE
+      WHEN EXISTS(SELECT 1 FROM worker_payments wp
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        JOIN order_stages os2 ON os2.id=p.order_stage_id
+        WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                    AND (
+                      NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id)
+                      OR COALESCE((SELECT SUM(legacy_wpa.amount) FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                      OR EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa
+                        LEFT JOIN production_entries legacy_p ON legacy_p.id=legacy_wpa.production_entry_id
+                        LEFT JOIN order_stages legacy_os ON legacy_os.id=legacy_p.order_stage_id
+                        WHERE legacy_wpa.worker_payment_id=wp.id
+                          AND (legacy_p.id IS NULL OR legacy_p.employee_id<>wp.employee_id
+                            OR legacy_os.order_id IS DISTINCT FROM ae.order_id
+                            OR (ae.order_stage_id IS NOT NULL AND legacy_p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                    )) THEN 'UNALLOCATED'
+      WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+        + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+        + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+        >= COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID'
+      WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+        + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+        + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)>0.009 THEN 'PARTIAL'
+      ELSE 'UNPAID'
+    END`;
+    if (query.data.paymentStatus) { params.push(query.data.paymentStatus); where.push(`(${paymentStatusSql})=${params.length}`); }
+
     const filterParams = [...params];
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
@@ -168,7 +197,18 @@ export async function productionRoutes(app: FastifyInstance) {
                   JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
                   JOIN order_stages os2 ON os2.id=p.order_stage_id
                   WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
-                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
+                    AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                    AND (
+                      NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id)
+                      OR COALESCE((SELECT SUM(legacy_wpa.amount) FROM worker_payment_allocations legacy_wpa WHERE legacy_wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                      OR EXISTS(SELECT 1 FROM worker_payment_allocations legacy_wpa
+                        LEFT JOIN production_entries legacy_p ON legacy_p.id=legacy_wpa.production_entry_id
+                        LEFT JOIN order_stages legacy_os ON legacy_os.id=legacy_p.order_stage_id
+                        WHERE legacy_wpa.worker_payment_id=wp.id
+                          AND (legacy_p.id IS NULL OR legacy_p.employee_id<>wp.employee_id
+                            OR legacy_os.order_id IS DISTINCT FROM ae.order_id
+                            OR (ae.order_stage_id IS NOT NULL AND legacy_p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                    )) THEN 'UNALLOCATED'
                 WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
                 + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                    + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
@@ -204,11 +244,30 @@ export async function productionRoutes(app: FastifyInstance) {
     let canViewFinancials=false;
     try{canViewFinancials=await hasPermission(permissionClient,request.user!.userId,"worker_payments.pay","all")}
     finally{permissionClient.release()}
+    const paidSql = `COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+      + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+      + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)`;
+    const remainingSql = `GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+      - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+      + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+      - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0)`;
+    const summaryResult=await pool.query(
+      `SELECT COALESCE(SUM(p.quantity),0)::float8 AS quantity,
+              COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount,0)),0)::float8 AS earned,
+              COALESCE(SUM(${paidSql}),0)::float8 AS paid,
+              COALESCE(SUM(${remainingSql}),0)::float8 AS remaining
+         FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
+      filterParams
+    );
+    const rawSummary=summaryResult.rows[0]??{};
+    const summary=canViewFinancials
+      ? {quantity:Number(rawSummary.quantity??0),earned:Number(rawSummary.earned??0),paid:Number(rawSummary.paid??0),remaining:Number(rawSummary.remaining??0)}
+      : {quantity:Number(rawSummary.quantity??0)};
     if(!canViewFinancials){
       const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
-      return {data, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks};
+      return {data, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks};
     }
-    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks };
+    return { data: result.rows, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks };
   });
 
   app.get("/api/production/my", {
@@ -1304,6 +1363,17 @@ export async function productionRoutes(app: FastifyInstance) {
                           WHERE wp.employee_id=e.id
                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
                             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                            AND (
+                              NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                              OR COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                              OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                                LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                                WHERE wpa.worker_payment_id=wp.id AND ae.order_id IS NOT NULL
+                                  AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
+                                    OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                            )
                           ),0) AS unallocated_historical_payments
         FROM employees e
        WHERE e.is_active=TRUE AND ($1::uuid IS NULL OR e.id=$1)
@@ -1355,9 +1425,21 @@ export async function productionRoutes(app: FastifyInstance) {
                               SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                             )),0)
                + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                            WHERE wp.employee_id=$1 AND NOT EXISTS(
-                              SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id
-                            )),0) AS unallocated
+                            WHERE wp.employee_id=$1
+                              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+                              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+                              AND (
+                                NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                                OR COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                                OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                                  LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                                  LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                                  WHERE wpa.worker_payment_id=wp.id
+                                    AND ae.order_id IS NOT NULL
+                                    AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
+                                      OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                              )),0) AS unallocated
         `,[parsed.data.employeeId]);
         if(Number(legacy.rows[0].unallocated)>0.009)throw new AppError("HISTORICAL_PAYMENTS_NEED_ALLOCATION",`يوجد ${Number(legacy.rows[0].unallocated).toFixed(2)} ج.م من دفعات قديمة غير موزعة على طلبيات؛ راجعها قبل تسوية طلبية محددة حتى لا يتكرر الصرف.`,409);
       }
