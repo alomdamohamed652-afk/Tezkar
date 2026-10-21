@@ -1591,3 +1591,31 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .metric-early{color:#9f1239;background:#ffe4e6;border-color:#fda4af}
 .metric-overtime{color:#6b21a8;background:#f3e8ff;border-color:#d8b4fe}
 .metric-zero{color:#475569;background:#f8fafc;border-color:#e2e8f0}
+
+
+/* Production payment status: thin, full-row outline that remains clear on dense tables. */
+.payment-row-paid td,
+.payment-row-unpaid td,
+.payment-row-partial td,
+.payment-row-unallocated td{
+  border-top:1px solid transparent;
+  border-bottom:1px solid transparent;
+}
+.payment-row-paid td{border-top-color:#86efac;border-bottom-color:#86efac;background:rgba(220,252,231,.16)}
+.payment-row-paid td:first-child{border-left:1px solid #86efac;border-radius:7px 0 0 7px}
+.payment-row-paid td:last-child{border-right:1px solid #86efac;border-radius:0 7px 7px 0}
+.payment-row-unpaid td{border-top-color:#fca5a5;border-bottom-color:#fca5a5;background:rgba(254,226,226,.14)}
+.payment-row-unpaid td:first-child{border-left:1px solid #fca5a5;border-radius:7px 0 0 7px}
+.payment-row-unpaid td:last-child{border-right:1px solid #fca5a5;border-radius:0 7px 7px 0}
+.payment-row-partial td{border-top-color:#fcd34d;border-bottom-color:#fcd34d;background:rgba(254,243,199,.14)}
+.payment-row-partial td:first-child{border-left:1px solid #fcd34d;border-radius:7px 0 0 7px}
+.payment-row-partial td:last-child{border-right:1px solid #fcd34d;border-radius:0 7px 7px 0}
+.payment-row-unallocated td{border-top-color:#cbd5e1;border-bottom-color:#cbd5e1;background:rgba(241,245,249,.25)}
+.payment-row-unallocated td:first-child{border-left:1px solid #cbd5e1;border-radius:7px 0 0 7px}
+.payment-row-unallocated td:last-child{border-right:1px solid #cbd5e1;border-radius:0 7px 7px 0}
+.stage-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;padding:0 18px 18px}
+.stage-summary-card{display:flex;flex-direction:column;gap:7px;min-width:0;padding:14px;border:1px solid var(--border,#e2e8f0);border-radius:10px;background:var(--card,#fff)}
+.stage-summary-card span{font-size:13px;color:var(--muted,#64748b);font-weight:700}
+.stage-summary-card strong{font-size:21px;line-height:1.25;font-weight:800}
+.stage-summary-card small{font-size:12px;color:var(--muted,#64748b)}
+.report-overview-card{overflow:hidden}
