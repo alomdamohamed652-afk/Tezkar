@@ -31,7 +31,7 @@ export function belongsToAttendanceShift(input: {
   const isCheckout = input.punchStatus === "OUT" || input.punchStatus === "OVERTIME_OUT";
   const mayBeMislabelledCheckout = input.punchStatus === "IN"
     && input.scheduledEndMinute !== null
-    && input.punchMinute >= input.scheduledEndMinute - 240
+    && input.punchMinute >= input.scheduledEndMinute - 120
     && input.punchMinute <= input.scheduledEndMinute + 120;
   return input.overnight
     && input.punchLocalDate === nextDate
