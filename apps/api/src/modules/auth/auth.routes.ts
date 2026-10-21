@@ -108,6 +108,8 @@ export async function authRoutes(app: FastifyInstance) {
         const userAgent = Array.isArray(rawAgent) ? rawAgent[0] : rawAgent ?? null;
         const rawDeviceId = request.headers["x-tezkar-device-id"];
         const deviceId = (Array.isArray(rawDeviceId) ? rawDeviceId[0] : rawDeviceId)?.slice(0, 128) ?? null;
+        const knownDevice = deviceId ? await client.query("SELECT 1 FROM user_sessions WHERE user_id=$1 AND device_id=$2 LIMIT 1", [user.userId, deviceId]) : { rowCount: 1 };
+        const isNewDevice = Boolean(deviceId) && !knownDevice.rowCount;
         const session = await createSession(client, user, { deviceId, ipAddress: request.ip, userAgent });
         await writeAudit(client, {
           actorUserId: user.userId,
@@ -117,10 +119,11 @@ export async function authRoutes(app: FastifyInstance) {
           entityType: "user",
           entityId: user.userId,
           ipAddress: request.ip,
-          userAgent: request.headers["user-agent"] ?? null
+          userAgent: request.headers["user-agent"] ?? null,
+          metadata: { deviceId, newDevice: isNewDevice }
         });
         await client.query("DELETE FROM user_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL");
-        return { user, session };
+        return { user, session, isNewDevice };
       });
       clearLoginFailures(request, parsed.data.username);
       await clearPersistentLoginFailures(request.ip, parsed.data.username);
@@ -147,7 +150,8 @@ export async function authRoutes(app: FastifyInstance) {
 
     return {
       data: result.user,
-      requiresSetup: result.user.mustCompleteSetup
+      requiresSetup: result.user.mustCompleteSetup,
+      newDevice: result.isNewDevice
     };
   });
 
