@@ -480,6 +480,125 @@ export async function paymentsRoutes(app:FastifyInstance){
     });
     return {data:row};
   });
+  // Safely reconcile historical worker payments that were recorded before order-scoped allocations existed.
+  // This only links existing payments to approved production; it does not create a new payment or accounting expense.
+  app.post("/api/worker-payments/reconcile-historical-allocations", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const result = await withTransaction(async client => {
+      const candidates = await client.query(`
+        SELECT wp.id
+          FROM worker_payments wp
+          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+         WHERE ae.order_id IS NOT NULL
+           AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         ORDER BY wp.created_at,wp.id
+         LIMIT 200
+         FOR UPDATE OF wp SKIP LOCKED
+      `);
+      let reconciledCount = 0;
+      const skipped: Array<{paymentId:string;employeeName:string;amount:number;reason:string}> = [];
+      for (const candidate of candidates.rows) {
+        const paymentResult = await client.query(`
+          SELECT wp.id,wp.employee_id,wp.gross_amount,e.full_name AS employee_name,
+                 ae.order_id,ae.order_stage_id
+            FROM worker_payments wp
+            JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            JOIN employees e ON e.id=wp.employee_id
+           WHERE wp.id=$1
+             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+           FOR UPDATE OF wp
+        `, [candidate.id]);
+        if (!paymentResult.rowCount) continue;
+        const payment = paymentResult.rows[0];
+        const grossAmount = Math.round(Number(payment.gross_amount) * 100) / 100;
+        const existing = await client.query(`
+          SELECT COALESCE(SUM(wpa.amount),0)::numeric(14,2) AS allocated,
+                 COUNT(wpa.production_entry_id)::int AS allocation_count,
+                 COUNT(*) FILTER(WHERE wpa.production_entry_id IS NOT NULL AND
+                   (p.id IS NULL OR p.employee_id<>$2 OR os.order_id IS DISTINCT FROM $3::uuid OR
+                    ($4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid)))::int AS mismatches
+            FROM worker_payment_allocations wpa
+            LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+            LEFT JOIN order_stages os ON os.id=p.order_stage_id
+           WHERE wpa.worker_payment_id=$1
+        `, [payment.id,payment.employee_id,payment.order_id,payment.order_stage_id]);
+        const allocationCount = Number(existing.rows[0]?.allocation_count ?? 0);
+        const existingAmount = Math.round(Number(existing.rows[0]?.allocated ?? 0) * 100) / 100;
+        const mismatchCount = Number(existing.rows[0]?.mismatches ?? 0);
+        if (allocationCount > 0) {
+          if (mismatchCount > 0 || Math.abs(existingAmount-grossAmount) > 0.009) {
+            skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,reason:mismatchCount>0?"التوزيع القديم يشمل طلبية/مرحلة مختلفة عن المصروف المرتبط.":"إجمالي التوزيع القديم لا يساوي إجمالي الدفعة."});
+            continue;
+          }
+          await client.query(`
+            INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+            SELECT wpa.worker_payment_id,wpa.production_entry_id,wpa.amount
+              FROM worker_payment_allocations wpa
+             WHERE wpa.worker_payment_id=$1
+            ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING
+          `, [payment.id]);
+        } else {
+          const eligible = await client.query(`
+            SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.production_entry_id=p.id
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)),0)
+              -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+              FROM production_entries p
+              JOIN order_stages os ON os.id=p.order_stage_id
+             WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
+               AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+             ORDER BY p.work_date,p.created_at,p.id
+             FOR UPDATE OF p
+          `, [payment.employee_id,payment.order_id,payment.order_stage_id]);
+          const available = eligible.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0);
+          if (available + 0.009 < grossAmount) {
+            skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,reason:`المستحق المتاح في الطلبية المرتبطة أقل من مبلغ الدفعة (${available.toFixed(2)} ج.م).`});
+            continue;
+          }
+          let remaining = grossAmount;
+          for (const row of eligible.rows) {
+            if (remaining <= 0.009) break;
+            const take = Math.min(remaining,Number(row.remaining??0));
+            if (take <= 0.009) continue;
+            await client.query(`
+              INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+              VALUES($1,$2,$3)
+              ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING
+            `, [payment.id,row.id,Math.round(take*100)/100]);
+            remaining = Math.round((remaining-take)*100)/100;
+          }
+          if (remaining > 0.009) throw new AppError("HISTORICAL_ALLOCATION_INCOMPLETE","تعذر توزيع كامل الدفعة القديمة؛ تم إلغاء العملية لحماية الحسابات.",409);
+        }
+        await writeAudit(client,{
+          actorUserId:request.user!.userId,
+          actorEmployeeId:request.user!.employeeId,
+          action:"reconcile_historical_worker_payment",
+          module:"payments",
+          entityType:"worker_payment",
+          entityId:payment.id,
+          afterData:{orderId:payment.order_id,orderStageId:payment.order_stage_id,grossAmount,allocationMode:allocationCount>0?"MIRRORED_EXISTING_ALLOCATION":"ALLOCATED_TO_LINKED_ORDER"},
+          ipAddress:request.ip,
+          userAgent:request.headers["user-agent"]??null
+        });
+        reconciledCount++;
+      }
+      const unresolved = await client.query(`
+        SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
+          FROM worker_payments wp
+          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+         WHERE ae.order_id IS NOT NULL
+           AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+      `);
+      return {reconciledCount,skippedCount:skipped.length,skipped:skipped.slice(0,50),unresolvedCount:Number(unresolved.rows[0]?.count??0),unresolvedAmount:Number(unresolved.rows[0]?.amount??0)};
+    });
+    return {data:result};
+  });
+
   app.get("/api/worker-payments/settlement-summary", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
