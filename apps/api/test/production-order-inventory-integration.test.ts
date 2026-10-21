@@ -1571,11 +1571,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const finalStageRate = await apiPool.query("SELECT stage_rate FROM order_stages WHERE id=$1", [priceStage.rows[0].id]);
     assert.equal(Number(finalStageRate.rows[0].stage_rate), 30);
     const approvedSnapshots = await apiPool.query(
-      "SELECT id,earning_amount FROM production_entries WHERE id=ANY($1::uuid[]) ORDER BY id",
+      "SELECT id,earning_amount,total_earning_amount FROM production_entries WHERE id=ANY($1::uuid[]) ORDER BY id",
       [[priceProductionId,secondPriceProductionId]]
     );
     assert.deepEqual(approvedSnapshots.rows.map((row: {earning_amount:string|number})=>Number(row.earning_amount)).sort((a:number,b:number)=>a-b),[300,300],
       "all-scope price changes must update approved production earnings as well as the signed worker ledger delta");
+    assert.deepEqual(approvedSnapshots.rows.map((row: {total_earning_amount:string|number})=>Number(row.total_earning_amount)).sort((a:number,b:number)=>a-b),[300,300],
+      "all-scope price changes must also recalculate net earnings used by worker settlement and production reports");
     const allCredits = await apiPool.query(
       "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE '%Integration all price%'",
       [submitterEmployee]
