@@ -97,3 +97,73 @@ test("multiple overtime punches within the duplicate window collapse to one but 
   assert.deepEqual(result.duplicateIds, ["ot-in-2"]);
   assert.equal(result.needsReview, true);
 });
+
+
+import { suggestBoundaryPunchCorrections } from "../src/modules/attendance/attendance-corrections.js";
+
+function correctionPunch(id: string, status: string, minute: number, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    status,
+    minute,
+    punch_at: `2026-10-15T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`,
+    localDate: "2026-10-15",
+    corrected_status: null,
+    correction_decision: null,
+    ...extra,
+  };
+}
+
+test("suggests OUT-at-shift-start as IN when another punch is near shift end", () => {
+  const suggestions = suggestBoundaryPunchCorrections({
+    punches: [
+      correctionPunch("early", "OUT", 15 * 60),
+      correctionPunch("end", "OUT", 23 * 60),
+    ],
+    shiftDate: "2026-10-15",
+    startMinute: 15 * 60,
+    endMinute: 23 * 60,
+    overnight: false,
+  });
+  assert.deepEqual(suggestions.map((s) => [s.id, s.originalStatus, s.suggestedStatus]), [
+    ["early", "OUT", "IN"],
+  ]);
+});
+
+test("suggests IN-at-shift-end as OUT when another punch is near shift start", () => {
+  const suggestions = suggestBoundaryPunchCorrections({
+    punches: [
+      correctionPunch("start", "IN", 15 * 60),
+      correctionPunch("late", "IN", 23 * 60),
+    ],
+    shiftDate: "2026-10-15",
+    startMinute: 15 * 60,
+    endMinute: 23 * 60,
+    overnight: false,
+  });
+  assert.deepEqual(suggestions.map((s) => [s.id, s.originalStatus, s.suggestedStatus]), [
+    ["late", "IN", "OUT"],
+  ]);
+});
+
+test("does not suggest corrections without both boundary-side punches or after a decision", () => {
+  const single = suggestBoundaryPunchCorrections({
+    punches: [correctionPunch("only", "OUT", 15 * 60)],
+    shiftDate: "2026-10-15",
+    startMinute: 15 * 60,
+    endMinute: 23 * 60,
+    overnight: false,
+  });
+  const decided = suggestBoundaryPunchCorrections({
+    punches: [
+      correctionPunch("early", "OUT", 15 * 60, { correction_decision: "KEPT_ORIGINAL" }),
+      correctionPunch("end", "OUT", 23 * 60),
+    ],
+    shiftDate: "2026-10-15",
+    startMinute: 15 * 60,
+    endMinute: 23 * 60,
+    overnight: false,
+  });
+  assert.deepEqual(single, []);
+  assert.deepEqual(decided, []);
+});
