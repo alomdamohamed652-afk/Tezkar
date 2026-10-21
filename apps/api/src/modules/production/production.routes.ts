@@ -105,6 +105,7 @@ export async function productionRoutes(app: FastifyInstance) {
       employeeId: z.string().uuid().optional(),
       orderId: z.string().uuid().optional(),
       stageId: z.string().uuid().optional(),
+      paymentStatus: z.enum(["PAID","PARTIAL","UNPAID","UNALLOCATED"]).optional(),
       from: z.string().date().optional(),
       to: z.string().date().optional(),
       limit: z.coerce.number().int().min(1).max(200).default(100),
@@ -137,9 +138,26 @@ export async function productionRoutes(app: FastifyInstance) {
       params.push(query.data.orderId);
       where.push(`EXISTS (SELECT 1 FROM order_stages os_filter WHERE os_filter.id=p.order_stage_id AND os_filter.order_id=$${params.length})`);
     }
-    if (query.data.stageId) { params.push(query.data.stageId); where.push(`p.stage_id=$${params.length}`); }
-    if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
-    if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
+    if (query.data.stageId) { params.push(query.data.stageId); where.push(`p.stage_id=${params.length}`); }
+    if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= ${params.length}`); }
+    if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= ${params.length}`); }
+
+    const paymentStatusSql = `CASE
+      WHEN EXISTS(SELECT 1 FROM worker_payments wp
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        JOIN order_stages os2 ON os2.id=p.order_stage_id
+        WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)) THEN 'UNALLOCATED'
+      WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+        + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+        + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+        >= COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID'
+      WHEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+        + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+        + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)>0.009 THEN 'PARTIAL'
+      ELSE 'UNPAID'
+    END`;
+    if (query.data.paymentStatus) { params.push(query.data.paymentStatus); where.push(`(${paymentStatusSql})=${params.length}`); }
 
     const filterParams = [...params];
     const countResult = await pool.query(
@@ -204,11 +222,30 @@ export async function productionRoutes(app: FastifyInstance) {
     let canViewFinancials=false;
     try{canViewFinancials=await hasPermission(permissionClient,request.user!.userId,"worker_payments.pay","all")}
     finally{permissionClient.release()}
+    const paidSql = `COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+      + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+      + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)`;
+    const remainingSql = `GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+      - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+      + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+      - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0)`;
+    const summaryResult=await pool.query(
+      `SELECT COALESCE(SUM(p.quantity),0)::float8 AS quantity,
+              COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount,0)),0)::float8 AS earned,
+              COALESCE(SUM(${paidSql}),0)::float8 AS paid,
+              COALESCE(SUM(${remainingSql}),0)::float8 AS remaining
+         FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
+      filterParams
+    );
+    const rawSummary=summaryResult.rows[0]??{};
+    const summary=canViewFinancials
+      ? {quantity:Number(rawSummary.quantity??0),earned:Number(rawSummary.earned??0),paid:Number(rawSummary.paid??0),remaining:Number(rawSummary.remaining??0)}
+      : {quantity:Number(rawSummary.quantity??0)};
     if(!canViewFinancials){
       const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
-      return {data, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks};
+      return {data, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks};
     }
-    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks };
+    return { data: result.rows, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks };
   });
 
   app.get("/api/production/my", {
