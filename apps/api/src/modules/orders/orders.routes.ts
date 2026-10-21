@@ -556,6 +556,9 @@ export async function orderRoutes(app: FastifyInstance) {
         const proposed=entries.rows.map((entry:any)=>{
           const previous=Number(entry.effective_earning);
           const revised=calculateStageEarning(String(entry.wage_type_method_snapshot),newRate,entry);
+          if(revised+Number(entry.bonus_amount??0)+0.009<Number(entry.deduction_amount??0)){
+            throw new AppError("PRICE_CHANGE_BELOW_DEDUCTIONS","السعر الجديد سيجعل خصومات سجل الإنتاج أكبر من مستحقه؛ راجع الخصومات قبل تغيير السعر. لم يتم حفظ أي تعديل.",409);
+          }
           const delta=Math.round((revised-previous+Number.EPSILON)*100)/100;
           // A price correction may legitimately make the revised entitlement lower
           // than the amount already paid. Keep the full earnings delta in the ledger;
