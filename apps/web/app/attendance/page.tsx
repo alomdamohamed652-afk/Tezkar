@@ -77,7 +77,7 @@ function exportEmployeeReport(){
   const first=group.rows[0];const employee=employees.find(e=>e.code===group.code);
   const sheetRows:any[][]=[["تقرير حضور الموظف"],["اسم الموظف",first?.employeeName??employee?.full_name??""],["كود الموظف",group.code],["الفترة من",reportFrom,"إلى",reportTo],[],dailyHeaders,...makeDaily(group.rows),[],...summaryFor(group.rows)];
   const ws=XLSX.utils.aoa_to_sheet(sheetRows);
-  ws["!cols"]=[{wch:14},{wch:14},{wch:14},{wch:26},{wch:20},{wch:20},{wch:14},{wch:14},{wch:17},{wch:20},{wch:22},{wch:22},{wch:18},{wch:18},{wch:24},{wch:12},{wch:14},{wch:14},{wch:16},{wch:16},{wch:28}];
+  ws["!cols"]=[{wch:14},{wch:14},{wch:14},{wch:26},{wch:20},{wch:20},{wch:14},{wch:14},{wch:18},{wch:17},{wch:20},{wch:22},{wch:22},{wch:24},{wch:12},{wch:14},{wch:14},{wch:16},{wch:16},{wch:28}];
   const headerRow=6;
   for(let c=0;c<dailyHeaders.length;c++){const cell=ws[XLSX.utils.encode_cell({r:headerRow-1,c})];if(cell)cell.s={font:{bold:true},alignment:{horizontal:"center",vertical:"center",wrapText:true}};}
   XLSX.utils.book_append_sheet(wb,ws,safeSheetName(group.code+" "+(first?.employeeName??"موظف")));
