@@ -49,7 +49,7 @@ await app.register(cookie, { secret: env.SESSION_SECRET });
 
 app.addHook("onResponse", async (request, reply) => {
   if (reply.statusCode >= 400) return;
-  const route = request.routeOptions.url ?? request.url.split("?")[0];
+  const route = request.routeOptions.url ?? request.url.split("?")[0] ?? request.url;
   const sensitiveRead = request.method === "GET" && (/^\/api\/admin\/security/.test(route) || route === "/api/account/profile" || route === "/api/auth/sessions");
   if (["GET", "HEAD", "OPTIONS"].includes(request.method) && !sensitiveRead) return;
   const actor = (request as typeof request & { user?: SessionUser | null }).user ?? null;
