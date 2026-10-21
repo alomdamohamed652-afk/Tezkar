@@ -199,7 +199,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
@@ -238,25 +238,28 @@ async function executeWorkerPayment(
       planned.total>0?`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}؛ سداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي نقد مدفوع ${planned.cashPaid.toFixed(2)} ج.م`:`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}`]);
   if(!input.skipCashCustodyOut) await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
 
-  let allocationRemaining=input.grossAmount;
-  const productions=await client.query(
-    `SELECT pe.id,
-      GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
-      FROM production_entries pe
-     WHERE pe.employee_id=$1 AND pe.status='APPROVED'
-     ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
-    [input.employeeId]);
-  for(const production of productions.rows){
-    if(allocationRemaining<=0.000001)break;
-    const take=Math.min(allocationRemaining,Number(production.remaining));
-    if(take<=0.000001)continue;
-    await client.query(
-      `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
-       VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
-       DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
-      [payment.rows[0].id,production.id,take]);
-    allocationRemaining-=take;
+  if(!input.skipProductionAllocations){
+    let allocationRemaining=input.grossAmount;
+    const productions=await client.query(
+      `SELECT pe.id,
+        GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+          COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+        FROM production_entries pe
+       WHERE pe.employee_id=$1 AND pe.status='APPROVED'
+       ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
+      [input.employeeId]);
+    for(const production of productions.rows){
+      if(allocationRemaining<=0.000001)break;
+      const take=Math.min(allocationRemaining,Number(production.remaining));
+      if(take<=0.000001)continue;
+      await client.query(
+        `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
+         VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
+         DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
+        [payment.rows[0].id,production.id,take]);
+      allocationRemaining-=take;
+    }
+  
   }
   return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
 }
@@ -743,7 +746,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyKey: parsed.data.idempotencyKey,
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
-        allowOverpayment: parsed.data.allowOverpayment
+        allowOverpayment: parsed.data.allowOverpayment,
+        skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY"
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
