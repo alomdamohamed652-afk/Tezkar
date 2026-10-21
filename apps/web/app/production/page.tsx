@@ -217,40 +217,6 @@ export default function ProductionPage(){
  }
 
 
- async function submitPreviousCustodyPayout(e:FormEvent){
-  e.preventDefault();setError("");
-  const amount=Number(normalizeNumber(payoutAmount||"0"));
-  if(!payoutEmployeeId||!payoutOrderId){setError("اختار العامل والطلبية قبل تسجيل سند القبض.");return}
-  if(!Number.isFinite(amount)||amount<=0){setError("اكتب مبلغ قبض صحيح.");return}
-  setPayoutSaving(true);
-  try{
-   await api("/api/worker-payments/direct",{method:"POST",body:JSON.stringify({
-    employeeId:payoutEmployeeId,settlementSource:"PREVIOUS_CUSTODY",orderId:payoutOrderId,
-    idempotencyKey:crypto.randomUUID(),amount,method:"CASH",transferReference:null,
-    advanceRepaymentAmount:0,notes:payoutNotes.trim()||"سند قبض من تسوية العهدة السابقة",allowOverpayment
-   })});
-   setPayoutAmount("");setPayoutNotes("");setAllowOverpayment(false);setError("");await load();await refreshProductionData(false);
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل سند قبض العامل")}
-  finally{setPayoutSaving(false)}
- }
- async function submitLegacyOrderExpense(e:FormEvent){
-  e.preventDefault();setError("");
-  const amount=Number(normalizeNumber(legacyExpenseAmount||"0"));
-  if(!legacyOrderId){setError("اختار الطلبية التي سيتم تحميل المصروف عليها.");return}
-  if(!legacyExpenseDescription.trim()){setError("اكتب بيان المصروف بوضوح.");return}
-  if(!Number.isFinite(amount)||amount<=0){setError("اكتب قيمة مصروف صحيحة.");return}
-  setLegacyExpenseSaving(true);
-  try{
-   await api("/api/accounting/expenses",{method:"POST",body:JSON.stringify({
-    orderId:legacyOrderId,category:legacyExpenseCategory,description:legacyExpenseDescription.trim(),amount,
-    expenseDate:legacyExpenseDate||localDateKey(),expenseType:"DIRECT",historicalSettlement:false,
-    paymentMethod:"CASH",idempotencyKey:crypto.randomUUID()
-   })});
-   setLegacyExpenseDescription("");setLegacyExpenseAmount("");setError("");
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل مصروف العهدة السابقة")}
-  finally{setLegacyExpenseSaving(false)}
- }
-
  return <div className="app-shell"><Sidebar active="/production"/><main className="main"><header className="topbar"><div><h1 className="page-title">إنتاج العمال</h1><p className="page-subtitle">اختار الطلبية ونوع الإنتاج فقط؛ المنتج والمرحلة والسعر بيتحددوا تلقائيًا من بيانات الطلب.</p></div><a className="secondary-btn" href="/production/scrap">♻ الهالك والتقارير</a></header><section className="content">
   {error&&<div role="alert" aria-live="assertive" className="alert error" style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:1000,width:"min(92vw,520px)",boxShadow:"0 8px 28px rgba(0,0,0,.22)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>setError("")} style={{border:0,background:"transparent",color:"inherit",fontSize:20,cursor:"pointer"}}>×</button></div>}
   {canViewProductionFinancials&&(  <div className="stats">
