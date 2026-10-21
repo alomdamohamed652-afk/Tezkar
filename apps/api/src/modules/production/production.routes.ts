@@ -194,7 +194,7 @@ export async function productionRoutes(app: FastifyInstance) {
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
         ORDER BY p.work_date DESC,p.created_at DESC
-        LIMIT ${params.length - 1} OFFSET ${params.length}`,
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
 
@@ -206,7 +206,7 @@ export async function productionRoutes(app: FastifyInstance) {
       const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
       return {data, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
     }
-    return { data: result.rows };
+    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
   });
 
   app.get("/api/production/my", {
