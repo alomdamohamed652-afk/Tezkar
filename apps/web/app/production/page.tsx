@@ -93,11 +93,11 @@ export default function ProductionPage(){
  async function reconcileHistoricalPayments(){
   setLegacyReconcileLoading(true);setLegacyReconcileMessage("");
   try{
-   const result=await api<{data:{reconciledCount:number;skippedCount:number;unresolvedCount:number;unresolvedAmount:number}}>(
+   const result=await api<{data:{reconciledCount:number;skippedCount:number;unresolvedCount:number;unresolvedAmount:number;skipped:Array<{paymentId:string;employeeName:string;amount:number;reason:string}>}}>(
     "/api/worker-payments/reconcile-historical-allocations",{method:"POST",body:JSON.stringify({})}
    );
    const x=result.data;
-   setLegacyReconcileMessage(`تمت مراجعة الدفعات القديمة: تم ربط ${formatInteger(x.reconciledCount)} دفعة بأمان. المتبقي للمراجعة اليدوية: ${formatInteger(x.unresolvedCount)} دفعة بإجمالي ${formatMoney(x.unresolvedAmount)}. الدفعات التي لا يمكن ربطها تلقائيًا لم يتم تغييرها.`);
+   setLegacyReconcileMessage(`تمت مراجعة الدفعات القديمة: تم ربط ${formatInteger(x.reconciledCount)} دفعة بأمان. تعذر التوزيع التلقائي لـ ${formatInteger(x.skippedCount)} دفعة. المتبقي للمراجعة اليدوية: ${formatInteger(x.unresolvedCount)} دفعة بإجمالي ${formatMoney(x.unresolvedAmount)}. ${x.skipped[0]?.reason??"الدفعات التي لا يمكن ربطها بأمان لم يتم تغييرها."}`);
    await refreshProductionData(false);
   }catch(e){setLegacyReconcileMessage(e instanceof Error?e.message:"تعذرت مراجعة الدفعات القديمة")}
   finally{setLegacyReconcileLoading(false)}
