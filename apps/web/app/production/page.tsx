@@ -60,6 +60,8 @@ export default function ProductionPage(){
 
  // Fetch the production summary and filtered history without resetting forms or page state.
  const refreshProductionData=useCallback(async(showLoading=true)=>{
+  const invalidPeriod=(recordRangeMode==="RANGE"&&(!recordFrom||!recordTo||recordFrom>recordTo))||(recordRangeMode==="MONTH"&&!/^\\d{4}-\\d{2}$/.test(recordMonth))||(recordRangeMode==="YEAR"&&!/^\\d{4}$/.test(recordYear));
+  if(invalidPeriod){setRecordEntries([]);setRecordTotal(0);setRecordTotalPages(1);setRecordReportTotals({quantity:0,earned:0,paid:0,remaining:0});if(showLoading)setRecordLoading(false);return}
   const params=new URLSearchParams({limit:"100",page:String(recordPage)});
   if(recordRangeMode==="TODAY"){params.set("from",localDateKey());params.set("to",localDateKey())}
   if(recordRangeMode==="WEEK"){params.set("from",recordWeekStart);params.set("to",recordWeekEnd)}
