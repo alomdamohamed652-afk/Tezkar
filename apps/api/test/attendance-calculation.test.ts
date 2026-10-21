@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
+import { suggestBoundaryPunchCorrections, type PunchCorrectionCandidate } from "../src/modules/attendance/attendance-corrections.js";
 
 function punch(id: string, status: string, minute: number, extra: Partial<AttendancePunchEvent> = {}): AttendancePunchEvent {
   return {
@@ -99,9 +100,7 @@ test("multiple overtime punches within the duplicate window collapse to one but 
 });
 
 
-import { suggestBoundaryPunchCorrections } from "../src/modules/attendance/attendance-corrections.js";
-
-function correctionPunch(id: string, status: string, minute: number, extra: Record<string, unknown> = {}) {
+function correctionPunch(id: string, status: string, minute: number, extra: Partial<Pick<PunchCorrectionCandidate, "corrected_status" | "correction_decision">> = {}): PunchCorrectionCandidate {
   return {
     id,
     status,
