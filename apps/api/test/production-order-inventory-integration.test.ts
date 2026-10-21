@@ -50,13 +50,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
 
     const [
       { default: Fastify }, { default: cookie }, { authRoutes }, { productionRoutes }, { productionScrapRoutes },
-      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { hashPassword },
+      { orderRoutes }, { warehouseRoutes }, { cartonDeliveryRoutes }, { codingRoutes }, { shiftWithdrawalRoutes }, { accountingRoutes }, { reportsRoutes }, { paymentsRoutes }, { hashPassword },
       poolModule
     ] = await Promise.all([
       import("fastify"), import("@fastify/cookie"), import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/production/production.routes.js"), import("../src/modules/production/production-scrap.routes.js"), import("../src/modules/orders/orders.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"), import("../src/modules/warehouse/cartons-deliveries.routes.js"), import("../src/modules/coding/coding.routes.js"), import("../src/modules/warehouse/shift-withdrawals.routes.js"),
-      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
+      import("../src/modules/accounting/accounting.routes.js"), import("../src/modules/reports/reports.routes.js"), import("../src/modules/payments/payments.routes.js"), import("../src/modules/auth/auth.service.js"), import("../src/db/pool.js")
     ]);
     apiPool = poolModule.pool;
     app = Fastify();
@@ -75,6 +75,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     await app.register(shiftWithdrawalRoutes);
     await app.register(accountingRoutes);
     await app.register(reportsRoutes);
+    await app.register(paymentsRoutes);
 
     async function makeUser(label: string, withEmployee: boolean) {
       let employeeId: string | null = null;
@@ -1571,11 +1572,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const finalStageRate = await apiPool.query("SELECT stage_rate FROM order_stages WHERE id=$1", [priceStage.rows[0].id]);
     assert.equal(Number(finalStageRate.rows[0].stage_rate), 30);
     const approvedSnapshots = await apiPool.query(
-      "SELECT id,earning_amount FROM production_entries WHERE id=ANY($1::uuid[]) ORDER BY id",
+      "SELECT id,earning_amount,total_earning_amount FROM production_entries WHERE id=ANY($1::uuid[]) ORDER BY id",
       [[priceProductionId,secondPriceProductionId]]
     );
     assert.deepEqual(approvedSnapshots.rows.map((row: {earning_amount:string|number})=>Number(row.earning_amount)).sort((a:number,b:number)=>a-b),[300,300],
       "all-scope price changes must update approved production earnings as well as the signed worker ledger delta");
+    assert.deepEqual(approvedSnapshots.rows.map((row: {total_earning_amount:string|number})=>Number(row.total_earning_amount)).sort((a:number,b:number)=>a-b),[300,300],
+      "all-scope price changes must also recalculate net earnings used by worker settlement and production reports");
     const allCredits = await apiPool.query(
       "SELECT COALESCE(SUM(credit_amount),0) AS credits,COALESCE(SUM(debit_amount),0) AS debits FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE '%Integration all price%'",
       [submitterEmployee]
@@ -1592,6 +1595,44 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(Number(priceHistory.json().data[0].affected[0].delta_amount), 50);
     assert.equal(priceHistory.json().data[1].reason, "Integration unpaid price");
     assert.equal(priceHistory.json().data[2].reason, "Integration new-only price");
+    const employeeStatement = await app.inject({
+      method: "GET", url: "/api/worker-payments/employee-statement?employeeId=" + submitterEmployee,
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(employeeStatement.statusCode, 200, employeeStatement.body);
+    assert.equal(employeeStatement.json().data.employee.id, submitterEmployee);
+    assert.ok(employeeStatement.json().data.production.some((row: {id:string}) => row.id === priceProductionId),
+      "employee statement must include the worker's approved production records");
+    assert.ok(Array.isArray(employeeStatement.json().data.ledgerEntries),
+      "employee statement must include the full account ledger");
+    assert.ok(employeeStatement.json().data.ledgerEntries.some((row: {entry_type:string;production_code:string|null}) =>
+      row.entry_type === "PRODUCTION_APPROVAL" && row.production_code !== null),
+      "ledger should identify production approval entries by production code");
+    assert.ok(employeeStatement.json().data.ledgerEntries.some((row: {entry_type:string;notes:string}) =>
+      row.entry_type === "ADJUSTMENT" && row.notes.includes("Integration all price") && row.notes.includes("إنتاج")),
+      "price-change ledger adjustments should identify the affected production record in their audit note");
+    const statementOrder = employeeStatement.json().data.orders.find((row: {order_id:string}) => row.order_id === priceOrderId);
+    assert.ok(statementOrder, "employee statement must include the price-change order");
+    assert.equal(Number(statementOrder.approved_earned), 600,
+      "order statement earnings must reflect updated net production values");
+    const workerFixture=await apiPool.query("INSERT INTO employees(full_name) VALUES('Worker statement access test') RETURNING id");
+    const workerFixtureId=workerFixture.rows[0].id as string;
+    await apiPool.query("UPDATE users SET employee_id=$1 WHERE id=$2",[workerFixtureId,limitedUser.userId]);
+    await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",[limitedUser.userId]);
+    const workerOwnStatement=await app.inject({
+      method:"GET",url:"/api/worker-payments/employee-statement",headers:{cookie:limitedUser.cookie}
+    });
+    assert.equal(workerOwnStatement.statusCode,200,workerOwnStatement.body);
+    assert.equal(workerOwnStatement.json().data.employee.id,workerFixtureId,
+      "worker account should default to the authenticated worker's own employee record");
+    const workerOtherStatement=await app.inject({
+      method:"GET",url:"/api/worker-payments/employee-statement?employeeId="+submitterEmployee,
+      headers:{cookie:limitedUser.cookie}
+    });
+    assert.equal(workerOtherStatement.statusCode,403,
+      "worker must not be able to inspect another employee's financial statement");
+
+
 
     // A later price reduction must still be recorded when a worker was already
     // paid more than the revised entitlement and has no remaining balance to absorb it.

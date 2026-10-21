@@ -542,7 +542,7 @@ export async function orderRoutes(app: FastifyInstance) {
         // using the same employee-before-production lock order as settlement operations.
         await client.query("SELECT e.id FROM employees e WHERE e.id IN (SELECT DISTINCT pe.employee_id FROM production_entries pe WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')) ORDER BY e.id FOR UPDATE",[parsed.data.orderStageId]);
         const entries=await client.query(
-          `SELECT pe.id,pe.employee_id,pe.status,pe.quantity,pe.hours_worked,pe.base_amount,
+          `SELECT pe.id,pe.code AS production_code,pe.employee_id,pe.status,pe.quantity,pe.hours_worked,pe.base_amount,
                   pe.wage_type_method_snapshot,pe.rate_snapshot,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,
                   COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0) AS paid_amount,
                   COALESCE((SELECT pci.revised_earning FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id ORDER BY pci.created_at DESC,pci.id DESC LIMIT 1),pe.earning_amount) AS effective_earning
@@ -584,8 +584,8 @@ export async function orderRoutes(app: FastifyInstance) {
               const credit=item.delta>0?item.delta:0;
               const debit=item.delta<0?Math.abs(item.delta):0;
               await client.query(
-                "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,production_entry_id,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,NULL,$4,$5)",
-                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / عملية "+item.id+" — "+parsed.data.reason]
+                "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)",
+                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / إنتاج "+item.production_code+" / سجل "+item.id+" — "+parsed.data.reason]
               );
             }
           }
