@@ -45,7 +45,7 @@ export async function createSession(client: pg.PoolClient, user: SessionUser, de
         browser_name, os_name, ip_address, user_agent)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [user.userId, hashToken(token), expiresAt, device.deviceId ?? null,
-     device.deviceName ?? null, device.deviceType ?? inferred.deviceType,
+     device.deviceName ?? (device.userAgent ? `${inferred.browserName} على ${inferred.osName}` : null), device.deviceType ?? inferred.deviceType,
      device.browserName ?? inferred.browserName, device.osName ?? inferred.osName,
      device.ipAddress ?? null, device.userAgent ?? null]
   );
