@@ -259,34 +259,7 @@ export default function ProductionPage(){
    <article className="card stat warning"><div className="stat-label">بانتظار المراجعة</div><div className="stat-value">{formatInteger(pendingCount)}</div><div className="stat-note">يحتاج اعتماد أو رفض</div></article>
    <article className="card stat neutral"><div className="stat-label">صافي التعديلات</div><div className="stat-value">{formatMoney(adjustments.reduce((s,x)=>s+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0))}</div><div className="stat-note">بونص ناقص خصومات</div></article>
   </div>)}
-  {canSettleWorkers&&<section className="card legacy-settlement-panel">
-   <div className="card-header"><div><h2 className="card-title">تسوية مستحقات العمال — العهدة السابقة</h2><p className="form-hint">سند القبض يُحمّل على الطلبية المختارة. لو صرفت أكثر من رصيد العامل، الزيادة تُرحّل كرصيد مدين وتُخصم من إنتاجه اللاحق.</p></div></div>
-   <form className="card-body" onSubmit={submitPreviousCustodyPayout}>
-    <div className="production-grid">
-     <label>العامل<SearchableSelect value={payoutEmployeeId} onChange={setPayoutEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختار العامل" searchPlaceholder="ابحث باسم العامل"/></label>
-     <label>الطلبية<SearchableSelect value={payoutOrderId} onChange={setPayoutOrderId} options={allOrders.filter(x=>(x as any).status!=="CANCELLED").map(x=>({value:x.id,label:x.order_name,meta:x.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث عن الطلبية"/></label>
-     <label>مبلغ سند القبض<input inputMode="decimal" value={payoutAmount} onChange={e=>setPayoutAmount(e.target.value)} placeholder="مثال: ٥٠٠" required/></label>
-     <label style={{gridColumn:"1/-1"}}>بيان / ملاحظات السند<input value={payoutNotes} onChange={e=>setPayoutNotes(e.target.value)} placeholder="مثال: تصفية أجور من العهدة القديمة"/></label>
-    </div>
-    <label className="inline-check"><input type="checkbox" checked={allowOverpayment} onChange={e=>setAllowOverpayment(e.target.checked)}/> السماح بقبض أكبر من المستحق (للمحاسب أو المدير فقط)</label>
-    <div className="form-hint">بدون تفعيل الاختيار، النظام يرفض أي مبلغ يتجاوز المتبقي المستحق. عند تفعيله، الزيادة تُسجل على حساب العامل وتقلل مستحقاته القادمة تلقائيًا.</div>
-    <div className="form-actions"><button className="primary-button" disabled={payoutSaving}>{payoutSaving?"جارٍ تسجيل السند…":"تسجيل سند القبض"}</button></div>
-   </form>
-  </section>}
-  {canAddLegacyExpense&&<section className="card legacy-settlement-panel">
-   <div className="card-header"><div><h2 className="card-title">إضافة مصروف من العهدة القديمة على طلبية</h2><p className="form-hint">سجّل فرق أجور العمالة أو أي مصروف قديم بالبيان والقيمة والطلبية، من غير إنشاء عهدة قديمة وهمية على النظام.</p></div></div>
-   <form className="card-body" onSubmit={submitLegacyOrderExpense}>
-    <div className="production-grid">
-     <label>الطلبية<SearchableSelect value={legacyOrderId} onChange={setLegacyOrderId} options={allOrders.filter(x=>(x as any).status!=="CANCELLED").map(x=>({value:x.id,label:x.order_name,meta:x.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث عن الطلبية"/></label>
-     <label>نوع المصروف<select value={legacyExpenseCategory} onChange={e=>setLegacyExpenseCategory(e.target.value)}><option>فرق أجور العمالة</option><option>مصروف عهدة قديمة</option><option>نقل وشحن</option><option>خامات</option><option>مصروف تشغيل</option><option>أخرى</option></select></label>
-     <label>المبلغ<input inputMode="decimal" value={legacyExpenseAmount} onChange={e=>setLegacyExpenseAmount(e.target.value)} placeholder="المبلغ بالجنيه" required/></label>
-     <label>تاريخ القيد<input type="date" value={legacyExpenseDate} onChange={e=>setLegacyExpenseDate(e.target.value)} required/></label>
-     <label style={{gridColumn:"1/-1"}}>بيان المصروف<textarea value={legacyExpenseDescription} onChange={e=>setLegacyExpenseDescription(e.target.value)} placeholder="اكتب تفاصيل المصروف القديم وسبب تحميله على الطلبية" required rows={2}/></label>
-    </div>
-    <div className="form-hint">يُسجل المصروف في دفتر المصروفات ويرتبط بالطلبية المحددة. اختار تاريخًا داخل فترة مالية مفتوحة لإتمام القيد.</div>
-    <div className="form-actions"><button className="primary-button" disabled={legacyExpenseSaving}>{legacyExpenseSaving?"جارٍ تسجيل المصروف…":"إضافة المصروف للطلبية"}</button></div>
-   </form>
-  </section>}
+  {(canSettleWorkers||canAddLegacyExpense)&&<section className="card"><div className="card-header"><div><h2 className="card-title">التسويات المالية</h2><p className="form-hint">تسويات العهد السابقة ومصروفاتها موجودة في القسم المالي حتى تظل صفحة الإنتاج مخصصة للتشغيل.</p></div><a className="primary-button" href="/finance/worker-settlements">فتح التسويات المالية</a></div></section>}
   {has("production.create")&&<form className="card production-form" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل إنتاج عامل</h2><span className="form-hint">الاسم فقط يظهر للمستخدم؛ الأكواد تستخدم داخليًا.</span></div></div>
    <div className="production-grid">
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
