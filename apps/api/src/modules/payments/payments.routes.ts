@@ -742,7 +742,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(!canManage&&(!actor?.is_worker||actor.employee_id!==employeeId))throw new AppError("EMPLOYEE_STATEMENT_FORBIDDEN","يمكنك عرض كشف حسابك أنت فقط",403);
       const employee=await client.query("SELECT id,code,full_name FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
-      const [production,orders,payments,priceChanges,totals]=await Promise.all([
+      const [production,orders,payments,priceChanges,ledgerEntries,totals]=await Promise.all([
         client.query(`
           SELECT p.id,p.code,p.work_date,p.quantity,p.earning_amount,p.total_earning_amount,
                  p.bonus_amount,p.deduction_amount,p.status,p.rate_snapshot,p.wage_type_method_snapshot,
@@ -824,6 +824,18 @@ export async function paymentsRoutes(app:FastifyInstance){
            ORDER BY pc.created_at DESC,pc.id DESC
         `,[employeeId]),
         client.query(`
+          SELECT l.id,l.entry_type,l.credit_amount,l.debit_amount,l.notes,l.created_at,
+                 pe.code AS production_code,wp.id AS worker_payment_id,
+                 es.id AS settlement_id,ar.id AS advance_repayment_id
+            FROM employee_earnings_ledger l
+            LEFT JOIN production_entries pe ON pe.id=l.production_entry_id
+            LEFT JOIN worker_payments wp ON wp.id=l.worker_payment_id
+            LEFT JOIN employee_earnings_settlements es ON es.id=l.settlement_id
+            LEFT JOIN advance_repayments ar ON ar.id=l.advance_repayment_id
+           WHERE l.employee_id=$1
+           ORDER BY l.created_at DESC,l.id DESC
+        `,[employeeId]),
+        client.query(`
           SELECT
             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='APPROVED'),0) AS approved_earnings,
             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='PENDING'),0) AS pending_earnings,
@@ -862,7 +874,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         })),
         production:production.rows,
         payments:payments.rows,
-        priceChanges:priceChanges.rows
+        priceChanges:priceChanges.rows,
+        ledgerEntries:ledgerEntries.rows
       }};
     }finally{client.release();}
   });
