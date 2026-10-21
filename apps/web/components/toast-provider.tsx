@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useRef, useState, useEffect, type ReactNode } from "react";
 
 type ToastKind = "success" | "error" | "warning" | "info";
 type ToastItem = { id: number; kind: ToastKind; title: string; message?: string };
@@ -40,6 +40,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const timer = setTimeout(() => dismiss(id), kind === "error" || kind === "warning" ? 6500 : 4200);
     timers.current.set(id, timer);
   }, [dismiss]);
+
+  useEffect(() => {
+    const onMutation = (event: Event) => {
+      const detail = (event as CustomEvent<{title?: string; message?: string}>).detail;
+      push("success", detail?.message || "تم حفظ التغيير بنجاح.", detail?.title || "تمت العملية بنجاح");
+    };
+    window.addEventListener("tezkar:mutation-success", onMutation);
+    return () => window.removeEventListener("tezkar:mutation-success", onMutation);
+  }, [push]);
 
   const api: ToastApi = {
     success: (message, title) => push("success", message, title),
