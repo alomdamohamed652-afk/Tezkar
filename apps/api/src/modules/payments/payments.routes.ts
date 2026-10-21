@@ -927,7 +927,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const settled = Number(settlements.rows[0]?.amount ?? 0);
       const legacyPaid = Number(legacyPayments.rows[0]?.amount ?? 0);
       const available = parsed.data.orderId
-        ? Math.max(0,Number(orderAccount.rows[0]?.earned??0)-Number(orderAccount.rows[0]?.allocated_paid??0)-Number(orderAccount.rows[0]?.legacy_order_paid??0))
+        ? Math.round((Number(orderAccount.rows[0]?.earned??0)-Number(orderAccount.rows[0]?.allocated_paid??0)-Number(orderAccount.rows[0]?.legacy_order_paid??0))*100)/100
         : await getAvailableEarnings(client, parsed.data.employeeId);
       return { data: {
         employee: employee.rows[0],
