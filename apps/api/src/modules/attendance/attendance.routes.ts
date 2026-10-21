@@ -141,7 +141,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    if(!["IN","OUT"].includes(old.status)||parsed.data.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","التصحيح المقترح يجب أن يعكس دخولًا إلى خروج أو العكس.",422);
    const corrected=parsed.data.decision==="APPLY_SUGGESTION"?parsed.data.suggestedStatus:null;
    const updated=await client.query(
-    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_reviewed_by=$4,correction_reviewed_at=now() WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at",
+    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_reviewed_by=$4,correction_reviewed_at=now(),review_status=CASE WHEN review_status='PENDING' THEN 'APPROVED' ELSE review_status END,reviewed_by=COALESCE(reviewed_by,$4),reviewed_at=COALESCE(reviewed_at,now()) WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at,review_status,reviewed_by,reviewed_at",
     [id,corrected,parsed.data.decision==="APPLY_SUGGESTION"?"APPLIED":"KEPT_ORIGINAL",request.user!.userId]
    );
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPLY_SUGGESTION"?"apply_attendance_correction":"keep_original_attendance_punch",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:old,afterData:updated.rows[0],metadata:{decision:parsed.data.decision,suggestedStatus:parsed.data.suggestedStatus,originalStatus:old.status},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
