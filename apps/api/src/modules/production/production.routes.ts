@@ -191,6 +191,14 @@ export async function productionRoutes(app: FastifyInstance) {
       params
     );
 
+    const permissionClient=await pool.connect();
+    let canViewFinancials=false;
+    try{canViewFinancials=await hasPermission(permissionClient,request.user!.userId,"worker_payments.pay","all")}
+    finally{permissionClient.release()}
+    if(!canViewFinancials){
+      const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
+      return {data};
+    }
     return { data: result.rows };
   });
 
