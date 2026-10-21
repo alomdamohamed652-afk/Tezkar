@@ -61,6 +61,24 @@ export async function api<T>(
       throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
     }
 
+    if (!canCache && typeof window !== "undefined") {
+      const cleanPath = path.split("?")[0];
+      const methodName = method.toLowerCase();
+      let title = "تم تنفيذ العملية بنجاح";
+      let message = "تم حفظ التغيير بنجاح.";
+      if (cleanPath === "/api/production" && method === "POST") { title = "تم تسجيل الإنتاج"; message = "تمت إضافة سجل الإنتاج بنجاح."; }
+      else if (cleanPath.includes("/reverse") || cleanPath.includes("/cancel")) { title = "تم التراجع عن العملية"; message = "تم تسجيل التراجع بنجاح."; }
+      else if (cleanPath.includes("/approve")) { title = "تم الاعتماد"; message = "تم اعتماد العملية بنجاح."; }
+      else if (cleanPath.includes("/reject")) { title = "تم الرفض"; message = "تم تسجيل الرفض بنجاح."; }
+      else if (cleanPath.includes("machine-production") && method === "POST") { title = "تم تسجيل إنتاج الماكينة"; message = "تمت إضافة إنتاج الماكينة بنجاح."; }
+      else if (cleanPath.includes("/production") && method === "PATCH") { title = "تم تعديل الإنتاج"; message = "تم حفظ تعديلات سجل الإنتاج."; }
+      else if (method === "POST") { title = "تمت الإضافة بنجاح"; message = "تم تنفيذ الإضافة المطلوبة."; }
+      else if (method === "PATCH" || method === "PUT") { title = "تم التعديل بنجاح"; message = "تم حفظ التعديلات."; }
+      else if (method === "DELETE") { title = "تم الحذف بنجاح"; message = "تم حذف السجل المطلوب."; }
+      else if (methodName === "post") { message = "تم تنفيذ العملية بنجاح."; }
+      window.dispatchEvent(new CustomEvent("tezkar:mutation-success", { detail: { title, message } }));
+    }
+
     if (canCache && requestGeneration === cacheGeneration) {
       getCache.set(key, { value: body, expiresAt: Date.now() + GET_CACHE_TTL_MS });
     }
