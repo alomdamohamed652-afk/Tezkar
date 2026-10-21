@@ -255,7 +255,7 @@ export default function ProductionPage(){
    <form className="card-body" onSubmit={submitPreviousCustodyPayout}>
     <div className="production-grid">
      <label>العامل<SearchableSelect value={payoutEmployeeId} onChange={setPayoutEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختار العامل" searchPlaceholder="ابحث باسم العامل"/></label>
-     <label>الطلبية<SearchableSelect value={payoutOrderId} onChange={setPayoutOrderId} options={allOrders.filter(x=>x.status!=="CANCELLED").map(x=>({value:x.id,label:x.order_name,meta:x.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث عن الطلبية"/></label>
+     <label>الطلبية<SearchableSelect value={payoutOrderId} onChange={setPayoutOrderId} options={allOrders.filter(x=>(x as any).status!=="CANCELLED").map(x=>({value:x.id,label:x.order_name,meta:x.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث عن الطلبية"/></label>
      <label>مبلغ سند القبض<input inputMode="decimal" value={payoutAmount} onChange={e=>setPayoutAmount(e.target.value)} placeholder="مثال: ٥٠٠" required/></label>
      <label style={{gridColumn:"1/-1"}}>بيان / ملاحظات السند<input value={payoutNotes} onChange={e=>setPayoutNotes(e.target.value)} placeholder="مثال: تصفية أجور من العهدة القديمة"/></label>
     </div>
@@ -268,7 +268,7 @@ export default function ProductionPage(){
    <div className="card-header"><div><h2 className="card-title">إضافة مصروف من العهدة القديمة على طلبية</h2><p className="form-hint">سجّل فرق أجور العمالة أو أي مصروف قديم بالبيان والقيمة والطلبية، من غير إنشاء عهدة قديمة وهمية على النظام.</p></div></div>
    <form className="card-body" onSubmit={submitLegacyOrderExpense}>
     <div className="production-grid">
-     <label>الطلبية<SearchableSelect value={legacyOrderId} onChange={setLegacyOrderId} options={allOrders.filter(x=>x.status!=="CANCELLED").map(x=>({value:x.id,label:x.order_name,meta:x.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث عن الطلبية"/></label>
+     <label>الطلبية<SearchableSelect value={legacyOrderId} onChange={setLegacyOrderId} options={allOrders.filter(x=>(x as any).status!=="CANCELLED").map(x=>({value:x.id,label:x.order_name,meta:x.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث عن الطلبية"/></label>
      <label>نوع المصروف<select value={legacyExpenseCategory} onChange={e=>setLegacyExpenseCategory(e.target.value)}><option>فرق أجور العمالة</option><option>مصروف عهدة قديمة</option><option>نقل وشحن</option><option>خامات</option><option>مصروف تشغيل</option><option>أخرى</option></select></label>
      <label>المبلغ<input inputMode="decimal" value={legacyExpenseAmount} onChange={e=>setLegacyExpenseAmount(e.target.value)} placeholder="المبلغ بالجنيه" required/></label>
      <label>تاريخ القيد<input type="date" value={legacyExpenseDate} onChange={e=>setLegacyExpenseDate(e.target.value)} required/></label>
