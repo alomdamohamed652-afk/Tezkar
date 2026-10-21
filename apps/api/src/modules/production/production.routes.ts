@@ -249,7 +249,7 @@ export async function productionRoutes(app: FastifyInstance) {
       + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)`;
     const remainingSql = `GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
       - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
-      + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+      - COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
       - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0)`;
     const summaryResult=await pool.query(
       `SELECT COALESCE(SUM(p.quantity),0)::float8 AS quantity,
