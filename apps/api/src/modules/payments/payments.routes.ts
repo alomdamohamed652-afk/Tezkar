@@ -729,13 +729,18 @@ export async function paymentsRoutes(app:FastifyInstance){
   // Complete employee statement for the finance settlement screen. Includes approved,
   // pending and rejected work separately so pending production is visible but never payable.
   app.get("/api/worker-payments/employee-statement", {
-    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+    preHandler: [authenticateRequest]
   }, async (request) => {
-    const parsed=z.object({employeeId:z.string().uuid()}).safeParse(request.query);
+    const parsed=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار العامل غير صحيح",422);
+    const actor=await isWorker(request.user!.userId);
+    const employeeId=employeeId??(actor?.is_worker?actor.employee_id:null);
+    if(!employeeId)throw new AppError("EMPLOYEE_REQUIRED","اختار العامل لعرض كشف الحساب",422);
     const client=await pool.connect();
     try{
-      const employee=await client.query("SELECT id,code,full_name FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);
+      const canManage=await hasPermission(client,request.user!.userId,"worker_payments.pay");
+      if(!canManage&&(!actor?.is_worker||actor.employee_id!==employeeId))throw new AppError("EMPLOYEE_STATEMENT_FORBIDDEN","يمكنك عرض كشف حسابك أنت فقط",403);
+      const employee=await client.query("SELECT id,code,full_name FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
       const [production,orders,payments,priceChanges,totals]=await Promise.all([
         client.query(`
@@ -759,7 +764,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE p.employee_id=$1
            ORDER BY p.work_date DESC,p.created_at DESC,p.id
            LIMIT 1000
-        `,[parsed.data.employeeId]),
+        `,[employeeId]),
         client.query(`
           SELECT o.id AS order_id,o.code AS order_code,o.order_name,
                  COUNT(p.id)::int AS production_records,
@@ -782,7 +787,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE p.employee_id=$1 AND p.status<>'CANCELLED'
            GROUP BY o.id,o.code,o.order_name
            ORDER BY o.order_name,o.code
-        `,[parsed.data.employeeId]),
+        `,[employeeId]),
         client.query(`
           SELECT wp.id,wp.gross_amount,wp.amount AS cash_paid_amount,wp.advance_repayment_amount,
                  wp.method,wp.created_at,es.settlement_date,
@@ -806,7 +811,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE wp.employee_id=$1
            ORDER BY wp.created_at DESC,wp.id
            LIMIT 500
-        `,[parsed.data.employeeId]),
+        `,[employeeId]),
         client.query(`
           SELECT pc.id,pc.code AS price_change_code,pc.created_at,pc.reason,pc.previous_rate,pc.new_rate,
                  pci.previous_earning,pci.revised_earning,pci.delta_amount,
@@ -820,7 +825,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE pci.employee_id=$1
            ORDER BY pc.created_at DESC,pc.id DESC
            LIMIT 300
-        `,[parsed.data.employeeId]),
+        `,[employeeId]),
         client.query(`
           SELECT
             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='APPROVED'),0) AS approved_earnings,
@@ -834,11 +839,11 @@ export async function paymentsRoutes(app:FastifyInstance){
                        FROM employee_earnings_adjustments a LEFT JOIN production_entries ap ON ap.id=a.production_entry_id
                       WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR ap.status='APPROVED')),0) AS adjustments
           FROM production_entries p WHERE p.employee_id=$1
-        `,[parsed.data.employeeId])
+        `,[employeeId])
       ]);
-      const advances=await getOutstandingAdvanceAmount(client,parsed.data.employeeId);
-      const availableForSettlement=await getAvailableEarnings(client,parsed.data.employeeId);
-      const ledger=await getBalance(client,parsed.data.employeeId);
+      const advances=await getOutstandingAdvanceAmount(client,employeeId);
+      const availableForSettlement=await getAvailableEarnings(client,employeeId);
+      const ledger=await getBalance(client,employeeId);
       return {data:{
         employee:employee.rows[0],
         totals:{
