@@ -1626,7 +1626,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(workerOwnStatement.json().data.employee.id,workerFixtureId,
       "worker account should default to the authenticated worker's own employee record");
     const workerOtherStatement=await app.inject({
-      method:"GET",url:"/api/worker-payments/employee-statement?employeeId="+approverEmployee,
+      method:"GET",url:"/api/worker-payments/employee-statement?employeeId="+submitterEmployee,
       headers:{cookie:limitedUser.cookie}
     });
     assert.equal(workerOtherStatement.statusCode,403,
