@@ -43,13 +43,12 @@ export function suggestBoundaryPunchCorrections(input: {
     !p.corrected_status &&
     !p.correction_decision
   );
-  const nearStart = (p: PunchCorrectionCandidate) =>
-    Math.abs(relativeMinute(p) - startMinute) <= windowMinutes;
-  const nearEnd = (p: PunchCorrectionCandidate) =>
-    Math.abs(relativeMinute(p) - shiftEnd) <= windowMinutes;
-  const hasStart = eligible.some(nearStart);
-  const hasEnd = eligible.some(nearEnd);
-  if (!hasStart || !hasEnd) return [];
+  const distanceToStart = (p: PunchCorrectionCandidate) => Math.abs(relativeMinute(p) - startMinute);
+  const distanceToEnd = (p: PunchCorrectionCandidate) => Math.abs(relativeMinute(p) - shiftEnd);
+  const nearStart = (p: PunchCorrectionCandidate) => distanceToStart(p) <= windowMinutes && distanceToStart(p) < distanceToEnd(p);
+  const nearEnd = (p: PunchCorrectionCandidate) => distanceToEnd(p) <= windowMinutes && distanceToEnd(p) < distanceToStart(p);
+  const hasBoundaryPair = eligible.some((p) => nearStart(p) && eligible.some((other) => other.id !== p.id && nearEnd(other)));
+  if (!hasBoundaryPair) return [];
 
   return eligible.flatMap((p) => {
     if (p.status === "OUT" && nearStart(p)) {
