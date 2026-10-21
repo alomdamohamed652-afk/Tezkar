@@ -1603,6 +1603,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(employeeStatement.json().data.employee.id, submitterEmployee);
     assert.ok(employeeStatement.json().data.production.some((row: {id:string}) => row.id === priceProductionId),
       "employee statement must include the worker's approved production records");
+    assert.ok(Array.isArray(employeeStatement.json().data.ledgerEntries),
+      "employee statement must include the full account ledger");
+    assert.ok(employeeStatement.json().data.ledgerEntries.some((row: {entry_type:string;production_code:string|null}) =>
+      row.entry_type === "PRODUCTION_APPROVAL" && row.production_code !== null),
+      "ledger should identify production approval entries by production code");
     const statementOrder = employeeStatement.json().data.orders.find((row: {order_id:string}) => row.order_id === priceOrderId);
     assert.ok(statementOrder, "employee statement must include the price-change order");
     assert.equal(Number(statementOrder.approved_earned), 600,
