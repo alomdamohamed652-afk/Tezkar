@@ -113,3 +113,61 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     multipleOvertimeOuts: overtimeOuts.length > 1,
   };
 }
+
+
+export type AttendanceCorrectionSuggestion = {
+  suggestedStatus: "IN" | "OUT";
+  reason: string;
+  confidence: "HIGH" | "MEDIUM";
+};
+
+/**
+ * Suggest a correction only when a punch is clearly closer to a scheduled
+ * boundary and its type contradicts that boundary. Never applies it silently.
+ * punchMinute and boundaries are minutes from shift-date midnight; for
+ * overnight shifts callers add 1440 to after-midnight punches/end.
+ */
+export function suggestAttendanceCorrection(input: {
+  punchStatus: string;
+  punchMinute: number;
+  scheduledStartMinute: number | null;
+  scheduledEndMinute: number | null;
+  alreadyReviewed?: boolean;
+  windowMinutes?: number;
+}): AttendanceCorrectionSuggestion | null {
+  if (input.alreadyReviewed || !["IN", "OUT"].includes(input.punchStatus)) return null;
+  if (input.scheduledStartMinute === null || input.scheduledEndMinute === null) return null;
+
+  const window = input.windowMinutes ?? 240;
+  const startDistance = Math.abs(input.punchMinute - input.scheduledStartMinute);
+  const endDistance = Math.abs(input.punchMinute - input.scheduledEndMinute);
+  const closerToStart = startDistance <= window && startDistance + 60 < endDistance;
+  const closerToEnd = endDistance <= window && endDistance + 60 < startDistance;
+
+  if (closerToStart && input.punchStatus === "OUT") {
+    return { suggestedStatus: "IN", reason: "البصمة قريبة من بداية الوردية لكن نوعها خروج", confidence: startDistance <= 90 ? "HIGH" : "MEDIUM" };
+  }
+  if (closerToEnd && input.punchStatus === "IN") {
+    return { suggestedStatus: "OUT", reason: "البصمة قريبة من نهاية الوردية لكن نوعها دخول", confidence: endDistance <= 90 ? "HIGH" : "MEDIUM" };
+  }
+  return null;
+}
+
+/** Sum complete, non-overlapping IN→OUT and OVERTIME_IN→OVERTIME_OUT pairs. */
+export function calculateWorkedMinutes(events: readonly { status: string; punch_at: string }[]): number {
+  const sorted = [...events].sort((a, b) => new Date(a.punch_at).getTime() - new Date(b.punch_at).getTime());
+  let total = 0;
+  for (const [inStatus, outStatus] of [["IN", "OUT"], ["OVERTIME_IN", "OVERTIME_OUT"]] as const) {
+    let open: number | null = null;
+    for (const event of sorted) {
+      const timestamp = new Date(event.punch_at).getTime();
+      if (event.status === inStatus) {
+        if (open === null) open = timestamp;
+      } else if (event.status === outStatus && open !== null && timestamp >= open) {
+        total += Math.floor((timestamp - open) / 60000);
+        open = null;
+      }
+    }
+  }
+  return total;
+}
