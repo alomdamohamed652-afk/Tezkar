@@ -107,7 +107,8 @@ export async function productionRoutes(app: FastifyInstance) {
       stageId: z.string().uuid().optional(),
       from: z.string().date().optional(),
       to: z.string().date().optional(),
-      limit: z.coerce.number().int().min(1).max(200).default(100)
+      limit: z.coerce.number().int().min(1).max(200).default(100),
+      page: z.coerce.number().int().min(1).default(1)
     }).safeParse(request.query);
 
     if (!query.success) throw new AppError("VALIDATION_ERROR", "فلاتر الإنتاج غير صحيحة", 422);
@@ -140,7 +141,13 @@ export async function productionRoutes(app: FastifyInstance) {
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
 
-    params.push(query.data.limit);
+    const filterParams = [...params];
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
+      filterParams
+    );
+    const total = Number(countResult.rows[0]?.total ?? 0);
+    params.push(query.data.limit, (query.data.page - 1) * query.data.limit);
 
     const result = await pool.query(
       `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,
@@ -187,7 +194,7 @@ export async function productionRoutes(app: FastifyInstance) {
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
         ORDER BY p.work_date DESC,p.created_at DESC
-        LIMIT $${params.length}`,
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
 
@@ -197,9 +204,9 @@ export async function productionRoutes(app: FastifyInstance) {
     finally{permissionClient.release()}
     if(!canViewFinancials){
       const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
-      return {data};
+      return {data, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
     }
-    return { data: result.rows };
+    return { data: result.rows, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
   });
 
   app.get("/api/production/my", {

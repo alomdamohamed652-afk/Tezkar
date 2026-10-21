@@ -1,4 +1,7 @@
 import Fastify from "fastify";
+import type { SessionUser } from "./modules/auth/auth.types.js";
+import { pool } from "./db/pool.js";
+import { writeAudit } from "./modules/audit/audit.service.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { env } from "./config.js";
@@ -42,6 +45,38 @@ await app.register(cors, {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 });
 await app.register(cookie, { secret: env.SESSION_SECRET });
+
+
+app.addHook("onResponse", async (request, reply) => {
+  const route = request.routeOptions.url ?? request.url.split("?")[0] ?? request.url;
+  const isRead = ["GET", "HEAD", "OPTIONS"].includes(request.method);
+  const sensitiveRead = request.method === "GET" && (/^\/api\/admin\/security/.test(route) || route === "/api/account/profile" || route === "/api/auth/sessions");
+  if (isRead && (!sensitiveRead || reply.statusCode >= 400)) return;
+  const actor = (request as typeof request & { user?: SessionUser | null }).user ?? null;
+  const moduleName = route.split("/").filter(Boolean)[1] ?? "api";
+  const client = await pool.connect().catch(() => null);
+  if (!client) {
+    app.log.error({ route, method: request.method }, "Unable to open audit connection");
+    return;
+  }
+  try {
+    await writeAudit(client, {
+      actorUserId: actor?.userId ?? null,
+      actorEmployeeId: actor?.employeeId ?? null,
+      action: request.method.toLowerCase() + " " + route,
+      module: moduleName,
+      entityType: "api_request",
+      requestId: request.id,
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"] ?? null,
+      metadata: { statusCode: reply.statusCode, failed: reply.statusCode >= 400 }
+    });
+  } catch (error) {
+    app.log.error({ err: error, route, method: request.method }, "Failed to write mutation audit log");
+  } finally {
+    client.release();
+  }
+});
 
 app.setErrorHandler((error, _request, reply) => {
   const statusCode = typeof error === "object" && error !== null && "statusCode" in error

@@ -6,6 +6,18 @@ import Link from "next/link";
 
 import { API_BASE as API } from "../../lib/api-base";
 
+function getDeviceId() {
+  const key = "tezkar_device_id";
+  let value = window.localStorage.getItem(key);
+  if (!value) {
+    value = typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    window.localStorage.setItem(key, value);
+  }
+  return value;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [username,setUsername]=useState("");
@@ -22,12 +34,13 @@ export default function LoginPage() {
     try {
       const res=await fetch(`${API}/api/auth/login`,{
         method:"POST",
-        headers:{"content-type":"application/json"},
+        headers:{"content-type":"application/json","x-tezkar-device-id":getDeviceId()},
         credentials:"include",
         body:JSON.stringify({username:username.trim(),password})
       });
       const body=await res.json().catch(()=>null);
       if(!res.ok) throw new Error(body?.error?.message ?? "تعذر تسجيل الدخول");
+      if(body?.newDevice) window.dispatchEvent(new CustomEvent("tezkar:mutation-success",{detail:{title:"تم التعرف على جهاز جديد",message:"تم حفظ هذا الجهاز في سجل أمان حسابك."}}));
       router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : "/");
     } catch(err) {
       setError(err instanceof Error ? err.message : "تعذر تسجيل الدخول");
