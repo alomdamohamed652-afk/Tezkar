@@ -571,13 +571,13 @@ export async function orderRoutes(app: FastifyInstance) {
             [created.rows[0].id,item.id,item.employee_id,item.previous,item.revised,item.delta,item.status==="APPROVED",newRate]
           );
           if(item.status==="PENDING"){
-            await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,total_earning_amount=$2+COALESCE(bonus_amount,0)-COALESCE(deduction_amount,0),updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
+            await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
           }else {
             // Update the approved production source row as well as its immutable delta ledger.
             // This keeps production reports, order balances, future settlements and the worker
             // ledger aligned even when the entry was already approved or paid.
             await client.query(
-              "UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,total_earning_amount=$2+COALESCE(bonus_amount,0)-COALESCE(deduction_amount,0),updated_at=now() WHERE id=$3",
+              "UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",
               [newRate,item.revised,item.id]
             );
             if(Math.abs(item.delta)>=0.005){
