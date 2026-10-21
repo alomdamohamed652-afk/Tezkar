@@ -630,6 +630,20 @@ export async function paymentsRoutes(app:FastifyInstance){
     return {data:result.rows};
   });
 
+  app.get("/api/worker-payments/historical-allocation-stages", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed=z.object({orderId:z.string().uuid()}).safeParse(request.query);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار الطلبية غير صحيح",422);
+    const result=await pool.query(`
+      SELECT os.id,os.sequence_no,s.name AS stage_name,os.status
+        FROM order_stages os JOIN stages s ON s.id=os.stage_id
+       WHERE os.order_id=$1 AND os.status<>'CANCELLED'
+       ORDER BY os.sequence_no,os.id
+    `,[parsed.data.orderId]);
+    return {data:result.rows};
+  });
+
   // Explicitly assign a historical payment to a chosen order. No cash or payment record is created.
   app.post("/api/worker-payments/:id/allocate-historical", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
