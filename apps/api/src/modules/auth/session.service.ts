@@ -4,17 +4,50 @@ import type { SessionUser } from "./auth.types.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
+type SessionDevice = {
+  deviceId?: string | null;
+  deviceName?: string | null;
+  deviceType?: string | null;
+  browserName?: string | null;
+  osName?: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+};
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(client: pg.PoolClient, user: SessionUser) {
+export function describeDevice(userAgent: string | null | undefined) {
+  const ua = userAgent ?? "";
+  const browserName = /Edg\//i.test(ua) ? "Microsoft Edge"
+    : /Firefox\//i.test(ua) ? "Firefox"
+    : /OPR\//i.test(ua) ? "Opera"
+    : /Chrome\//i.test(ua) ? "Google Chrome"
+    : /Safari\//i.test(ua) && !/Chrome\//i.test(ua) ? "Safari" : "متصفح غير معروف";
+  const osName = /Android/i.test(ua) ? "Android"
+    : /iPhone|iPad|iPod/i.test(ua) ? "iOS"
+    : /Windows/i.test(ua) ? "Windows"
+    : /Mac OS X|Macintosh/i.test(ua) ? "macOS"
+    : /Linux/i.test(ua) ? "Linux" : "نظام غير معروف";
+  const deviceType = /iPad|Tablet/i.test(ua) ? "tablet"
+    : /Mobile|Android|iPhone|iPod/i.test(ua) ? "mobile" : "desktop";
+  return { browserName, osName, deviceType };
+}
+
+export async function createSession(client: pg.PoolClient, user: SessionUser, device: SessionDevice = {}) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const inferred = describeDevice(device.userAgent);
   await client.query(
-    `INSERT INTO user_sessions (user_id, token_hash, expires_at)
-     VALUES ($1, $2, $3)`,
-    [user.userId, hashToken(token), expiresAt]
+    `INSERT INTO user_sessions
+       (user_id, token_hash, expires_at, device_id, device_name, device_type,
+        browser_name, os_name, ip_address, user_agent)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [user.userId, hashToken(token), expiresAt, device.deviceId ?? null,
+     device.deviceName ?? null, device.deviceType ?? inferred.deviceType,
+     device.browserName ?? inferred.browserName, device.osName ?? inferred.osName,
+     device.ipAddress ?? null, device.userAgent ?? null]
   );
   return { token, expiresAt };
 }
