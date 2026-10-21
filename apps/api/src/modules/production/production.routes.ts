@@ -1414,9 +1414,21 @@ export async function productionRoutes(app: FastifyInstance) {
                               SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                             )),0)
                + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                            WHERE wp.employee_id=$1 AND NOT EXISTS(
-                              SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id
-                            )),0) AS unallocated
+                            WHERE wp.employee_id=$1
+                              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+                              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+                              AND (
+                                NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                                OR COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)<wp.gross_amount-0.009
+                                OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                                  LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                                  LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                                  WHERE wpa.worker_payment_id=wp.id
+                                    AND ae.order_id IS NOT NULL
+                                    AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
+                                      OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+                              )),0) AS unallocated
         `,[parsed.data.employeeId]);
         if(Number(legacy.rows[0].unallocated)>0.009)throw new AppError("HISTORICAL_PAYMENTS_NEED_ALLOCATION",`يوجد ${Number(legacy.rows[0].unallocated).toFixed(2)} ج.م من دفعات قديمة غير موزعة على طلبيات؛ راجعها قبل تسوية طلبية محددة حتى لا يتكرر الصرف.`,409);
       }
