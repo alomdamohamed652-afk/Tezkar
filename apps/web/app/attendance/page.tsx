@@ -77,17 +77,17 @@ function exportEmployeeReport(){
   const first=group.rows[0];const employee=employees.find(e=>e.code===group.code);
   const sheetRows:any[][]=[["تقرير حضور الموظف"],["اسم الموظف",first?.employeeName??employee?.full_name??""],["كود الموظف",group.code],["الفترة من",reportFrom,"إلى",reportTo],[],dailyHeaders,...makeDaily(group.rows),[],...summaryFor(group.rows)];
   const ws=XLSX.utils.aoa_to_sheet(sheetRows);
-  ws["!cols"]=[{wch:14},{wch:14},{wch:14},{wch:26},{wch:20},{wch:20},{wch:14},{wch:14},{wch:17},{wch:20},{wch:22},{wch:22},{wch:24},{wch:12},{wch:14},{wch:14},{wch:16},{wch:16},{wch:28}];
+  ws["!cols"]=[{wch:14},{wch:14},{wch:14},{wch:26},{wch:20},{wch:20},{wch:14},{wch:14},{wch:17},{wch:20},{wch:22},{wch:22},{wch:18},{wch:18},{wch:24},{wch:12},{wch:14},{wch:14},{wch:16},{wch:16},{wch:28}];
   const headerRow=6;
   for(let c=0;c<dailyHeaders.length;c++){const cell=ws[XLSX.utils.encode_cell({r:headerRow-1,c})];if(cell)cell.s={font:{bold:true},alignment:{horizontal:"center",vertical:"center",wrapText:true}};}
   XLSX.utils.book_append_sheet(wb,ws,safeSheetName(group.code+" "+(first?.employeeName??"موظف")));
  }
- const aggregateRows:(string|number)[][]=[["الملخص الإجمالي لكل الموظفين"],["الفترة من",reportFrom,"إلى",reportTo],["كود الموظف","اسم الموظف","أيام الفترة","أيام العمل المجدولة","أيام الحضور","أيام الغياب","أيام الإجازة","أيام تحتاج مراجعة","دقائق التأخير","دقائق الانصراف المبكر","الإضافي المبدئي بالدقائق","أيام بصمة ناقصة","حركات مكررة","حركات مشبوهة","إجمالي البصمات"]];
- for(const group of employeeGroups){const t=calculate(group.rows);aggregateRows.push([group.code,group.rows[0]?.employeeName??"",t.totalDays,t.scheduledDays,t.presentDays,t.absentDays,t.leaveDays,t.reviewDays,t.lateMinutes,t.earlyMinutes,t.overtimeMinutes,t.missingPunchDays,t.duplicatePunches,t.suspiciousPunches,t.punchCount]);}
+ const aggregateRows:(string|number)[][]=[["الملخص الإجمالي لكل الموظفين"],["الفترة من",reportFrom,"إلى",reportTo],["كود الموظف","اسم الموظف","أيام الفترة","أيام العمل المجدولة","أيام الحضور","أيام الغياب","أيام الإجازة","أيام تحتاج مراجعة","دقائق التأخير","دقائق الانصراف المبكر","الإضافي المبدئي بالدقائق","ساعات العمل الفعلية","دقائق العمل الفعلية","أيام بصمة ناقصة","حركات مكررة","حركات مشبوهة","إجمالي البصمات"]];
+ for(const group of employeeGroups){const t=calculate(group.rows);aggregateRows.push([group.code,group.rows[0]?.employeeName??"",t.totalDays,t.scheduledDays,t.presentDays,t.absentDays,t.leaveDays,t.reviewDays,t.lateMinutes,t.earlyMinutes,t.overtimeMinutes,t.workedHours,t.workedMinutes,t.missingPunchDays,t.duplicatePunches,t.suspiciousPunches,t.punchCount]);}
  const overall=calculate(selectedRows);
- aggregateRows.push(["الإجمالي","",overall.totalDays,overall.scheduledDays,overall.presentDays,overall.absentDays,overall.leaveDays,overall.reviewDays,overall.lateMinutes,overall.earlyMinutes,overall.overtimeMinutes,overall.missingPunchDays,overall.duplicatePunches,overall.suspiciousPunches,overall.punchCount]);
+ aggregateRows.push(["الإجمالي","",overall.totalDays,overall.scheduledDays,overall.presentDays,overall.absentDays,overall.leaveDays,overall.reviewDays,overall.lateMinutes,overall.earlyMinutes,overall.overtimeMinutes,overall.workedHours,overall.workedMinutes,overall.missingPunchDays,overall.duplicatePunches,overall.suspiciousPunches,overall.punchCount]);
  const overallSheet=XLSX.utils.aoa_to_sheet(aggregateRows);
- overallSheet["!cols"]=[{wch:16},{wch:28},...Array.from({length:13},()=>({wch:19}))];
+ overallSheet["!cols"]=[{wch:16},{wch:28},...Array.from({length:15},()=>({wch:19}))];
  XLSX.utils.book_append_sheet(wb,overallSheet,"الملخص الإجمالي");
  XLSX.writeFile(wb,"attendance-report-"+(reportEmployee==="ALL"?"all":reportEmployee)+"-"+reportFrom+"-"+reportTo+".xlsx");
 }
