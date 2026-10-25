@@ -517,6 +517,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed=z.object({
       orderStageId:z.string().uuid(),
       newRate:z.number().nonnegative(),
+      newRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).optional(),
       scope:z.enum(["NEW_ONLY","UNPAID_ONLY","ALL"]),
       reason:z.string().trim().min(2).max(500)
     }).safeParse(request.body);
@@ -531,10 +532,10 @@ export async function orderRoutes(app: FastifyInstance) {
       if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","المرحلة لا تتبع هذه الطلبية",404);
       const oldRate=stage.rows[0].stage_rate==null?null:Number(stage.rows[0].stage_rate);
       const newRate=parsed.data.newRate;
-      await client.query("UPDATE order_stages SET stage_rate=$1 WHERE id=$2",[newRate,parsed.data.orderStageId]);
+      await client.query("UPDATE order_stages SET stage_rate=$1,stage_rate_method=COALESCE($2,stage_rate_method) WHERE id=$3",[newRate,parsed.data.newRateMethod??null,parsed.data.orderStageId]);
       const created=await client.query(
-        "INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,scope,reason,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-        [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.scope,parsed.data.reason,request.user!.userId]
+        "INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,new_rate_method,scope,reason,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+        [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.newRateMethod??stage.rows[0].stage_rate_method??null,parsed.data.scope,parsed.data.reason,request.user!.userId]
       );
       let affected=0,totalDelta=0;
       if(parsed.data.scope!=="NEW_ONLY"){
@@ -555,7 +556,7 @@ export async function orderRoutes(app: FastifyInstance) {
         );
         const proposed=entries.rows.map((entry:any)=>{
           const previous=Number(entry.effective_earning);
-          const revised=calculateStageEarning(String(entry.wage_type_method_snapshot),newRate,entry);
+          const revised=calculateStageEarning(String(parsed.data.newRateMethod??entry.wage_type_method_snapshot),newRate,entry);
           if(revised+Number(entry.bonus_amount??0)+0.009<Number(entry.deduction_amount??0)){
             throw new AppError("PRICE_CHANGE_BELOW_DEDUCTIONS","السعر الجديد سيجعل خصومات سجل الإنتاج أكبر من مستحقه؛ راجع الخصومات قبل تغيير السعر. لم يتم حفظ أي تعديل.",409);
           }
@@ -571,14 +572,14 @@ export async function orderRoutes(app: FastifyInstance) {
             [created.rows[0].id,item.id,item.employee_id,item.previous,item.revised,item.delta,item.status==="APPROVED",newRate]
           );
           if(item.status==="PENDING"){
-            await client.query("UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",[newRate,item.revised,item.id]);
+            await client.query("UPDATE production_entries SET rate_snapshot=$1,wage_type_method_snapshot=$2,earning_amount=$3,updated_at=now() WHERE id=$4",[newRate,parsed.data.newRateMethod??item.wage_type_method_snapshot,item.revised,item.id]);
           }else {
             // Update the approved production source row as well as its immutable delta ledger.
             // This keeps production reports, order balances, future settlements and the worker
             // ledger aligned even when the entry was already approved or paid.
             await client.query(
-              "UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",
-              [newRate,item.revised,item.id]
+              "UPDATE production_entries SET rate_snapshot=$1,wage_type_method_snapshot=$2,earning_amount=$3,updated_at=now() WHERE id=$4",
+              [newRate,parsed.data.newRateMethod??item.wage_type_method_snapshot,item.revised,item.id]
             );
             if(Math.abs(item.delta)>=0.005){
               const credit=item.delta>0?item.delta:0;
@@ -594,7 +595,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
       const updated=await client.query("UPDATE order_price_changes SET affected_entries=$1,total_delta=$2 WHERE id=$3 RETURNING *",[affected,Math.round((totalDelta+Number.EPSILON)*100)/100,created.rows[0].id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"price_change",module:"orders",entityType:"order_price_change",entityId:updated.rows[0].id,beforeData:{stageRate:oldRate},afterData:updated.rows[0],metadata:{orderCode:order.rows[0].code,stageId:parsed.data.orderStageId,scope:parsed.data.scope,reason:parsed.data.reason,affectedEntries:affected,totalDelta},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"price_change",module:"orders",entityType:"order_price_change",entityId:updated.rows[0].id,beforeData:{stageRate:oldRate},afterData:updated.rows[0],metadata:{orderCode:order.rows[0].code,stageId:parsed.data.orderStageId,scope:parsed.data.scope,reason:parsed.data.reason,newRate,newRateMethod:parsed.data.newRateMethod??stage.rows[0].stage_rate_method,affectedEntries:affected,totalDelta},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return reply.code(201).send({data:result});
@@ -603,7 +604,7 @@ export async function orderRoutes(app: FastifyInstance) {
   app.get("/api/orders/:id/price-changes", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const orderId=(request.params as {id:string}).id;
     const result=await pool.query(
-      `SELECT pc.id,pc.code,pc.order_stage_id,pc.previous_rate,pc.new_rate,pc.scope,pc.reason,pc.affected_entries,pc.total_delta,pc.created_at,
+      `SELECT pc.id,pc.code,pc.order_stage_id,pc.previous_rate,pc.new_rate,pc.new_rate_method,pc.scope,pc.reason,pc.affected_entries,pc.total_delta,pc.created_at,
               s.name AS stage_name,u.username AS created_by_username,
               COALESCE(json_agg(jsonb_build_object('employee_name',e.full_name,'production_code',pe.code,'previous_earning',pci.previous_earning,'revised_earning',pci.revised_earning,'delta_amount',pci.delta_amount) ORDER BY e.full_name,pe.code) FILTER (WHERE pci.id IS NOT NULL),'[]') AS affected
          FROM order_price_changes pc

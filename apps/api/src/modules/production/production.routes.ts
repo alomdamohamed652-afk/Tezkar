@@ -199,7 +199,7 @@ export async function productionRoutes(app: FastifyInstance) {
     params.push(query.data.limit, (query.data.page - 1) * query.data.limit);
 
     const result = await pool.query(
-      `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.earning_amount,p.bonus_amount,p.deduction_amount,
+      `SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.wage_type_method_snapshot AS rate_method,p.earning_amount,p.bonus_amount,p.deduction_amount,
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='BONUS' ORDER BY a.created_at DESC LIMIT 1) AS bonus_reason,
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
               p.total_earning_amount,p.status,
