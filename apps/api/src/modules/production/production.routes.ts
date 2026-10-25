@@ -158,7 +158,7 @@ export async function productionRoutes(app: FastifyInstance) {
                   WHERE a.production_entry_id=p.id AND NOT EXISTS(
                     SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id
                   )),0)
-                + COALESCE((SELECT SUM(owa.amount) FROM worker_payment_order_allocations owa WHERE owa.production_entry_id=p.id),0)
+                - COALESCE((SELECT SUM(owa.amount) FROM worker_payment_order_allocations owa WHERE owa.production_entry_id=p.id),0)
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
@@ -1406,7 +1406,7 @@ export async function productionRoutes(app: FastifyInstance) {
                   WHERE a.production_entry_id=p.id AND NOT EXISTS(
                     SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id
                   )),0)
-                + COALESCE((SELECT SUM(owa.amount) FROM worker_payment_order_allocations owa WHERE owa.production_entry_id=p.id),0),0) AS remaining
+                - COALESCE((SELECT SUM(owa.amount) FROM worker_payment_order_allocations owa WHERE owa.production_entry_id=p.id),0),0) AS remaining
           FROM production_entries p
           LEFT JOIN order_stages os ON os.id=p.order_stage_id
          WHERE p.employee_id=$1 AND p.status='APPROVED'
