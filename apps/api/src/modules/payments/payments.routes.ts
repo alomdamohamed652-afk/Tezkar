@@ -929,7 +929,12 @@ export async function paymentsRoutes(app:FastifyInstance){
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
               LEFT JOIN order_stages os ON os.id=p.order_stage_id
-              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS allocated_paid,
+              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+            + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+              JOIN employee_earnings_settlements s ON s.id=a.settlement_id
+              JOIN production_entries p ON p.id=a.production_entry_id
+              LEFT JOIN order_stages os ON os.id=p.order_stage_id
+              WHERE s.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS allocated_paid,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
@@ -1153,7 +1158,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
         const productionRows=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
             FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
