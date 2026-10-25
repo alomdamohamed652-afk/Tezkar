@@ -27,7 +27,7 @@ export default function OrdersPage(){
  async function load(){try{const [o,t]=await Promise.all([api<{data:Order[]}>("/api/orders"),api<{data:ProductionType[]}>("/api/production-types")]);setOrders(o.data);setProductionTypes(t.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الطلبات أو أنواع الإنتاج")}}
  useEffect(()=>{void load()},[]);
 
- function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:"",notes:"",stageRate:"",stageRateMethod:"PER_1000",productionTypeId:"",isFinalProduct:false}])}
+ function addStage(){setStageRows(v=>[...v,{stageName:"",outputProductName:"",plannedQuantity:"",notes:"",stageRate:"",stageRateMethod:"PER_PIECE",productionTypeId:"",isFinalProduct:false}])}
  function updateStage(i:number,key:keyof StageRow,value:string|boolean){setStageRows(v=>v.map((r,n)=>n===i?({...r,[key]:value} as StageRow):r))}
  function removeStage(i:number){setStageRows(v=>v.filter((_,n)=>n!==i))}
 
@@ -82,7 +82,7 @@ export default function OrdersPage(){
        <div><span className="field-caption">الكمية المخططة</span><input inputMode="decimal" value={row.plannedQuantity} onChange={e=>updateStage(i,"plannedQuantity",e.target.value)} required /></div>
        <label className="stage-final-checkbox"><input type="checkbox" checked={row.isFinalProduct} onChange={e=>updateStage(i,"isFinalProduct",e.target.checked)}/> منتج نهائي للتسليم</label>
        <div><span className="field-caption">نوع الإنتاج (تحليلي)</span><select value={row.productionTypeId} onChange={e=>updateStage(i,"productionTypeId",e.target.value)}><option value="">بدون تصنيف</option>{productionTypes.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
-       <div><span className="field-caption">طريقة التسعير</span><select value={row.stageRateMethod} onChange={e=>updateStage(i,"stageRateMethod",e.target.value)}><option value="PER_PIECE">بالقطعة</option><option value="PER_1000">لكل ألف</option><option value="PER_HOUR">بالساعة</option><option value="PER_DAY">باليومية</option><option value="PERCENTAGE">نسبة</option></select></div>
+       <div><span className="field-caption">طريقة الحساب</span><select value={row.stageRateMethod} onChange={e=>updateStage(i,"stageRateMethod",e.target.value)}><option value="PER_PIECE">بالقطعة (الكمية × السعر)</option><option value="PER_1000">لكل ألف (الكمية ÷ ١٠٠٠ × السعر)</option><option value="PER_HOUR">بالساعة</option><option value="PER_DAY">باليومية</option><option value="PERCENTAGE">نسبة</option></select></div>
        <div><span className="field-caption">سعر المرحلة</span><input inputMode="decimal" value={row.stageRate} onChange={e=>updateStage(i,"stageRate",e.target.value)} placeholder="مثال: 300" required /></div>
        <button type="button" className="danger-button" onClick={()=>removeStage(i)}>حذف</button>
       </div>)}</div>}
