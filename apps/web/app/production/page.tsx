@@ -127,7 +127,7 @@ export default function ProductionPage(){
  function selectShift(value:string){setShiftId(value);if(shiftLeaderEmployeeId&&!shiftLeaders.some(x=>x.employee_id===shiftLeaderEmployeeId&&x.shift_id===value))setShiftLeaderEmployeeId("")}
  function selectResponsible(value:string){setShiftLeaderEmployeeId(value)}
  const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
- const filteredOrderStages=useMemo(()=>orderStages.filter(x=>!orderId||x.order_id===orderId),[orderStages,orderId]);
+ const filteredOrderStages=useMemo(()=>orderId?orderStages.filter(x=>x.order_id===orderId):[],[orderStages,orderId]);
  const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+formatMoney(x.stage_rate)):"بدون سعر"})),[filteredOrderStages]);
  const typeOptions=useMemo(()=>productionTypes.map(x=>({value:x.id,label:x.name})),[productionTypes]);
  const productionToday=useMemo(()=>entries.filter(x=>x.work_date===localDateKey()),[entries]);
@@ -258,7 +258,7 @@ export default function ProductionPage(){
    <div className="production-grid">
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
     <label>الطلبية<SearchableSelect value={orderId} onChange={selectOrder} options={orderOptions} placeholder="اختر الطلبية" searchPlaceholder="ابحث باسم الطلبية"/></label>
-    <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder={orderId?"اختر مرحلة من الطلبية":"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
+    <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} disabled={!orderId} placeholder={orderId?(orderStageOptions.length?"اختر مرحلة من الطلبية":"لا توجد مراحل مرتبطة بالطلبية"):"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
     <label>المنتج<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختيار المنتج" searchPlaceholder="ابحث عن المنتج"/></label>
     
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
