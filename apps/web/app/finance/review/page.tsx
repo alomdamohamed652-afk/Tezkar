@@ -73,7 +73,7 @@ export default function FinanceExceptionsPage() {
     if (!orderId) { setStages([]); setStageId(""); return; }
     let active = true;
     api<{ data: Stage[] }>("/api/worker-payments/historical-allocation-stages?orderId=" + encodeURIComponent(orderId))
-      .then(r => { if (active) { setStages(r.data); setStageId(""); } })
+      .then(r => { if (active) setStages(r.data); })
       .catch(e => { if (active) setError(e instanceof Error ? e.message : "تعذر تحميل مراحل الطلبية"); });
     return () => { active = false; };
   }, [orderId]);
@@ -138,7 +138,7 @@ export default function FinanceExceptionsPage() {
           {selected && <section className="card">
             <div className="card-header"><div><h2 className="card-title">مراجعة دفعة {selected.employee_name}</h2><p className="form-hint">المبلغ الأصلي: {money(Number(selected.gross_amount))} · الموزع حاليًا: {money(Number(selected.production_allocated))} · عدد قيود الإنتاج القديمة: {selected.production_allocation_count}</p></div><button type="button" className="secondary-btn" onClick={() => choosePayment("")}>إلغاء التحديد</button></div>
             <div className="card-body"><div className="production-grid">
-              <label>الطلبية<SearchableSelect value={orderId} onChange={setOrderId} options={orders.map(o => ({value:o.id,label:o.order_name,meta:o.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث باسم الطلبية أو كودها" /></label>
+              <label>الطلبية<SearchableSelect value={orderId} onChange={value => { setOrderId(value); setStageId(""); }} options={orders.map(o => ({value:o.id,label:o.order_name,meta:o.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث باسم الطلبية أو كودها" /></label>
               <label>المرحلة (اختياري)<SearchableSelect value={stageId} onChange={setStageId} options={stages.map(s => ({value:s.id,label:s.stage_name,meta:"مرحلة " + s.sequence_no}))} disabled={!orderId || stages.length===0 || Boolean(selected.order_stage_id)} placeholder={!orderId ? "اختار الطلبية أولًا" : selected.order_stage_id ? "المرحلة محددة من القيد الأصلي" : stages.length ? "اختار مرحلة لو مطلوبة" : "لا توجد مراحل متاحة"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
             </div>
             {selected.order_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بالفعل بطلبية في القيد المحاسبي؛ لازم تفضل على نفس الطلبية.</p>}
