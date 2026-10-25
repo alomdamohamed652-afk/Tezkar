@@ -143,7 +143,7 @@ export default function FinanceExceptionsPage() {
             </div>
             {selected.order_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بالفعل بطلبية في القيد المحاسبي؛ لازم تفضل على نفس الطلبية.</p>}
             {selected.order_stage_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بمرحلة في القيد المحاسبي؛ لازم تفضل على نفس المرحلة.</p>}
-            <div className="form-actions"><button type="button" className="primary-button" disabled={saving || !orderId}>{saving ? "جارٍ الحفظ…" : "تأكيد توزيع الدفعة"}</button></div>
+            <div className="form-actions"><button type="button" className="primary-button" onClick={() => void allocate()} disabled={saving || !orderId}>{saving ? "جارٍ الحفظ…" : "تأكيد توزيع الدفعة"}</button></div>
             </div>
           </section>}
         </>}
