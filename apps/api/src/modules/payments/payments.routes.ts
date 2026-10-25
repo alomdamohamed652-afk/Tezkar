@@ -242,7 +242,10 @@ async function executeWorkerPayment(
   const productions=await client.query(
     `SELECT pe.id,
       GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)-
+        COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+          WHERE wpa.production_entry_id=pe.id AND NOT EXISTS(
+            SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id
+          )),0)-
         COALESCE((SELECT SUM(sea.amount) FROM employee_earnings_settlement_allocations sea WHERE sea.production_entry_id=pe.id),0)-
         COALESCE((SELECT SUM(owa.amount) FROM worker_payment_order_allocations owa WHERE owa.production_entry_id=pe.id),0)) AS remaining
       FROM production_entries pe
