@@ -1673,3 +1673,85 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .production-history-filters .form-hint{font-size:10px;line-height:1.5;font-weight:400}
 @media(max-width:1100px){.production-history-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.card-header:has(> .production-history-filters){grid-template-columns:1fr}}
 @media(max-width:560px){.production-history-filters{grid-template-columns:1fr}}
+
+
+/* =========================================================
+   Global UI polish — consistent motion, scrolling and focus
+   Applies across the application without changing workflows.
+   ========================================================= */
+:root {
+  --motion-fast: 140ms;
+  --motion-normal: 210ms;
+  --motion-slow: 300ms;
+  --ease-ui: cubic-bezier(.2,.75,.25,1);
+  scroll-behavior: smooth;
+  scrollbar-color: #b8c4d5 transparent;
+  scrollbar-width: thin;
+}
+html { scroll-padding-top: 88px; }
+body { overscroll-behavior-y: contain; }
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: 180ms; }
+
+button, a, input, select, textarea, [role="button"], summary {
+  transition:
+    color var(--motion-fast) var(--ease-ui),
+    background-color var(--motion-fast) var(--ease-ui),
+    border-color var(--motion-fast) var(--ease-ui),
+    box-shadow var(--motion-fast) var(--ease-ui);
+}
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active {
+  transform: translateY(1px);
+}
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--border-strong, #cbd5e1);
+}
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  scroll-margin-block: 96px;
+}
+:where(main, .main, .page-content) :where(h1, h2, h3, .page-title, .section-title) {
+  text-wrap: pretty;
+}
+:where(.card, .panel, .stat-card, .summary-card, .table-wrap) {
+  min-width: 0;
+}
+:where(.table-wrap, .table-container, .overflow-x-auto) {
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #b8c4d5 transparent;
+}
+:where(table) {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+:where(th) {
+  text-wrap: nowrap;
+}
+:where(td) {
+  overflow-wrap: anywhere;
+}
+:where(.card, .panel, .stat-card, .summary-card, .production-week-nav) {
+  transition:
+    border-color var(--motion-normal) var(--ease-ui),
+    box-shadow var(--motion-normal) var(--ease-ui);
+}
+@media (hover: hover) and (pointer: fine) {
+  :where(.card, .panel, .stat-card, .summary-card):hover {
+    border-color: color-mix(in srgb, var(--border, #e2e8f0) 72%, var(--primary, #2563eb));
+  }
+  :where(.nav-item, .btn, button):not(:disabled):hover {
+    transition-duration: var(--motion-fast);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
