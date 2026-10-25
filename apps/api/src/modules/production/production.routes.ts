@@ -614,7 +614,7 @@ export async function productionRoutes(app: FastifyInstance) {
           [employeeId, parsed.data.workDate, parsed.data.quantity]
         );
         if (possibleDuplicates.rowCount) {
-          const previous = possibleDuplicates.rows.map((entry: {code:string;employee_name:string;recorder_name:string;quantity:string|number;work_date:string|Date}) =>
+          const previous = possibleDuplicates.rows.map((entry: {code:string;employee_name:string;recorder_name:string;order_code:string|null;quantity:string|number;work_date:string|Date}) =>
             `سجل ${entry.code} — العامل: ${entry.employee_name} — الكمية: ${entry.quantity} — التاريخ: ${String(entry.work_date).slice(0,10)} — الطلبية: ${entry.order_code ?? "غير مرتبطة"} — سجله الحساب: ${entry.recorder_name}`
           ).join(" | ");
           throw new AppError(
