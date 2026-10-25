@@ -598,22 +598,24 @@ export async function productionRoutes(app: FastifyInstance) {
         const possibleDuplicates = await client.query(
           `SELECT p.id,p.code,p.quantity,p.work_date,p.created_at,
                   e.full_name AS employee_name,
+                  po.code AS order_code,
                   COALESCE(NULLIF(u.full_name,''),NULLIF(u.username,''),p.submitted_by::text,'حساب غير معروف') AS recorder_name
              FROM production_entries p
              JOIN employees e ON e.id=p.employee_id
              LEFT JOIN users u ON u.id=p.submitted_by
+             LEFT JOIN order_stages os ON os.id=p.order_stage_id
+             LEFT JOIN production_orders po ON po.id=os.order_id
             WHERE p.employee_id=$1
-              AND p.order_stage_id IS NOT DISTINCT FROM $2::uuid
-              AND p.product_id=$3 AND p.stage_id=$4 AND p.shift_id=$5
-              AND p.work_date=$6::date AND p.quantity=$7
+              AND p.work_date=$2::date
+              AND ABS(p.quantity-$3::numeric) <= GREATEST(1::numeric,ABS($3::numeric)*0.02)
               AND p.status <> 'CANCELLED'
-            ORDER BY p.created_at DESC,p.id
+            ORDER BY ABS(p.quantity-$3::numeric),p.created_at DESC,p.id
             LIMIT 5`,
-          [employeeId, parsed.data.orderStageId ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId, parsed.data.workDate, parsed.data.quantity]
+          [employeeId, parsed.data.workDate, parsed.data.quantity]
         );
         if (possibleDuplicates.rowCount) {
           const previous = possibleDuplicates.rows.map((entry: {code:string;employee_name:string;recorder_name:string;quantity:string|number;work_date:string|Date}) =>
-            `سجل ${entry.code} — العامل: ${entry.employee_name} — الكمية: ${entry.quantity} — التاريخ: ${String(entry.work_date).slice(0,10)} — سجله الحساب: ${entry.recorder_name}`
+            `سجل ${entry.code} — العامل: ${entry.employee_name} — الكمية: ${entry.quantity} — التاريخ: ${String(entry.work_date).slice(0,10)} — الطلبية: ${entry.order_code ?? "غير مرتبطة"} — سجله الحساب: ${entry.recorder_name}`
           ).join(" | ");
           throw new AppError(
             "POSSIBLE_DUPLICATE_PRODUCTION",
