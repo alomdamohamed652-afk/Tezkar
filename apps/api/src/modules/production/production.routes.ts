@@ -106,6 +106,10 @@ export async function productionRoutes(app: FastifyInstance) {
       employeeId: z.string().uuid().optional(),
       orderId: z.string().uuid().optional(),
       stageId: z.string().uuid().optional(),
+      shiftId: z.string().uuid().optional(),
+      productId: z.string().uuid().optional(),
+      productionTypeId: z.string().uuid().optional(),
+      search: z.string().trim().max(120).optional(),
       paymentStatus: z.enum(["PAID","PARTIAL","UNPAID","UNALLOCATED"]).optional(),
       from: z.string().date().optional(),
       to: z.string().date().optional(),
@@ -140,6 +144,19 @@ export async function productionRoutes(app: FastifyInstance) {
       where.push(`EXISTS (SELECT 1 FROM order_stages os_filter WHERE os_filter.id=p.order_stage_id AND os_filter.order_id=$${params.length})`);
     }
     if (query.data.stageId) { params.push(query.data.stageId); where.push(`p.stage_id=$${params.length}`); }
+    if (query.data.shiftId) { params.push(query.data.shiftId); where.push(`p.shift_id=$${params.length}`); }
+    if (query.data.productId) { params.push(query.data.productId); where.push(`p.product_id=$${params.length}`); }
+    if (query.data.productionTypeId) { params.push(query.data.productionTypeId); where.push(`p.production_type_id=$${params.length}`); }
+    if (query.data.search) {
+      params.push(`%${query.data.search}%`);
+      const searchParam = `$${params.length}`;
+      where.push(`(p.code ILIKE ${searchParam}
+        OR EXISTS (SELECT 1 FROM employees e_search WHERE e_search.id=p.employee_id AND (e_search.full_name ILIKE ${searchParam} OR e_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM products pr_search WHERE pr_search.id=p.product_id AND (pr_search.name ILIKE ${searchParam} OR pr_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM stages st_search WHERE st_search.id=p.stage_id AND (st_search.name ILIKE ${searchParam} OR st_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM order_stages os_search JOIN orders o_search ON o_search.id=os_search.order_id WHERE os_search.id=p.order_stage_id AND (o_search.order_name ILIKE ${searchParam} OR o_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM shifts sh_search WHERE sh_search.id=p.shift_id AND sh_search.name ILIKE ${searchParam}))`);
+    }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
 
