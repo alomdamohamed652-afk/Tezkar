@@ -28,6 +28,7 @@ const groups:NavGroup[]=[
  {label:"المالية",items:[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
   {icon:"⇄",label:"تسويات العهدة ومستحقات العمال",href:"/finance/worker-settlements",permissions:["worker_payments.pay","finance.expenses.create"]},
+  {icon:"⚠",label:"مراجعة الحالات المالية",href:"/finance/review",permissions:["worker_payments.pay"]},
   {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
