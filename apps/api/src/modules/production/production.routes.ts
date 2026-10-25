@@ -150,12 +150,12 @@ export async function productionRoutes(app: FastifyInstance) {
     if (query.data.search) {
       params.push(`%${query.data.search}%`);
       const searchParam = `$${params.length}`;
-      where.push(`(p.code ILIKE ${params.length}
-        OR EXISTS (SELECT 1 FROM employees e_search WHERE e_search.id=p.employee_id AND (e_search.full_name ILIKE ${params.length} OR e_search.code ILIKE ${params.length}))
-        OR EXISTS (SELECT 1 FROM products pr_search WHERE pr_search.id=p.product_id AND (pr_search.name ILIKE ${params.length} OR pr_search.code ILIKE ${params.length}))
-        OR EXISTS (SELECT 1 FROM stages st_search WHERE st_search.id=p.stage_id AND (st_search.name ILIKE ${params.length} OR st_search.code ILIKE ${params.length}))
-        OR EXISTS (SELECT 1 FROM order_stages os_search JOIN orders o_search ON o_search.id=os_search.order_id WHERE os_search.id=p.order_stage_id AND (o_search.order_name ILIKE ${params.length} OR o_search.code ILIKE ${params.length}))
-        OR EXISTS (SELECT 1 FROM shifts sh_search WHERE sh_search.id=p.shift_id AND sh_search.name ILIKE ${params.length}))`);
+      where.push(`(p.code ILIKE ${searchParam}
+        OR EXISTS (SELECT 1 FROM employees e_search WHERE e_search.id=p.employee_id AND (e_search.full_name ILIKE ${searchParam} OR e_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM products pr_search WHERE pr_search.id=p.product_id AND (pr_search.name ILIKE ${searchParam} OR pr_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM stages st_search WHERE st_search.id=p.stage_id AND (st_search.name ILIKE ${searchParam} OR st_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM order_stages os_search JOIN orders o_search ON o_search.id=os_search.order_id WHERE os_search.id=p.order_stage_id AND (o_search.order_name ILIKE ${searchParam} OR o_search.code ILIKE ${searchParam}))
+        OR EXISTS (SELECT 1 FROM shifts sh_search WHERE sh_search.id=p.shift_id AND sh_search.name ILIKE ${searchParam}))`);
     }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
