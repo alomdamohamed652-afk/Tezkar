@@ -578,8 +578,8 @@ export async function orderRoutes(app: FastifyInstance) {
             // This keeps production reports, order balances, future settlements and the worker
             // ledger aligned even when the entry was already approved or paid.
             await client.query(
-              "UPDATE production_entries SET rate_snapshot=$1,earning_amount=$2,updated_at=now() WHERE id=$3",
-              [newRate,item.revised,item.id]
+              "UPDATE production_entries SET rate_snapshot=$1,wage_type_method_snapshot=$2,earning_amount=$3,updated_at=now() WHERE id=$4",
+              [newRate,parsed.data.newRateMethod??item.wage_type_method_snapshot,item.revised,item.id]
             );
             if(Math.abs(item.delta)>=0.005){
               const credit=item.delta>0?item.delta:0;
