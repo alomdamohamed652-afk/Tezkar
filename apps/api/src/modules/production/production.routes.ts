@@ -28,7 +28,8 @@ const createSchema = z.object({
   shiftLeaderEmployeeId: z.string().uuid().nullable().optional(),
   bonusReason: z.string().trim().max(500).nullable().optional(),
   deductionAmount: z.number().nonnegative().optional().default(0),
-  deductionReason: z.string().trim().max(500).nullable().optional()
+  deductionReason: z.string().trim().max(500).nullable().optional(),
+  allowDuplicate: z.boolean().optional().default(false)
 });
 
 const rejectSchema = z.object({
@@ -588,6 +589,41 @@ export async function productionRoutes(app: FastifyInstance) {
       }
 
       const unitId = rate.unit_id ?? product.rows[0].unit_id;
+
+      // Serialize matching production submissions across accounts so simultaneous
+      // requests cannot both pass the duplicate check before either one inserts.
+      const duplicateKey = [employeeId, parsed.data.workDate].join(":");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["production-duplicate:" + duplicateKey]);
+      if (!parsed.data.allowDuplicate) {
+        const possibleDuplicates = await client.query(
+          `SELECT p.id,p.code,p.quantity,p.work_date,p.created_at,
+                  e.full_name AS employee_name,
+                  po.code AS order_code,
+                  COALESCE(NULLIF(u.full_name,''),NULLIF(u.username,''),p.submitted_by::text,'حساب غير معروف') AS recorder_name
+             FROM production_entries p
+             JOIN employees e ON e.id=p.employee_id
+             LEFT JOIN users u ON u.id=p.submitted_by
+             LEFT JOIN order_stages os ON os.id=p.order_stage_id
+             LEFT JOIN production_orders po ON po.id=os.order_id
+            WHERE p.employee_id=$1
+              AND p.work_date=$2::date
+              AND ABS(p.quantity-$3::numeric) <= GREATEST(1::numeric,ABS($3::numeric)*0.02)
+              AND p.status <> 'CANCELLED'
+            ORDER BY ABS(p.quantity-$3::numeric),p.created_at DESC,p.id
+            LIMIT 5`,
+          [employeeId, parsed.data.workDate, parsed.data.quantity]
+        );
+        if (possibleDuplicates.rowCount) {
+          const previous = possibleDuplicates.rows.map((entry: {code:string;employee_name:string;recorder_name:string;order_code:string|null;quantity:string|number;work_date:string|Date}) =>
+            `سجل ${entry.code} — العامل: ${entry.employee_name} — الكمية: ${entry.quantity} — التاريخ: ${String(entry.work_date).slice(0,10)} — الطلبية: ${entry.order_code ?? "غير مرتبطة"} — سجله الحساب: ${entry.recorder_name}`
+          ).join(" | ");
+          throw new AppError(
+            "POSSIBLE_DUPLICATE_PRODUCTION",
+            `POSSIBLE_DUPLICATE_PRODUCTION::يوجد إنتاج مطابق أو شبه مطابق مسجل مسبقًا. ${previous} . لو دي عملية جديدة فعلًا اختار «استمرار»، وإلا اختار «إلغاء».`,
+            409
+          );
+        }
+      }
 
       const inserted = await client.query(
         `INSERT INTO production_entries(

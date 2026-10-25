@@ -34,7 +34,7 @@ export default function ProductionPage(){
  const visiblePaymentTotals=useMemo(()=>visibleRecordEntries.reduce((a,x)=>({earned:a.earned+Number(x.total_earning_amount??x.earning_amount??0),paid:a.paid+Number(x.paid_amount??0),remaining:a.remaining+Number(x.remaining_amount??0),quantity:a.quantity+Number(x.quantity??0)}),{earned:0,paid:0,remaining:0,quantity:0}),[visibleRecordEntries]);
  const [recordWeekStart,setRecordWeekStart]=useState(()=>weekStartKey(localDateKey())),[recordRangeMode,setRecordRangeMode]=useState<"ALL"|"TODAY"|"WEEK"|"MONTH"|"YEAR"|"RANGE">("ALL"),[recordMonth,setRecordMonth]=useState(()=>localDateKey().slice(0,7)),[recordYear,setRecordYear]=useState(()=>localDateKey().slice(0,4)),[recordFrom,setRecordFrom]=useState(localDateKey()),[recordTo,setRecordTo]=useState(localDateKey()),[recordPage,setRecordPage]=useState(1),[recordTotal,setRecordTotal]=useState(0),[recordTotalPages,setRecordTotalPages]=useState(1),[recordTotalWeeks,setRecordTotalWeeks]=useState(0),[recordReportTotals,setRecordReportTotals]=useState({quantity:0,earned:0,paid:0,remaining:0}),[legacyReconcileLoading,setLegacyReconcileLoading]=useState(false),[legacyReconcileMessage,setLegacyReconcileMessage]=useState("");
  const recordWeekEnd=useMemo(()=>shiftDateKey(recordWeekStart,6),[recordWeekStart]);
- const [lastProductionSignature,setLastProductionSignature]=useState(""),[duplicateProductionPending,setDuplicateProductionPending]=useState(false);
+ const [lastProductionSignature,setLastProductionSignature]=useState(""),[duplicateProductionPending,setDuplicateProductionPending]=useState(false),[duplicateProductionMessage,setDuplicateProductionMessage]=useState("");
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editValues,setEditValues]=useState({employeeId:"",orderStageId:"",productId:"",stageId:"",productionTypeId:"",shiftId:"",shiftLeaderEmployeeId:"",workDate:"",quantity:"",baseAmount:"",hoursWorked:"",rateOverride:"",bonusAmount:"",bonusReason:"",deductionAmount:"",deductionReason:""}),[editSaving,setEditSaving]=useState(false),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
  const [bonusAmount,setBonusAmount]=useState(""),[bonusReason,setBonusReason]=useState(""),[deductionAmount,setDeductionAmount]=useState(""),[deductionReason,setDeductionReason]=useState("");
@@ -169,12 +169,12 @@ export default function ProductionPage(){
   if(deduction>0&&!deductionReason.trim()) return setError("اكتب بيان الخصم.");
   if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
   const signature=JSON.stringify({employeeId,shiftLeaderEmployeeId,orderStageId,productionTypeId,productId,stageId,shiftId,workDate,quantity:q,rate:rateOverride,baseAmount,hoursWorked,bonus,deduction,scrap,scrapType,scrapNotes:scrapNotes.trim()});
-  if(!allowDuplicate&&signature===lastProductionSignature){setDuplicateProductionPending(true);return;}
+  if(!allowDuplicate&&signature===lastProductionSignature){setDuplicateProductionMessage("نفس بيانات الإنتاج اتسجلت قبل كده من نفس الصفحة. راجع العامل والطلبية والمرحلة والكمية.");setDuplicateProductionPending(true);return;}
   setSaving(true);
   let createdProductionId:string|null=null;
   try{
    const created=await api<{data:{id:string}}>("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,shiftLeaderEmployeeId:shiftLeaderEmployeeId||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,
-     bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
+     bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null,allowDuplicate
     })});
    createdProductionId=created.data.id;setLastProductionSignature(signature);setDuplicateProductionPending(false);
    if(scrap>0){await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:created.data.id,scrapType,quantity:scrap,notes:scrapNotes.trim()||null,idempotencyKey:crypto.randomUUID()})});}
@@ -182,6 +182,11 @@ export default function ProductionPage(){
    setQuantity("");setScrapQuantity("0");setScrapType("WORKER_SCRAP");setScrapNotes("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
   }catch(e){
    const message=e instanceof Error?e.message:"تعذر تسجيل الإنتاج";
+   if(message.startsWith("POSSIBLE_DUPLICATE_PRODUCTION::")){
+    setDuplicateProductionMessage(message.slice("POSSIBLE_DUPLICATE_PRODUCTION::".length));
+    setDuplicateProductionPending(true);
+    return;
+   }
    setError(createdProductionId&&scrap>0
     ? `تم إنشاء سجل الإنتاج بالفعل (رقم داخلي: ${createdProductionId}) لكن تسجيل الهالك لم يكتمل. لا تعِد تسجيل الإنتاج؛ راجع صفحة الهالك وسجّل الكمية الناقصة. السبب: ${message}`
     : message);
@@ -293,6 +298,6 @@ export default function ProductionPage(){
   <div className="production-pagination"><span>عدد السجلات في {recordRangeMode==="TODAY"?"اليوم":recordRangeMode==="WEEK"?"الأسبوع المحدد":recordRangeMode==="MONTH"?"الشهر المحدد":recordRangeMode==="YEAR"?"السنة المحددة":recordRangeMode==="RANGE"?"الفترة المحددة":"كل الإنتاج"}: {formatInteger(recordTotal)}</span><div className="form-actions"><button type="button" className="secondary-btn" disabled={recordPage<=1||recordLoading} onClick={()=>setRecordPage(p=>Math.max(1,p-1))}>السجلات السابقة</button><span>صفحة {recordPage} من {Math.max(1,recordTotalPages)}</span><button type="button" className="secondary-btn" disabled={recordPage>=recordTotalPages||recordLoading} onClick={()=>setRecordPage(p=>Math.min(recordTotalPages,p+1))}>السجلات التالية</button></div></div>
   </section>
 
-  {duplicateProductionPending&&<div className="modal-backdrop" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="duplicate-worker-production-title"><h2 id="duplicate-worker-production-title" className="card-title">تأكيد تكرار تسجيل الإنتاج</h2><p>نفس بيانات الإنتاج اتسجلت قبل كده من نفس الصفحة. راجع العامل والطلبية والمرحلة والكمية. لو دي وردية أو عملية جديدة فعلًا، أكد التسجيل مرة أخرى.</p><div className="form-actions"><button type="button" className="secondary-btn" disabled={saving} onClick={()=>setDuplicateProductionPending(false)}>مراجعة البيانات</button><button type="button" className="danger-button" disabled={saving} onClick={()=>void submit({preventDefault:()=>{}} as unknown as FormEvent,true)}>{saving?"جارٍ التسجيل...":"تأكيد تسجيل العملية مرة أخرى"}</button></div></section></div>}
+  {duplicateProductionPending&&<div className="modal-backdrop" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="duplicate-worker-production-title"><h2 id="duplicate-worker-production-title" className="card-title">تأكيد تكرار تسجيل الإنتاج</h2><p style={{whiteSpace:"pre-wrap"}}>{duplicateProductionMessage} لو دي عملية جديدة فعلًا اضغط «استمرار»، ولو احتمال تكرار اضغط «إلغاء» وراجع السجل.</p><div className="form-actions"><button type="button" className="secondary-btn" disabled={saving} onClick={()=>{setDuplicateProductionPending(false);setDuplicateProductionMessage("")}}>إلغاء العملية</button><button type="button" className="danger-button" disabled={saving} onClick={()=>void submit({preventDefault:()=>{}} as unknown as FormEvent,true)}>{saving?"جارٍ التسجيل...":"استمرار وتسجيل رغم التحذير"}</button></div></section></div>}
  </section></main></div>;
 }
