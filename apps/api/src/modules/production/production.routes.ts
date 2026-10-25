@@ -592,7 +592,7 @@ export async function productionRoutes(app: FastifyInstance) {
 
       // Serialize matching production submissions across accounts so simultaneous
       // requests cannot both pass the duplicate check before either one inserts.
-      const duplicateKey = [employeeId, parsed.data.orderStageId ?? "", parsed.data.productId, parsed.data.stageId, parsed.data.shiftId, parsed.data.workDate, parsed.data.quantity].join(":");
+      const duplicateKey = [employeeId, parsed.data.workDate].join(":");
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["production-duplicate:" + duplicateKey]);
       if (!parsed.data.allowDuplicate) {
         const possibleDuplicates = await client.query(
