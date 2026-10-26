@@ -186,7 +186,7 @@ export async function productionRoutes(app: FastifyInstance) {
         + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)>0.009 THEN 'PARTIAL'
       ELSE 'UNPAID'
     END`;
-    if (query.data.paymentStatus) { params.push(query.data.paymentStatus); where.push(`(${paymentStatusSql})=${params.length}`); }
+    if (query.data.paymentStatus) { params.push(query.data.paymentStatus); where.push("(" + paymentStatusSql + ")=$" + params.length); }
 
     const filterParams = [...params];
     const countResult = await pool.query(
