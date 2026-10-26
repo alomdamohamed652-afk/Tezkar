@@ -8,7 +8,7 @@ import {api} from "../../lib/api";
 
 type Summary={total_earned:string;total_paid:string;remaining:string};
 type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null};
-type Employee={id:string;code:string;name:string};
+type Employee={id:string;code:string;name?:string;full_name?:string};
 type Shift={id:string;code:string;name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null};
 
@@ -58,7 +58,7 @@ export default function EarningsPage(){
    {!isWorker&&<section className="card">
     <div className="card-header"><div><h2 className="card-title">بونص / خصم إنتاج</h2><div className="form-hint">كل حركة لازم يكون لها موظف، وردية اختيارية، مبلغ وبيان واضح، وتدخل مباشرة في دفتر مستحقات الموظف.</div></div></div>
     {has("production.adjustments.create")&&<form className="form-grid" onSubmit={addAdjustment}>
-      <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.name,meta:x.code}))} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
+      <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name||x.name||x.code,meta:x.code}))} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
       <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shifts.map(x=>({value:x.id,label:x.name,meta:x.code}))} placeholder="اختياري" searchPlaceholder="ابحث عن الوردية"/></label>
       <label>نوع الحركة<select value={type} onChange={e=>setType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">بونص</option><option value="DEDUCTION">خصم</option></select></label>
       <label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} required/></label>
