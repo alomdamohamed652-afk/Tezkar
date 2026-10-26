@@ -1306,10 +1306,8 @@ export async function productionRoutes(app: FastifyInstance) {
       await assertAccountingPeriodOpen(client,p.data.adjustmentDate??new Date().toISOString().slice(0,10));
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[p.data.employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
-      if(p.data.shiftId){
-        const assigned=await client.query("SELECT 1 FROM shift_employees WHERE shift_id=$1 AND employee_id=$2 AND is_active=TRUE",[p.data.shiftId,p.data.employeeId]);
-        if(!assigned.rowCount)throw new AppError("EMPLOYEE_NOT_ASSIGNED_TO_SHIFT","الموظف غير مربوط بالوردية المحددة",422);
-      }
+      // A general earnings adjustment may optionally reference a shift without requiring
+      // the employee to have an active shift_employees assignment; the shift is descriptive metadata.
       if(p.data.productionEntryId){
         const production=await client.query("SELECT employee_id FROM production_entries WHERE id=$1",[p.data.productionEntryId]);
         if(!production.rowCount)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",422);
