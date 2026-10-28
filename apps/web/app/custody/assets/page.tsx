@@ -122,7 +122,7 @@ export default function AssetCustodyPage() {
 
   return <div className="app-shell"><Sidebar active="/custody/assets"/><main className="main">
     <header className="topbar"><div><h1 className="page-title">العهد العينية وتسويتها</h1><p className="page-subtitle">تسجيل الأدوات والمعدات المسلّمة للعامل ومتابعة المرتجع والفقد والتلف والتحويلات. هذه الشاشة منفصلة عن رصيد العهدة النقدية وعن مستحقات العامل.</p></div>
-      <div className="form-actions"><Link className="secondary-btn" href="/custody">العهدة النقدية</Link><Link className="secondary-btn" href="/payments">القبض ومستحقات العمال</Link><Link className="secondary-btn" href="/finance/review">مراجعة الحالات المالية</Link><Link className="secondary-btn" href="/accounting">المالية</Link></div>
+      <div className="form-actions"><Link className="secondary-btn" href="/custody">العهدة النقدية</Link><Link className="secondary-btn" href="/payments">القبض ومستحقات العمال</Link><Link className="secondary-btn" href="/finance/review">مراجعة الحالات المالية</Link>{has("payroll.view") && <Link className="secondary-btn" href="/payroll">المرتبات والخصومات</Link>}<Link className="secondary-btn" href="/accounting">المالية</Link></div>
     </header>
     <section className="content">
       {error && <div role="alert" className="alert error">{error}</div>}{message && <div role="status" className="success-box">{message}</div>}
