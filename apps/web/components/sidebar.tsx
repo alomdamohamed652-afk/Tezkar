@@ -33,6 +33,7 @@ const groups:NavGroup[]=[
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
   {icon:"◍",label:"العهدة النقدية",href:"/custody",permissions:["cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.transfer","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"]},
+  {icon:"▣",label:"العهد العينية وتسويتها",href:"/custody/assets",permissions:["custody.view","custody.view_own","custody.create","custody.settle","custody.transfer"]},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
  ]},
  {label:"الإدارة",items:[
