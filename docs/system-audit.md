@@ -100,6 +100,37 @@ The current navigation separates cash custody, in-kind custody, historical expen
 - Assert closed-period protections and API permission checks.
 - Never test by mutating the production database.
 
+## API module registry observed in `apps/api/src/main.ts`
+
+The current API bootstrap registers the following route modules. This is a registration inventory, not a substitute for reviewing every handler and permission:
+
+| Module / routes file | Domain to audit next |
+|---|---|
+| `health/health.routes.ts` | Health/readiness |
+| `auth/auth.routes.ts`, `registration.routes.ts`, `password-reset.routes.ts`, `account.routes.ts` | Login, registration, password recovery, profile/session management |
+| `employees/employees.routes.ts` | Employee master data |
+| `attendance/attendance.routes.ts` | Attendance and fingerprint imports |
+| `master-data/master-data.routes.ts` | Catalog/master data |
+| `users/users.routes.ts` | Users, roles and access |
+| `operations-master/operations-master.routes.ts` | Shifts, rates and production setup |
+| `production/production.routes.ts`, `machine-production.routes.ts`, `production-scrap.routes.ts` | Worker/machine production, cancellation and scrap |
+| `payments/payments.routes.ts`, `earnings/earnings.routes.ts` | Worker payout, dues and earning ledger |
+| `warehouse/warehouse.routes.ts`, `shift-withdrawals.routes.ts`, `cartons-deliveries.routes.ts`, `receipts.routes.ts` | Stock, withdrawals, carton deliveries and receiving |
+| `advances/advances.routes.ts` | Advance requests and repayment lifecycle |
+| `dashboard/dashboard.routes.ts` | Summary metrics |
+| `reports/reports.routes.ts` | Reporting/export |
+| `orders/orders.routes.ts` | Orders, stages and customer/product relationships |
+| `custody/custody.routes.ts` | Cash and in-kind custody workflows |
+| `coding/coding.routes.ts` | Coding/design workflow |
+| `accounting/accounting.routes.ts` | Expenses, revenue, profitability and period close |
+| `tasks/tasks.routes.ts` | Tasks and due dates |
+| `payroll/payroll.routes.ts` | Salaries, payroll periods and payments |
+| `search/global-search.routes.ts` | Cross-module search |
+| `notifications/notifications.routes.ts` | Notifications |
+| `system-reset/system-reset.routes.ts` | Guarded system reset workflow; never run during this audit |
+
+The bootstrap also has a global response hook that writes request audit records for mutations and selected sensitive reads, plus module-level audit calls for important financial actions. Follow-up work should check that important mutations retain both correct business audit context and appropriate failure visibility, without treating a generic request log as a substitute for transaction-level audit evidence.
+
 ## Remaining audit work
 
 - Enumerate every route under `apps/web/app` and every API module under `apps/api/src/modules`, including actual permissions, reads/writes and links.
