@@ -70,6 +70,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
       + COALESCE((SELECT SUM(l.credit_amount-l.debit_amount)
         FROM employee_earnings_ledger l
         WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
+          AND l.advance_repayment_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
