@@ -469,6 +469,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{name:"Historical expense test period",periodStart:"1800-01-01",periodEnd:"1800-12-31"}
       });
       assert.equal(historicalPeriod.statusCode,201,historicalPeriod.body);
+      const historicalExpenseOrders=await app.inject({
+        method:"GET",url:"/api/accounting/historical-expense-orders",headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalExpenseOrders.statusCode,200,historicalExpenseOrders.body);
+      assert.ok(historicalExpenseOrders.json().data.length>0,
+        "historical expense entry should load order options through its own permission-scoped endpoint");
       const historicalExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
         payload:{category:"تسوية قديمة",description:"Historical expense inside open period",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:null,historicalSettlement:true,idempotencyKey:randomUUID()}
