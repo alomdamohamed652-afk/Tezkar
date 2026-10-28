@@ -51,7 +51,7 @@ function periodBounds(periodType: "DAY" | "MONTH" | "SHIFT", date: string) {
   if (periodType !== "MONTH") return { from: date, to: date };
   const year = Number(date.slice(0,4));
   const month = Number(date.slice(5,7));
-  const from = `${year}-${String(month).padStart(2,"0")}-01`;
+  const from = date;
   const to = new Date(Date.UTC(year, month, 0)).toISOString().slice(0,10);
   return { from, to };
 }
@@ -107,6 +107,26 @@ export async function laserMachineOperationsRoutes(app: FastifyInstance) {
           AND is_active=TRUE LIMIT 1
       `, [parsed.data.machineId,parsed.data.designVersionId ?? null,parsed.data.shiftId ?? null,parsed.data.periodType,bounds.from]);
       if (duplicate.rowCount) throw new AppError("TARGET_ALREADY_EXISTS", "يوجد مستهدف نشط بنفس الماكينة والتصميم والوردية والفترة", 409);
+      if (parsed.data.periodType === "MONTH") {
+        const future = await client.query(`
+          SELECT id FROM laser_machine_targets
+          WHERE machine_id=$1 AND design_version_id IS NOT DISTINCT FROM $2::uuid
+            AND shift_id IS NOT DISTINCT FROM $3::uuid AND period_type='MONTH' AND is_active=TRUE
+            AND effective_from>$4::date AND effective_from<=$5::date
+          FOR UPDATE
+        `, [parsed.data.machineId,parsed.data.designVersionId ?? null,parsed.data.shiftId ?? null,bounds.from,bounds.to]);
+        if (future.rowCount) throw new AppError("TARGET_FUTURE_REVISION_EXISTS", "يوجد مستهدف أحدث داخل هذا الشهر؛ ابدأ التعديل من تاريخ بعده", 409);
+        const previous = await client.query(`
+          SELECT id FROM laser_machine_targets
+          WHERE machine_id=$1 AND design_version_id IS NOT DISTINCT FROM $2::uuid
+            AND shift_id IS NOT DISTINCT FROM $3::uuid AND period_type='MONTH' AND is_active=TRUE
+            AND effective_from<$4::date AND effective_to>=$4::date
+          FOR UPDATE
+        `, [parsed.data.machineId,parsed.data.designVersionId ?? null,parsed.data.shiftId ?? null,bounds.from]);
+        for (const prior of previous.rows) {
+          await client.query("UPDATE laser_machine_targets SET effective_to=$2::date-1 WHERE id=$1", [prior.id,bounds.from]);
+        }
+      }
       const inserted = await client.query(`
         INSERT INTO laser_machine_targets(machine_id,design_version_id,shift_id,period_type,effective_from,effective_to,target_quantity,target_cycles,notes,created_by)
         VALUES($1,$2,$3,$4,$5::date,$6::date,$7,$8,$9,$10)
@@ -124,7 +144,7 @@ export async function laserMachineOperationsRoutes(app: FastifyInstance) {
   }, async request => {
     const id = (request.params as { id: string }).id;
     const result = await withTransaction(async client => {
-      const updated = await client.query("UPDATE laser_machine_targets SET is_active=FALSE WHERE id=$1 AND is_active=TRUE RETURNING *", [id]);
+      const updated = await client.query("UPDATE laser_machine_targets SET is_active=FALSE,effective_to=CASE WHEN effective_from>CURRENT_DATE THEN effective_to ELSE LEAST(effective_to,CURRENT_DATE) END WHERE id=$1 AND is_active=TRUE RETURNING *", [id]);
       if (!updated.rowCount) throw new AppError("TARGET_NOT_FOUND", "المستهدف غير موجود أو متوقف بالفعل", 404);
       await audit(client,request,"deactivate_target","laser_machine_target",id,updated.rows[0]);
       return updated.rows[0];
