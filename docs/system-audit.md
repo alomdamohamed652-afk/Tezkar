@@ -71,7 +71,7 @@ The PR changes 13 files:
 
 ### P1 — summary field does not use the same production earning definition
 
-In `GET /api/worker-payments/settlement-summary`, the displayed `productionEarnings` query sums `earning_amount`, while the canonical available-earnings calculation and unpaid-production selection use `COALESCE(total_earning_amount, earning_amount)`. Production records can have a total amount that differs from the base amount (for example, bonus/deduction components). This can make the summary disagree with the same screen's payable balance. Fix the summary query to use the canonical total amount and add a regression assertion in the isolated PostgreSQL integration test.
+**Fixed on this audit branch:** `GET /api/worker-payments/settlement-summary` now sums `COALESCE(total_earning_amount, earning_amount)`, consistent with available-earnings and unpaid-production calculations. Added an integration regression assertion using a production record with base earnings 100, bonus 50, deduction 20, and expected total earnings 130. CI validation for this branch is still pending.
 
 ### P1 — keep selected settlement amounts server-enforced
 
@@ -87,7 +87,7 @@ The current navigation separates cash custody, in-kind custody, historical expen
 
 ### P2 — presentation cleanup
 
-In `apps/web/app/custody/assets/page.tsx`, the transfer-history and settlement-history sections both use the heading “سجل التسويات”. Rename the first heading to “سجل التحويلات” so the table purpose is unambiguous. This is a presentation-only change and must not alter custody calculations.
+**Fixed on this audit branch:** renamed the transfer-history heading to “سجل التحويلات”; no custody calculations or API behavior changed.
 
 ## Required validation for finance changes
 
