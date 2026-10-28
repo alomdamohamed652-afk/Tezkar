@@ -691,17 +691,26 @@ export async function paymentsRoutes(app:FastifyInstance){
         LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         LEFT JOIN production_orders o ON o.id=ae.order_id
        WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
-         AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa
-                         WHERE esa.settlement_id=es.id)
          AND (
-           es.id IS NOT NULL
-           OR NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-           OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
-           OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
-                      LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
-                      LEFT JOIN order_stages os ON os.id=p.order_stage_id
-                      WHERE wpa.worker_payment_id=wp.id AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
-                        OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+           (es.id IS NOT NULL AND (
+             ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
+             OR EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa
+                       LEFT JOIN production_entries p ON p.id=esa.production_entry_id
+                       LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                       WHERE esa.settlement_id=es.id AND (p.id IS NULL OR p.employee_id<>wp.employee_id
+                         OR (ae.order_id IS NOT NULL AND os.order_id IS DISTINCT FROM ae.order_id)
+                         OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+           ))
+           OR (es.id IS NULL AND (
+             NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+             OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                        LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                        WHERE wpa.worker_payment_id=wp.id AND (p.id IS NULL OR p.employee_id<>wp.employee_id
+                          OR os.order_id IS DISTINCT FROM ae.order_id
+                          OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+           ))
          )
        ORDER BY wp.created_at,wp.id
        LIMIT 300
@@ -749,7 +758,6 @@ export async function paymentsRoutes(app:FastifyInstance){
       const payment=paymentResult.rows[0];
       const amount=Math.round(Number(payment.gross_amount)*100)/100;
       const settlementId=payment.settlement_id as string|null;
-      if(settlementId&&await client.query("SELECT 1 FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",[settlementId]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة على سجلات الإنتاج بالفعل",409);
       if(await client.query("SELECT 1 FROM worker_payment_order_allocations WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة على طلبية بالفعل",409);
       if(payment.order_id&&payment.order_id!==parsed.data.orderId)throw new AppError("HISTORICAL_PAYMENT_ORDER_MISMATCH","الدفعة مرتبطة محاسبيًا بطلبية مختلفة؛ لا يمكن تغييرها من هنا",409);
       if(payment.order_stage_id&&payment.order_stage_id!==(parsed.data.orderStageId??null))throw new AppError("HISTORICAL_PAYMENT_STAGE_MISMATCH","الدفعة مرتبطة محاسبيًا بمرحلة مختلفة؛ اختر المرحلة المرتبطة بها",409);
@@ -768,8 +776,24 @@ export async function paymentsRoutes(app:FastifyInstance){
          ORDER BY p.work_date,p.created_at,p.id
          FOR UPDATE OF wpa
       `,[id]);
+      const existingSettlementAllocations=settlementId?await client.query(`
+        SELECT esa.production_entry_id,esa.amount,p.employee_id,os.order_id,p.order_stage_id
+          FROM employee_earnings_settlement_allocations esa
+          LEFT JOIN production_entries p ON p.id=esa.production_entry_id
+          LEFT JOIN order_stages os ON os.id=p.order_stage_id
+         WHERE esa.settlement_id=$1
+         ORDER BY p.work_date,p.created_at,p.id
+         FOR UPDATE OF esa
+      `,[settlementId]):{rows:[],rowCount:0};
+      if(existingSettlementAllocations.rowCount&&oldAllocations.rowCount)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","توجد توزيعات قديمة في أكثر من سجل؛ يلزم مراجعة محاسبية قبل التعديل",409);
       let remaining=amount;
-      if(oldAllocations.rowCount){
+      if(existingSettlementAllocations.rowCount){
+        const existingTotal=existingSettlementAllocations.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+        const valid=existingSettlementAllocations.rows.every(row=>row.employee_id===payment.employee_id&&row.order_id===parsed.data.orderId&&(!parsed.data.orderStageId||row.order_stage_id===parsed.data.orderStageId));
+        if(!valid||existingTotal>amount+0.009)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","التوزيع الحالي لا يطابق العامل/الطلبية أو يتجاوز قيمة الدفعة؛ يلزم مراجعة محاسبية",409);
+        if(existingTotal>=amount-0.009)throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة بالكامل على سجلات الإنتاج بالفعل",409);
+        remaining=Math.round((amount-existingTotal)*100)/100;
+      }else if(oldAllocations.rowCount){
         const oldTotal=oldAllocations.rows.reduce((sum,row)=>sum+Number(row.amount),0);
         const valid=oldAllocations.rows.every(row=>row.employee_id===payment.employee_id&&row.order_id===parsed.data.orderId&&(!parsed.data.orderStageId||row.order_stage_id===parsed.data.orderStageId));
         if(!valid||Math.abs(oldTotal-amount)>0.009)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","توزيع الإنتاج القديم لا يطابق الموظف/الطلبية أو إجمالي الدفعة؛ يلزم مراجعة محاسبية يدوية",409);
@@ -781,7 +805,8 @@ export async function paymentsRoutes(app:FastifyInstance){
           }
         }
         remaining=0;
-      }else{
+      }
+      if(remaining>0.009){
         const eligible=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
             -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
@@ -798,7 +823,7 @@ export async function paymentsRoutes(app:FastifyInstance){
            FOR UPDATE OF p
         `,[payment.employee_id,parsed.data.orderId,parsed.data.orderStageId??null]);
         const available=eligible.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0);
-        if(available+0.009<amount)throw new AppError("HISTORICAL_PAYMENT_EXCEEDS_ORDER_DUE",`المستحق المتاح في الطلبية/المرحلة ${available.toFixed(2)} ج.م فقط، أقل من مبلغ الدفعة ${amount.toFixed(2)} ج.م`,409);
+        if(available+0.009<remaining)throw new AppError("HISTORICAL_PAYMENT_EXCEEDS_ORDER_DUE",`المستحق المتاح في الطلبية/المرحلة ${available.toFixed(2)} ج.م فقط، أقل من المبلغ غير الموزع ${remaining.toFixed(2)} ج.م`,409);
         for(const row of eligible.rows){
           if(remaining<=0.009)break;
           const take=Math.round(Math.min(remaining,Number(row.remaining??0))*100)/100;
