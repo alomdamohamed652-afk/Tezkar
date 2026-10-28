@@ -823,6 +823,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,2)`,
         [unallocatedHistoricalPayment.id,bonusProduction.id]
       );
+      const historicalOrderOptions=await app.inject({
+        method:"GET",url:"/api/worker-payments/historical-allocation-orders",headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalOrderOptions.statusCode,200,historicalOrderOptions.body);
+      assert.ok(historicalOrderOptions.json().data.some((row:any)=>row.id===orderId),
+        "historical review must provide order options through its own permission-scoped endpoint");
+
       const historicalQueue=await app.inject({
         method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
       });
