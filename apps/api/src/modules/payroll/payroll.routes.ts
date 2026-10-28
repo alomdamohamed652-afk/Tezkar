@@ -350,6 +350,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const paymentDate=parsed.data.paymentDate??new Date().toISOString().slice(0,10);
       const fingerprint=JSON.stringify({
         payrollItemId:id,
+        paidByUserId:request.user!.userId,
         amount:parsed.data.amount,
         paymentDate,
         paymentMethod:parsed.data.paymentMethod??null,
