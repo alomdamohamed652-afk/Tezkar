@@ -523,7 +523,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const skipped: Array<{paymentId:string;employeeName:string;amount:number;reason:string}> = [];
       for (const candidate of candidates.rows) {
         const paymentResult = await client.query(`
-          SELECT wp.id,wp.employee_id,wp.gross_amount,e.full_name AS employee_name,
+          SELECT wp.id,wp.employee_id,wp.gross_amount,wp.created_at::date AS payment_date,e.full_name AS employee_name,
                  ae.order_id,ae.order_stage_id,es.id AS settlement_id
             FROM worker_payments wp
             JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
@@ -596,9 +596,10 @@ export async function paymentsRoutes(app:FastifyInstance){
             JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+             AND p.work_date <= $4::date
            ORDER BY p.work_date,p.created_at,p.id
            FOR UPDATE OF p
-        `, [payment.employee_id,payment.order_id,payment.order_stage_id]);
+        `, [payment.employee_id,payment.order_id,payment.order_stage_id,payment.payment_date]);
         const available = Math.round(eligible.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
         if (settlementId && Math.abs(available-grossAmount) > 0.009) {
           skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,
