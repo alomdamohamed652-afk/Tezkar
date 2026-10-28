@@ -57,7 +57,7 @@ export default function FinanceExceptionsPage() {
     try {
       const [p, o] = await Promise.all([
         api<{ data: Payment[] }>("/api/worker-payments/historical-unallocated"),
-        api<{ data: Order[] }>("/api/orders")
+        api<{ data: Order[] }>("/api/worker-payments/historical-allocation-orders")
       ]);
       setPayments(p.data);
       setOrders(o.data.filter(x => x.status !== "CANCELLED"));
