@@ -12,6 +12,7 @@ const designSchema = z.object({
   fileReference: z.string().trim().max(1000).nullable().optional()
 });
 const versionSchema = z.object({
+  productId: z.string().uuid().nullable().optional(),
   versionNo: z.number().int().positive(),
   materialType: z.string().trim().min(1).max(80),
   materialThicknessMm: z.number().nonnegative().nullable().optional(),
@@ -100,7 +101,7 @@ export async function laserDesignRoutes(app: FastifyInstance) {
   }, async request => {
     const id = (request.params as { id: string }).id;
     const result = await pool.query(`
-      SELECT v.id,v.design_id,v.version_no,v.material_type,v.material_thickness_mm,
+      SELECT v.id,v.design_id,v.product_id,v.version_no,v.material_type,v.material_thickness_mm,
              v.width_mm,v.height_mm,v.unit_label,v.pieces_per_cycle,v.standard_cycle_seconds,
              v.notes,v.status,v.created_at,d.code AS design_code,d.name AS design_name
       FROM laser_design_versions v JOIN laser_designs d ON d.id=v.design_id
@@ -133,13 +134,19 @@ export async function laserDesignRoutes(app: FastifyInstance) {
       if (!design.rowCount || design.rows[0].status !== "ACTIVE") {
         throw new AppError("LASER_DESIGN_NOT_ACTIVE", "لا يمكن إضافة إصدار لتصميم غير موجود أو مؤرشف", 409);
       }
+      if (parsed.data.productId) {
+        const product = await client.query("SELECT id FROM products WHERE id=$1 AND is_active=TRUE", [parsed.data.productId]);
+        if (!product.rowCount) throw new AppError("PRODUCT_NOT_ACTIVE", "المنتج المرتبط بإصدار التصميم غير موجود أو غير نشط", 422);
+      }
+      const duplicate = await client.query("SELECT id FROM laser_design_versions WHERE design_id=$1 AND version_no=$2", [designId,parsed.data.versionNo]);
+      if (duplicate.rowCount) throw new AppError("LASER_VERSION_EXISTS", "رقم الإصدار مستخدم بالفعل لهذا التصميم؛ اختر رقم إصدار جديدًا", 409);
       const inserted = await client.query(`
         INSERT INTO laser_design_versions(
-          design_id,version_no,material_type,material_thickness_mm,width_mm,height_mm,
+          design_id,product_id,version_no,material_type,material_thickness_mm,width_mm,height_mm,
           unit_label,pieces_per_cycle,standard_cycle_seconds,notes,created_by
-        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING *
-      `, [designId,parsed.data.versionNo,parsed.data.materialType,parsed.data.materialThicknessMm ?? null,
+      `, [designId,parsed.data.productId ?? null,parsed.data.versionNo,parsed.data.materialType,parsed.data.materialThicknessMm ?? null,
         parsed.data.widthMm ?? null,parsed.data.heightMm ?? null,parsed.data.unitLabel,parsed.data.piecesPerCycle,
         parsed.data.standardCycleSeconds ?? null,parsed.data.notes ?? null,request.user!.userId]);
       await audit(client, request, "create_version", "laser_design_version", inserted.rows[0].id, inserted.rows[0]);
