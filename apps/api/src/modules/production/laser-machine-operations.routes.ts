@@ -104,9 +104,9 @@ export async function laserMachineOperationsRoutes(app: FastifyInstance) {
         SELECT id FROM laser_machine_targets
         WHERE machine_id=$1 AND design_version_id IS NOT DISTINCT FROM $2::uuid
           AND shift_id IS NOT DISTINCT FROM $3::uuid AND period_type=$4 AND effective_from=$5::date
-          AND is_active=TRUE LIMIT 1
+          LIMIT 1
       `, [parsed.data.machineId,parsed.data.designVersionId ?? null,parsed.data.shiftId ?? null,parsed.data.periodType,bounds.from]);
-      if (duplicate.rowCount) throw new AppError("TARGET_ALREADY_EXISTS", "يوجد مستهدف نشط بنفس الماكينة والتصميم والوردية والفترة", 409);
+      if (duplicate.rowCount) throw new AppError("TARGET_ALREADY_EXISTS", "يوجد مستهدف محفوظ بنفس الماكينة والتصميم والوردية وتاريخ البداية؛ اختر تاريخ بداية آخر", 409);
       if (parsed.data.periodType === "MONTH") {
         const future = await client.query(`
           SELECT id FROM laser_machine_targets
