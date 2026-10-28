@@ -169,6 +169,15 @@ const machineSchema = z.object({
   machineType: z.string().trim().max(120).optional()
 });
 
+const machineProductionReportQuerySchema = z.object({
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
+  machineId: z.string().uuid().optional(),
+  designVersionId: z.string().uuid().optional(),
+  employeeId: z.string().uuid().optional(),
+  shiftId: z.string().uuid().optional()
+}).refine(x => !x.from || !x.to || x.from <= x.to, { message: "تاريخ البداية يجب ألا يتجاوز تاريخ النهاية" });
+
 const machineProductionSchema = z.object({
   orderStageId: z.string().uuid(),
   productionTypeId: z.string().uuid().nullable().optional(),
@@ -865,6 +874,86 @@ export async function orderRoutes(app: FastifyInstance) {
          LEFT JOIN laser_designs ld ON ld.id=ldv.design_id
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
+  });
+
+  app.get("/api/machine-production/reports", {
+    preHandler: [authenticateRequest, requirePermission("machine_production.reports.view")]
+  }, async request => {
+    const parsed = machineProductionReportQuerySchema.safeParse(request.query);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "فلاتر تقرير إنتاج الماكينات غير صحيحة", 422);
+    const params = [parsed.data.from ?? null,parsed.data.to ?? null,parsed.data.machineId ?? null,
+      parsed.data.designVersionId ?? null,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null];
+    const filterSql = `
+      ($1::date IS NULL OR mp.work_date >= $1::date)
+      AND ($2::date IS NULL OR mp.work_date <= $2::date)
+      AND ($3::uuid IS NULL OR mp.machine_id=$3::uuid)
+      AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
+      AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
+      AND ($6::uuid IS NULL OR mp.shift_id=$6::uuid)
+    `;
+    const [summary,machines,designs,operators] = await Promise.all([
+      pool.query(`
+        SELECT
+          COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)) FILTER (WHERE mp.status='ACTIVE'),0) AS good_quantity,
+          COALESCE(SUM(COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),0) AS scrap_quantity,
+          COUNT(*) FILTER (WHERE mp.status='ACTIVE')::int AS run_count,
+          COALESCE(SUM(mp.cycles_count) FILTER (WHERE mp.status='ACTIVE'),0) AS cycles_count,
+          COUNT(DISTINCT mp.machine_id) FILTER (WHERE mp.status='ACTIVE')::int AS machines_used,
+          COUNT(*) FILTER (WHERE mp.status='CANCELLED')::int AS cancelled_count,
+          CASE WHEN COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)+COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),0)>0
+            THEN ROUND(100.0*COALESCE(SUM(COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),0)/
+              SUM(COALESCE(mp.good_quantity,mp.quantity)+COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),2)
+            ELSE 0 END AS scrap_rate_percent
+        FROM machine_productions mp WHERE ${filterSql}
+      `,params),
+      pool.query(`
+        SELECT m.id AS machine_id,m.code AS machine_code,m.name AS machine_name,
+          SUM(COALESCE(mp.good_quantity,mp.quantity)) AS good_quantity,
+          SUM(COALESCE(mp.scrap_quantity,0)) AS scrap_quantity,
+          COUNT(*)::int AS run_count,COALESCE(SUM(mp.cycles_count),0) AS cycles_count,
+          COUNT(DISTINCT mp.laser_design_version_id)::int AS design_count
+        FROM machine_productions mp JOIN machines m ON m.id=mp.machine_id
+        WHERE mp.status='ACTIVE' AND ${filterSql}
+        GROUP BY m.id,m.code,m.name
+        ORDER BY good_quantity DESC,m.name ASC,m.id ASC
+      `,params),
+      pool.query(`
+        SELECT d.id AS design_id,d.code AS design_code,d.name AS design_name,v.version_no,
+          SUM(COALESCE(mp.good_quantity,mp.quantity)) AS good_quantity,
+          SUM(COALESCE(mp.scrap_quantity,0)) AS scrap_quantity,
+          COUNT(*)::int AS run_count,COALESCE(SUM(mp.cycles_count),0) AS cycles_count,
+          COUNT(DISTINCT mp.machine_id)::int AS machine_count
+        FROM machine_productions mp
+        JOIN laser_design_versions v ON v.id=mp.laser_design_version_id
+        JOIN laser_designs d ON d.id=v.design_id
+        WHERE mp.status='ACTIVE' AND ${filterSql}
+        GROUP BY d.id,d.code,d.name,v.id,v.version_no
+        ORDER BY good_quantity DESC,d.name ASC,v.version_no DESC
+      `,params),
+      pool.query(`
+        SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
+          SUM(COALESCE(mp.good_quantity,mp.quantity)) AS good_quantity,
+          SUM(COALESCE(mp.scrap_quantity,0)) AS scrap_quantity,
+          COUNT(*)::int AS run_count,COALESCE(SUM(mp.cycles_count),0) AS cycles_count
+        FROM machine_productions mp JOIN employees e ON e.id=mp.employee_id
+        WHERE mp.status='ACTIVE' AND ${filterSql}
+        GROUP BY e.id,e.code,e.full_name
+        ORDER BY good_quantity DESC,e.full_name ASC,e.id ASC
+      `,params)
+    ]);
+    const totalGood = Number(summary.rows[0]?.good_quantity ?? 0);
+    const totalScrap = Number(summary.rows[0]?.scrap_quantity ?? 0);
+    return {
+      data: {
+        summary: { ...summary.rows[0], good_quantity: totalGood, scrap_quantity: totalScrap,
+          scrap_rate_percent: Number(summary.rows[0]?.scrap_rate_percent ?? 0) },
+        machineRanking: machines.rows,
+        designRanking: designs.rows,
+        operatorRanking: operators.rows,
+        operatorRankingBasis: "PRIMARY_OPERATOR_ONLY",
+        note: "لا تُنسب كمية الإنتاج كاملة إلى أعضاء الفريق الإضافيين؛ الترتيب الفردي يعتمد على المشغل الأساسي فقط حتى تُسجل سياسة توزيع صريحة."
+      }
+    };
   });
 
   app.get("/api/orders/:id/reconciliation",{preHandler:[authenticateRequest,requirePermission("orders.dashboard")]},async(request)=>{
