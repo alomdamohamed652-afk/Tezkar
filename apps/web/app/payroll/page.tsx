@@ -34,7 +34,7 @@ export default function PayrollPage(){
  const [salaryHistory,setSalaryHistory]=useState<SalaryHistoryItem[]>([]),[salaryHistoryEmployeeId,setSalaryHistoryEmployeeId]=useState(""),[salaryHistoryLoading,setSalaryHistoryLoading]=useState(false);
  const [ownPayroll,setOwnPayroll]=useState<OwnPayrollData|null>(null);
  const [adjustmentTarget,setAdjustmentTarget]=useState<PayrollItem|null>(null),[adjustmentLines,setAdjustmentLines]=useState<AdjustmentLine[]>([]),[adjustmentLoading,setAdjustmentLoading]=useState(false);
- const [lineType,setLineType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[lineDescription,setLineDescription]=useState(""),[lineAmount,setLineAmount]=useState(""),[lineNotes,setLineNotes]=useState("");
+ const [lineType,setLineType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[lineDescription,setLineDescription]=useState(""),[lineAmount,setLineAmount]=useState(""),[lineNotes,setLineNotes]=useState(""),[editingLineId,setEditingLineId]=useState<string|null>(null);
  async function load(){setLoading(true);setError("");try{
   if(!has("payroll.view")){
    if(!has("payroll.view_own")){setError("ليس لديك صلاحية عرض الرواتب.");return}
@@ -72,7 +72,7 @@ export default function PayrollPage(){
   finally{setAttendanceLoading(false)}
  }
  async function openAdjustments(item:PayrollItem){
-  setAdjustmentTarget(item);setAdjustmentLines([]);setAdjustmentLoading(true);setError("");setLineType("BONUS");setLineDescription("");setLineAmount("");setLineNotes("");
+  setAdjustmentTarget(item);setAdjustmentLines([]);setAdjustmentLoading(true);setError("");setLineType("BONUS");setLineDescription("");setLineAmount("");setLineNotes("");setEditingLineId(null);
   try{const r=await api<{data:AdjustmentLine[]}>("/api/payroll/items/"+item.id+"/adjustments");setAdjustmentLines(r.data)}
   catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بنود المرتب")}
   finally{setAdjustmentLoading(false)}
@@ -81,9 +81,11 @@ export default function PayrollPage(){
   e.preventDefault();if(!adjustmentTarget)return;
   setBusy(true);setError("");setNotice("");
   try{
-   const r=await api<{data:AdjustmentLine}>("/api/payroll/items/"+adjustmentTarget.id+"/adjustments",{method:"POST",body:JSON.stringify({lineType,description:lineDescription,amount:Number(lineAmount),notes:lineNotes||null})});
-   setAdjustmentLines(s=>[...s,r.data]);setLineDescription("");setLineAmount("");setLineNotes("");
-   setNotice(lineType==="BONUS"?"تمت إضافة بند المكافأة.":"تمت إضافة بند الخصم.");
+   const body=JSON.stringify({lineType,description:lineDescription,amount:Number(lineAmount),notes:lineNotes||null});
+   const r=await api<{data:AdjustmentLine}>("/api/payroll/items/"+adjustmentTarget.id+"/adjustments"+(editingLineId?"/"+editingLineId:""),{method:editingLineId?"PATCH":"POST",body});
+   setAdjustmentLines(lines=>editingLineId?lines.map(line=>line.id===editingLineId?r.data:line):[...lines,r.data]);
+   setNotice(editingLineId?"تم تعديل البند وإعادة حساب المرتب.":lineType==="BONUS"?"تمت إضافة بند المكافأة.":"تمت إضافة بند الخصم.");
+   setEditingLineId(null);setLineType("BONUS");setLineDescription("");setLineAmount("");setLineNotes("");
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بند المكافأة أو الخصم")}
   finally{setBusy(false)}
@@ -157,8 +159,8 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
    <label>البيان<input value={lineDescription} onChange={e=>setLineDescription(e.target.value)} placeholder={lineType==="BONUS"?"مثال: بونص إنتاج":"مثال: خصم تأخير"} minLength={2} maxLength={240} required/></label>
    <label>المبلغ بالجنيه<input type="number" min="0.01" step="0.01" value={lineAmount} onChange={e=>setLineAmount(e.target.value)} required/></label>
    <label>ملاحظات (اختياري)<input value={lineNotes} onChange={e=>setLineNotes(e.target.value)} maxLength={1000}/></label>
-  </div><div className="form-actions"><button className="primary-button" disabled={busy||!lineDescription.trim()||Number(lineAmount)<=0}>إضافة البند</button></div></form>}
-  {adjustmentLoading?<div className="empty">جارٍ تحميل البنود...</div>:<div className="table-wrap"><table><thead><tr><th>النوع</th><th>البيان</th><th>المبلغ</th><th>ملاحظات</th><th>إجراء</th></tr></thead><tbody>{adjustmentLines.map(line=><tr key={line.id}><td>{line.line_type==="BONUS"?"مكافأة / بونص":"خصم"}</td><td>{line.description}</td><td className="strong">{money(line.amount)} ج.م</td><td>{line.notes||"—"}</td><td>{payroll.period?.status==="DRAFT"&&has("payroll.manage")&&<button className="secondary-btn" disabled={busy} onClick={()=>void deleteAdjustment(line)}>حذف</button>}</td></tr>)}{!adjustmentLines.length&&<tr><td colSpan={5} className="empty">لا توجد بنود مسجلة لهذا الموظف.</td></tr>}</tbody></table></div>}
+  </div><div className="form-actions"><button className="primary-button" disabled={busy||!lineDescription.trim()||Number(lineAmount)<=0}>{editingLineId?"حفظ التعديل":"إضافة البند"}</button>{editingLineId&&<button type="button" className="secondary-btn" onClick={()=>{setEditingLineId(null);setLineType("BONUS");setLineDescription("");setLineAmount("");setLineNotes("")}}>إلغاء التعديل</button>}</div></form>}
+  {adjustmentLoading?<div className="empty">جارٍ تحميل البنود...</div>:<div className="table-wrap"><table><thead><tr><th>النوع</th><th>البيان</th><th>المبلغ</th><th>ملاحظات</th><th>إجراء</th></tr></thead><tbody>{adjustmentLines.map(line=><tr key={line.id}><td>{line.line_type==="BONUS"?"مكافأة / بونص":"خصم"}</td><td>{line.description}</td><td className="strong">{money(line.amount)} ج.م</td><td>{line.notes||"—"}</td><td>{payroll.period?.status==="DRAFT"&&has("payroll.manage")&&<div className="row-actions"><button className="secondary-btn" disabled={busy} onClick={()=>{setEditingLineId(line.id);setLineType(line.line_type);setLineDescription(line.description);setLineAmount(String(line.amount));setLineNotes(line.notes||"")}}>تعديل</button><button className="secondary-btn" disabled={busy} onClick={()=>void deleteAdjustment(line)}>حذف</button></div>}</td></tr>)}{!adjustmentLines.length&&<tr><td colSpan={5} className="empty">لا توجد بنود مسجلة لهذا الموظف.</td></tr>}</tbody></table></div>}
   <div className="stats"><article className="card stat"><div className="stat-label">إجمالي المكافآت</div><div className="stat-value">{money(adjustmentLines.filter(x=>x.line_type==="BONUS").reduce((s,x)=>s+Number(x.amount),0))} ج.م</div></article><article className="card stat"><div className="stat-label">إجمالي الخصومات</div><div className="stat-value">{money(adjustmentLines.filter(x=>x.line_type==="DEDUCTION").reduce((s,x)=>s+Number(x.amount),0))} ج.م</div></article></div>
  </div></div>}
  {historyTarget&&<div className="modal-backdrop" onClick={()=>setHistoryTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">سجل صرف الراتب</h2><div className="form-hint">{historyTarget.employee_name} · إجمالي المدفوع {money(historyTarget.paid_amount)} ج.م</div></div><button className="secondary-btn" onClick={()=>setHistoryTarget(null)}>إغلاق</button></div>{historyLoading?<div className="empty">جارٍ تحميل سجل الصرف...</div>:!paymentHistory.length?<div className="empty">لا توجد عمليات صرف مسجلة.</div>:<div className="table-wrap"><table><thead><tr><th>تاريخ الصرف</th><th>المبلغ</th><th>الطريقة</th><th>المرجع/الإيصال</th><th>المسجل بواسطة</th><th>ملاحظات</th></tr></thead><tbody>{paymentHistory.map(p=><tr key={p.id}><td>{String(p.payment_date).slice(0,10)}</td><td className="strong">{money(p.amount)} ج.م</td><td>{paymentMethodLabel[p.payment_method||""]||p.payment_method||"—"}</td><td>{p.reference||"—"}</td><td>{p.paid_by_username||"—"}</td><td>{p.notes||"—"}</td></tr>)}</tbody></table></div>}</div></div>}
