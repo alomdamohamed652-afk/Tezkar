@@ -31,7 +31,7 @@ export default function PaymentsPage(){
    setRequests(r.data); const map:Record<string,string>={};m.data.forEach(x=>map[x.code]=x.name);setMethods(map);
    try{const cash=await api<{data:CashCustodian[]}>("/api/custodies/eligible-employees");setCashCustodians(cash.data);setCashCustodyEmployeeId(current=>current&&cash.data.some(x=>x.id===current)?current:(cash.data[0]?.id||""))}catch{setCashCustodians([]);setCashCustodyEmployeeId("");}
    try{const e=await api<{data:Array<{id:string;code:string;full_name:string;is_active?:boolean}>}>("/api/employees");setEmployees(e.data.filter(x=>x.is_active!==false));setSettlementEmployeeId(current=>current&&e.data.some(x=>x.id===current)?current:(e.data.find(x=>x.is_active!==false)?.id||""))}catch{setEmployees([]);}
-   try{const o=await api<{data:OrderOption[]}>("/api/orders");setOrders(o.data.filter(x=>!["CANCELLED","COMPLETED"].includes(x.status)));}catch{setOrders([]);}
+   try{const o=await api<{data:OrderOption[]}>("/api/worker-payments/historical-allocation-orders");setOrders(o.data.filter(x=>!["CANCELLED","COMPLETED"].includes(x.status)));}catch{setOrders([]);}
    if(worker){const b=await api<{data:{balance:number;availableEarnings:number;outstandingAdvanceAmount:number;dueAdvanceRepaymentAmount:number}}>("/api/payments/my-balance");setBalance(b.data.availableEarnings);setAccountBalance(b.data.balance);setOutstandingAdvanceAmount(b.data.outstandingAdvanceAmount);setDueAdvanceRepaymentAmount(b.data.dueAdvanceRepaymentAmount);}
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المدفوعات")}
  }
