@@ -796,10 +796,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          VALUES($1,10,10,0,'CASH',$2,'historical allocation regression test',$3,'historical-allocation-regression') RETURNING id`,
         [bonusWorkerEmployee.id,manager.id,randomUUID()]
       )).rows[0];
-      await apiPool.query(
+      const unallocatedHistoricalSettlement=(await apiPool.query(
         `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
-         VALUES($1,10,10,0,CURRENT_DATE,'historical allocation regression test',$2,$3)`,
+         VALUES($1,10,10,0,CURRENT_DATE,'historical allocation regression test',$2,$3) RETURNING id`,
         [bonusWorkerEmployee.id,manager.id,unallocatedHistoricalPayment.id]
+      )).rows[0];
+      // Legacy and canonical ledgers can both contain the same historical attribution.
+      // The review UI must report the canonical settlement allocation only, not sum both.
+      await apiPool.query(
+        `INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,2)`,
+        [unallocatedHistoricalSettlement.id,bonusProduction.id]
+      );
+      await apiPool.query(
+        `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,2)`,
+        [unallocatedHistoricalPayment.id,bonusProduction.id]
       );
       const historicalQueue=await app.inject({
         method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
@@ -809,7 +819,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "historical payments linked to a settlement but missing production allocation must be visible");
       const historicalQueueRow=historicalQueue.json().data.find((row:any)=>row.payment_id===unallocatedHistoricalPayment.id);
       assert.ok(historicalQueueRow.settlement_id);
-      assert.equal(Number(historicalQueueRow.production_allocated),0);
+      assert.equal(Number(historicalQueueRow.production_allocated),2,
+        "historical queue must not double-count matching legacy and canonical allocations");
+      assert.equal(Number(historicalQueueRow.production_allocation_count),1);
       const blockedUntilHistoricalAllocation=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:1,method:"CASH",
