@@ -116,11 +116,12 @@ export default function FinanceExceptionsPage() {
     <Sidebar active="/finance/review" />
     <main className="main">
       <header className="topbar">
-        <div><h1 className="page-title">مراجعة الحالات المالية</h1><p className="page-subtitle">مركز واحد لمراجعة توزيع الدفعات التاريخية وربطها بالإنتاج والطلبيات. إجمالي المراجعة يحسب جزء الإنتاج فقط، لا أي بونص أو تسوية إضافية داخل الدفعة.</p></div>
+        <div><h1 className="page-title">مراجعة الحالات المالية</h1><p className="page-subtitle">هذه الشاشة مخصصة لربط الدفعات القديمة بسجلات الإنتاج والطلبيات فقط. لا تنشئ صرفًا جديدًا، ولا تغيّر رصيد العهدة أو خصومات المرتب. تسجيل صرف العامل من صفحة القبض، الخصم اليدوي من مسير المرتبات، والمصروفات أو الإهلاك من المالية. تتم مراجعة جزء الإنتاج فقط، دون البونص أو التسويات الإضافية داخل الدفعة.</p></div>
         <div className="form-actions">
           <Link className="secondary-btn" href="/payments">القبض ومستحقات العمال</Link>
-          <Link className="secondary-btn" href="/finance/worker-settlements">مصروفات تاريخية على الطلبيات</Link>
-          <Link className="secondary-btn" href="/custody">حركة العهدة</Link>
+          {has("payroll.view") && <Link className="secondary-btn" href="/payroll">المرتبات والخصومات</Link>}
+          {(has("finance.expenses.view") || has("finance.expenses.create")) && <Link className="secondary-btn" href="/accounting">المصروفات والمالية</Link>}
+          <Link className="secondary-btn" href="/custody">العهدة النقدية</Link>
         </div>
       </header>
       <section className="content">
