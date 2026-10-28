@@ -40,6 +40,7 @@ export default function FinanceExceptionsPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -71,6 +72,28 @@ export default function FinanceExceptionsPage() {
   }, []);
 
   useEffect(() => { if (allowed) void load(); else setLoading(false); }, [allowed, load]);
+
+  async function reconcileHistorical() {
+    if (reconciling) return;
+    setReconciling(true);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await api<{data:{reconciledCount:number;skippedCount:number;unresolvedCount:number;unresolvedAmount:number}}>
+        ("/api/worker-payments/reconcile-historical-allocations", {method:"POST",body:JSON.stringify({})});
+      const summary = result.data;
+      setSuccess(
+        `تم ربط ${summary.reconciledCount} دفعة قديمة بسجلات الإنتاج المؤكدة، من غير إنشاء أي دفعة أو حركة عهدة جديدة. ` +
+        `دفعات مرتبطة بطلبية وما زالت بلا توزيع إنتاج: ${summary.unresolvedCount} بإجمالي ${money(summary.unresolvedAmount)}. ` +
+        (summary.skippedCount ? `تم تجاوز ${summary.skippedCount} حالة غير مؤكدة؛ راجع القائمة لتوزيعها يدويًا.` : "")
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "تعذرت مزامنة الدفعات التاريخية");
+    } finally {
+      setReconciling(false);
+    }
+  }
 
   useEffect(() => {
     if (!orderId) { setStages([]); setStageId(""); return; }
@@ -133,7 +156,7 @@ export default function FinanceExceptionsPage() {
             <article className="card stat warning"><div className="stat-label">إجمالي المبالغ المتبقية</div><div className="stat-value">{money(totalUnallocated)}</div><div className="stat-note">الجزء المتوقع من مستحقات الإنتاج فقط</div></article>
           </div>
           <section className="card">
-            <div className="card-header"><div><h2 className="card-title">قائمة الحالات</h2><p className="form-hint">اختار الحالة لمراجعة تفاصيلها. الحالات المرتبطة محاسبيًا بطلبية أو مرحلة لا يمكن تغيير ربطها المخالف.</p></div><button type="button" className="secondary-btn" onClick={() => void load()} disabled={loading}>{loading ? "جارٍ التحديث…" : "تحديث القائمة"}</button></div>
+            <div className="card-header"><div><h2 className="card-title">قائمة الحالات</h2><p className="form-hint">اختار الحالة لمراجعة تفاصيلها. الحالات المرتبطة محاسبيًا بطلبية أو مرحلة لا يمكن تغيير ربطها المخالف.</p></div><div className="form-actions"><button type="button" className="primary-button" onClick={() => void reconcileHistorical()} disabled={reconciling || loading}>{reconciling ? "جارٍ مزامنة الدفعات…" : "مزامنة المدفوعات القديمة المؤكدة"}</button><button type="button" className="secondary-btn" onClick={() => void load()} disabled={loading || reconciling}>{loading ? "جارٍ التحديث…" : "تحديث القائمة"}</button></div></div>
             <div className="card-body">
               <input aria-label="بحث في الحالات المالية" value={search} onChange={e => setSearch(e.target.value)} placeholder="ابحث باسم العامل أو كوده أو الطلبية…" />
               {loading ? <p className="form-hint">جارٍ تحميل الحالات…</p> : filtered.length === 0 ? <p className="form-hint">مفيش حالات مطابقة للبحث. لو ظهرت رسالة عن دفعة تاريخية خارج القائمة، حدّث البيانات وتأكد من صلاحيات الحساب.</p> :
