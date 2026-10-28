@@ -280,12 +280,12 @@ export async function payrollRoutes(app: FastifyInstance) {
     const body=z.object({
       attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid()}).passthrough()).max(10000)
     }).safeParse(request.body);
-    if(!body.success)throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لازم تحميل سجل الحضور الشهري قبل اعتماد المسير",422);
-    const snapshot=body.data.attendanceSnapshot;
     const result = await withTransaction(async client => {
       const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
       if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
+      if(!body.success)throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لازم تحميل سجل الحضور الشهري قبل اعتماد المسير",422);
+      const snapshot=body.data.attendanceSnapshot;
       const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
       // Payroll approval posts salary expenses and earnings for the entire month.
       // Check overlap with the full calendar month, not only its first day.
