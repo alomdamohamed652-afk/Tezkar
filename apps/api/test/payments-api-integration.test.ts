@@ -750,18 +750,44 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
+      const unpaidProductionBeforePayout=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(unpaidProductionBeforePayout.statusCode,200,unpaidProductionBeforePayout.body);
+      assert.equal(unpaidProductionBeforePayout.json().data.some((row:any)=>row.id===bonusProduction.id),true,
+        "the payments screen must list approved production that still has a due balance");
+      assert.equal(Number(unpaidProductionBeforePayout.json().data.find((row:any)=>row.id===bonusProduction.id).remaining_amount),130);
+      const invalidSelectedPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:129,method:"CASH",
+          settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
+      });
+      assert.equal(invalidSelectedPayout.statusCode,409,invalidSelectedPayout.body,
+        "selected-production settlement must match the outstanding balance of the selected records");
+      assert.equal(invalidSelectedPayout.json().error.code,"PRODUCTION_SETTLEMENT_AMOUNT_MISMATCH");
       const bonusAwarePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",idempotencyKey:randomUUID()}
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",
+          settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
       });
       assert.equal(bonusAwarePayout.statusCode,201,bonusAwarePayout.body,
         "available payout balance must include approved production bonuses and deductions");
       assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),130);
       const bonusAllocation=await apiPool.query(
-        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+        `SELECT COALESCE(SUM(a.amount),0) AS amount
+           FROM employee_earnings_settlement_allocations a
+           JOIN employee_earnings_settlements s ON s.id=a.settlement_id
+          WHERE s.worker_payment_id=$1`,
         [bonusAwarePayout.json().data.payment.id]
       );
-      assert.equal(Number(bonusAllocation.rows[0].amount),130);
+      assert.equal(Number(bonusAllocation.rows[0].amount),130,
+        "selected production must be allocated to the canonical settlement allocation ledger");
+      const unpaidProductionAfterPayout=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(unpaidProductionAfterPayout.statusCode,200,unpaidProductionAfterPayout.body);
+      assert.equal(unpaidProductionAfterPayout.json().data.some((row:any)=>row.id===bonusProduction.id),false,
+        "fully settled production must disappear from the unpaid production list");
 
       const settlementsBeforeInsufficientCustody=await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",
