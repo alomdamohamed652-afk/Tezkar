@@ -1062,6 +1062,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const totalScrap = Number(summary.rows[0]?.scrap_quantity ?? 0);
     return {
       data: {
+        generatedAt: new Date().toISOString(),
+        generatedBy: request.user!.userId,
         summary: { ...summary.rows[0], good_quantity: totalGood, scrap_quantity: totalScrap,
           scrap_rate_percent: Number(summary.rows[0]?.scrap_rate_percent ?? 0) },
         machineRanking: machines.rows,
@@ -1129,6 +1131,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const metadata = [
       ["تقرير إنتاج الماكينات"],
       ["وقت استخراج التقرير UTC",new Date().toISOString()],
+      ["المستخدم",request.user!.userId],
       ["من تاريخ",parsed.data.from ?? "كل الفترات"],
       ["إلى تاريخ",parsed.data.to ?? "حتى الآن"]
     ];
