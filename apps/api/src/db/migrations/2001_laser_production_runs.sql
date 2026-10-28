@@ -10,6 +10,14 @@ ALTER TABLE machine_productions
   ADD COLUMN IF NOT EXISTS scrap_quantity NUMERIC(18,3) NOT NULL DEFAULT 0 CHECK (scrap_quantity >= 0),
   ADD COLUMN IF NOT EXISTS scrap_reason TEXT;
 
+ALTER TABLE machine_productions
+  ADD CONSTRAINT chk_machine_production_laser_quantities CHECK (
+    laser_design_version_id IS NULL OR (
+      cycles_count IS NOT NULL AND expected_quantity IS NOT NULL AND good_quantity IS NOT NULL
+      AND quantity = good_quantity AND good_quantity + scrap_quantity <= expected_quantity
+    )
+  );
+
 CREATE INDEX IF NOT EXISTS idx_machine_productions_laser_version_date
   ON machine_productions(laser_design_version_id,work_date) WHERE laser_design_version_id IS NOT NULL;
 
