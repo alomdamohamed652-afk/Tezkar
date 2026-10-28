@@ -523,6 +523,40 @@ export async function payrollRoutes(app: FastifyInstance) {
     return reply.code(201).send({data:result});
   });
 
+  app.patch("/api/payroll/items/:id/adjustments/:lineId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
+    const params=request.params as {id:string;lineId:string};
+    const parsed=z.object({
+      lineType:z.enum(["BONUS","DEDUCTION"]),
+      description:z.string().trim().min(2).max(240),
+      amount:z.number().positive().max(100000000),
+      notes:z.string().trim().max(1000).nullable().optional()
+    }).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل بند المرتب غير صحيحة",422);
+    return withTransaction(async client=>{
+      const item=await client.query(`SELECT i.*,p.status AS period_status,p.period_month
+        FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+        WHERE i.id=$1 FOR UPDATE OF i,p`,[params.id]);
+      if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
+      if(item.rows[0].period_status!=="DRAFT")throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن تعديل بنود مسير معتمد",409);
+      const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
+      await assertAccountingMonthOpen(client,month);
+      const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 FOR UPDATE",[params.lineId,params.id]);
+      if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
+      const updated=await client.query(`UPDATE payroll_adjustment_lines SET line_type=$1,description=$2,amount=$3,notes=$4
+        WHERE id=$5 AND payroll_item_id=$6 RETURNING *`,[parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,params.lineId,params.id]);
+      const totals=await client.query(`SELECT
+        COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
+        COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
+        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[params.id]);
+      const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
+      if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0))
+        throw new AppError("PAYROLL_NET_NEGATIVE","تعديل البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
+      await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,params.id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {data:updated.rows[0]};
+    });
+  });
+
   app.delete("/api/payroll/items/:id/adjustments/:lineId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const params=request.params as {id:string;lineId:string};
     return withTransaction(async client=>{
