@@ -894,6 +894,36 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unpaidAfterHistoricalReconcile.json().data.some((row:any)=>row.id===reconcileProduction.id),false,
         "a reconciled historical settlement must not reappear as unpaid production");
 
+      // Some legacy paths wrote both settlement allocations and order allocations for one payment.
+      // The unified ledger must prefer the settlement allocation instead of counting the same payout twice.
+      await apiPool.query(
+        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [reconcilePayment.id,reconcileProduction.id]
+      );
+      const reconciledOrderSummary=await app.inject({
+        method:"GET",
+        url:`/api/worker-payments/settlement-summary?employeeId=${bonusWorkerEmployee.id}&orderId=${multiOrderId}&orderStageId=${reconcileOrderStage.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reconciledOrderSummary.statusCode,200,reconciledOrderSummary.body);
+      assert.equal(Number(reconciledOrderSummary.json().data.orderAccount.paid),10,
+        "the same historical payment recorded in both allocation tables must count once");
+      assert.equal(Number(reconciledOrderSummary.json().data.orderAccount.remaining),0,
+        "fully settled order production must have no remaining balance");
+
+      const duplicatePreviousCustodyPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:multiOrderId,
+          orderStageId:reconcileOrderStage.id,amount:1,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(duplicatePreviousCustodyPayout.statusCode,409,duplicatePreviousCustodyPayout.body);
+      assert.equal(duplicatePreviousCustodyPayout.json().error.code,"ORDER_BALANCE_EXCEEDED",
+        "previous-custody payouts must not ignore amounts already allocated through settlements");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND gross_amount=1",
+        [bonusWorkerEmployee.id]
+      )).rows[0].count),0,"rejected duplicate settlement must not create a payment");
+
       // Older worker payments can already have a settlement row but no canonical
       // production-allocation rows; those must still appear in the historical review queue.
       const unallocatedHistoricalPayment=(await apiPool.query(
