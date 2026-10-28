@@ -17,6 +17,7 @@ import { operationsMasterRoutes } from "./modules/operations-master/operations-m
 import { productionRoutes } from "./modules/production/production.routes.js";
 import { machineProductionCancellationRoutes } from "./modules/production/machine-production.routes.js";
 import { laserDesignRoutes } from "./modules/production/laser-design.routes.js";
+import { laserMachineOperationsRoutes } from "./modules/production/laser-machine-operations.routes.js";
 import { productionScrapRoutes } from "./modules/production/production-scrap.routes.js";
 import { paymentsRoutes } from "./modules/payments/payments.routes.js";
 import { earningsRoutes } from "./modules/earnings/earnings.routes.js";
@@ -111,6 +112,7 @@ await app.register(operationsMasterRoutes);
 await app.register(productionRoutes);
 await app.register(machineProductionCancellationRoutes);
 await app.register(laserDesignRoutes);
+await app.register(laserMachineOperationsRoutes);
 await app.register(productionScrapRoutes);
 await app.register(paymentsRoutes);
 await app.register(earningsRoutes);
