@@ -92,6 +92,13 @@ The root layout mounted a global Dhikr reminder on every route. The component po
 
 **Action taken in PR #197:** removed the global mount, component, and its CSS. This does not affect authentication, production, or financial workflows.
 
+### 11. Two additional routes are absent from navigation and need usage/permission review
+
+- **/operations** is not in the sidebar. Its current form overlaps the master-data page for shifts, rate groups, units, products, stages, and wage types. Its shift-leader assignment overlaps the dedicated **/shift-leaders** page. The reviewed page also uses raw fetch helpers and does not hide sections by permission; server-side API authorization remains the actual security boundary.
+- **/cartons** is not in the sidebar and uses the separate **/api/warehouse/cartons** flow. The linked **/coding** page uses **/api/coding/units** and packaging templates. These may be distinct inventory concepts, so this is a candidate for usage/linkage verification, not a deletion decision.
+
+**Next step:** inspect role permissions, live/internal references, and whether carton records are used by warehouse/delivery flows. If a route is legacy, preserve it as a compatibility redirect and keep its historical data/API intact until the migration path is proven.
+
 ## Recommended cleanup sequence
 
 ### P0 — correctness and financial integrity
@@ -101,7 +108,7 @@ The root layout mounted a global Dhikr reminder on every route. The component po
 4. Confirm order revenue, expense, custody, and delivery idempotency remains intact.
 
 ### P1 — reduce confusing duplicate workflows
-1. Review **/earnings/direct-pay** permissions and external usage; then redirect or retire the UI route if confirmed redundant.
+1. Review the **/operations** and **/cartons** routes against role permissions and live references; redirect only where feature parity is confirmed.
 2. Keep current-custody payment and previous-custody settlement labels explicit.
 3. Split the **/payments** page into clear sections/tabs without duplicating API writes or financial logic.
 4. Make production scrap and scrap warehouse movements link to each other by source reference.
