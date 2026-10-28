@@ -968,6 +968,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "فلاتر تقرير إنتاج الماكينات غير صحيحة", 422);
     const params = [parsed.data.from ?? null,parsed.data.to ?? null,parsed.data.machineId ?? null,
       parsed.data.designVersionId ?? null,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null];
+    const targetParams = [params[0],params[1],params[2],params[3],params[5]];
     const filterSql = `
       ($1::date IS NULL OR mp.work_date >= $1::date)
       AND ($2::date IS NULL OR mp.work_date <= $2::date)
@@ -1051,11 +1052,11 @@ export async function orderRoutes(app: FastifyInstance) {
           AND ($2::date IS NULL OR t.effective_from <= $2::date)
           AND ($3::uuid IS NULL OR t.machine_id=$3::uuid)
           AND ($4::uuid IS NULL OR t.design_version_id=$4::uuid)
-          AND ($6::uuid IS NULL OR t.shift_id=$6::uuid)
+          AND ($5::uuid IS NULL OR t.shift_id=$5::uuid)
         GROUP BY t.id,t.period_type,t.effective_from,t.effective_to,t.target_quantity,t.target_cycles,
           m.id,m.code,m.name,d.code,d.name,v.version_no,sh.name
         ORDER BY t.effective_from DESC,m.name,d.name,t.period_type
-      `,params)
+      `,targetParams)
     ]);
     const totalGood = Number(summary.rows[0]?.good_quantity ?? 0);
     const totalScrap = Number(summary.rows[0]?.scrap_quantity ?? 0);
