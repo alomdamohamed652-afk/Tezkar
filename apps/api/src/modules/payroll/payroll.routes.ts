@@ -402,7 +402,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         const repayment=await client.query(
           `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
            VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-          [deduction.advance_id,deduction.amount,deduction.repayment_type,parsed.data.paymentDate??new Date().toISOString().slice(0,10),`خصم قسط سلفة ${deduction.advance_code} عند صرف الراتب`,request.user!.userId,id]
+          [deduction.advance_id,deduction.amount,deduction.repayment_type,paymentDate,`خصم قسط سلفة ${deduction.advance_code} عند صرف الراتب`,request.user!.userId,id]
         );
         await client.query(
           `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
