@@ -911,6 +911,30 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledOrderSummary.json().data.orderAccount.remaining),0,
         "fully settled order production must have no remaining balance");
 
+      const employeeStatementAfterReconcile=await app.inject({
+        method:"GET",url:`/api/worker-payments/employee-statement?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(employeeStatementAfterReconcile.statusCode,200,employeeStatementAfterReconcile.body);
+      const reconciledProductionStatement=employeeStatementAfterReconcile.json().data.production.find((row:any)=>row.id===reconcileProduction.id);
+      assert.ok(reconciledProductionStatement);
+      assert.equal(Number(reconciledProductionStatement.paid_amount),10,
+        "employee statement must not count settlement and order allocation rows for the same payment twice");
+
+      const duplicateCurrentCustodyKey=randomUUID();
+      const duplicateCurrentCustodyPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,
+          settlementSource:"CURRENT_CUSTODY",settlementMode:"SELECTED_PRODUCTION",
+          productionEntryIds:[reconcileProduction.id],amount:1,method:"CASH",idempotencyKey:duplicateCurrentCustodyKey}
+      });
+      assert.equal(duplicateCurrentCustodyPayout.statusCode,409,duplicateCurrentCustodyPayout.body);
+      assert.equal(duplicateCurrentCustodyPayout.json().error.code,"PRODUCTION_ALREADY_SETTLED",
+        "current-custody payout must also reject production already paid through a prior settlement");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",
+        [duplicateCurrentCustodyKey]
+      )).rows[0].count),0,"rejected current-custody payout must not create a payment");
+
       const duplicatePreviousCustodyKey=randomUUID();
       const duplicatePreviousCustodyPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
