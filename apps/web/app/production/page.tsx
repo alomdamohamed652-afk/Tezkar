@@ -61,7 +61,7 @@ export default function ProductionPage(){
    const preferredShiftId=(pref.data as any).shiftId||"";
    setShiftId(preferredShiftId);
    const assignedLeaders=leaders.data.filter(x=>x.shift_id===preferredShiftId);
-   const accountEmployeeId=(session as any)?.employeeId as string|undefined;
+   const accountEmployeeId=session?.employeeId ?? undefined;
    setShiftLeaderEmployeeId(accountEmployeeId&&assignedLeaders.some(x=>x.employee_id===accountEmployeeId)?accountEmployeeId:(assignedLeaders[0]?.employee_id||""));
    setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
@@ -69,7 +69,7 @@ export default function ProductionPage(){
  useEffect(()=>{void load()},[]);
  useEffect(()=>{
   if(shiftLeaderTouched)return;
-  const accountEmployeeId=(session as any)?.employeeId as string|undefined;
+  const accountEmployeeId=session?.employeeId ?? undefined;
   if(!accountEmployeeId)return;
   const assigned=shiftLeaders.filter(x=>!shiftId||x.shift_id===shiftId);
   if(assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
@@ -149,7 +149,7 @@ export default function ProductionPage(){
   setShiftLeaderTouched(false);
   setShiftId(value);
   const assigned=shiftLeaders.filter(x=>x.shift_id===value);
-  const accountEmployeeId=(session as any)?.employeeId as string|undefined;
+  const accountEmployeeId=session?.employeeId ?? undefined;
   if(accountEmployeeId&&assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
   else if(!assigned.some(x=>x.employee_id===shiftLeaderEmployeeId))setShiftLeaderEmployeeId(assigned[0]?.employee_id||"");
  }
