@@ -920,7 +920,8 @@ export async function orderRoutes(app: FastifyInstance) {
               ld.code AS design_code,ld.name AS design_name,ldv.version_no AS design_version_no,
               COALESCE((SELECT string_agg(e2.full_name, ', ' ORDER BY e2.full_name)
                 FROM machine_production_operators mpo JOIN employees e2 ON e2.id=mpo.employee_id
-                WHERE mpo.machine_production_id=mp.id AND mpo.operator_role='TEAM'),'') AS team_operator_names
+                WHERE mpo.machine_production_id=mp.id AND mpo.operator_role='TEAM'),'') AS team_operator_names,
+              general_w.name AS general_warehouse_name,general_l.name AS general_location_name
          FROM machine_productions mp
          JOIN machines m ON m.id=mp.machine_id
          JOIN products p ON p.id=mp.product_id
@@ -931,6 +932,9 @@ export async function orderRoutes(app: FastifyInstance) {
          LEFT JOIN production_types pt ON pt.id=mp.production_type_id
          LEFT JOIN laser_design_versions ldv ON ldv.id=mp.laser_design_version_id
          LEFT JOIN laser_designs ld ON ld.id=ldv.design_id
+         LEFT JOIN stock_movements general_sm ON general_sm.reference_type='MACHINE_PRODUCTION' AND general_sm.reference_id=mp.id AND general_sm.order_stage_id IS NULL AND general_sm.movement_type='IN'
+         LEFT JOIN warehouses general_w ON general_w.id=general_sm.warehouse_id
+         LEFT JOIN warehouse_locations general_l ON general_l.id=general_sm.location_id
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
   });
