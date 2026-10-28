@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
+import { calculateExpectedQuantity, isRunQuantityWithinExpected } from "../production/laser-production.math.js";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -169,12 +171,32 @@ const machineSchema = z.object({
   machineType: z.string().trim().max(120).optional()
 });
 
+const machineProductionReportQuerySchema = z.object({
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
+  machineId: z.string().uuid().optional(),
+  designVersionId: z.string().uuid().optional(),
+  employeeId: z.string().uuid().optional(),
+  shiftId: z.string().uuid().optional()
+}).refine(x => !x.from || !x.to || x.from <= x.to, { message: "تاريخ البداية يجب ألا يتجاوز تاريخ النهاية" });
+
 const machineProductionSchema = z.object({
-  orderStageId: z.string().uuid(),
+  idempotencyKey: z.string().uuid().optional(),
+  orderStageId: z.string().uuid().nullable().optional(),
+  warehouseId: z.string().uuid().nullable().optional(),
+  locationId: z.string().uuid().nullable().optional(),
   productionTypeId: z.string().uuid().nullable().optional(),
   machineId: z.string().uuid(),
   productId: z.string().uuid(),
   employeeId: z.string().uuid().nullable().optional(),
+  operatorEmployeeIds: z.array(z.string().uuid()).max(20).optional().default([]),
+  laserDesignVersionId: z.string().uuid().nullable().optional(),
+  cyclesCount: z.number().int().positive().optional(),
+  goodQuantity: z.number().nonnegative().optional(),
+  scrapQuantity: z.number().nonnegative().optional().default(0),
+  scrapReasonId: z.string().uuid().nullable().optional(),
+  scrapReasonDetail: z.string().trim().max(500).nullable().optional(),
+  scrapReason: z.string().trim().max(500).nullable().optional(),
   shiftId: z.string().uuid().nullable().optional(),
   workDate: z.string().date(),
   quantity: z.number().positive(),
@@ -668,12 +690,55 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
+    const { idempotencyKey, ...fingerprintPayload } = parsed.data;
+    const idempotencyFingerprint = idempotencyKey ? createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex") : null;
+    let idempotentReplay = false;
+    if(!parsed.data.orderStageId && (!parsed.data.warehouseId || !parsed.data.locationId)) throw new AppError("GENERAL_STOCK_DESTINATION_REQUIRED","اختر المخزن والموقع عند تسجيل إنتاج غير مرتبط بطلبية",422);
+    if(parsed.data.orderStageId && (parsed.data.warehouseId || parsed.data.locationId)) throw new AppError("WAREHOUSE_STAGE_CONFLICT","إنتاج مرحلة الطلبية يذهب تلقائيًا إلى مخزن المرحلة؛ لا تحدد مخزنًا يدويًا",422);
+    if(parsed.data.laserDesignVersionId && !parsed.data.cyclesCount) throw new AppError("CYCLES_REQUIRED","أدخل عدد دورات التشغيل عند ربط الإنتاج بإصدار تصميم ليزر",422);
+    if(!parsed.data.laserDesignVersionId && Number(parsed.data.scrapQuantity ?? 0)>0) throw new AppError("LASER_DESIGN_REQUIRED","سجّل إصدار تصميم الليزر قبل إدخال كمية الهالك",422);
+    if(parsed.data.goodQuantity!=null && Math.abs(parsed.data.goodQuantity-parsed.data.quantity)>0.0001) throw new AppError("GOOD_QUANTITY_MISMATCH","الكمية المخزنية يجب أن تساوي الكمية الجيدة",422);
+    if(Number(parsed.data.scrapQuantity ?? 0)>0 && !parsed.data.scrapReasonId) throw new AppError("SCRAP_REASON_REQUIRED","اختر سبب الهالك من قائمة الأسباب المعتمدة",422);
+    if(new Set(parsed.data.operatorEmployeeIds).size!==parsed.data.operatorEmployeeIds.length) throw new AppError("DUPLICATE_OPERATOR","لا يمكن اختيار نفس المشغل أكثر من مرة",422);
     const row=await withTransaction(async(client)=>{
+      if(idempotencyKey){
+        const existing=await client.query("SELECT * FROM machine_productions WHERE idempotency_key=$1 FOR UPDATE",[idempotencyKey]);
+        if(existing.rowCount){
+          if(existing.rows[0].idempotency_fingerprint!==idempotencyFingerprint) throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة المحاولة مستخدم مع بيانات إنتاج مختلفة",409);
+          idempotentReplay=true;
+          return existing.rows[0];
+        }
+      }
       await assertAccountingPeriodOpen(client, parsed.data.workDate);
+      if(!parsed.data.orderStageId && !(await hasPermission(client,request.user!.userId,"machine_production.general_stock.create"))) throw new AppError("FORBIDDEN","لا تملك صلاحية تسجيل إنتاج ماكينة إلى مخزون عام دون طلبية",403);
       const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
       if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
+      let laserExpectedQuantity: number | null = null;
+      let laserGoodQuantity: number | null = null;
+      const laserScrapQuantity = Number(parsed.data.scrapQuantity ?? 0);
+      if(parsed.data.laserDesignVersionId){
+        const compatible = await client.query(`
+          SELECT v.id,v.product_id,COALESCE(c.pieces_per_cycle_override,v.pieces_per_cycle) AS pieces_per_cycle
+          FROM laser_machine_design_compatibility c
+          JOIN laser_design_versions v ON v.id=c.design_version_id AND v.status='ACTIVE'
+          JOIN laser_designs d ON d.id=v.design_id AND d.status='ACTIVE'
+          WHERE c.machine_id=$1 AND c.design_version_id=$2 AND c.is_active=TRUE
+            AND c.effective_from<=$3::date AND (c.effective_to IS NULL OR c.effective_to>=$3::date)
+          FOR SHARE OF c,v,d
+        `,[parsed.data.machineId,parsed.data.laserDesignVersionId,parsed.data.workDate]);
+        if(!compatible.rowCount) throw new AppError("LASER_DESIGN_NOT_COMPATIBLE","إصدار التصميم غير متوافق مع الماكينة المختارة أو أن التوافق غير سارٍ في تاريخ الإنتاج",422);
+        if(compatible.rows[0].product_id && compatible.rows[0].product_id!==parsed.data.productId) throw new AppError("LASER_DESIGN_PRODUCT_MISMATCH","المنتج المرتبط بإصدار التصميم لا يطابق منتج مرحلة الطلبية",409);
+        laserExpectedQuantity = calculateExpectedQuantity(Number(parsed.data.cyclesCount),Number(compatible.rows[0].pieces_per_cycle));
+        laserGoodQuantity = Number(parsed.data.goodQuantity ?? parsed.data.quantity);
+        if(!isRunQuantityWithinExpected(laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity)) throw new AppError("LASER_QUANTITY_EXCEEDS_EXPECTED","مجموع الكمية الجيدة والهالك يتجاوز الناتج المتوقع من عدد الدورات",422);
+      }
       const product = await client.query("SELECT id,unit_id,track_inventory FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+      const operatorIds = [...new Set([...(parsed.data.employeeId ? [parsed.data.employeeId] : []),...parsed.data.operatorEmployeeIds])];
+      if(operatorIds.length){
+        const activeOperators = await client.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[operatorIds]);
+        if(activeOperators.rowCount!==operatorIds.length) throw new AppError("EMPLOYEE_NOT_ACTIVE","أحد المشغلين غير موجود أو غير نشط",422);
+      }
       if(parsed.data.employeeId){
         const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);
         if(!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
@@ -704,11 +769,36 @@ export async function orderRoutes(app: FastifyInstance) {
         if(s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج المختار لا يطابق المنتج الناتج من المرحلة المحددة",409);
       }
       const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
+      let scrapReasonSnapshot = parsed.data.scrapReason?.trim() || null;
+      if(parsed.data.scrapReasonId){
+        const reason=await client.query("SELECT id,name FROM laser_scrap_reasons WHERE id=$1 AND status='ACTIVE'",[parsed.data.scrapReasonId]);
+        if(!reason.rowCount) throw new AppError("SCRAP_REASON_NOT_ACTIVE","سبب الهالك غير موجود أو مؤرشف",422);
+        scrapReasonSnapshot=reason.rows[0].name;
+      }
       const r=await client.query(
-        `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11) RETURNING *`,
-        [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
+        `INSERT INTO machine_productions(
+          order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by,
+          laser_design_version_id,cycles_count,expected_quantity,good_quantity,scrap_quantity,scrap_reason,scrap_reason_id,scrap_reason_detail,
+          idempotency_key,idempotency_fingerprint
+        ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+        ON CONFLICT(idempotency_key) DO NOTHING RETURNING *`,
+        [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId,
+          parsed.data.laserDesignVersionId ?? null,parsed.data.cyclesCount ?? null,laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity,scrapReasonSnapshot,parsed.data.scrapReasonId ?? null,parsed.data.scrapReasonDetail?.trim() || null,idempotencyKey ?? null,idempotencyFingerprint]
       );
+      if(!r.rowCount && idempotencyKey){
+        const existing=await client.query("SELECT * FROM machine_productions WHERE idempotency_key=$1 FOR UPDATE",[idempotencyKey]);
+        if(!existing.rowCount) throw new AppError("IDEMPOTENCY_RETRY_FAILED","تعذر التحقق من نتيجة إعادة المحاولة؛ أعد تحميل السجل قبل المتابعة",409);
+        if(existing.rows[0].idempotency_fingerprint!==idempotencyFingerprint) throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة المحاولة مستخدم مع بيانات إنتاج مختلفة",409);
+        idempotentReplay=true;
+        return existing.rows[0];
+      }
+      for(const operatorId of operatorIds){
+        await client.query(
+          `INSERT INTO machine_production_operators(machine_production_id,employee_id,operator_role)
+           VALUES($1,$2,$3) ON CONFLICT(machine_production_id,employee_id) DO NOTHING`,
+          [r.rows[0].id,operatorId,operatorId===parsed.data.employeeId ? "PRIMARY" : "TEAM"]
+        );
+      }
       // Order-linked machine output must enter the virtual warehouse for its stage.
       // Keep the stock receipt, cost lot, stage progress, and production record atomic.
       if (parsed.data.orderStageId) {
@@ -790,18 +880,71 @@ export async function orderRoutes(app: FastifyInstance) {
           }
         }
       }
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      if (!parsed.data.orderStageId) {
+        if (!product.rows[0].track_inventory) throw new AppError("PRODUCT_NOT_INVENTORIED","المنتج غير مفعّل للمتابعة المخزنية؛ فعّل متابعة المخزون قبل تسجيل إنتاج مخزون عام",409);
+        const destination = await client.query(
+          `SELECT l.id,l.warehouse_id FROM warehouse_locations l
+           JOIN warehouses w ON w.id=l.warehouse_id
+           WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE
+           FOR UPDATE OF l,w`,
+          [parsed.data.locationId,parsed.data.warehouseId]
+        );
+        if (!destination.rowCount) throw new AppError("DESTINATION_NOT_FOUND","الموقع لا يتبع المخزن المختار أو أن المخزن أو الموقع غير نشط",422);
+        const productLock = await client.query(
+          "SELECT id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",
+          [parsed.data.productId]
+        );
+        if (!productLock.rowCount) throw new AppError("PRODUCT_NOT_INVENTORIED","المنتج غير متابع مخزنيًا",409);
+        const warehouseId = destination.rows[0].warehouse_id;
+        const locationId = destination.rows[0].id;
+        const balance = await client.query(
+          "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+          [parsed.data.productId,warehouseId,locationId]
+        );
+        const currentQty = Number(balance.rows[0]?.quantity ?? 0);
+        const currentValue = Number(balance.rows[0]?.inventory_value ?? 0);
+        const currentAvg = Number(balance.rows[0]?.avg_unit_cost ?? 0);
+        const quantity = parsed.data.quantity;
+        const unitCost = 0;
+        const totalCost = 0;
+        if (balance.rowCount) {
+          await client.query(
+            "UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
+            [currentQty+quantity,currentValue,currentAvg,parsed.data.productId,warehouseId,locationId]
+          );
+        } else {
+          await client.query(
+            "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,inventory_value,avg_unit_cost) VALUES($1,$2,$3,$4,$5,$6)",
+            [parsed.data.productId,warehouseId,locationId,quantity,totalCost,unitCost]
+          );
+        }
+        await client.query(
+          `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,notes,created_by,reference_type,reference_id)
+           VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'MACHINE_PRODUCTION',$10)`,
+          [parsed.data.productId,warehouseId,locationId,quantity,unitId,unitCost,totalCost,
+            "إدخال إنتاج ماكينة "+r.rows[0].code+" إلى المخزون العام",request.user!.userId,r.rows[0].id]
+        );
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId,locationId,quantity,unitCost,batchCode:r.rows[0].code,sourceType:"MACHINE_PRODUCTION",sourceId:r.rows[0].id});
+      }
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{metadata:{inventoryWarehouseType:"GENERAL_STOCK",inventoryMovementType:"MACHINE_PRODUCTION"}}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return r.rows[0];
     });
-    return reply.code(201).send({data:row});
+    return reply.code(idempotentReplay?200:201).send({data:row,idempotentReplay});
   });
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
     const r=await pool.query(
       `SELECT mp.id,mp.code,mp.machine_id,mp.employee_id,mp.order_stage_id,mp.production_type_id,
+              mp.laser_design_version_id,mp.cycles_count,mp.expected_quantity,
+              COALESCE(mp.good_quantity,mp.quantity) AS good_quantity,mp.scrap_quantity,mp.scrap_reason,
               os.order_id,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,mp.quantity,mp.notes,mp.status,mp.cancellation_reason,
               m.code AS machine_code,m.name AS machine_name,p.code AS product_code,p.name AS product_name,
-              e.full_name AS employee_name,o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
+              e.full_name AS employee_name,o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name,
+              ld.code AS design_code,ld.name AS design_name,ldv.version_no AS design_version_no,
+              COALESCE((SELECT string_agg(e2.full_name, ', ' ORDER BY e2.full_name)
+                FROM machine_production_operators mpo JOIN employees e2 ON e2.id=mpo.employee_id
+                WHERE mpo.machine_production_id=mp.id AND mpo.operator_role='TEAM'),'') AS team_operator_names,
+              general_w.name AS general_warehouse_name,general_l.name AS general_location_name
          FROM machine_productions mp
          JOIN machines m ON m.id=mp.machine_id
          JOIN products p ON p.id=mp.product_id
@@ -810,8 +953,194 @@ export async function orderRoutes(app: FastifyInstance) {
          LEFT JOIN production_orders o ON o.id=os.order_id
          LEFT JOIN stages s ON s.id=os.stage_id
          LEFT JOIN production_types pt ON pt.id=mp.production_type_id
+         LEFT JOIN laser_design_versions ldv ON ldv.id=mp.laser_design_version_id
+         LEFT JOIN laser_designs ld ON ld.id=ldv.design_id
+         LEFT JOIN stock_movements general_sm ON general_sm.reference_type='MACHINE_PRODUCTION' AND general_sm.reference_id=mp.id AND general_sm.order_stage_id IS NULL AND general_sm.movement_type='IN'
+         LEFT JOIN warehouses general_w ON general_w.id=general_sm.warehouse_id
+         LEFT JOIN warehouse_locations general_l ON general_l.id=general_sm.location_id
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
+  });
+
+  app.get("/api/machine-production/reports", {
+    preHandler: [authenticateRequest, requirePermission("machine_production.reports.view")]
+  }, async request => {
+    const parsed = machineProductionReportQuerySchema.safeParse(request.query);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "فلاتر تقرير إنتاج الماكينات غير صحيحة", 422);
+    const params = [parsed.data.from ?? null,parsed.data.to ?? null,parsed.data.machineId ?? null,
+      parsed.data.designVersionId ?? null,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null];
+    const targetParams = [params[0],params[1],params[2],params[3],params[5]];
+    const filterSql = `
+      ($1::date IS NULL OR mp.work_date >= $1::date)
+      AND ($2::date IS NULL OR mp.work_date <= $2::date)
+      AND ($3::uuid IS NULL OR mp.machine_id=$3::uuid)
+      AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
+      AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
+      AND ($6::uuid IS NULL OR mp.shift_id=$6::uuid)
+    `;
+    const [summary,machines,designs,operators,targetComparison] = await Promise.all([
+      pool.query(`
+        SELECT
+          COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)) FILTER (WHERE mp.status='ACTIVE'),0) AS good_quantity,
+          COALESCE(SUM(COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),0) AS scrap_quantity,
+          COUNT(*) FILTER (WHERE mp.status='ACTIVE')::int AS run_count,
+          COALESCE(SUM(mp.cycles_count) FILTER (WHERE mp.status='ACTIVE'),0) AS cycles_count,
+          COUNT(DISTINCT mp.machine_id) FILTER (WHERE mp.status='ACTIVE')::int AS machines_used,
+          COUNT(*) FILTER (WHERE mp.status='CANCELLED')::int AS cancelled_count,
+          CASE WHEN COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)+COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),0)>0
+            THEN ROUND(100.0*COALESCE(SUM(COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),0)/
+              SUM(COALESCE(mp.good_quantity,mp.quantity)+COALESCE(mp.scrap_quantity,0)) FILTER (WHERE mp.status='ACTIVE'),2)
+            ELSE 0 END AS scrap_rate_percent
+        FROM machine_productions mp WHERE ${filterSql}
+      `,params),
+      pool.query(`
+        SELECT m.id AS machine_id,m.code AS machine_code,m.name AS machine_name,
+          SUM(COALESCE(mp.good_quantity,mp.quantity)) AS good_quantity,
+          SUM(COALESCE(mp.scrap_quantity,0)) AS scrap_quantity,
+          COUNT(*)::int AS run_count,COALESCE(SUM(mp.cycles_count),0) AS cycles_count,
+          COUNT(DISTINCT mp.laser_design_version_id)::int AS design_count
+        FROM machine_productions mp JOIN machines m ON m.id=mp.machine_id
+        WHERE mp.status='ACTIVE' AND ${filterSql}
+        GROUP BY m.id,m.code,m.name
+        ORDER BY good_quantity DESC,m.name ASC,m.id ASC
+      `,params),
+      pool.query(`
+        SELECT d.id AS design_id,d.code AS design_code,d.name AS design_name,v.version_no,
+          SUM(COALESCE(mp.good_quantity,mp.quantity)) AS good_quantity,
+          SUM(COALESCE(mp.scrap_quantity,0)) AS scrap_quantity,
+          COUNT(*)::int AS run_count,COALESCE(SUM(mp.cycles_count),0) AS cycles_count,
+          COUNT(DISTINCT mp.machine_id)::int AS machine_count
+        FROM machine_productions mp
+        JOIN laser_design_versions v ON v.id=mp.laser_design_version_id
+        JOIN laser_designs d ON d.id=v.design_id
+        WHERE mp.status='ACTIVE' AND ${filterSql}
+        GROUP BY d.id,d.code,d.name,v.id,v.version_no
+        ORDER BY good_quantity DESC,d.name ASC,v.version_no DESC
+      `,params),
+      pool.query(`
+        SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
+          SUM(COALESCE(mp.good_quantity,mp.quantity)) AS good_quantity,
+          SUM(COALESCE(mp.scrap_quantity,0)) AS scrap_quantity,
+          COUNT(*)::int AS run_count,COALESCE(SUM(mp.cycles_count),0) AS cycles_count
+        FROM machine_productions mp JOIN employees e ON e.id=mp.employee_id
+        WHERE mp.status='ACTIVE' AND ${filterSql}
+        GROUP BY e.id,e.code,e.full_name
+        ORDER BY good_quantity DESC,e.full_name ASC,e.id ASC
+      `,params),
+      pool.query(`
+        SELECT t.id AS target_id,t.period_type,t.effective_from,t.effective_to,t.target_quantity,t.target_cycles,
+          m.id AS machine_id,m.code AS machine_code,m.name AS machine_name,
+          d.code AS design_code,d.name AS design_name,v.version_no,
+          sh.name AS shift_name,
+          COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)),0) AS achieved_quantity,
+          COALESCE(SUM(COALESCE(mp.scrap_quantity,0)),0) AS scrap_quantity,
+          COALESCE(SUM(mp.cycles_count),0) AS achieved_cycles,
+          COUNT(mp.id)::int AS run_count,
+          ROUND(100.0*COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)),0)/NULLIF(t.target_quantity,0),2) AS attainment_percent,
+          GREATEST(0,t.target_quantity-COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)),0)) AS remaining_quantity
+        FROM laser_machine_targets t
+        JOIN machines m ON m.id=t.machine_id
+        LEFT JOIN laser_design_versions v ON v.id=t.design_version_id
+        LEFT JOIN laser_designs d ON d.id=v.design_id
+        LEFT JOIN shifts sh ON sh.id=t.shift_id
+        LEFT JOIN machine_productions mp ON mp.machine_id=t.machine_id AND mp.status='ACTIVE'
+          AND mp.work_date BETWEEN t.effective_from AND t.effective_to
+          AND (t.design_version_id IS NULL OR mp.laser_design_version_id=t.design_version_id)
+          AND (t.shift_id IS NULL OR mp.shift_id=t.shift_id)
+          AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
+        WHERE (t.is_active=TRUE OR t.effective_from<=CURRENT_DATE)
+          AND ($1::date IS NULL OR t.effective_to >= $1::date)
+          AND ($2::date IS NULL OR t.effective_from <= $2::date)
+          AND ($3::uuid IS NULL OR t.machine_id=$3::uuid)
+          AND ($4::uuid IS NULL OR t.design_version_id=$4::uuid)
+          AND ($5::uuid IS NULL OR t.shift_id=$5::uuid)
+        GROUP BY t.id,t.period_type,t.effective_from,t.effective_to,t.target_quantity,t.target_cycles,
+          m.id,m.code,m.name,d.code,d.name,v.version_no,sh.name
+        ORDER BY t.effective_from DESC,m.name,d.name,t.period_type
+      `,targetParams)
+    ]);
+    const totalGood = Number(summary.rows[0]?.good_quantity ?? 0);
+    const totalScrap = Number(summary.rows[0]?.scrap_quantity ?? 0);
+    return {
+      data: {
+        generatedAt: new Date().toISOString(),
+        generatedBy: request.user!.userId,
+        summary: { ...summary.rows[0], good_quantity: totalGood, scrap_quantity: totalScrap,
+          scrap_rate_percent: Number(summary.rows[0]?.scrap_rate_percent ?? 0) },
+        machineRanking: machines.rows,
+        designRanking: designs.rows,
+        operatorRanking: operators.rows,
+        targetComparison: targetComparison.rows,
+        targetComparisonBasis: "ACTIVE_TARGETS_BY_FULL_EFFECTIVE_PERIOD",
+        operatorRankingBasis: "PRIMARY_OPERATOR_ONLY",
+        note: "لا تُنسب كمية الإنتاج كاملة إلى أعضاء الفريق الإضافيين؛ الترتيب الفردي يعتمد على المشغل الأساسي فقط حتى تُسجل سياسة توزيع صريحة. مقارنة المستهدفات تعرض المستهدفات النشطة للفترة الفعالة كاملة على مستوى الماكينة والتصميم والوردية، ولا تتغير بفلتر المشغل؛ بقية مؤشرات التقرير تطبق فلاتر التقرير المحددة."
+      }
+    };
+  });
+
+  app.get("/api/machine-production/reports/export", {
+    preHandler: [authenticateRequest, requirePermission("machine_production.reports.view")]
+  }, async (request, reply) => {
+    const parsed = machineProductionReportQuerySchema.safeParse(request.query);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "فلاتر تصدير تقرير إنتاج الماكينات غير صحيحة", 422);
+    const params = [parsed.data.from ?? null,parsed.data.to ?? null,parsed.data.machineId ?? null,
+      parsed.data.designVersionId ?? null,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null];
+    const result = await pool.query(`
+      SELECT mp.code,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,
+        m.code AS machine_code,m.name AS machine_name,
+        d.code AS design_code,d.name AS design_name,v.version_no,
+        p.code AS product_code,p.name AS product_name,
+        e.full_name AS primary_operator,sh.name AS shift_name,
+        o.code AS order_code,o.order_name,s.name AS stage_name,
+        mp.cycles_count,mp.expected_quantity,COALESCE(mp.good_quantity,mp.quantity) AS good_quantity,
+        COALESCE(mp.scrap_quantity,0) AS scrap_quantity,mp.scrap_reason,mp.scrap_reason_detail,
+        mp.status,mp.cancellation_reason,mp.notes,mp.created_at
+      FROM machine_productions mp
+      JOIN machines m ON m.id=mp.machine_id
+      JOIN products p ON p.id=mp.product_id
+      LEFT JOIN laser_design_versions v ON v.id=mp.laser_design_version_id
+      LEFT JOIN laser_designs d ON d.id=v.design_id
+      LEFT JOIN employees e ON e.id=mp.employee_id
+      LEFT JOIN shifts sh ON sh.id=mp.shift_id
+      LEFT JOIN order_stages os ON os.id=mp.order_stage_id
+      LEFT JOIN production_orders o ON o.id=os.order_id
+      LEFT JOIN stages s ON s.id=os.stage_id
+      WHERE ($1::date IS NULL OR mp.work_date >= $1::date)
+        AND ($2::date IS NULL OR mp.work_date <= $2::date)
+        AND ($3::uuid IS NULL OR mp.machine_id=$3::uuid)
+        AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
+        AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
+        AND ($6::uuid IS NULL OR mp.shift_id=$6::uuid)
+      ORDER BY mp.work_date DESC,mp.created_at DESC,mp.id
+    `,params);
+    const csvCell = (value: unknown) => {
+      let text = value == null ? "" : String(value);
+      if (/^[=+@\-\t\r]/.test(text)) text = "'" + text;
+      return '"' + text.replace(/"/g,'""') + '"';
+    };
+    const header = [
+      "كود الإنتاج","تاريخ الإنتاج","كود الماكينة","اسم الماكينة","كود التصميم","اسم التصميم","إصدار التصميم",
+      "كود المنتج","اسم المنتج","المشغل الأساسي","الوردية","كود الطلبية","اسم الطلبية","مرحلة الطلبية",
+      "عدد الدورات","الناتج المتوقع","الكمية الجيدة","كمية الهالك","سبب الهالك","تفاصيل الهالك","حالة السجل","سبب الإلغاء","ملاحظات","وقت التسجيل"
+    ];
+    const rows = result.rows.map(row => [
+      row.code,row.work_date,row.machine_code,row.machine_name,row.design_code,row.design_name,row.version_no,
+      row.product_code,row.product_name,row.primary_operator,row.shift_name,row.order_code,row.order_name,row.stage_name,
+      row.cycles_count,row.expected_quantity,row.good_quantity,row.scrap_quantity,row.scrap_reason,row.scrap_reason_detail,
+      row.status,row.cancellation_reason,row.notes,row.created_at
+    ]);
+    const metadata = [
+      ["تقرير إنتاج الماكينات"],
+      ["وقت استخراج التقرير UTC",new Date().toISOString()],
+      ["المستخدم",request.user!.userId],
+      ["من تاريخ",parsed.data.from ?? "كل الفترات"],
+      ["إلى تاريخ",parsed.data.to ?? "حتى الآن"]
+    ];
+    const csv = "\uFEFF" + [...metadata,...[header],...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
+    return reply
+      .header("Content-Type","text/csv; charset=utf-8")
+      .header("Content-Disposition",'attachment; filename="machine-production-report.csv"')
+      .send(csv);
   });
 
   app.get("/api/orders/:id/reconciliation",{preHandler:[authenticateRequest,requirePermission("orders.dashboard")]},async(request)=>{

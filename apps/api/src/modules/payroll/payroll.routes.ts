@@ -24,6 +24,7 @@ const adjustmentSchema = z.object({
   notes: z.string().trim().max(1000).nullable().optional()
 });
 const paymentSchema = z.object({
+  idempotencyKey: z.string().uuid(),
   amount: z.number().positive().max(100000000),
   paymentDate: z.string().date().optional(),
   paymentMethod: z.string().trim().max(80).nullable().optional(),
@@ -345,7 +346,36 @@ export async function payrollRoutes(app: FastifyInstance) {
     const parsed = paymentSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات صرف الراتب غير صحيحة", 422);
     const result = await withTransaction(async client => {
-      await assertAccountingPeriodOpen(client,parsed.data.paymentDate??new Date().toISOString().slice(0,10));
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('payroll-payment:' || $1))", [parsed.data.idempotencyKey]);
+      const paymentDate=parsed.data.paymentDate??new Date().toISOString().slice(0,10);
+      const fingerprint=JSON.stringify({
+        payrollItemId:id,
+        paidByUserId:request.user!.userId,
+        amount:parsed.data.amount,
+        paymentDate,
+        paymentMethod:parsed.data.paymentMethod??null,
+        reference:parsed.data.reference??null,
+        notes:parsed.data.notes??null
+      });
+      const prior=await client.query(
+        `SELECT pp.id,pp.payroll_item_id,pp.amount,pp.payment_date,pp.payment_method,pp.reference,pp.notes,pp.paid_by,pp.created_at,
+                pp.idempotency_fingerprint,i.net_amount,i.status AS item_status
+           FROM payroll_payments pp JOIN payroll_items i ON i.id=pp.payroll_item_id
+          WHERE pp.idempotency_key=$1 LIMIT 1`,
+        [parsed.data.idempotencyKey]
+      );
+      if(prior.rowCount){
+        const saved=prior.rows[0];
+        if(saved.payroll_item_id!==id||saved.idempotency_fingerprint!==fingerprint)
+          throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم مع بيانات صرف راتب مختلفة",409);
+        const paid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM payroll_payments WHERE payroll_item_id=$1",[id]);
+        const paidAmount=Number(paid.rows[0].amount);
+        const payment={id:saved.id,payroll_item_id:saved.payroll_item_id,amount:saved.amount,payment_date:saved.payment_date,payment_method:saved.payment_method,reference:saved.reference,notes:saved.notes,paid_by:saved.paid_by,created_at:saved.created_at};
+        const netAmount=Number(saved.net_amount);
+        const itemStatus=saved.item_status;
+        return {payment,paidAmount,remainingAmount:Math.max(0,netAmount-paidAmount),status:itemStatus,replayed:true};
+      }
+      await assertAccountingPeriodOpen(client,paymentDate);
       const item = await client.query("SELECT i.*,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
       if (!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
       if (item.rows[0].period_status !== "APPROVED" && item.rows[0].period_status !== "CLOSED") throw new AppError("PAYROLL_NOT_APPROVED", "يجب اعتماد مسير الرواتب قبل الصرف", 409);
@@ -372,7 +402,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         const repayment=await client.query(
           `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
            VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-          [deduction.advance_id,deduction.amount,deduction.repayment_type,parsed.data.paymentDate??new Date().toISOString().slice(0,10),`خصم قسط سلفة ${deduction.advance_code} عند صرف الراتب`,request.user!.userId,id]
+          [deduction.advance_id,deduction.amount,deduction.repayment_type,paymentDate,`خصم قسط سلفة ${deduction.advance_code} عند صرف الراتب`,request.user!.userId,id]
         );
         await client.query(
           `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
@@ -386,14 +416,13 @@ export async function payrollRoutes(app: FastifyInstance) {
         await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payroll_repayment",module:"advances",entityType:"advance_request",entityId:deduction.advance_id,metadata:{payrollItemId:id,amount:Number(deduction.amount),remaining:Math.max(0,next)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       }
       if(!request.user!.employeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اربط حساب الصارف بملف موظف/عهدة قبل صرف المرتب",409);
-      const paymentDate=parsed.data.paymentDate??new Date().toISOString().slice(0,10);
       const custodyBalance=await client.query(
         "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
         [request.user!.employeeId,paymentDate]
       );
       if(parsed.data.amount>Number(custodyBalance.rows[0]?.balance??0)+0.0001)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة لا يكفي لصافي النقد المطلوب لصرف الراتب؛ لم يتم تسجيل أي حركة",409);
-      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-        [id,parsed.data.amount,parsed.data.paymentDate??new Date().toISOString().slice(0,10),parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId]);
+      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
+        [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
       let custodyIn=null;
       if(committedAdvanceRepayment>0)custodyIn=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3::date,$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
@@ -420,9 +449,10 @@ export async function payrollRoutes(app: FastifyInstance) {
           status==="PAID"?"تم تسجيل صرف مستحقات راتبك بالكامل.":"تم تسجيل دفعة راتب جديدة بمبلغ "+parsed.data.amount.toFixed(2)+" ج.م.",id]
       );
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,cashCustodyOutId:custodyOut.rows[0].id,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status };
+      return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status, replayed:false };
     });
-    return reply.code(201).send({ data: result });
+    const {replayed,...responseData}=result;
+    return reply.code(replayed?200:201).send({ data: responseData });
   });
 
   app.get("/api/payroll/items/:id/payments", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
