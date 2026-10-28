@@ -189,6 +189,8 @@ const machineProductionSchema = z.object({
   cyclesCount: z.number().int().positive().optional(),
   goodQuantity: z.number().nonnegative().optional(),
   scrapQuantity: z.number().nonnegative().optional().default(0),
+  scrapReasonId: z.string().uuid().nullable().optional(),
+  scrapReasonDetail: z.string().trim().max(500).nullable().optional(),
   scrapReason: z.string().trim().max(500).nullable().optional(),
   shiftId: z.string().uuid().nullable().optional(),
   workDate: z.string().date(),
@@ -686,7 +688,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if(parsed.data.laserDesignVersionId && !parsed.data.cyclesCount) throw new AppError("CYCLES_REQUIRED","أدخل عدد دورات التشغيل عند ربط الإنتاج بإصدار تصميم ليزر",422);
     if(!parsed.data.laserDesignVersionId && Number(parsed.data.scrapQuantity ?? 0)>0) throw new AppError("LASER_DESIGN_REQUIRED","سجّل إصدار تصميم الليزر قبل إدخال كمية الهالك",422);
     if(parsed.data.goodQuantity!=null && Math.abs(parsed.data.goodQuantity-parsed.data.quantity)>0.0001) throw new AppError("GOOD_QUANTITY_MISMATCH","الكمية المخزنية يجب أن تساوي الكمية الجيدة",422);
-    if(Number(parsed.data.scrapQuantity ?? 0)>0 && !parsed.data.scrapReason?.trim()) throw new AppError("SCRAP_REASON_REQUIRED","أدخل سبب الهالك عند تسجيل كمية هالك",422);
+    if(Number(parsed.data.scrapQuantity ?? 0)>0 && !parsed.data.scrapReasonId) throw new AppError("SCRAP_REASON_REQUIRED","اختر سبب الهالك من قائمة الأسباب المعتمدة",422);
     if(new Set(parsed.data.operatorEmployeeIds).size!==parsed.data.operatorEmployeeIds.length) throw new AppError("DUPLICATE_OPERATOR","لا يمكن اختيار نفس المشغل أكثر من مرة",422);
     const row=await withTransaction(async(client)=>{
       await assertAccountingPeriodOpen(client, parsed.data.workDate);
@@ -748,13 +750,19 @@ export async function orderRoutes(app: FastifyInstance) {
         if(s.output_product_id!==parsed.data.productId) throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","المنتج المختار لا يطابق المنتج الناتج من المرحلة المحددة",409);
       }
       const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
+      let scrapReasonSnapshot = parsed.data.scrapReason?.trim() || null;
+      if(parsed.data.scrapReasonId){
+        const reason=await client.query("SELECT id,name FROM laser_scrap_reasons WHERE id=$1 AND status='ACTIVE'",[parsed.data.scrapReasonId]);
+        if(!reason.rowCount) throw new AppError("SCRAP_REASON_NOT_ACTIVE","سبب الهالك غير موجود أو مؤرشف",422);
+        scrapReasonSnapshot=reason.rows[0].name;
+      }
       const r=await client.query(
         `INSERT INTO machine_productions(
           order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by,
-          laser_design_version_id,cycles_count,expected_quantity,good_quantity,scrap_quantity,scrap_reason
-        ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+          laser_design_version_id,cycles_count,expected_quantity,good_quantity,scrap_quantity,scrap_reason,scrap_reason_id,scrap_reason_detail
+        ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
         [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId,
-          parsed.data.laserDesignVersionId ?? null,parsed.data.cyclesCount ?? null,laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity,parsed.data.scrapReason?.trim() || null]
+          parsed.data.laserDesignVersionId ?? null,parsed.data.cyclesCount ?? null,laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity,scrapReasonSnapshot,parsed.data.scrapReasonId ?? null,parsed.data.scrapReasonDetail?.trim() || null]
       );
       for(const operatorId of operatorIds){
         await client.query(
