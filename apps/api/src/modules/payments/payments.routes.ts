@@ -1196,15 +1196,54 @@ export async function paymentsRoutes(app:FastifyInstance){
           COALESCE((SELECT COUNT(*)::int FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
-            COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
-              JOIN worker_payments wp ON wp.id=a.worker_payment_id
-              JOIN production_entries p ON p.id=a.production_entry_id
-              LEFT JOIN order_stages os ON os.id=p.order_stage_id
-              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS allocated_paid,
-            COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+            (
+              COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+                JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE es.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                JOIN worker_payments wp ON wp.id=a.worker_payment_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)),0)
+              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+                JOIN worker_payments wp ON wp.id=a.worker_payment_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0)
+            ) AS allocated_paid,
+            COALESCE((SELECT SUM(GREATEST(wp.gross_amount
+              -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+                JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE es.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)),0)
+              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
+              FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]})
       ]);
       const earned = Number(production.rows[0]?.amount ?? 0);
@@ -1439,15 +1478,54 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE((SELECT COUNT(*)::int FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
-            COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
-              JOIN worker_payments wp ON wp.id=a.worker_payment_id
-              JOIN production_entries p ON p.id=a.production_entry_id
-              LEFT JOIN order_stages os ON os.id=p.order_stage_id
-              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS allocated_paid,
-            COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+            (
+              COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+                JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE es.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                JOIN worker_payments wp ON wp.id=a.worker_payment_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)),0)
+              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+                JOIN worker_payments wp ON wp.id=a.worker_payment_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0)
+            ) AS allocated_paid,
+            COALESCE((SELECT SUM(GREATEST(wp.gross_amount
+              -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+                JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE es.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)),0)
+              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+                JOIN production_entries p ON p.id=a.production_entry_id
+                LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                    JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
+              FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
