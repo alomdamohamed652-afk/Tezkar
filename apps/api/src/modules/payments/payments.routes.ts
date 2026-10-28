@@ -611,6 +611,13 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   // Return each approved production record's genuinely unpaid balance for explicit settlement selection.
+  app.get("/api/worker-payments/eligible-employees", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async () => {
+    const result = await pool.query("SELECT id,code,full_name,is_active FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+    return {data:result.rows};
+  });
+
   app.get("/api/worker-payments/unpaid-production", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
