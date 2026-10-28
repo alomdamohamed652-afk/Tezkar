@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS laser_machine_targets (
   CHECK (period_type <> 'SHIFT' OR shift_id IS NOT NULL),
   CHECK (period_type <> 'DAY' OR effective_to = effective_from),
   CHECK (period_type <> 'SHIFT' OR effective_to = effective_from),
-  CHECK (period_type <> 'MONTH' OR (date_trunc('month',effective_from)::date = effective_from AND effective_to = (date_trunc('month',effective_from) + interval '1 month - 1 day')::date))
+  CHECK (period_type <> 'MONTH' OR (date_trunc('month',effective_from)::date = effective_from AND effective_to = (date_trunc('month',effective_from) + interval '1 month' - interval '1 day')::date))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_laser_machine_target_active
   ON laser_machine_targets(machine_id,COALESCE(design_version_id,'00000000-0000-0000-0000-000000000000'::uuid),
