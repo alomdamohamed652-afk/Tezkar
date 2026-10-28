@@ -221,6 +221,11 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='shift_leader' ON CONFLICT DO NOTHING",
       [leaderUser.rows[0].id]
     );
+    // Give this test role the financial dashboard permission deliberately:
+    // the role-level guard must still prevent cost disclosure even when a permission is misassigned.
+    await apiPool.query(
+      "INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='shift_leader' AND p.code IN ('warehouse.view','warehouse.dashboard') ON CONFLICT DO NOTHING"
+    );
     const leaderLogin = await app.inject({
       method: "POST",
       url: "/api/auth/login",
