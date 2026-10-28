@@ -7,7 +7,6 @@ import { formatQuantity } from "../../lib/format";
 
 type Machine = { id: string; code: string; name: string; machine_type?: string | null };
 type Item = { id: string; code: string; name: string; full_name?: string; is_active?: boolean };
-type DesignVersion = { id: string; design_id: string; design_code: string; design_name: string; version_no: number; material_type: string; material_thickness_mm: string | number | null; pieces_per_cycle: number; status: string; design_status: string };
 type CompatibleDesign = { design_version_id: string; design_code: string; design_name: string; version_no: number; material_type: string; material_thickness_mm: string | number | null; pieces_per_cycle: number; standard_cycle_seconds: string | number | null };
 type Target = { id: string; machine_id: string; design_version_id: string | null; shift_id: string | null; period_type: "DAY" | "MONTH" | "SHIFT"; effective_from: string; effective_to: string; target_quantity: string | number; target_cycles: number | null; notes?: string | null; is_active: boolean; machine_code: string; machine_name: string; design_code?: string | null; design_name?: string | null; version_no?: number | null; shift_name?: string | null };
 type MachineSession = { machine_id: string; machine_code: string; machine_name: string; machine_type?: string | null; session_id: string | null; session_status: string | null; started_at: string | null; ended_at: string | null; session_notes?: string | null; design_code?: string | null; design_name?: string | null; version_no?: number | null; material_type?: string | null; material_thickness_mm?: string | number | null; operator_name?: string | null; shift_name?: string | null; target_quantity?: string | number | null; target_cycles?: number | null; achieved_quantity: string | number; scrap_quantity: string | number; achieved_cycles: string | number; remaining_quantity: string | number | null; downtime_id: string | null; downtime_reason?: string | null; downtime_started_at?: string | null; last_session_started_at?: string | null; last_session_status?: string | null };
@@ -20,7 +19,7 @@ export default function MachineOperationsPage() {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [employees, setEmployees] = useState<Item[]>([]);
   const [shifts, setShifts] = useState<Item[]>([]);
-  const [versions, setVersions] = useState<DesignVersion[]>([]);
+  const [targetCompatible, setTargetCompatible] = useState<CompatibleDesign[]>([]);
   const [compatible, setCompatible] = useState<CompatibleDesign[]>([]);
   const [targets, setTargets] = useState<Target[]>([]);
   const [sessions, setSessions] = useState<MachineSession[]>([]);
@@ -46,15 +45,14 @@ export default function MachineOperationsPage() {
 
   async function load() {
     try {
-      const [m,e,s,v,t,live] = await Promise.all([
+      const [m,e,s,t,live] = await Promise.all([
         api<{data:Machine[]}>("/api/machines"),
         api<{data:Item[]}>("/api/employees"),
         api<{data:Item[]}>("/api/shifts"),
-        api<{data:DesignVersion[]}>("/api/laser-design-versions"),
         api<{data:Target[]}>("/api/laser-machine-targets"),
         api<{data:MachineSession[]}>("/api/laser-machine-sessions")
       ]);
-      setMachines(m.data); setEmployees(e.data); setShifts(s.data); setVersions(v.data); setTargets(t.data); setSessions(live.data);
+      setMachines(m.data); setEmployees(e.data); setShifts(s.data); setTargets(t.data); setSessions(live.data);
       if (!machineId && m.data[0]) { setMachineId(m.data[0].id); setTargetMachineId(m.data[0].id); }
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذر تحميل متابعة تشغيل الماكينات");
@@ -78,8 +76,13 @@ export default function MachineOperationsPage() {
   }, [machineId]);
 
   useEffect(() => {
-    if (!targetMachineId) return;
-    if (targetMachineId !== machineId) setMachineId(targetMachineId);
+    let alive = true;
+    setTargetDesignVersionId("");
+    if (!targetMachineId) { setTargetCompatible([]); return () => { alive = false; }; }
+    api<{data:CompatibleDesign[]}>(`/api/machines/${targetMachineId}/laser-designs`)
+      .then(r => { if (alive) setTargetCompatible(r.data); })
+      .catch(() => { if (alive) setTargetCompatible([]); });
+    return () => { alive = false; };
   }, [targetMachineId]);
 
   async function startSession(e: FormEvent) {
@@ -161,7 +164,6 @@ export default function MachineOperationsPage() {
   const eligibleTargets = targets.filter(t => t.is_active && t.machine_id === machineId &&
     (!t.design_version_id || t.design_version_id === designVersionId) &&
     (!t.shift_id || t.shift_id === shiftId) && t.effective_from.slice(0,10) <= localDateKey() && t.effective_to.slice(0,10) >= localDateKey());
-  const activeVersions = versions.filter(v => v.status === "ACTIVE" && v.design_status === "ACTIVE");
   const labelVersion = (v: {design_code:string;design_name:string;version_no:number;material_type:string}) => v.design_code + " — " + v.design_name + " · V" + v.version_no + " · " + v.material_type;
 
   return <div className="app-shell">
@@ -208,7 +210,7 @@ export default function MachineOperationsPage() {
           <div className="card-header"><h2 className="card-title">إضافة مستهدف إنتاج</h2></div>
           <div className="form-grid">
             <label>الماكينة<select value={targetMachineId} onChange={e => {setTargetMachineId(e.target.value);setTargetDesignVersionId("")}} required><option value="">اختر الماكينة</option>{machines.map(m => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}</select></label>
-            <label>التصميم (اختياري)<select value={targetDesignVersionId} onChange={e => setTargetDesignVersionId(e.target.value)}><option value="">مستهدف لكل تصميمات الماكينة</option>{compatible.map(v => <option key={v.design_version_id} value={v.design_version_id}>{labelVersion(v)}</option>)}</select><span className="form-hint">تظهر هنا تصميمات الماكينة المحددة في أعلى الصفحة.</span></label>
+            <label>التصميم (اختياري)<select value={targetDesignVersionId} onChange={e => setTargetDesignVersionId(e.target.value)}><option value="">مستهدف لكل تصميمات الماكينة</option>{targetCompatible.map(v => <option key={v.design_version_id} value={v.design_version_id}>{labelVersion(v)}</option>)}</select><span className="form-hint">تظهر هنا تصميمات الماكينة المحددة في أعلى الصفحة.</span></label>
             <label>نوع المستهدف<select value={targetPeriodType} onChange={e => setTargetPeriodType(e.target.value as "DAY"|"MONTH"|"SHIFT")}><option value="DAY">يومي</option><option value="MONTH">شهري</option><option value="SHIFT">وردية</option></select></label>
             <label>التاريخ / الشهر<input type="date" value={targetDate} onChange={e => setTargetDate(e.target.value)} required/><span className="form-hint">للمستهدف الشهري اختر أي يوم داخل الشهر؛ سيحفظ الشهر كاملًا.</span></label>
             {targetPeriodType === "SHIFT" && <label>الوردية<select value={targetShiftId} onChange={e => setTargetShiftId(e.target.value)} required><option value="">اختر الوردية</option>{shifts.filter(s => s.is_active !== false).map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}</select></label>}
