@@ -792,8 +792,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // Older worker payments can already have a settlement row but no canonical
       // production-allocation rows; those must still appear in the historical review queue.
       const unallocatedHistoricalPayment=(await apiPool.query(
-        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key)
-         VALUES($1,10,10,0,'CASH',$2,'historical allocation regression test',$3) RETURNING id`,
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'historical allocation regression test',$3,'historical-allocation-regression') RETURNING id`,
         [bonusWorkerEmployee.id,manager.id,randomUUID()]
       )).rows[0];
       await apiPool.query(
