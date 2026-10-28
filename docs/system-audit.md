@@ -77,7 +77,7 @@ The PR changes 13 files:
 
 The warehouse API defines `canViewWarehouseCosts(userId, roleCodes)` to suppress cost fields for the `shift_leader` role. The stock endpoint passed the role codes, but the lots and movements endpoints called the helper without them; because the parameter defaulted to an empty array, a shift leader who also had the dashboard permission could receive unit-cost/total-cost fields or order references. The warehouse dashboard also returned aggregate inventory value without a role-level denial.
 
-**Fixed on this audit branch:** pass the authenticated role codes to the lots and movements cost filter, and explicitly deny the warehouse financial dashboard to shift leaders. This protects the API response itself, not just the UI. CI #3492 passed after the finance-summary fix; this warehouse fix is newer and awaits its own CI run.
+**Fixed on this audit branch:** pass the authenticated role codes to the lots and movements cost filter, and explicitly deny the warehouse financial dashboard to shift leaders. The warehouse integration test now deliberately grants the shift-leader role both `warehouse.view` and `warehouse.dashboard`, proving the role-level restriction still blocks disclosure even if a financial permission is misassigned. This protects the API response itself, not just the UI. CI for the latest changes is running.
 
 ### P1 — keep selected settlement amounts server-enforced
 
