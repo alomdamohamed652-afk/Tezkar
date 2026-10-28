@@ -572,7 +572,7 @@ export async function paymentsRoutes(app:FastifyInstance){
               SELECT $1,wpa.production_entry_id,wpa.amount
                 FROM worker_payment_allocations wpa
                WHERE wpa.worker_payment_id=$2
-              ON CONFLICT(settlement_id,production_entry_id) DO NOTHING
+              ON CONFLICT DO NOTHING
             `, [settlementId,payment.id]);
           } else {
             await client.query(`
