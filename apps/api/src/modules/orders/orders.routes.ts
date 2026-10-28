@@ -964,6 +964,70 @@ export async function orderRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get("/api/machine-production/reports/export", {
+    preHandler: [authenticateRequest, requirePermission("machine_production.reports.view")]
+  }, async (request, reply) => {
+    const parsed = machineProductionReportQuerySchema.safeParse(request.query);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "فلاتر تصدير تقرير إنتاج الماكينات غير صحيحة", 422);
+    const params = [parsed.data.from ?? null,parsed.data.to ?? null,parsed.data.machineId ?? null,
+      parsed.data.designVersionId ?? null,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null];
+    const result = await pool.query(`
+      SELECT mp.code,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,
+        m.code AS machine_code,m.name AS machine_name,
+        d.code AS design_code,d.name AS design_name,v.version_no,
+        p.code AS product_code,p.name AS product_name,
+        e.full_name AS primary_operator,sh.name AS shift_name,
+        o.code AS order_code,o.order_name,s.name AS stage_name,
+        mp.cycles_count,mp.expected_quantity,COALESCE(mp.good_quantity,mp.quantity) AS good_quantity,
+        COALESCE(mp.scrap_quantity,0) AS scrap_quantity,mp.scrap_reason,mp.scrap_reason_detail,
+        mp.status,mp.cancellation_reason,mp.notes,mp.created_at
+      FROM machine_productions mp
+      JOIN machines m ON m.id=mp.machine_id
+      JOIN products p ON p.id=mp.product_id
+      LEFT JOIN laser_design_versions v ON v.id=mp.laser_design_version_id
+      LEFT JOIN laser_designs d ON d.id=v.design_id
+      LEFT JOIN employees e ON e.id=mp.employee_id
+      LEFT JOIN shifts sh ON sh.id=mp.shift_id
+      LEFT JOIN order_stages os ON os.id=mp.order_stage_id
+      LEFT JOIN production_orders o ON o.id=os.order_id
+      LEFT JOIN stages s ON s.id=os.stage_id
+      WHERE ($1::date IS NULL OR mp.work_date >= $1::date)
+        AND ($2::date IS NULL OR mp.work_date <= $2::date)
+        AND ($3::uuid IS NULL OR mp.machine_id=$3::uuid)
+        AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
+        AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
+        AND ($6::uuid IS NULL OR mp.shift_id=$6::uuid)
+      ORDER BY mp.work_date DESC,mp.created_at DESC,mp.id
+    `,params);
+    const csvCell = (value: unknown) => {
+      let text = value == null ? "" : String(value);
+      if (/^[=+@\-\t\r]/.test(text)) text = "'" + text;
+      return '"' + text.replace(/"/g,'""') + '"';
+    };
+    const header = [
+      "كود الإنتاج","تاريخ الإنتاج","كود الماكينة","اسم الماكينة","كود التصميم","اسم التصميم","إصدار التصميم",
+      "كود المنتج","اسم المنتج","المشغل الأساسي","الوردية","كود الطلبية","اسم الطلبية","مرحلة الطلبية",
+      "عدد الدورات","الناتج المتوقع","الكمية الجيدة","كمية الهالك","سبب الهالك","تفاصيل الهالك","حالة السجل","سبب الإلغاء","ملاحظات","وقت التسجيل"
+    ];
+    const rows = result.rows.map(row => [
+      row.code,row.work_date,row.machine_code,row.machine_name,row.design_code,row.design_name,row.version_no,
+      row.product_code,row.product_name,row.primary_operator,row.shift_name,row.order_code,row.order_name,row.stage_name,
+      row.cycles_count,row.expected_quantity,row.good_quantity,row.scrap_quantity,row.scrap_reason,row.scrap_reason_detail,
+      row.status,row.cancellation_reason,row.notes,row.created_at
+    ]);
+    const metadata = [
+      ["تقرير إنتاج الماكينات"],
+      ["وقت استخراج التقرير UTC",new Date().toISOString()],
+      ["من تاريخ",parsed.data.from ?? "كل الفترات"],
+      ["إلى تاريخ",parsed.data.to ?? "حتى الآن"]
+    ];
+    const csv = "\uFEFF" + [...metadata,...[header],...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
+    return reply
+      .header("Content-Type","text/csv; charset=utf-8")
+      .header("Content-Disposition",'attachment; filename="machine-production-report.csv"')
+      .send(csv);
+  });
+
   app.get("/api/orders/:id/reconciliation",{preHandler:[authenticateRequest,requirePermission("orders.dashboard")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const order=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1",[id]);
