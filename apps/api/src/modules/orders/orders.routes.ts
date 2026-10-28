@@ -179,7 +179,9 @@ const machineProductionReportQuerySchema = z.object({
 }).refine(x => !x.from || !x.to || x.from <= x.to, { message: "تاريخ البداية يجب ألا يتجاوز تاريخ النهاية" });
 
 const machineProductionSchema = z.object({
-  orderStageId: z.string().uuid(),
+  orderStageId: z.string().uuid().nullable().optional(),
+  warehouseId: z.string().uuid().nullable().optional(),
+  locationId: z.string().uuid().nullable().optional(),
   productionTypeId: z.string().uuid().nullable().optional(),
   machineId: z.string().uuid(),
   productId: z.string().uuid(),
@@ -685,6 +687,8 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
+    if(!parsed.data.orderStageId && (!parsed.data.warehouseId || !parsed.data.locationId)) throw new AppError("GENERAL_STOCK_DESTINATION_REQUIRED","اختر المخزن والموقع عند تسجيل إنتاج غير مرتبط بطلبية",422);
+    if(parsed.data.orderStageId && (parsed.data.warehouseId || parsed.data.locationId)) throw new AppError("WAREHOUSE_STAGE_CONFLICT","إنتاج مرحلة الطلبية يذهب تلقائيًا إلى مخزن المرحلة؛ لا تحدد مخزنًا يدويًا",422);
     if(parsed.data.laserDesignVersionId && !parsed.data.cyclesCount) throw new AppError("CYCLES_REQUIRED","أدخل عدد دورات التشغيل عند ربط الإنتاج بإصدار تصميم ليزر",422);
     if(!parsed.data.laserDesignVersionId && Number(parsed.data.scrapQuantity ?? 0)>0) throw new AppError("LASER_DESIGN_REQUIRED","سجّل إصدار تصميم الليزر قبل إدخال كمية الهالك",422);
     if(parsed.data.goodQuantity!=null && Math.abs(parsed.data.goodQuantity-parsed.data.quantity)>0.0001) throw new AppError("GOOD_QUANTITY_MISMATCH","الكمية المخزنية يجب أن تساوي الكمية الجيدة",422);
@@ -692,6 +696,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if(new Set(parsed.data.operatorEmployeeIds).size!==parsed.data.operatorEmployeeIds.length) throw new AppError("DUPLICATE_OPERATOR","لا يمكن اختيار نفس المشغل أكثر من مرة",422);
     const row=await withTransaction(async(client)=>{
       await assertAccountingPeriodOpen(client, parsed.data.workDate);
+      if(!parsed.data.orderStageId && !(await hasPermission(client,request.user!.userId,"machine_production.general_stock.create"))) throw new AppError("FORBIDDEN","لا تملك صلاحية تسجيل إنتاج ماكينة إلى مخزون عام دون طلبية",403);
       const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
       if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
       let laserExpectedQuantity: number | null = null;
@@ -852,7 +857,53 @@ export async function orderRoutes(app: FastifyInstance) {
           }
         }
       }
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      if (!parsed.data.orderStageId) {
+        if (!product.rows[0].track_inventory) throw new AppError("PRODUCT_NOT_INVENTORIED","المنتج غير مفعّل للمتابعة المخزنية؛ فعّل متابعة المخزون قبل تسجيل إنتاج مخزون عام",409);
+        const destination = await client.query(
+          `SELECT l.id,l.warehouse_id FROM warehouse_locations l
+           JOIN warehouses w ON w.id=l.warehouse_id
+           WHERE l.id=$1 AND l.warehouse_id=$2 AND l.is_active=TRUE AND w.is_active=TRUE
+           FOR UPDATE OF l,w`,
+          [parsed.data.locationId,parsed.data.warehouseId]
+        );
+        if (!destination.rowCount) throw new AppError("DESTINATION_NOT_FOUND","الموقع لا يتبع المخزن المختار أو أن المخزن أو الموقع غير نشط",422);
+        const productLock = await client.query(
+          "SELECT id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE FOR UPDATE",
+          [parsed.data.productId]
+        );
+        if (!productLock.rowCount) throw new AppError("PRODUCT_NOT_INVENTORIED","المنتج غير متابع مخزنيًا",409);
+        const warehouseId = destination.rows[0].warehouse_id;
+        const locationId = destination.rows[0].id;
+        const balance = await client.query(
+          "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+          [parsed.data.productId,warehouseId,locationId]
+        );
+        const currentQty = Number(balance.rows[0]?.quantity ?? 0);
+        const currentValue = Number(balance.rows[0]?.inventory_value ?? 0);
+        const currentAvg = Number(balance.rows[0]?.avg_unit_cost ?? 0);
+        const quantity = parsed.data.quantity;
+        const unitCost = 0;
+        const totalCost = 0;
+        if (balance.rowCount) {
+          await client.query(
+            "UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",
+            [currentQty+quantity,currentValue,currentAvg,parsed.data.productId,warehouseId,locationId]
+          );
+        } else {
+          await client.query(
+            "INSERT INTO stock_balances(product_id,warehouse_id,location_id,quantity,inventory_value,avg_unit_cost) VALUES($1,$2,$3,$4,$5,$6)",
+            [parsed.data.productId,warehouseId,locationId,quantity,totalCost,unitCost]
+          );
+        }
+        await client.query(
+          `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,notes,created_by,reference_type,reference_id)
+           VALUES('IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,'MACHINE_PRODUCTION',$10)`,
+          [parsed.data.productId,warehouseId,locationId,quantity,unitId,unitCost,totalCost,
+            "إدخال إنتاج ماكينة "+r.rows[0].code+" إلى المخزون العام",request.user!.userId,r.rows[0].id]
+        );
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId,locationId,quantity,unitCost,batchCode:r.rows[0].code,sourceType:"MACHINE_PRODUCTION",sourceId:r.rows[0].id});
+      }
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{metadata:{inventoryWarehouseType:"GENERAL_STOCK",inventoryMovementType:"MACHINE_PRODUCTION"}}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return r.rows[0];
     });
     return reply.code(201).send({data:row});
