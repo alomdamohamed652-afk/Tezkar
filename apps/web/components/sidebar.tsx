@@ -5,7 +5,7 @@ import Link from "next/link";
 import { api } from "../lib/api";
 
 type Session={permissions:string[];username?:string;fullName?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
-type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
+type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"advance"};
 type NavGroup={label:string;items:NavItem[]};
 
 const groups:NavGroup[]=[
@@ -32,7 +32,7 @@ const groups:NavGroup[]=[
   {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","worker_payments.view","worker_payments.pay"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
-  {icon:"◍",label:"العهد وحركة النقد",href:"/custody",permissions:["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"],conditional:"custody"},
+  {icon:"◍",label:"العهدة النقدية",href:"/custody",permissions:["cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"]},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
  ]},
  {label:"الإدارة",items:[
@@ -68,7 +68,6 @@ export function Sidebar({active}:{active:string}){
    if(!item.permissions?.some(p=>permissions.includes(p)))return false;
    if(!item.conditional)return true;
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
-   if(item.conditional==="custody"&&permissions.some(p=>["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"].includes(p)))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
