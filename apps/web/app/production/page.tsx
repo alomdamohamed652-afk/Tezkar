@@ -28,7 +28,7 @@ export default function ProductionPage(){
  const canSettleWorkers=has("worker_payments.pay");
  const canAddLegacyExpense=has("finance.expenses.create");
  const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[allOrders,setAllOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
- const [employeeId,setEmployeeId]=useState(""),[shiftLeaderEmployeeId,setShiftLeaderEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(localDateKey()),[quantity,setQuantity]=useState(""),[scrapQuantity,setScrapQuantity]=useState("0"),[scrapType,setScrapType]=useState<"WORKER_SCRAP"|"MANUFACTURING_DEFECT">("WORKER_SCRAP"),[scrapNotes,setScrapNotes]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState(""),[recordEmployeeFilter,setRecordEmployeeFilter]=useState(""),[recordOrderFilter,setRecordOrderFilter]=useState(""),[recordStageFilter,setRecordStageFilter]=useState(""),[recordShiftFilter,setRecordShiftFilter]=useState(""),[recordProductFilter,setRecordProductFilter]=useState(""),[recordTypeFilter,setRecordTypeFilter]=useState(""),[recordSearch,setRecordSearch]=useState(""),[recordPaymentFilter,setRecordPaymentFilter]=useState(""),[recordEntries,setRecordEntries]=useState<Entry[]>([]),[recordLoading,setRecordLoading]=useState(false),[reviewSavingId,setReviewSavingId]=useState("");
+ const [employeeId,setEmployeeId]=useState(""),[shiftLeaderEmployeeId,setShiftLeaderEmployeeId]=useState(""),[shiftLeaderTouched,setShiftLeaderTouched]=useState(false),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(localDateKey()),[quantity,setQuantity]=useState(""),[scrapQuantity,setScrapQuantity]=useState("0"),[scrapType,setScrapType]=useState<"WORKER_SCRAP"|"MANUFACTURING_DEFECT">("WORKER_SCRAP"),[scrapNotes,setScrapNotes]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState(""),[recordEmployeeFilter,setRecordEmployeeFilter]=useState(""),[recordOrderFilter,setRecordOrderFilter]=useState(""),[recordStageFilter,setRecordStageFilter]=useState(""),[recordShiftFilter,setRecordShiftFilter]=useState(""),[recordProductFilter,setRecordProductFilter]=useState(""),[recordTypeFilter,setRecordTypeFilter]=useState(""),[recordSearch,setRecordSearch]=useState(""),[recordPaymentFilter,setRecordPaymentFilter]=useState(""),[recordEntries,setRecordEntries]=useState<Entry[]>([]),[recordLoading,setRecordLoading]=useState(false),[reviewSavingId,setReviewSavingId]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const employeeOrderIds=useMemo(()=>new Set(entries.filter(x=>!recordEmployeeFilter||x.employee_id===recordEmployeeFilter).map(x=>x.order_stage_id?orderStages.find(os=>os.id===x.order_stage_id)?.order_id:"").filter(Boolean)),[entries,recordEmployeeFilter,orderStages]);
  const recordOrderOptions=useMemo(()=>allOrders.filter(o=>!recordEmployeeFilter||employeeOrderIds.has(o.id)),[allOrders,recordEmployeeFilter,employeeOrderIds]);
@@ -67,6 +67,13 @@ export default function ProductionPage(){
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
  }
  useEffect(()=>{void load()},[]);
+ useEffect(()=>{
+  if(shiftLeaderTouched)return;
+  const accountEmployeeId=(session as any)?.employeeId as string|undefined;
+  if(!accountEmployeeId)return;
+  const assigned=shiftLeaders.filter(x=>!shiftId||x.shift_id===shiftId);
+  if(assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
+ },[session,shiftLeaders,shiftId,shiftLeaderTouched]);
 
  // Fetch the production summary and filtered history without resetting forms or page state.
  const refreshProductionData=useCallback(async(showLoading=true)=>{
@@ -139,13 +146,14 @@ export default function ProductionPage(){
  const shiftOptions=useMemo(()=>shifts.map(x=>({value:x.id,label:x.name})),[shifts]);
  const responsibleOptions=useMemo(()=>Array.from(new Map(shiftLeaders.filter(x=>!shiftId||x.shift_id===shiftId).map(x=>[x.employee_id,{value:x.employee_id,label:x.employee_name,meta:x.shift_name}])).values()),[shiftLeaders,shiftId]);
  function selectShift(value:string){
+  setShiftLeaderTouched(false);
   setShiftId(value);
   const assigned=shiftLeaders.filter(x=>x.shift_id===value);
   const accountEmployeeId=(session as any)?.employeeId as string|undefined;
   if(accountEmployeeId&&assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
   else if(!assigned.some(x=>x.employee_id===shiftLeaderEmployeeId))setShiftLeaderEmployeeId(assigned[0]?.employee_id||"");
  }
- function selectResponsible(value:string){setShiftLeaderEmployeeId(value)}
+ function selectResponsible(value:string){setShiftLeaderTouched(true);setShiftLeaderEmployeeId(value)}
  const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
  const filteredOrderStages=useMemo(()=>orderId?orderStages.filter(x=>x.order_id===orderId):[],[orderStages,orderId]);
  const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+formatMoney(x.stage_rate)):"بدون سعر"})),[filteredOrderStages]);
