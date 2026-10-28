@@ -167,8 +167,15 @@ export async function laserMachineOperationsRoutes(app: FastifyInstance) {
                SUM(COALESCE(mp.cycles_count,0)) AS cycles_count
         FROM machine_productions mp
         WHERE mp.machine_id=m.id AND mp.status='ACTIVE'
-          AND mp.laser_design_version_id=s.design_version_id
-          AND mp.created_at>=s.started_at
+          AND (
+            (t.id IS NOT NULL
+              AND mp.created_at>=t.effective_from::timestamptz
+              AND mp.created_at<(t.effective_to + 1)::timestamptz
+              AND (t.design_version_id IS NULL OR mp.laser_design_version_id=t.design_version_id)
+              AND (t.shift_id IS NULL OR mp.shift_id=t.shift_id))
+            OR
+            (t.id IS NULL AND mp.laser_design_version_id=s.design_version_id AND mp.created_at>=s.started_at)
+          )
       ) prod ON TRUE
       LEFT JOIN laser_machine_downtime_events dt ON dt.machine_id=m.id AND dt.ended_at IS NULL
       WHERE m.is_active=TRUE
