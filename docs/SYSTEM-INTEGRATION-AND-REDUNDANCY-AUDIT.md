@@ -86,6 +86,12 @@ The migration runner sorts by numeric prefix and then filename, and stores the f
 
 The laser/machine feature series includes explicit dependencies between PRs #187–#194. PR #195 is based on **fix/release-migration-order-ci**, not on that laser stack. Keep these changes reviewable, but before release, verify the intended dependency order and ensure a release branch includes only reviewed, compatible changes. Do not merge the entire stack just to make features appear connected.
 
+### 10. Unrelated global reminder adds background traffic and UI noise
+
+The root layout mounted a global Dhikr reminder on every route. The component polled the authentication endpoint every 20 seconds and showed a religious reminder on login and periodically afterward. This behavior is unrelated to factory operations and had no settings/opt-in in the reviewed component.
+
+**Action taken in PR #197:** removed the global mount, component, and its CSS. This does not affect authentication, production, or financial workflows.
+
 ## Recommended cleanup sequence
 
 ### P0 — correctness and financial integrity
