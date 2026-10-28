@@ -911,17 +911,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledOrderSummary.json().data.orderAccount.remaining),0,
         "fully settled order production must have no remaining balance");
 
+      const duplicatePreviousCustodyKey=randomUUID();
       const duplicatePreviousCustodyPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:bonusWorkerEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:multiOrderId,
-          orderStageId:reconcileOrderStage.id,amount:1,method:"CASH",idempotencyKey:randomUUID()}
+          orderStageId:reconcileOrderStage.id,amount:1,method:"CASH",idempotencyKey:duplicatePreviousCustodyKey}
       });
       assert.equal(duplicatePreviousCustodyPayout.statusCode,409,duplicatePreviousCustodyPayout.body);
       assert.equal(duplicatePreviousCustodyPayout.json().error.code,"ORDER_BALANCE_EXCEEDED",
         "previous-custody payouts must not ignore amounts already allocated through settlements");
       assert.equal(Number((await apiPool.query(
-        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND gross_amount=1",
-        [bonusWorkerEmployee.id]
+        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",
+        [duplicatePreviousCustodyKey]
       )).rows[0].count),0,"rejected duplicate settlement must not create a payment");
 
       // Older worker payments can already have a settlement row but no canonical
