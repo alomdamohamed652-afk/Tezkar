@@ -1301,7 +1301,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
         skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
-        productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds : null
+        productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
