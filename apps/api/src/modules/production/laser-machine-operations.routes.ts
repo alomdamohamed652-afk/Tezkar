@@ -49,7 +49,8 @@ async function audit(client: any, request: any, action: string, entityType: stri
 
 function periodBounds(periodType: "DAY" | "MONTH" | "SHIFT", date: string) {
   if (periodType !== "MONTH") return { from: date, to: date };
-  const [year, month] = date.split("-").map(Number);
+  const year = Number(date.slice(0,4));
+  const month = Number(date.slice(5,7));
   const from = `${year}-${String(month).padStart(2,"0")}-01`;
   const to = new Date(Date.UTC(year, month, 0)).toISOString().slice(0,10);
   return { from, to };
