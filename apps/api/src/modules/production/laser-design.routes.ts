@@ -114,7 +114,7 @@ export async function laserDesignRoutes(app: FastifyInstance) {
     preHandler: [authenticateRequest, requirePermission("laser_designs.view")]
   }, async () => {
     const result = await pool.query(`
-      SELECT v.id,v.design_id,v.version_no,v.material_type,v.material_thickness_mm,
+      SELECT v.id,v.design_id,v.product_id,v.version_no,v.material_type,v.material_thickness_mm,
              v.width_mm,v.height_mm,v.unit_label,v.pieces_per_cycle,v.standard_cycle_seconds,
              v.notes,v.status,d.code AS design_code,d.name AS design_name,d.status AS design_status
       FROM laser_design_versions v JOIN laser_designs d ON d.id=v.design_id
@@ -205,7 +205,7 @@ export async function laserDesignRoutes(app: FastifyInstance) {
       const machine = await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE", [parsed.data.machineId]);
       if (!machine.rowCount) throw new AppError("MACHINE_NOT_ACTIVE", "الماكينة غير موجودة أو غير نشطة", 422);
       const version = await client.query(`
-        SELECT v.id,v.status AS version_status,d.status AS design_status
+        SELECT v.id,v.product_id,v.status AS version_status,d.status AS design_status
         FROM laser_design_versions v JOIN laser_designs d ON d.id=v.design_id
         WHERE v.id=$1 FOR UPDATE OF v,d
       `, [parsed.data.designVersionId]);
