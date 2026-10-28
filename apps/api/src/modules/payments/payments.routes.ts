@@ -748,6 +748,20 @@ export async function paymentsRoutes(app:FastifyInstance){
     return {data:result.rows};
   });
 
+  // Order choices for historical payment review. This uses the review permission, not orders.view.
+  // Completed orders remain eligible for historical attribution; cancelled orders do not.
+  app.get("/api/worker-payments/historical-allocation-orders", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async () => {
+    const result = await pool.query(`
+      SELECT id,code,order_name,status
+        FROM production_orders
+       WHERE status<>'CANCELLED'
+       ORDER BY created_at DESC,id
+    `);
+    return {data:result.rows};
+  });
+
   app.get("/api/worker-payments/historical-allocation-stages", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
