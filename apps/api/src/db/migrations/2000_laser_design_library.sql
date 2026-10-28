@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS laser_machine_design_compatibility (
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_by UUID NOT NULL REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CHECK (effective_to IS NULL OR effective_to >= effective_from),
+  CHECK (effective_to IS NULL OR effective_to >= effective_from)
 );
 
 CREATE INDEX IF NOT EXISTS idx_laser_designs_status_name ON laser_designs(status, name);
