@@ -320,7 +320,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const salaryItemsForPosting = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
           (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
-      for (const item of salaryItems.rows) {
+      for (const item of salaryItemsForPosting.rows) {
         const grossSalary=Number(item.salary_expense_amount);
         if(grossSalary< -0.0001)throw new AppError("PAYROLL_NET_NEGATIVE","إجمالي الراتب بعد البونص والخصومات لا يمكن أن يكون بالسالب",409);
         if(grossSalary>0&&!item.accounting_expense_id){
