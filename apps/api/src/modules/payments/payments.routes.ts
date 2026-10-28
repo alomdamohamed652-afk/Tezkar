@@ -660,6 +660,22 @@ export async function paymentsRoutes(app:FastifyInstance){
   }, async () => {
     const result = await pool.query(`
       SELECT wp.id AS payment_id,wp.gross_amount,wp.created_at,wp.employee_id,
+             LEAST(wp.gross_amount,GREATEST(0,
+               COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
+                 FROM production_entries p
+                 WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
+               - COALESCE((SELECT SUM(
+                   CASE
+                     WHEN prior_es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                     WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
+                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                   END)
+                 FROM worker_payments prior_wp
+                 LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
+                 WHERE prior_wp.employee_id=wp.employee_id
+                   AND (prior_wp.created_at<wp.created_at OR (prior_wp.created_at=wp.created_at AND prior_wp.id<wp.id))),0)
+             )) AS expected_production_amount,
              e.code AS employee_code,e.full_name AS employee_name,
              ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,es.id AS settlement_id,
              CASE WHEN es.id IS NOT NULL
