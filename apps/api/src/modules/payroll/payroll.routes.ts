@@ -231,6 +231,8 @@ export async function payrollRoutes(app: FastifyInstance) {
     const id = (request.params as {id:string}).id;
     const parsed = adjustmentSchema.safeParse(request.body);
     if (!parsed.success || (parsed.data.bonusAmount===undefined && parsed.data.deductionAmount===undefined && parsed.data.deductionMode===undefined && parsed.data.deductionPercentage===undefined && parsed.data.deductionBasis===undefined && parsed.data.notes===undefined)) throw new AppError("VALIDATION_ERROR", "بيانات تعديل مسير الراتب غير صحيحة", 422);
+    if(parsed.data.bonusAmount!==undefined||parsed.data.deductionAmount!==undefined||parsed.data.deductionMode!==undefined||parsed.data.deductionPercentage!==undefined||parsed.data.deductionBasis!==undefined)
+      throw new AppError("USE_NAMED_PAYROLL_ADJUSTMENTS","استخدم بنود المكافآت والخصومات المسماة حتى يظل سجل المفردات والإجمالي متطابقين",409);
     return withTransaction(async client => {
       const before = await client.query("SELECT i.*,p.status AS period_status,p.period_month AS accounting_period_month FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
       if (!before.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
