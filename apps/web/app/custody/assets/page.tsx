@@ -10,6 +10,7 @@ import { formatMoney, formatQuantity } from "../../../lib/format";
 type Employee = { id: string; code: string; full_name: string };
 type Custody = { id: string; code: string; employee_id: string; employee_name: string; employee_code: string; custody_type: string; description: string; quantity: number; unit_value: number; total_value: number; due_date: string | null; status: string; returned_quantity: number; lost_quantity: number; remaining_quantity: number; transfer_count: number; notes: string | null };
 type Settlement = { id: string; returned_quantity: number; lost_quantity: number; damage_value: number; shortage_value: number; status: string; notes: string | null; settled_at: string; settled_by_username: string | null };
+type Transfer = { id: string; from_employee_name: string; to_employee_name: string; remaining_quantity: number; notes: string | null; created_at: string; created_by_username: string | null };
 const num = (v: string) => Number(v.replace(/[٠-٩]/g, d => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g, "").replace(/٫/g, ".") || 0);
 const labels: Record<string, string> = { ACTIVE: "مفتوحة", PARTIAL_RETURNED: "مرتجع جزئي", RETURNED: "تم الإرجاع", PARTIAL: "تسوية جزئية", FULL: "تمت التسوية", DAMAGED: "تلف", LOST: "فقد", CANCELLED: "ملغاة" };
 
@@ -18,6 +19,7 @@ export default function AssetCustodyPage() {
   const [items, setItems] = useState<Custody[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [settlements, setSettlements] = useState<Settlement[]>([]);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [selected, setSelected] = useState<Custody | null>(null);
   const [employeeId, setEmployeeId] = useState("");
   const [custodyType, setCustodyType] = useState("أداة تشغيل");
@@ -64,8 +66,14 @@ export default function AssetCustodyPage() {
 
   async function openDetails(item: Custody) {
     setSelected(item); setReturned(String(item.remaining_quantity)); setLost("0"); setDamage("0"); setShortage("0"); setSettlementNotes(""); setTransferTo(""); setTransferNotes(""); setError(""); setMessage("");
-    try { setSettlements((await api<{data: Settlement[]}>("/api/custodies/" + encodeURIComponent(item.id) + "/settlements")).data); }
-    catch (e) { setSettlements([]); setError(e instanceof Error ? e.message : "تعذر تحميل سجل التسويات"); }
+    try {
+      const base = "/api/custodies/" + encodeURIComponent(item.id);
+      const [settlementResult, transferResult] = await Promise.all([
+        api<{data: Settlement[]}>(base + "/settlements"),
+        api<{data: Transfer[]}>(base + "/transfers")
+      ]);
+      setSettlements(settlementResult.data); setTransfers(transferResult.data);
+    } catch (e) { setSettlements([]); setTransfers([]); setError(e instanceof Error ? e.message : "تعذر تحميل سجل التسويات والتحويلات"); }
   }
 
   async function createCustody(e: FormEvent) {
@@ -145,7 +153,7 @@ export default function AssetCustodyPage() {
             {canTransfer && Number(selected.remaining_quantity) > 0 && <form className="form-grid" onSubmit={transferCustody} style={{borderTop:"1px solid var(--border)",paddingTop:16,marginTop:16}}><h3 className="card-title" style={{gridColumn:"1/-1"}}>تحويل العهدة لموظف آخر</h3>
               <label>الموظف المستلم<SearchableSelect value={transferTo} onChange={setTransferTo} options={employees.filter(x => x.id !== selected.employee_id).map(x => ({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف المستلم"/></label><label>ملاحظات<input value={transferNotes} onChange={e => setTransferNotes(e.target.value)}/></label><div className="form-actions"><button className="secondary-btn" disabled={saving || !transferTo || transferTo === selected.employee_id}>{saving ? "جارٍ التحويل…" : "تحويل العهدة"}</button></div>
             </form>}
-            <h3 className="card-title" style={{marginTop:20}}>سجل التسويات</h3><div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>مرتجع</th><th>مفقود</th><th>قيمة التلف</th><th>قيمة العجز</th><th>الحالة</th><th>سجل بواسطة</th><th>ملاحظات</th></tr></thead><tbody>
+            <h3 className="card-title" style={{marginTop:20}}>سجل التسويات</h3><div className="table-wrap"><table><thead><tr><th>تاريخ التحويل</th><th>من الموظف</th><th>إلى الموظف</th><th>الكمية المحولة</th><th>سجل بواسطة</th><th>ملاحظات</th></tr></thead><tbody>{transfers.map(x => <tr key={x.id}><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td><td>{x.from_employee_name}</td><td>{x.to_employee_name}</td><td>{formatQuantity(Number(x.remaining_quantity))}</td><td>{x.created_by_username || "—"}</td><td>{x.notes || "—"}</td></tr>)}{!transfers.length && <tr><td colSpan={6}>لا توجد تحويلات مسجلة.</td></tr>}</tbody></table></div><h3 className="card-title" style={{marginTop:20}}>سجل التسويات</h3><div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>مرتجع</th><th>مفقود</th><th>قيمة التلف</th><th>قيمة العجز</th><th>الحالة</th><th>سجل بواسطة</th><th>ملاحظات</th></tr></thead><tbody>
               {settlements.map(x => <tr key={x.id}><td>{new Date(x.settled_at).toLocaleString("ar-EG")}</td><td>{formatQuantity(Number(x.returned_quantity))}</td><td>{formatQuantity(Number(x.lost_quantity))}</td><td>{formatMoney(Number(x.damage_value))}</td><td>{formatMoney(Number(x.shortage_value))}</td><td>{labels[x.status] || x.status}</td><td>{x.settled_by_username || "—"}</td><td>{x.notes || "—"}</td></tr>)}
               {!settlements.length && <tr><td colSpan={8}>لا توجد تسويات مسجلة.</td></tr>}
             </tbody></table></div>
