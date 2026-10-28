@@ -765,14 +765,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(invalidSelectedPayout.statusCode,409,invalidSelectedPayout.body,
         "selected-production settlement must match the outstanding balance of the selected records");
       assert.equal(invalidSelectedPayout.json().error.code,"PRODUCTION_SETTLEMENT_AMOUNT_MISMATCH");
+      // A payment can include production earnings plus a separate adjustment.
+      // Only the production portion belongs in production allocation reconciliation.
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',25,$2,'test-only non-production adjustment')",
+        [bonusWorkerEmployee.id,manager.id]
+      );
       const bonusAwarePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",
-          settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:155,method:"CASH",
+          settlementMode:"ALL_DUES",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
       });
       assert.equal(bonusAwarePayout.statusCode,201,bonusAwarePayout.body,
-        "available payout balance must include approved production bonuses and deductions");
-      assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),130);
+        "all-dues payout may include both approved production earnings and a separate adjustment");
+      assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),155);
       const bonusAllocation=await apiPool.query(
         `SELECT COALESCE(SUM(a.amount),0) AS amount
            FROM employee_earnings_settlement_allocations a
@@ -781,7 +787,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [bonusAwarePayout.json().data.payment.id]
       );
       assert.equal(Number(bonusAllocation.rows[0].amount),130,
-        "selected production must be allocated to the canonical settlement allocation ledger");
+        "only the production portion must be allocated to the canonical settlement allocation ledger");
+      const queueAfterAdjustmentPayout=await app.inject({
+        method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
+      });
+      assert.equal(queueAfterAdjustmentPayout.statusCode,200,queueAfterAdjustmentPayout.body);
+      assert.equal(queueAfterAdjustmentPayout.json().data.some((row:any)=>row.payment_id===bonusAwarePayout.json().data.payment.id),false,
+        "a fully allocated production portion must not be flagged merely because gross payment also includes an adjustment");
       const unpaidProductionAfterPayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
