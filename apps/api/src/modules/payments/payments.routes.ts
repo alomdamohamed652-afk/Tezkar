@@ -604,13 +604,20 @@ export async function paymentsRoutes(app:FastifyInstance){
 
         const eligible = await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+              JOIN worker_payments old_wp ON old_wp.id=a.worker_payment_id
+              WHERE a.production_entry_id=p.id
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements old_es
+                  JOIN employee_earnings_settlement_allocations old_esa ON old_esa.settlement_id=old_es.id
+                  WHERE old_es.worker_payment_id=old_wp.id)),0)
             -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
               JOIN worker_payments old_wp ON old_wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
-                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements old_es WHERE old_es.worker_payment_id=old_wp.id)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations old_owa WHERE old_owa.worker_payment_id=a.worker_payment_id)),0)
-            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements old_es
+                  JOIN employee_earnings_settlement_allocations old_esa ON old_esa.settlement_id=old_es.id
+                  WHERE old_es.worker_payment_id=old_wp.id)
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations old_owa WHERE old_owa.worker_payment_id=old_wp.id)),0),0) AS remaining
             FROM production_entries p
             JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
