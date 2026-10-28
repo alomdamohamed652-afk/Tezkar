@@ -327,6 +327,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO payroll_items(period_id,employee_id,salary_profile_id,base_salary,bonus_amount,deduction_amount) VALUES ($1,$2,$3,1000,100,100) RETURNING id",
         [period.rows[0].id, employeeB.rows[0].id, profileB.rows[0].id]
       );
+      const adjustmentLines = await apiPool.query(
+        `INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by)
+         VALUES ($1,'BONUS','Test bonus',100,$3),($1,'DEDUCTION','Test deduction',100,$3),
+                ($2,'BONUS','Test bonus',100,$3),($2,'DEDUCTION','Test deduction',100,$3)
+         RETURNING id`,
+        [itemA.rows[0].id,itemB.rows[0].id,userId]
+      );
+      assert.equal(adjustmentLines.rowCount,4);
 
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
@@ -362,6 +370,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(linkedPayroll.rows.every((row: {amount:string;net_amount:string;payment_method:string;expense_date:string}) =>
         Number(row.amount) === Number(row.net_amount) && row.payment_method === "PAYROLL" &&
         String(row.expense_date).slice(0,10) === "2099-01-01"));
+      const linkedAdjustments = await apiPool.query(
+        `SELECT l.id,l.line_type,l.amount,e.credit_amount,e.debit_amount
+           FROM payroll_adjustment_lines l
+           LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id
+          WHERE l.payroll_item_id IN ($1,$2)`,
+        [itemA.rows[0].id,itemB.rows[0].id]
+      );
+      assert.equal(linkedAdjustments.rowCount,4);
+      assert.ok(linkedAdjustments.rows.every((row:{line_type:string;credit_amount:string|null;debit_amount:string|null}) =>
+        row.line_type==="BONUS" ? Number(row.credit_amount)===100 && Number(row.debit_amount??0)===0
+                                : Number(row.debit_amount)===100 && Number(row.credit_amount??0)===0),
+        "every approved named bonus/deduction must create one matching employee-ledger entry");
       const secondApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader }
