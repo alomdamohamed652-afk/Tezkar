@@ -18,7 +18,7 @@ type Unit={id:string;code:string;barcode:string;packaging_type_id:string;templat
 const statusLabels:Record<string,string>={CODED:"مُكوّدة",IN_STOCK:"بالمخزن",RESERVED:"محجوزة",READY_FOR_DELIVERY:"جاهزة للتسليم",DELIVERED:"تم التسليم",OUT:"خارجة",CANCELLED:"ملغاة"};
 
 export default function CodingPage(){
- const {has}=usePermissions();
+ const {has,session}=usePermissions();
  const toast=useToast();
  const [types,setTypes]=useState<Packaging[]>([]),[templates,setTemplates]=useState<Template[]>([]),[employees,setEmployees]=useState<Item[]>([]),[products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Item[]>([]),[locations,setLocations]=useState<Location[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[units,setUnits]=useState<Unit[]>([]),[productionReady,setProductionReady]=useState<ProductionReady[]>([]);
  const [typeId,setTypeId]=useState(""),[templateId,setTemplateId]=useState(""),[productionEntryId,setProductionEntryId]=useState(""),[productId,setProductId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[batch,setBatch]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState("");
@@ -36,6 +36,12 @@ export default function CodingPage(){
   }catch(e){toast.error(e instanceof Error?e.message:"تعذر تحميل نظام التكويد")}
  }
  useEffect(()=>{void load()},[]);
+ useEffect(()=>{
+  const employeeId=(session as any)?.employeeId as string|undefined;
+  if(!employeeId||!employees.some(x=>x.id===employeeId))return;
+  setPackedBy(current=>current||employeeId);
+  setReceivedBy(current=>current||employeeId);
+ },[session,employees]);
 
  const selectedType=types.find(x=>x.id===typeId);
  const availableTemplates=templates.filter(x=>x.packaging_type_id===typeId||!x.packaging_type_id);
