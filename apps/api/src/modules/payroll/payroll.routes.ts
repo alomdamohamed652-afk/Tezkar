@@ -265,8 +265,21 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
+  app.get("/api/payroll/items/:id/attendance-snapshot", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
+    const id=(request.params as {id:string}).id;
+    const item=await pool.query("SELECT i.id,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1",[id]);
+    if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
+    const rows=await pool.query("SELECT attendance_date::text AS date,snapshot_data AS snapshotData,captured_at AS capturedAt FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 ORDER BY attendance_date",[id]);
+    return {data:rows.rows, frozen:rows.rowCount>0, periodStatus:item.rows[0].period_status};
+  });
+
   app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
     const id = (request.params as {id:string}).id;
+    const body=z.object({
+      attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid()}).passthrough()).max(10000)
+    }).safeParse(request.body);
+    if(!body.success)throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لازم تحميل سجل الحضور الشهري قبل اعتماد المسير",422);
+    const snapshot=body.data.attendanceSnapshot;
     const result = await withTransaction(async client => {
       const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
       if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
@@ -280,7 +293,31 @@ export async function payrollRoutes(app: FastifyInstance) {
       const periodMonthValue=period.rows[0].period_month;
       const parsedPeriodMonth=periodMonthValue instanceof Date?periodMonthValue:new Date(String(periodMonthValue));
       const monthLabel=Number.isNaN(parsedPeriodMonth.getTime())?String(periodMonthValue).slice(0,7):parsedPeriodMonth.toISOString().slice(0,7);
-      const salaryItems = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
+      const monthStart=monthLabel+"-01";
+      const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
+      const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
+      const daysInMonth=monthEndDate.getUTCDate();
+      const salaryItems = await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
+      const expectedKeys=new Set<string>();
+      for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
+      const suppliedKeys=new Set<string>();
+      for(const row of snapshot){
+        const key=row.employeeId+"|"+row.date;
+        if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
+          throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","سجل الحضور يحتوي تاريخًا خارج الشهر أو موظفًا غير موجود أو يومًا مكررًا",422);
+        suppliedKeys.add(key);
+      }
+      if(suppliedKeys.size!==expectedKeys.size)
+        throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","لا يمكن اعتماد المسير قبل مراجعة سجل كل موظف لكل يوم من الشهر. أعد تحميل الحضور وحاول مرة أخرى.",422);
+      for(const row of snapshot){
+        const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
+        await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
+      }
+      const salaryItemIds=salaryItems.rows.map(x=>x.id);
+      const existingSnapshots=await client.query("SELECT COUNT(*)::int AS count FROM payroll_attendance_snapshots WHERE payroll_item_id=ANY($1::uuid[])",[salaryItemIds]);
+      if(Number(existingSnapshots.rows[0].count)!==expectedKeys.size)
+        throw new AppError("ATTENDANCE_SNAPSHOT_CONFLICT","يوجد سجل حضور سابق غير مكتمل أو مختلف؛ راجع المسير قبل الاعتماد",409);
+      const salaryItemsForPosting = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
           (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
       for (const item of salaryItems.rows) {
