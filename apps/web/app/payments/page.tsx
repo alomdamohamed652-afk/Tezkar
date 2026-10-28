@@ -87,7 +87,7 @@ export default function PaymentsPage(){
  <div className="card-header"><div><h3 className="card-title">سجلات الإنتاج غير المدفوعة</h3><div className="form-hint">اختار سجلات الإنتاج التي تريد تصفيتها. يظهر المتبقي لكل سجل بعد احتساب كل التسويات والدفعات السابقة دون تكرارها.</div></div><button type="button" className="secondary-btn" disabled={productionLoading||!settlementEmployeeId} onClick={()=>void loadUnpaidProduction(settlementEmployeeId)}>{productionLoading?"جارٍ التحديث...":"تحديث الإنتاج"}</button></div>
  <div className="form-actions" style={{marginTop:0,marginBottom:12}}>
   <button type="button" className="secondary-btn" disabled={productionLoading||!unpaidProduction.length} onClick={()=>{const ids=unpaidProduction.map(row=>row.id);setSelectedProductionIds(ids);setSettlementMode("SELECTED_PRODUCTION");const total=Math.round(unpaidProduction.reduce((sum,row)=>sum+Number(row.remaining_amount||0),0)*100)/100;setSettlementAmount(total>0?String(total):"")}}>تحديد كل سجلات الإنتاج غير المدفوعة</button>
-  <button type="button" className="secondary-btn" disabled={!settlementSummary||settlementSummary.availableForSettlement<=0} onClick={()=>void fillFullSettlement()}>تصفية إجمالي المستحقات</button>
+  <button type="button" className="secondary-btn" disabled={!settlementSummary||settlementSummary.availableForSettlement<=0||!cashCustodyEmployeeId} onClick={()=>void fillFullSettlement()}>تصفية إجمالي المستحقات</button>
   <button type="button" className="secondary-btn" disabled={!selectedProductionIds.length} onClick={()=>{setSelectedProductionIds([]);setSettlementMode("SELECTED_PRODUCTION");setSettlementAmount("")}}>مسح الاختيار</button>
  </div>
  <div className="stats" style={{marginBottom:12}}>
