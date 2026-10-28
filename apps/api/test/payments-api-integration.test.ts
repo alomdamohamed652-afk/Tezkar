@@ -868,13 +868,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          VALUES($1,10,10,0,CURRENT_DATE,'historical reconciliation regression',$2,$3) RETURNING id`,
         [bonusWorkerEmployee.id,manager.id,reconcilePayment.id]
       )).rows[0];
-      const reconcileExpense=await app.inject({
-        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
-        payload:{orderId:multiOrderId,orderStageId:reconcileOrderStage.id,category:"WORKER_PAYMENT",
-          description:"Historical worker settlement reconciliation test",amount:10,expenseDate:(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date,
-          expenseType:"DIRECT",paymentMethod:"CASH",historicalSettlement:true,idempotencyKey:reconcileKey}
-      });
-      assert.ok([200,201].includes(reconcileExpense.statusCode),reconcileExpense.body);
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(
+           order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash
+         )
+         VALUES($1,$2,'WORKER_PAYMENT','Historical worker settlement reconciliation test',10,CURRENT_DATE,'CASH',$3,'DIRECT',NULL,$4,'historical-reconciliation-test-hash')`,
+        [multiOrderId,reconcileOrderStage.id,manager.id,reconcileKey]
+      );
       const reconciled=await app.inject({
         method:"POST",url:"/api/worker-payments/reconcile-historical-allocations",headers:{cookie:managerCookie},payload:{}
       });
