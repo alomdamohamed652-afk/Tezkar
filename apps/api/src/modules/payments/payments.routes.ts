@@ -678,15 +678,28 @@ export async function paymentsRoutes(app:FastifyInstance){
         SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
           FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
              (es.id IS NULL AND (
                NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
                OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+               OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                 LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                 WHERE wpa.worker_payment_id=wp.id AND (p.id IS NULL OR p.employee_id<>wp.employee_id OR p.status<>'APPROVED'
+                   OR (ae.order_id IS NOT NULL AND os.order_id IS DISTINCT FROM ae.order_id)
+                   OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
              ))
              OR (es.id IS NOT NULL AND (
                NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id)
                OR ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
+               OR EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa
+                 LEFT JOIN production_entries p ON p.id=esa.production_entry_id
+                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                 WHERE esa.settlement_id=es.id AND (p.id IS NULL OR p.employee_id<>wp.employee_id OR p.status<>'APPROVED'
+                   OR (ae.order_id IS NOT NULL AND os.order_id IS DISTINCT FROM ae.order_id)
+                   OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
              ))
            )
       `);
