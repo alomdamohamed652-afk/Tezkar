@@ -822,6 +822,75 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unpaidProductionAfterPayout.json().data.some((row:any)=>row.id===bonusProduction.id),false,
         "fully settled production must disappear from the unpaid production list");
 
+      // A legacy previous-custody payout with a settlement row but no production allocation
+      // must be linked to its explicitly referenced order, then disappear from unpaid production.
+      const reconcileOrderStage=(await apiPool.query(
+        "SELECT id,stage_id FROM order_stages WHERE order_id=$1 AND is_final_product=TRUE ORDER BY sequence_no LIMIT 1",
+        [hamzaOrder.json().data.id]
+      )).rows[0];
+      assert.ok(reconcileOrderStage,"the test order should have a final production stage");
+      const reconcileRateGroup=(await apiPool.query(
+        "INSERT INTO rate_groups(name) VALUES($1) RETURNING id",
+        ["Historical reconciliation rate group "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const reconcileShift=(await apiPool.query(
+        "INSERT INTO shifts(name,start_time,end_time,rate_group_id) VALUES($1,'08:00','16:00',$2) RETURNING id",
+        ["Historical reconciliation shift "+randomBytes(4).toString("hex"),reconcileRateGroup.id]
+      )).rows[0];
+      const reconcileRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,10,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id`,
+        [hamzaProducts.rows[0].product_id,reconcileOrderStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,bonusProduct.unit_id,manager.id]
+      )).rows[0];
+      const reconcileProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [bonusWorkerEmployee.id,reconcileOrderStage.id,hamzaProducts.rows[0].product_id,reconcileOrderStage.stage_id,
+         reconcileShift.id,bonusProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(reconcileProduction.total_earning_amount),10);
+      const reconcileKey=randomUUID();
+      const reconcilePayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'historical reconciliation regression',$3,'historical-reconciliation-regression') RETURNING id`,
+        [bonusWorkerEmployee.id,manager.id,reconcileKey]
+      )).rows[0];
+      const reconcileSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'historical reconciliation regression',$2,$3) RETURNING id`,
+        [bonusWorkerEmployee.id,manager.id,reconcilePayment.id]
+      )).rows[0];
+      const reconcileExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:hamzaOrder.json().data.id,orderStageId:reconcileOrderStage.id,category:"WORKER_PAYMENT",
+          description:"Historical worker settlement reconciliation test",amount:10,expenseDate:(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date,
+          expenseType:"DIRECT",paymentMethod:"CASH",historicalSettlement:true,idempotencyKey:reconcileKey}
+      });
+      assert.ok([200,201].includes(reconcileExpense.statusCode),reconcileExpense.body);
+      const reconciled=await app.inject({
+        method:"POST",url:"/api/worker-payments/reconcile-historical-allocations",headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(reconciled.statusCode,200,reconciled.body);
+      assert.ok(reconciled.json().data.reconciledCount>=1,JSON.stringify(reconciled.json().data));
+      const reconciledAllocation=await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",
+        [reconcileSettlement.id]
+      );
+      assert.equal(Number(reconciledAllocation.rows[0].amount),10,
+        "a clearly linked legacy settlement must be connected to its original production record");
+      const unpaidAfterHistoricalReconcile=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(unpaidAfterHistoricalReconcile.statusCode,200,unpaidAfterHistoricalReconcile.body);
+      assert.equal(unpaidAfterHistoricalReconcile.json().data.some((row:any)=>row.id===reconcileProduction.id),false,
+        "a reconciled historical settlement must not reappear as unpaid production");
+
       // Older worker payments can already have a settlement row but no canonical
       // production-allocation rows; those must still appear in the historical review queue.
       const unallocatedHistoricalPayment=(await apiPool.query(
