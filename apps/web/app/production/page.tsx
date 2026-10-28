@@ -23,7 +23,7 @@ const weekStartKey=(key:string)=>{const d=new Date(key+"T12:00:00");d.setDate(d.
 const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد",REJECTED:"مرفوض",CANCELLED:"ملغي"};
 
 export default function ProductionPage(){
- const {has}=usePermissions();
+ const {has,session}=usePermissions();
  const canViewProductionFinancials=has("worker_payments.pay");
  const canSettleWorkers=has("worker_payments.pay");
  const canAddLegacyExpense=has("finance.expenses.create");
@@ -57,7 +57,13 @@ export default function ProductionPage(){
    ]);
    setEmployees(e.data);setStages(s.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
-   setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
+   setEmployeeId((pref.data as any).employeeId||"");
+   const preferredShiftId=(pref.data as any).shiftId||"";
+   setShiftId(preferredShiftId);
+   const assignedLeaders=leaders.data.filter(x=>x.shift_id===preferredShiftId);
+   const accountEmployeeId=(session as any)?.employeeId as string|undefined;
+   setShiftLeaderEmployeeId(accountEmployeeId&&assignedLeaders.some(x=>x.employee_id===accountEmployeeId)?accountEmployeeId:(assignedLeaders[0]?.employee_id||""));
+   setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
  }
  useEffect(()=>{void load()},[]);
@@ -132,7 +138,13 @@ export default function ProductionPage(){
  const stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]);
  const shiftOptions=useMemo(()=>shifts.map(x=>({value:x.id,label:x.name})),[shifts]);
  const responsibleOptions=useMemo(()=>Array.from(new Map(shiftLeaders.filter(x=>!shiftId||x.shift_id===shiftId).map(x=>[x.employee_id,{value:x.employee_id,label:x.employee_name,meta:x.shift_name}])).values()),[shiftLeaders,shiftId]);
- function selectShift(value:string){setShiftId(value);if(shiftLeaderEmployeeId&&!shiftLeaders.some(x=>x.employee_id===shiftLeaderEmployeeId&&x.shift_id===value))setShiftLeaderEmployeeId("")}
+ function selectShift(value:string){
+  setShiftId(value);
+  const assigned=shiftLeaders.filter(x=>x.shift_id===value);
+  const accountEmployeeId=(session as any)?.employeeId as string|undefined;
+  if(accountEmployeeId&&assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
+  else if(!assigned.some(x=>x.employee_id===shiftLeaderEmployeeId))setShiftLeaderEmployeeId(assigned[0]?.employee_id||"");
+ }
  function selectResponsible(value:string){setShiftLeaderEmployeeId(value)}
  const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
  const filteredOrderStages=useMemo(()=>orderId?orderStages.filter(x=>x.order_id===orderId):[],[orderStages,orderId]);
@@ -271,7 +283,7 @@ export default function ProductionPage(){
     
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
     <label>الوردية<SearchableSelect value={shiftId} onChange={selectShift} options={shiftOptions} placeholder="اختر الوردية"/></label>
-    <label>مسؤول الوردية <span className="optional">(اختياري)</span><SearchableSelect value={shiftLeaderEmployeeId} onChange={selectResponsible} options={responsibleOptions} placeholder="اختر رئيس وردية" searchPlaceholder="ابحث عن المسؤول"/></label>
+    <label>رئيس الوردية <span className="optional">(افتراضي من حسابك إذا كان مكلفًا بالوردية، ويمكن تغييره)</span><SearchableSelect value={shiftLeaderEmployeeId} onChange={selectResponsible} options={responsibleOptions} placeholder="اختر رئيس وردية" searchPlaceholder="ابحث عن المسؤول"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
     {!isShiftWage&&<label>إجمالي الإنتاج (شامل الهالك)<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
     {!isShiftWage&&<><label>كمية الهالك الإضافي<input inputMode="decimal" value={scrapQuantity} onChange={e=>setScrapQuantity(e.target.value)} placeholder="٠"/></label>
