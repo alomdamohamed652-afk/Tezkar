@@ -920,16 +920,61 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledProductionStatement.paid_amount),10,
         "employee statement must not count settlement and order allocation rows for the same payment twice");
 
+      const currentCustodyGuardWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Current Custody Guard Worker') RETURNING id"
+      )).rows[0];
+      const currentCustodyGuardProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [currentCustodyGuardWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const currentCustodyGuardKey=randomUUID();
+      const currentCustodyGuardPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'current custody duplicate guard test',$3,'current-custody-duplicate-guard') RETURNING id`,
+        [currentCustodyGuardWorker.id,manager.id,currentCustodyGuardKey]
+      )).rows[0];
+      const currentCustodyGuardSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'current custody duplicate guard test',$2,$3) RETURNING id`,
+        [currentCustodyGuardWorker.id,manager.id,currentCustodyGuardPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [currentCustodyGuardSettlement.id,currentCustodyGuardProduction.id]
+      );
+      await apiPool.query(
+        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [currentCustodyGuardPayment.id,currentCustodyGuardProduction.id]
+      );
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(
+           order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash
+         )
+         VALUES($1,$2,'WORKER_PAYMENT','Current custody duplicate guard test',10,CURRENT_DATE,'CASH',$3,'DIRECT',NULL,$4,'current-custody-duplicate-guard-hash')`,
+        [multiOrderId,reconcileOrderStage.id,manager.id,currentCustodyGuardKey]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',10,$2,'current custody duplicate guard test')",
+        [currentCustodyGuardWorker.id,manager.id]
+      );
       const duplicateCurrentCustodyKey=randomUUID();
       const duplicateCurrentCustodyPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,
+        payload:{employeeId:currentCustodyGuardWorker.id,cashCustodyEmployeeId:managerEmployee.id,
           settlementSource:"CURRENT_CUSTODY",settlementMode:"SELECTED_PRODUCTION",
-          productionEntryIds:[reconcileProduction.id],amount:1,method:"CASH",idempotencyKey:duplicateCurrentCustodyKey}
+          productionEntryIds:[currentCustodyGuardProduction.id],amount:1,method:"CASH",idempotencyKey:duplicateCurrentCustodyKey}
       });
       assert.equal(duplicateCurrentCustodyPayout.statusCode,409,duplicateCurrentCustodyPayout.body);
       assert.equal(duplicateCurrentCustodyPayout.json().error.code,"PRODUCTION_ALREADY_SETTLED",
-        "current-custody payout must also reject production already paid through a prior settlement");
+        "current-custody payout must reject production already paid through settlement and order allocation rows");
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",
         [duplicateCurrentCustodyKey]
