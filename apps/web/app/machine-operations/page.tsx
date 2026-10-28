@@ -53,7 +53,6 @@ export default function MachineOperationsPage() {
         api<{data:MachineSession[]}>("/api/laser-machine-sessions")
       ]);
       setMachines(m.data); setEmployees(e.data); setShifts(s.data); setTargets(t.data); setSessions(live.data);
-      if (!machineId && m.data[0]) { setMachineId(m.data[0].id); setTargetMachineId(m.data[0].id); }
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذر تحميل متابعة تشغيل الماكينات");
     }
@@ -64,6 +63,10 @@ export default function MachineOperationsPage() {
     const interval = setInterval(() => { void load(); }, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!machineId && machines[0]) { setMachineId(machines[0].id); setTargetMachineId(machines[0].id); }
+  }, [machines, machineId]);
 
   useEffect(() => {
     let alive = true;
