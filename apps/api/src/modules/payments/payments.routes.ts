@@ -1191,6 +1191,39 @@ export async function paymentsRoutes(app:FastifyInstance){
       }
 
       await assertAccountingPeriodOpen(client);
+      if(parsed.data.settlementSource==="CURRENT_CUSTODY" && (parsed.data.productionEntryIds?.length??0)>0){
+        const unresolvedHistory=await client.query(`
+          SELECT wp.id,wp.gross_amount
+            FROM worker_payments wp
+            LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+           WHERE wp.employee_id=$1
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+             AND (
+               (es.id IS NOT NULL AND (
+                 ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
+                 OR EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa
+                           LEFT JOIN production_entries p ON p.id=esa.production_entry_id
+                           LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                           WHERE esa.settlement_id=es.id AND (p.id IS NULL OR p.employee_id<>wp.employee_id
+                             OR (ae.order_id IS NOT NULL AND os.order_id IS DISTINCT FROM ae.order_id)
+                             OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+               ))
+               OR (es.id IS NULL AND (
+                 NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                 OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+                 OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
+                           LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+                           LEFT JOIN order_stages os ON os.id=p.order_stage_id
+                           WHERE wpa.worker_payment_id=wp.id AND (p.id IS NULL OR p.employee_id<>wp.employee_id
+                             OR os.order_id IS DISTINCT FROM ae.order_id
+                             OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
+               ))
+             )
+           ORDER BY wp.created_at,wp.id LIMIT 1
+        `,[parsed.data.employeeId]);
+        if(unresolvedHistory.rowCount)throw new AppError("HISTORICAL_PAYMENTS_NEED_ALLOCATION","لدى العامل دفعة تاريخية تحتاج توزيعًا. وزّع الدفعة من قسم «مراجعة وتوزيع الدفعات القديمة غير الموزعة» أولًا حتى لا يتم صرف سجل إنتاج سبق دفعه.",409);
+      }
       const available = await getAvailableEarnings(client, parsed.data.employeeId);
       let orderAvailable: number | null = null;
       let orderLegacyPaid = 0;
