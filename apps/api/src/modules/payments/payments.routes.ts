@@ -650,7 +650,6 @@ export async function paymentsRoutes(app:FastifyInstance){
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0)>0.009
       ORDER BY p.work_date ASC,p.created_at ASC,p.id ASC
-      LIMIT 2000
     `,[parsed.data.employeeId]);
     return {data:result.rows};
   });
@@ -695,7 +694,6 @@ export async function paymentsRoutes(app:FastifyInstance){
            ))
          )
        ORDER BY wp.created_at,wp.id
-       LIMIT 300
     `);
     return {data:result.rows};
   });
