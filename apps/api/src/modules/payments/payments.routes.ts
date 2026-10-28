@@ -776,7 +776,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       }else if(oldAllocations.rowCount){
         const oldTotal=oldAllocations.rows.reduce((sum,row)=>sum+Number(row.amount),0);
         const valid=oldAllocations.rows.every(row=>row.employee_id===payment.employee_id&&row.order_id===parsed.data.orderId&&(!parsed.data.orderStageId||row.order_stage_id===parsed.data.orderStageId));
-        if(!valid||Math.abs(oldTotal-amount)>0.009)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","توزيع الإنتاج القديم لا يطابق الموظف/الطلبية أو إجمالي الدفعة؛ يلزم مراجعة محاسبية يدوية",409);
+        if(!valid||oldTotal>amount+0.009)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","توزيع الإنتاج القديم لا يطابق الموظف/الطلبية أو يتجاوز إجمالي الدفعة؛ يلزم مراجعة محاسبية يدوية",409);
         for(const row of oldAllocations.rows){
           if(settlementId){
             await client.query("INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,$3)",[settlementId,row.production_entry_id,row.amount]);
@@ -784,7 +784,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.production_entry_id,row.amount]);
           }
         }
-        remaining=0;
+        remaining=Math.round((amount-oldTotal)*100)/100;
       }
       if(remaining>0.009){
         const eligible=await client.query(`
