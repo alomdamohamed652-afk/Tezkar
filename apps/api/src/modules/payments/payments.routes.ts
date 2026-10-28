@@ -662,10 +662,14 @@ export async function paymentsRoutes(app:FastifyInstance){
       SELECT wp.id AS payment_id,wp.gross_amount,wp.created_at,wp.employee_id,
              e.code AS employee_code,e.full_name AS employee_name,
              ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,es.id AS settlement_id,
-             COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
-               + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0) AS production_allocated,
-             (COALESCE((SELECT COUNT(*) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
-               + COALESCE((SELECT COUNT(*) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0))::int AS production_allocation_count
+             CASE WHEN es.id IS NOT NULL
+               THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+               ELSE COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
+             END AS production_allocated,
+             CASE WHEN es.id IS NOT NULL
+               THEN COALESCE((SELECT COUNT(*) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+               ELSE COALESCE((SELECT COUNT(*) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
+             END::int AS production_allocation_count
         FROM worker_payments wp
         JOIN employees e ON e.id=wp.employee_id
         LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
