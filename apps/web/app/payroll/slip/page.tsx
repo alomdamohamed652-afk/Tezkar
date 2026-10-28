@@ -12,6 +12,7 @@ type PayrollItem = {
   status: string; notes: string | null;
 };
 type PayrollData = { period: { id: string; period_month: string; status: string } | null; items: PayrollItem[] };
+type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
 const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل" };
@@ -19,6 +20,7 @@ const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIA
 export default function PayrollSlipPage() {
   const [item, setItem] = useState<PayrollItem | null>(null);
   const [periodStatus, setPeriodStatus] = useState("");
+  const [adjustments, setAdjustments] = useState<AdjustmentLine[]>([]);
   const [month, setMonth] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -37,6 +39,12 @@ export default function PayrollSlipPage() {
         if (!found) { setError("لم يتم العثور على بند المرتب لهذا الشهر. تأكد من اعتماد المسير وصحة الرابط."); return; }
         setItem(found);
         setPeriodStatus(result.data.period?.status || "");
+        try {
+          const lines = await api<{data:AdjustmentLine[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/adjustments");
+          if (active) setAdjustments(lines.data);
+        } catch {
+          if (active) setError("تعذر تحميل تفاصيل المكافآت والخصومات. أعد تحميل الصفحة.");
+        }
       })
       .catch(e => { if (active) setError(e instanceof Error ? e.message : "تعذر تحميل مفردات المرتب."); })
       .finally(() => { if (active) setLoading(false); });
@@ -47,8 +55,10 @@ export default function PayrollSlipPage() {
   if (error || !item) return <main className="slip-state" dir="rtl"><p>{error || "تعذر تحميل المستند."}</p><button onClick={() => window.close()}>إغلاق</button></main>;
 
   const approved = periodStatus === "APPROVED" || periodStatus === "CLOSED";
-  const totalEarnings = Number(item.base_salary) + Number(item.bonus_amount);
-  const totalDeductions = Number(item.deduction_amount) + Number(item.advance_repayment_amount || 0);
+  const bonusLines = adjustments.filter(line => line.line_type === "BONUS");
+  const deductionLines = adjustments.filter(line => line.line_type === "DEDUCTION");
+  const totalEarnings = Number(item.base_salary) + bonusLines.reduce((sum,line)=>sum+Number(line.amount),0);
+  const totalDeductions = deductionLines.reduce((sum,line)=>sum+Number(line.amount),0) + Number(item.advance_repayment_amount || 0);
   const documentNo = "SAL-" + month.replace("-", "") + "-" + item.id.slice(0, 8).toUpperCase();
 
   return (
@@ -79,7 +89,8 @@ export default function PayrollSlipPage() {
           <table><thead><tr><th>البيان</th><th>المبلغ (جنيه مصري)</th></tr></thead>
             <tbody>
               <tr><td>الراتب الأساسي</td><td>{money(item.base_salary)}</td></tr>
-              <tr><td>المكافآت والبونصات المسجلة في المسير</td><td>{money(item.bonus_amount)}</td></tr>
+              {bonusLines.map(line=><tr key={line.id}><td>{line.description}{line.notes?<small className="line-note">{line.notes}</small>:null}</td><td>{money(line.amount)}</td></tr>)}
+              {!bonusLines.length && <tr><td>لا توجد مكافآت مسجلة</td><td>{money(0)}</td></tr>}
               <tr className="subtotal"><td>إجمالي الاستحقاقات</td><td>{money(totalEarnings)}</td></tr>
             </tbody>
           </table>
@@ -90,7 +101,8 @@ export default function PayrollSlipPage() {
           <h3>ثانيًا: الاستقطاعات</h3>
           <table><thead><tr><th>البيان</th><th>المبلغ (جنيه مصري)</th></tr></thead>
             <tbody>
-              <tr><td>الخصومات المسجلة</td><td>{money(item.deduction_amount)}</td></tr>
+              {deductionLines.map(line=><tr key={line.id}><td>{line.description}{line.notes?<small className="line-note">{line.notes}</small>:null}</td><td>{money(line.amount)}</td></tr>)}
+              {!deductionLines.length && <tr><td>لا توجد خصومات مسجلة</td><td>{money(0)}</td></tr>
               <tr><td>سداد السلف / أقساط السلف</td><td>{money(item.advance_repayment_amount || 0)}</td></tr>
               <tr className="subtotal"><td>إجمالي الاستقطاعات</td><td>{money(totalDeductions)}</td></tr>
             </tbody>
@@ -148,7 +160,7 @@ export default function PayrollSlipPage() {
         .slip-section td, .slip-section th { padding: 10px 12px; border: 1px solid #dce5ee; }
         .slip-section td:last-child, .slip-section th:last-child { text-align: left; width: 34%; font-variant-numeric: tabular-nums; }
         .subtotal td { font-weight: 800; background: #f7fafc; }
-        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }
+        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }\n        .line-note { display:block; color:#718096; margin-top:4px; font-size:10px; }
         .settlement-box { border: 1px solid #dce5ee; border-radius: 7px; padding: 13px; background: #fbfcfd; }
         .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
         .settlement-box p { margin: 10px 0 0; color: #65758a; font-size: 11px; line-height: 1.7; }
