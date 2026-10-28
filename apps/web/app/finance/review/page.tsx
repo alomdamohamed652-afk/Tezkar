@@ -19,6 +19,7 @@ type Payment = {
   order_stage_id: string | null;
   order_code: string | null;
   order_name: string | null;
+  order_stage_name?: string | null;
   production_allocated: number;
   production_allocation_count: number;
 };
@@ -92,15 +93,13 @@ export default function FinanceExceptionsPage() {
   async function allocate() {
     if (!selected) return;
     if (!orderId) { setError("اختار الطلبية اللي تخصها الدفعة."); return; }
-    if (selected.order_stage_id && stageId !== selected.order_stage_id) {
-      setError("الدفعة مرتبطة بمرحلة محددة بالفعل؛ لازم تختار نفس المرحلة.");
-      return;
-    }
+    if (selected.order_id && orderId !== selected.order_id) { setError("الدفعة مرتبطة بطلبية محددة بالفعل؛ لازم تفضل على نفس الطلبية."); return; }
+    const effectiveStageId = selected.order_stage_id ?? stageId;
     setSaving(true); setError(""); setSuccess("");
     try {
       await api("/api/worker-payments/" + encodeURIComponent(selected.payment_id) + "/allocate-historical", {
         method: "POST",
-        body: JSON.stringify({ orderId, ...(stageId ? { orderStageId: stageId } : {}) })
+        body: JSON.stringify({ orderId, ...(effectiveStageId ? { orderStageId: effectiveStageId } : {}) })
       });
       setSuccess("تم ربط الدفعة القديمة بالطلبية والمرحلة المحددتين. لم يتم إنشاء دفعة نقدية جديدة.");
       setSelectedId(""); setOrderId(""); setStageId(""); setStages([]);
@@ -146,8 +145,8 @@ export default function FinanceExceptionsPage() {
           {selected && <section className="card">
             <div className="card-header"><div><h2 className="card-title">مراجعة دفعة {selected.employee_name}</h2><p className="form-hint">إجمالي الدفعة: {money(Number(selected.gross_amount))} · حصة الإنتاج المتوقعة: {money(Number(selected.expected_production_amount ?? selected.gross_amount))} · الموزع حاليًا: {money(Number(selected.production_allocated))} · عدد قيود الإنتاج: {selected.production_allocation_count}</p></div><button type="button" className="secondary-btn" onClick={() => choosePayment("")}>إلغاء التحديد</button></div>
             <div className="card-body"><div className="production-grid">
-              <label>الطلبية<SearchableSelect value={orderId} onChange={value => { setOrderId(value); setStageId(""); }} options={orders.map(o => ({value:o.id,label:o.order_name,meta:o.code}))} placeholder="اختار الطلبية" searchPlaceholder="ابحث باسم الطلبية أو كودها" /></label>
-              <label>المرحلة (اختياري)<SearchableSelect value={stageId} onChange={setStageId} options={stages.map(s => ({value:s.id,label:s.stage_name,meta:"مرحلة " + s.sequence_no}))} disabled={!orderId || stages.length===0 || Boolean(selected.order_stage_id)} placeholder={!orderId ? "اختار الطلبية أولًا" : selected.order_stage_id ? "المرحلة محددة من القيد الأصلي" : stages.length ? "اختار مرحلة لو مطلوبة" : "لا توجد مراحل متاحة"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
+              <label>الطلبية<SearchableSelect value={orderId} onChange={value => { setOrderId(value); setStageId(""); }} options={orders.map(o => ({value:o.id,label:o.order_name,meta:o.code}))} disabled={Boolean(selected.order_id)} placeholder="اختار الطلبية" searchPlaceholder="ابحث باسم الطلبية أو كودها" /></label>
+              <label>المرحلة{selected.order_stage_id ? <input readOnly value={selected.order_stage_name || ("مرحلة مرتبطة بالقيد الأصلي · "+selected.order_stage_id)} /> : " (اختياري)"}{selected.order_stage_id ? null : <SearchableSelect value={stageId} onChange={setStageId} options={stages.map(s => ({value:s.id,label:s.stage_name,meta:"مرحلة " + s.sequence_no}))} disabled={!orderId || stages.length===0} placeholder={!orderId ? "اختار الطلبية أولًا" : stages.length ? "اختار مرحلة لو مطلوبة" : "لا توجد مراحل متاحة"} searchPlaceholder="ابحث في مراحل الطلبية" />}</label>
             </div>
             {selected.order_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بالفعل بطلبية في القيد المحاسبي؛ لازم تفضل على نفس الطلبية.</p>}
             {selected.order_stage_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بمرحلة في القيد المحاسبي؛ لازم تفضل على نفس المرحلة.</p>}
