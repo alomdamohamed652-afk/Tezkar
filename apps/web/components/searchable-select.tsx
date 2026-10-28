@@ -5,8 +5,8 @@ import { createPortal } from "react-dom";
 
 type Option={value:string;label:string;meta?:string};
 
-export function SearchableSelect({value,onChange,options,placeholder="اختر...",searchPlaceholder="ابحث...",disabled=false}:{
- value:string; onChange:(value:string)=>void; options:Option[]; placeholder?:string; searchPlaceholder?:string; disabled?:boolean;
+export function SearchableSelect({value,onChange,options,placeholder="اختر...",searchPlaceholder="ابحث...",disabled=false,ariaLabel}:{
+ value:string; onChange:(value:string)=>void; options:Option[]; placeholder?:string; searchPlaceholder?:string; disabled?:boolean; ariaLabel?:string;
 }){
  const [open,setOpen]=useState(false);
  const [query,setQuery]=useState("");
@@ -56,7 +56,7 @@ export function SearchableSelect({value,onChange,options,placeholder="اختر..
    </div>
   </div>,document.body):null;
  return <div className="search-select" ref={ref}>
-  <button ref={triggerRef} type="button" className="search-select-trigger" disabled={disabled} aria-expanded={open} onClick={()=>{setOpen(v=>!v);setQuery("")}}>
+  <button ref={triggerRef} type="button" className="search-select-trigger" disabled={disabled} aria-label={ariaLabel} aria-expanded={open} onClick={()=>{setOpen(v=>!v);setQuery("")}}>
    <span className={"search-select-current"+(current?"":" placeholder")}><span className="search-select-current-label">{current?.label??placeholder}</span>{current?.meta&&<small className="search-select-current-meta">{current.meta}</small>}</span><span className="search-select-trigger-actions">{value&&!disabled&&<span role="button" aria-label="مسح الاختيار" className="search-select-clear" onClick={e=>{e.stopPropagation();onChange("");setQuery("")}}>×</span>}<span className="search-select-chevron">⌄</span></span>
   </button>
   {menu}
