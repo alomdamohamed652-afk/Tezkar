@@ -825,10 +825,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // A legacy previous-custody payout with a settlement row but no production allocation
       // must be linked to its explicitly referenced order, then disappear from unpaid production.
       const reconcileOrderStage=(await apiPool.query(
-        "SELECT id,stage_id FROM order_stages WHERE order_id=$1 AND is_final_product=TRUE ORDER BY sequence_no LIMIT 1",
-        [hamzaOrder.json().data.id]
+        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 AND is_final_product=TRUE ORDER BY sequence_no LIMIT 1",
+        [multiOrderId]
       )).rows[0];
       assert.ok(reconcileOrderStage,"the test order should have a final production stage");
+      const reconcileProduct=(await apiPool.query("SELECT id,unit_id FROM products WHERE id=$1",[reconcileOrderStage.output_product_id])).rows[0];
+      assert.ok(reconcileProduct,"the final production stage should have an output product");
       const reconcileRateGroup=(await apiPool.query(
         "INSERT INTO rate_groups(name) VALUES($1) RETURNING id",
         ["Historical reconciliation rate group "+randomBytes(4).toString("hex")]
@@ -841,7 +843,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
          VALUES($1,$2,$3,$4,$5,10,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
          RETURNING id`,
-        [hamzaProducts.rows[0].product_id,reconcileOrderStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,bonusProduct.unit_id,manager.id]
+        [reconcileProduct.id,reconcileOrderStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,reconcileProduct.unit_id,manager.id]
       )).rows[0];
       const reconcileProduction=(await apiPool.query(
         `INSERT INTO production_entries(
@@ -851,8 +853,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
          RETURNING id,total_earning_amount`,
-        [bonusWorkerEmployee.id,reconcileOrderStage.id,hamzaProducts.rows[0].product_id,reconcileOrderStage.stage_id,
-         reconcileShift.id,bonusProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+        [bonusWorkerEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(reconcileProduction.total_earning_amount),10);
       const reconcileKey=randomUUID();
@@ -868,7 +870,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       )).rows[0];
       const reconcileExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
-        payload:{orderId:hamzaOrder.json().data.id,orderStageId:reconcileOrderStage.id,category:"WORKER_PAYMENT",
+        payload:{orderId:multiOrderId,orderStageId:reconcileOrderStage.id,category:"WORKER_PAYMENT",
           description:"Historical worker settlement reconciliation test",amount:10,expenseDate:(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date,
           expenseType:"DIRECT",paymentMethod:"CASH",historicalSettlement:true,idempotencyKey:reconcileKey}
       });
