@@ -51,6 +51,11 @@ async function assertAccountingDateOpen(client:import("pg").PoolClient,date:stri
 }
 
 export async function accountingRoutes(app:FastifyInstance){
+ app.get("/api/accounting/historical-expense-orders",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async()=>{
+  const result=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status<>'CANCELLED' ORDER BY created_at DESC,id");
+  return {data:result.rows};
+ });
+
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر المصروفات غير صحيح",422);
