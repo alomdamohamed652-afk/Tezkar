@@ -4,7 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
@@ -1353,7 +1353,7 @@ export async function productionRoutes(app: FastifyInstance) {
     return {data:result.rows};
   });
 
-  app.get("/api/production/earnings/order-summary", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async request => {
+  app.get("/api/production/earnings/order-summary", { preHandler: [authenticateRequest, requireAnyPermission(["production.view","all"],["worker_payments.pay","all"])] }, async request => {
     const q=z.object({orderId:z.string().uuid().optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر حساب الطلبيات غير صحيحة",422);
     const values:unknown[]=[];const filters:string[]=[];
