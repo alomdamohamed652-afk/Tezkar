@@ -24,7 +24,7 @@ These are not fully interchangeable: current-custody payouts, previous-custody a
 **Proposed target**
 - Keep **/payments** as the home for employee requests, approval, current-custody payout, historical payment reconciliation, and employee payment statements.
 - Keep **/finance/worker-settlements** for previous/off-system custody settlements and their linked accounting expenses.
-- Treat **/earnings/direct-pay** as an orphan/legacy candidate. Before redirecting or retiring it, verify role permissions and whether any external bookmarks depend on it. Do not delete the underlying API or payment records.
+- **Action in PR #197:** preserve **/earnings/direct-pay** as a compatibility route that redirects users with payout permission to **/payments**. The old route is not deleted, so existing bookmarks continue to resolve; the underlying API and payment records remain unchanged. PR #197 also exposes the unified page in navigation for payout-only roles and separates request-view permissions from payout access.
 
 **Required acceptance tests:** same employee balance in all views; no duplicate payout across entry points; cash custody reflects only physical cash; historical allocation never creates a second payment; idempotent retries do not duplicate accounting/custody entries.
 
