@@ -175,6 +175,12 @@ const machineProductionSchema = z.object({
   machineId: z.string().uuid(),
   productId: z.string().uuid(),
   employeeId: z.string().uuid().nullable().optional(),
+  operatorEmployeeIds: z.array(z.string().uuid()).max(20).optional().default([]),
+  laserDesignVersionId: z.string().uuid().nullable().optional(),
+  cyclesCount: z.number().int().positive().optional(),
+  goodQuantity: z.number().nonnegative().optional(),
+  scrapQuantity: z.number().nonnegative().optional().default(0),
+  scrapReason: z.string().trim().max(500).nullable().optional(),
   shiftId: z.string().uuid().nullable().optional(),
   workDate: z.string().date(),
   quantity: z.number().positive(),
@@ -668,12 +674,41 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
+    if(parsed.data.laserDesignVersionId && !parsed.data.cyclesCount) throw new AppError("CYCLES_REQUIRED","أدخل عدد دورات التشغيل عند ربط الإنتاج بإصدار تصميم ليزر",422);
+    if(!parsed.data.laserDesignVersionId && Number(parsed.data.scrapQuantity ?? 0)>0) throw new AppError("LASER_DESIGN_REQUIRED","سجّل إصدار تصميم الليزر قبل إدخال كمية الهالك",422);
+    if(parsed.data.goodQuantity!=null && Math.abs(parsed.data.goodQuantity-parsed.data.quantity)>0.0001) throw new AppError("GOOD_QUANTITY_MISMATCH","الكمية المخزنية يجب أن تساوي الكمية الجيدة",422);
+    if(Number(parsed.data.scrapQuantity ?? 0)>0 && !parsed.data.scrapReason?.trim()) throw new AppError("SCRAP_REASON_REQUIRED","أدخل سبب الهالك عند تسجيل كمية هالك",422);
+    if(new Set(parsed.data.operatorEmployeeIds).size!==parsed.data.operatorEmployeeIds.length) throw new AppError("DUPLICATE_OPERATOR","لا يمكن اختيار نفس المشغل أكثر من مرة",422);
     const row=await withTransaction(async(client)=>{
       await assertAccountingPeriodOpen(client, parsed.data.workDate);
       const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
       if(!machine.rowCount) throw new AppError("MACHINE_NOT_FOUND","الماكينة غير موجودة أو غير نشطة",422);
+      let laserExpectedQuantity: number | null = null;
+      let laserGoodQuantity: number | null = null;
+      const laserScrapQuantity = Number(parsed.data.scrapQuantity ?? 0);
+      if(parsed.data.laserDesignVersionId){
+        const compatible = await client.query(`
+          SELECT v.id,v.product_id,COALESCE(c.pieces_per_cycle_override,v.pieces_per_cycle) AS pieces_per_cycle
+          FROM laser_machine_design_compatibility c
+          JOIN laser_design_versions v ON v.id=c.design_version_id AND v.status='ACTIVE'
+          JOIN laser_designs d ON d.id=v.design_id AND d.status='ACTIVE'
+          WHERE c.machine_id=$1 AND c.design_version_id=$2 AND c.is_active=TRUE
+            AND c.effective_from<=$3::date AND (c.effective_to IS NULL OR c.effective_to>=$3::date)
+          FOR SHARE OF c,v,d
+        `,[parsed.data.machineId,parsed.data.laserDesignVersionId,parsed.data.workDate]);
+        if(!compatible.rowCount) throw new AppError("LASER_DESIGN_NOT_COMPATIBLE","إصدار التصميم غير متوافق مع الماكينة المختارة أو أن التوافق غير سارٍ في تاريخ الإنتاج",422);
+        if(compatible.rows[0].product_id && compatible.rows[0].product_id!==parsed.data.productId) throw new AppError("LASER_DESIGN_PRODUCT_MISMATCH","المنتج المرتبط بإصدار التصميم لا يطابق منتج مرحلة الطلبية",409);
+        laserExpectedQuantity = Number(parsed.data.cyclesCount) * Number(compatible.rows[0].pieces_per_cycle);
+        laserGoodQuantity = Number(parsed.data.goodQuantity ?? parsed.data.quantity);
+        if(laserGoodQuantity + laserScrapQuantity > laserExpectedQuantity + 0.0001) throw new AppError("LASER_QUANTITY_EXCEEDS_EXPECTED","مجموع الكمية الجيدة والهالك يتجاوز الناتج المتوقع من عدد الدورات",422);
+      }
       const product = await client.query("SELECT id,unit_id,track_inventory FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
+      const operatorIds = [...new Set([...(parsed.data.employeeId ? [parsed.data.employeeId] : []),...parsed.data.operatorEmployeeIds])];
+      if(operatorIds.length){
+        const activeOperators = await client.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[operatorIds]);
+        if(activeOperators.rowCount!==operatorIds.length) throw new AppError("EMPLOYEE_NOT_ACTIVE","أحد المشغلين غير موجود أو غير نشط",422);
+      }
       if(parsed.data.employeeId){
         const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);
         if(!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);
@@ -705,10 +740,20 @@ export async function orderRoutes(app: FastifyInstance) {
       }
       const unitId=parsed.data.unitId ?? product.rows[0].unit_id;
       const r=await client.query(
-        `INSERT INTO machine_productions(order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11) RETURNING *`,
-        [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId]
+        `INSERT INTO machine_productions(
+          order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by,
+          laser_design_version_id,cycles_count,expected_quantity,good_quantity,scrap_quantity,scrap_reason
+        ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+        [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId,
+          parsed.data.laserDesignVersionId ?? null,parsed.data.cyclesCount ?? null,laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity,parsed.data.scrapReason?.trim() || null]
       );
+      for(const operatorId of operatorIds){
+        await client.query(
+          `INSERT INTO machine_production_operators(machine_production_id,employee_id,operator_role)
+           VALUES($1,$2,$3) ON CONFLICT(machine_production_id,employee_id) DO NOTHING`,
+          [r.rows[0].id,operatorId,operatorId===parsed.data.employeeId ? "PRIMARY" : "TEAM"]
+        );
+      }
       // Order-linked machine output must enter the virtual warehouse for its stage.
       // Keep the stock receipt, cost lot, stage progress, and production record atomic.
       if (parsed.data.orderStageId) {
@@ -799,9 +844,15 @@ export async function orderRoutes(app: FastifyInstance) {
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
     const r=await pool.query(
       `SELECT mp.id,mp.code,mp.machine_id,mp.employee_id,mp.order_stage_id,mp.production_type_id,
+              mp.laser_design_version_id,mp.cycles_count,mp.expected_quantity,
+              COALESCE(mp.good_quantity,mp.quantity) AS good_quantity,mp.scrap_quantity,mp.scrap_reason,
               os.order_id,to_char(mp.work_date,'YYYY-MM-DD') AS work_date,mp.quantity,mp.notes,mp.status,mp.cancellation_reason,
               m.code AS machine_code,m.name AS machine_name,p.code AS product_code,p.name AS product_name,
-              e.full_name AS employee_name,o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name
+              e.full_name AS employee_name,o.code AS order_code,o.order_name,s.name AS stage_name,pt.name AS production_type_name,
+              ld.code AS design_code,ld.name AS design_name,ldv.version_no AS design_version_no,
+              COALESCE((SELECT string_agg(e2.full_name, ', ' ORDER BY e2.full_name)
+                FROM machine_production_operators mpo JOIN employees e2 ON e2.id=mpo.employee_id
+                WHERE mpo.machine_production_id=mp.id AND mpo.operator_role='TEAM'),'') AS team_operator_names
          FROM machine_productions mp
          JOIN machines m ON m.id=mp.machine_id
          JOIN products p ON p.id=mp.product_id
@@ -810,6 +861,8 @@ export async function orderRoutes(app: FastifyInstance) {
          LEFT JOIN production_orders o ON o.id=os.order_id
          LEFT JOIN stages s ON s.id=os.stage_id
          LEFT JOIN production_types pt ON pt.id=mp.production_type_id
+         LEFT JOIN laser_design_versions ldv ON ldv.id=mp.laser_design_version_id
+         LEFT JOIN laser_designs ld ON ld.id=ldv.design_id
         ORDER BY mp.created_at DESC LIMIT 500`);
     return {data:r.rows};
   });
