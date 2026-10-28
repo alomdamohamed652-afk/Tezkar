@@ -1047,7 +1047,7 @@ export async function orderRoutes(app: FastifyInstance) {
           AND (t.design_version_id IS NULL OR mp.laser_design_version_id=t.design_version_id)
           AND (t.shift_id IS NULL OR mp.shift_id=t.shift_id)
           AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
-        WHERE t.is_active=TRUE
+        WHERE (t.is_active=TRUE OR t.effective_from<=CURRENT_DATE)
           AND ($1::date IS NULL OR t.effective_to >= $1::date)
           AND ($2::date IS NULL OR t.effective_from <= $2::date)
           AND ($3::uuid IS NULL OR t.machine_id=$3::uuid)
