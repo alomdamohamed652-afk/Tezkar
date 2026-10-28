@@ -5,9 +5,10 @@ import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 
 type Machine = { id: string; code: string; name: string; machine_type?: string | null };
+type Product = { id: string; code: string; name: string };
 const localDateKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 type Design = { id: string; code: string; name: string; thumbnail_url?: string | null; file_reference?: string | null; status: "ACTIVE" | "ARCHIVED"; version_count: number; latest_version_no: number | null };
-type DesignVersion = { id: string; design_id: string; version_no: number; material_type: string; material_thickness_mm: string | number | null; width_mm: string | number | null; height_mm: string | number | null; unit_label: string; pieces_per_cycle: number; standard_cycle_seconds: string | number | null; notes?: string | null; status: "ACTIVE" | "ARCHIVED"; design_code: string; design_name: string; design_status?: "ACTIVE" | "ARCHIVED" };
+type DesignVersion = { id: string; design_id: string; product_id?: string | null; version_no: number; material_type: string; material_thickness_mm: string | number | null; width_mm: string | number | null; height_mm: string | number | null; unit_label: string; pieces_per_cycle: number; standard_cycle_seconds: string | number | null; notes?: string | null; status: "ACTIVE" | "ARCHIVED"; design_code: string; design_name: string; design_status?: "ACTIVE" | "ARCHIVED" };
 type Compatibility = { id: string; machine_id: string; design_version_id: string; settings_notes?: string | null; pieces_per_cycle_override?: number | null; standard_cycle_seconds_override?: string | number | null; effective_from: string; effective_to?: string | null; is_active: boolean; machine_code: string; machine_name: string; design_id: string; design_code: string; design_name: string; design_status: string; version_no: number; material_type: string; material_thickness_mm: string | number | null; unit_label: string; pieces_per_cycle: number; standard_cycle_seconds: string | number | null; version_status: string };
 
 export default function LaserDesignsPage() {
@@ -15,11 +16,13 @@ export default function LaserDesignsPage() {
   const [designs, setDesigns] = useState<Design[]>([]);
   const [versions, setVersions] = useState<DesignVersion[]>([]);
   const [machines, setMachines] = useState<Machine[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [compatibility, setCompatibility] = useState<Compatibility[]>([]);
   const [designName, setDesignName] = useState("");
   const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [fileReference, setFileReference] = useState("");
   const [versionDesignId, setVersionDesignId] = useState("");
+  const [versionProductId, setVersionProductId] = useState("");
   const [versionNo, setVersionNo] = useState("1");
   const [materialType, setMaterialType] = useState("MDF");
   const [thickness, setThickness] = useState("");
@@ -42,15 +45,17 @@ export default function LaserDesignsPage() {
 
   async function load() {
     try {
-      const [d, v, m, c] = await Promise.all([
+      const [d, v, m, p, c] = await Promise.all([
         api<{ data: Design[] }>("/api/laser-designs"),
         api<{ data: DesignVersion[] }>("/api/laser-design-versions"),
         api<{ data: Machine[] }>("/api/machines"),
+        api<{ data: Product[] }>("/api/products"),
         api<{ data: Compatibility[] }>("/api/laser-machine-design-compatibility")
       ]);
       setDesigns(d.data);
       setVersions(v.data);
       setMachines(m.data);
+      setProducts(p.data);
       setCompatibility(c.data);
       if (!versionDesignId && d.data.find(x => x.status === "ACTIVE")) setVersionDesignId(d.data.find(x => x.status === "ACTIVE")!.id);
       if (!compatMachineId && m.data[0]) setCompatMachineId(m.data[0].id);
@@ -86,6 +91,7 @@ export default function LaserDesignsPage() {
     setSaving("version"); setError(""); setNotice("");
     try {
       await api("/api/laser-designs/" + versionDesignId + "/versions", { method: "POST", body: JSON.stringify({
+        productId: versionProductId || null,
         versionNo: Number(versionNo), materialType: materialType.trim(),
         materialThicknessMm: thickness === "" ? null : Number(thickness),
         widthMm: width === "" ? null : Number(width), heightMm: height === "" ? null : Number(height),
@@ -169,6 +175,7 @@ export default function LaserDesignsPage() {
           <div className="form-grid">
             <label>التصميم<select value={versionDesignId} onChange={e => setVersionDesignId(e.target.value)} required><option value="">اختر التصميم</option>{designs.filter(x => x.status === "ACTIVE").map(x => <option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
             <label>رقم الإصدار<input type="number" min="1" step="1" value={versionNo} onChange={e => setVersionNo(e.target.value)} required /></label>
+            <label>المنتج المرتبط (اختياري)<select value={versionProductId} onChange={e => setVersionProductId(e.target.value)}><option value="">بدون ربط منتج</option>{products.map(x => <option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
             <label>نوع الخامة<input value={materialType} onChange={e => setMaterialType(e.target.value)} required placeholder="MDF / أكريليك" /></label>
             <label>سُمك الخامة (مم)<input type="number" min="0" step="0.001" value={thickness} onChange={e => setThickness(e.target.value)} /></label>
             <label>العرض (مم)<input type="number" min="0.001" step="0.001" value={width} onChange={e => setWidth(e.target.value)} /></label>
