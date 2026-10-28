@@ -780,7 +780,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN prior_es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                     WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
+                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
                        THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
                      ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
@@ -792,12 +793,18 @@ export async function paymentsRoutes(app:FastifyInstance){
              )) AS expected_production_amount,
              e.code AS employee_code,e.full_name AS employee_name,
              ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,original_stage_lookup.name AS order_stage_name,es.id AS settlement_id,
-             CASE WHEN es.id IS NOT NULL
-               THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+             CASE
+               WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id)
+                 THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+               WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+                 THEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
                ELSE COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
              END AS production_allocated,
-             CASE WHEN es.id IS NOT NULL
-               THEN COALESCE((SELECT COUNT(*) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+             CASE
+               WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id)
+                 THEN COALESCE((SELECT COUNT(*) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+               WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
+                 THEN COALESCE((SELECT COUNT(*) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
                ELSE COALESCE((SELECT COUNT(*) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
              END::int AS production_allocation_count
         FROM worker_payments wp
@@ -816,7 +823,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN prior_es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                     WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
+                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
                        THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
                      ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
@@ -841,7 +849,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN prior_es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                     WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
+                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
                        THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
                      ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
