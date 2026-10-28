@@ -50,8 +50,8 @@ export function SearchableSelect({value,onChange,options,placeholder="اختر..
  const menu= open&&mounted ? createPortal(<div ref={menuRef} className="search-select-menu" style={{top:position.top,left:position.left,width:position.width,maxHeight:position.maxHeight,zIndex:99999}}>
    <input ref={searchRef} autoFocus className="search-select-search" value={query} onChange={e=>{setQuery(e.target.value);setActiveIndex(0)}} placeholder={searchPlaceholder} aria-label={searchPlaceholder}
     onKeyDown={e=>{if(e.key==="ArrowDown"){e.preventDefault();setActiveIndex(i=>Math.min(i+1,filtered.length-1))}else if(e.key==="ArrowUp"){e.preventDefault();setActiveIndex(i=>Math.max(0,i-1))}else if(e.key==="Enter"){e.preventDefault();const option=filtered[activeIndex];if(option)choose(option)}else if(e.key==="Escape"){setOpen(false);setQuery("")}}}/>
-   <div className="search-select-list" style={{maxHeight:position.maxHeight-56,overflowY:"auto"}}>
-    {filtered.map(x=><button type="button" key={x.value} className={"search-select-option"+(x.value===value?" selected":"")+(filtered[activeIndex]?.value===x.value?" active":"")} onMouseEnter={()=>setActiveIndex(i=>filtered.findIndex(item=>item.value===x.value))} onClick={()=>choose(x)}><span>{x.label}</span>{x.meta&&<small>{x.meta}</small>}</button>)}
+   <div className="search-select-list" style={{maxHeight:position.maxHeight-66,overflowY:"auto"}}>
+    {filtered.map(x=><button type="button" key={x.value} className={"search-select-option"+(x.value===value?" selected":"")+(filtered[activeIndex]?.value===x.value?" active":"")} onMouseEnter={()=>setActiveIndex(i=>filtered.findIndex(item=>item.value===x.value))} onClick={()=>choose(x)}><span className="search-select-option-label">{x.label}</span>{x.meta&&<small className="search-select-option-meta">{x.meta}</small>}</button>)}
     {!filtered.length&&<div className="search-select-empty">لا توجد نتائج مطابقة<br/><small>جرّب البحث بالاسم أو الكود</small></div>}
    </div>
   </div>,document.body):null;
