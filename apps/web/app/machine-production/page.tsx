@@ -13,7 +13,10 @@ type OrderStage={id:string;order_id:string;order_name:string;order_code:string;s
 type ProdType=Item;
 type Row={id:string;code:string;work_date:string;quantity:string;status:"ACTIVE"|"CANCELLED";cancellation_reason?:string|null;machine_id:string;employee_id:string|null;order_id:string|null;order_stage_id:string|null;production_type_id:string|null;machine_name:string;product_name:string;employee_name:string|null;order_code:string|null;order_name:string|null;stage_name:string|null;production_type_name:string|null;laser_design_version_id?:string|null;cycles_count?:number|null;expected_quantity?:string|number|null;good_quantity?:string|number|null;scrap_quantity?:string|number|null;scrap_reason?:string|null;design_code?:string|null;design_name?:string|null;design_version_no?:number|null;team_operator_names?:string};
 type MachineDesign={compatibility_id:string;design_id:string;design_version_id:string;design_code:string;design_name:string;version_no:number;material_type:string;material_thickness_mm:string|number|null;unit_label:string;pieces_per_cycle:number;standard_cycle_seconds:string|number|null;settings_notes?:string|null;product_id?:string|null};
+type DesignOption={id:string;design_code:string;design_name:string;version_no:number;material_type:string;status:string;design_status:string};
+type MachineReport={summary:{good_quantity:string|number;scrap_quantity:string|number;run_count:number;cycles_count:string|number;machines_used:number;cancelled_count:number;scrap_rate_percent:number};machineRanking:Array<{machine_id:string;machine_code:string;machine_name:string;good_quantity:string|number;scrap_quantity:string|number;run_count:number;cycles_count:string|number;design_count:number}>;designRanking:Array<{design_id:string;design_code:string;design_name:string;version_no:number;good_quantity:string|number;scrap_quantity:string|number;run_count:number;cycles_count:string|number;machine_count:number}>;operatorRanking:Array<{employee_id:string;employee_code:string;employee_name:string;good_quantity:string|number;scrap_quantity:string|number;run_count:number;cycles_count:string|number}>;note:string};
 const localDateKey=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
+const localMonthStartKey=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`};
 
 export default function MachineProductionPage(){
  const {has}=usePermissions();const [machines,setMachines]=useState<Machine[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[shifts,setShifts]=useState<Item[]>([]),[orders,setOrders]=useState<Order[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[types,setTypes]=useState<ProdType[]>([]),[rows,setRows]=useState<Row[]>([]);
@@ -21,6 +24,7 @@ export default function MachineProductionPage(){
  async function load(){try{const [m,p,e,s,ord,o,t,r]=await Promise.all([api<{data:Machine[]}>("/api/machines"),api<{data:Item[]}>("/api/products"),api<{data:Employee[]}>("/api/employees"),api<{data:Item[]}>("/api/shifts"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProdType[]}>("/api/production-types"),api<{data:Row[]}>("/api/machine-production")]);setMachines(m.data);setProducts(p.data);setEmployees(e.data);setShifts(s.data);setOrders(ord.data);setOrderStages(o.data);setTypes(t.data);setRows(r.data);if(!machine&&m.data[0])setMachine(m.data[0].id);if(!productionType&&t.data[0])setProductionType(t.data[0].id)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل إنتاج الماكينات")}}
  useEffect(()=>{void load()},[]);
  useEffect(()=>{let alive=true;setDesignVersion("");if(!machine){setCompatibleDesigns([]);return()=>{alive=false}}api<{data:MachineDesign[]}>(`/api/machines/${machine}/laser-designs`).then(r=>{if(alive)setCompatibleDesigns(r.data)}).catch(e=>{if(alive){setCompatibleDesigns([]);setError(e instanceof Error?e.message:"تعذر تحميل التصميمات المتوافقة مع الماكينة")}});return()=>{alive=false}},[machine]);
+ useEffect(()=>{let alive=true;if(!has("laser_designs.view"))return()=>{alive=false};api<{data:DesignOption[]}>("/api/laser-design-versions").then(r=>{if(alive)setReportDesignOptions(r.data.filter(x=>x.status==="ACTIVE"&&x.design_status==="ACTIVE"))}).catch(()=>{if(alive)setReportDesignOptions([])});return()=>{alive=false}},[has]);
  const opts=(a:Item[])=>a.map(x=>({value:x.id,label:(x.full_name||x.name||"").trim()||x.code}));
  const orderOpts=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
  const selectedOrderStage=useMemo(()=>orderStages.find(s=>s.id===orderStage),[orderStages,orderStage]);
@@ -50,6 +54,22 @@ export default function MachineProductionPage(){
  async function addMachine(e:FormEvent){e.preventDefault();await submitMachine(false)}
  async function submitMachineProduction(allowDuplicate=false){if(saving)return;if(!orderId)return setError("اختر الطلبية أولًا.");if(!orderStage)return setError("اختر المرحلة المرتبطة بالطلبية.");if(!product)return setError("المرحلة المختارة ليس لها منتج ناتج مربوط. راجع إعدادات مراحل الطلبية.");if(designVersion&&(!Number.isInteger(Number(cyclesCount))||Number(cyclesCount)<1))return setError("أدخل عدد دورات صحيحًا.");if(designVersion&&Number(qty)+Number(scrapQty||0)>expectedLaserQuantity)return setError("الكمية الجيدة والهالك تتجاوز الناتج المتوقع من الدورات.");if(Number(scrapQty||0)>0&&!designVersion)return setError("اختر إصدار تصميم ليزر قبل تسجيل الهالك.");if(Number(scrapQty||0)>0&&!scrapReason.trim())return setError("أدخل سبب الهالك.");const payload={machineId:machine,productId:product,productionTypeId:productionType||null,orderStageId:orderStage,employeeId:employee||null,operatorEmployeeIds:teamOperators,laserDesignVersionId:designVersion||null,cyclesCount:designVersion?Number(cyclesCount):undefined,goodQuantity:designVersion?Number(qty):undefined,scrapQuantity:designVersion?Number(scrapQty||0):0,scrapReason:designVersion?scrapReason.trim()||null:null,shiftId:shift||null,workDate:date,quantity:Number(qty),notes};const signature=JSON.stringify(payload);if(!allowDuplicate&&signature===lastProductionSignature){setDuplicateProductionPending(true);return}setSaving(true);setError("");try{await api("/api/machine-production",{method:"POST",body:JSON.stringify(payload)});setLastProductionSignature(signature);setDuplicateProductionPending(false);setQty("");setNotes("");setScrapQty("0");setScrapReason("");setTeamOperators([]);setCyclesCount("1");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل إنتاج الماكينة")}finally{setSaving(false)}}
  async function addProduction(e:FormEvent){e.preventDefault();await submitMachineProduction(false)}
+ async function runMachineReport(fromOverride?:string,toOverride?:string){
+  const from=fromOverride??reportFrom;const to=toOverride??reportTo;
+  if(from&&to&&from>to){setError("تاريخ البداية يجب ألا يتجاوز تاريخ النهاية.");return}
+  setReportLoading(true);setError("");
+  try{
+   const params=new URLSearchParams();
+   if(from)params.set("from",from);if(to)params.set("to",to);
+   if(reportMachine)params.set("machineId",reportMachine);
+   if(reportDesign)params.set("designVersionId",reportDesign);
+   if(reportEmployee)params.set("employeeId",reportEmployee);
+   if(reportShift)params.set("shiftId",reportShift);
+   const result=await api<{data:MachineReport}>("/api/machine-production/reports?"+params.toString());
+   setReport(result.data);
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تقرير إنتاج الماكينات")}
+  finally{setReportLoading(false)}
+ }
  return <div className="app-shell"><Sidebar active="/machine-production"/><main className="main"><header className="topbar"><div><h1 className="page-title">إنتاج الماكينات</h1><p className="page-subtitle">إنتاج الماكينات يضيف كمية للمخزن ويحدّث تقدم المرحلة فقط؛ لا ينشئ تكلفة مالية ولا يغيّر متوسط تكلفة المخزون.</p></div></header><section className="content">{error&&<div className="alert error">{error}</div>}
  {has("machines.create")&&<><form className="card mini-form" onSubmit={addMachine}><input placeholder="اسم الماكينة" value={name} onChange={e=>setName(e.target.value)} required/><input placeholder="نوع / وصف الماكينة" value={machineType} onChange={e=>setMachineType(e.target.value)}/><button className="primary-button" disabled={machineAddSaving}>{machineAddSaving?"جارٍ الإضافة...":"إضافة ماكينة"}</button></form><section className="card"><div className="card-header"><h2 className="card-title">الماكينات</h2></div><div className="master-list">{machines.map(x=><div className="master-row" key={x.id}><strong>{x.name}</strong><span>{x.machine_type||"بدون وصف"} · {x.code}</span>{has("machines.delete")?<button className="danger-button" onClick={()=>deactivateMachine(x)}>تعطيل</button>:null}</div>)}</div></section></>}
  {has("machine_production.create")&&<form className="card form-card" onSubmit={addProduction}><div className="card-header"><h2 className="card-title">تسجيل إنتاج ماكينة</h2></div><div className="form-grid">
@@ -65,6 +85,36 @@ export default function MachineProductionPage(){
  <label>من تاريخ<input type="date" value={filterFrom} onChange={e=>setFilterFrom(e.target.value)}/></label>
  <label>إلى تاريخ<input type="date" value={filterTo} onChange={e=>setFilterTo(e.target.value)}/></label>
  </div><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>{setFilterMachine("");setFilterEmployee("");setFilterOrder("");setFilterStage("");setFilterType("");setFilterStatus("");setFilterFrom("");setFilterTo("")}}>مسح الفلاتر</button><span className="form-hint">النتائج المطابقة: {visibleRows.length} سجل</span></div></div>
+ {has("machine_production.reports.view")&&<section className="card">
+  <div className="card-header"><div><h2 className="card-title">تقارير وتحليلات إنتاج الماكينات</h2><p className="form-hint">تعتمد الإجماليات على السجلات النشطة فقط، وتُعرض السجلات الملغاة كعدد مستقل. ترتيب المشغلين يعتمد على المشغل الأساسي فقط.</p></div></div>
+  <div className="form-grid">
+   <label>من تاريخ<input type="date" value={reportFrom} onChange={e=>setReportFrom(e.target.value)}/></label>
+   <label>إلى تاريخ<input type="date" value={reportTo} onChange={e=>setReportTo(e.target.value)}/></label>
+   <label>الماكينة<SearchableSelect value={reportMachine} onChange={setReportMachine} options={opts(machines)} placeholder="كل الماكينات"/></label>
+   <label>إصدار التصميم<SearchableSelect value={reportDesign} onChange={setReportDesign} options={reportDesignOptions.map(x=>({value:x.id,label:x.design_code+" — "+x.design_name+" · V"+x.version_no,meta:x.material_type}))} placeholder="كل التصميمات"/></label>
+   <label>المشغل الأساسي<SearchableSelect value={reportEmployee} onChange={setReportEmployee} options={opts(employees)} placeholder="كل المشغلين"/></label>
+   <label>الوردية<SearchableSelect value={reportShift} onChange={setReportShift} options={opts(shifts)} placeholder="كل الورديات"/></label>
+  </div>
+  <div className="form-actions">
+   <button type="button" className="secondary-btn" disabled={reportLoading} onClick={()=>{const today=localDateKey();setReportFrom(today);setReportTo(today);void runMachineReport(today,today)}}>اليوم</button>
+   <button type="button" className="secondary-btn" disabled={reportLoading} onClick={()=>{const from=localMonthStartKey();const to=localDateKey();setReportFrom(from);setReportTo(to);void runMachineReport(from,to)}}>الشهر الحالي</button>
+   <button type="button" className="primary-button" disabled={reportLoading} onClick={()=>void runMachineReport()}>{reportLoading?"جارٍ إعداد التقرير...":"تحديث التقرير"}</button>
+   <button type="button" className="secondary-btn" disabled={reportLoading} onClick={()=>{setReportMachine("");setReportDesign("");setReportEmployee("");setReportShift("");setReport(null)}}>مسح فلاتر التقرير</button>
+  </div>
+  {report&&<><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12,marginBottom:16}}>
+   <div className="card"><div className="form-hint">إجمالي الإنتاج الجيد</div><strong>{formatQuantity(report.summary.good_quantity,0)}</strong></div>
+   <div className="card"><div className="form-hint">إجمالي الهالك</div><strong>{formatQuantity(report.summary.scrap_quantity,0)}</strong></div>
+   <div className="card"><div className="form-hint">معدل الهالك</div><strong>{Number(report.summary.scrap_rate_percent||0).toFixed(2)}%</strong></div>
+   <div className="card"><div className="form-hint">دورات التشغيل</div><strong>{formatQuantity(report.summary.cycles_count,0)}</strong></div>
+   <div className="card"><div className="form-hint">عمليات نشطة</div><strong>{report.summary.run_count}</strong></div>
+   <div className="card"><div className="form-hint">ماكينات أنتجت</div><strong>{report.summary.machines_used}</strong></div>
+   <div className="card"><div className="form-hint">سجلات ملغاة</div><strong>{report.summary.cancelled_count}</strong></div>
+  </div>
+  <h3 className="card-title">ترتيب الماكينات</h3><div className="table-wrap"><table><thead><tr><th>الترتيب</th><th>الماكينة</th><th>إنتاج جيد</th><th>هالك</th><th>الدورات</th><th>عمليات</th><th>تصميمات</th></tr></thead><tbody>{report.machineRanking.map((x,i)=><tr key={x.machine_id}><td>{i+1}</td><td>{x.machine_name} ({x.machine_code})</td><td>{formatQuantity(x.good_quantity,0)}</td><td>{formatQuantity(x.scrap_quantity,0)}</td><td>{formatQuantity(x.cycles_count,0)}</td><td>{x.run_count}</td><td>{x.design_count}</td></tr>)}{!report.machineRanking.length&&<tr><td colSpan={7}>لا توجد بيانات لهذه الفترة.</td></tr>}</tbody></table></div>
+  <h3 className="card-title" style={{marginTop:18}}>ترتيب التصميمات</h3><div className="table-wrap"><table><thead><tr><th>الترتيب</th><th>التصميم</th><th>الإصدار</th><th>إنتاج جيد</th><th>هالك</th><th>الدورات</th><th>ماكينات</th></tr></thead><tbody>{report.designRanking.map((x,i)=><tr key={x.design_id+"-"+x.version_no}><td>{i+1}</td><td>{x.design_code} — {x.design_name}</td><td>V{x.version_no}</td><td>{formatQuantity(x.good_quantity,0)}</td><td>{formatQuantity(x.scrap_quantity,0)}</td><td>{formatQuantity(x.cycles_count,0)}</td><td>{x.machine_count}</td></tr>)}{!report.designRanking.length&&<tr><td colSpan={7}>لا توجد سجلات مرتبطة بتصميم ليزر لهذه الفترة.</td></tr>}</tbody></table></div>
+  <h3 className="card-title" style={{marginTop:18}}>ترتيب المشغلين الأساسيين</h3><div className="table-wrap"><table><thead><tr><th>الترتيب</th><th>المشغل</th><th>إنتاج جيد</th><th>هالك</th><th>الدورات</th><th>عمليات</th></tr></thead><tbody>{report.operatorRanking.map((x,i)=><tr key={x.employee_id}><td>{i+1}</td><td>{x.employee_name} ({x.employee_code})</td><td>{formatQuantity(x.good_quantity,0)}</td><td>{formatQuantity(x.scrap_quantity,0)}</td><td>{formatQuantity(x.cycles_count,0)}</td><td>{x.run_count}</td></tr>)}{!report.operatorRanking.length&&<tr><td colSpan={6}>لا توجد بيانات مشغل أساسي لهذه الفترة.</td></tr>}</tbody></table></div>
+  <p className="form-hint">{report.note}</p></>}
+ </section>}
  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:12,marginBottom:16}}>
  <div className="card"><div className="form-hint">إجمالي الكميات المسجلة (+)</div><strong>{formatQuantity(machineTotals.added,0)}</strong></div>
  <div className="card"><div className="form-hint">الكميات الملغاة / المطروحة (−)</div><strong>{formatQuantity(machineTotals.cancelled,0)}</strong></div>
