@@ -24,7 +24,6 @@ export default function PayrollPage(){
  const [employees,setEmployees]=useState<Employee[]>([]),[payroll,setPayroll]=useState<PayrollData>({period:null,items:[],totals:{employees:0,net:0,paid:0,remaining:0}});
  const [month,setMonth]=useState(monthNow()),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
  const [employeeId,setEmployeeId]=useState(""),[monthlySalary,setMonthlySalary]=useState(""),[effectiveFrom,setEffectiveFrom]=useState(today()),[salaryNotes,setSalaryNotes]=useState("");
- const [adjustments,setAdjustments]=useState<Record<string,{bonus:string;deduction:string;deductionMode:"FIXED"|"PERCENTAGE";deductionPercentage:string;deductionBasis:"BASE_SALARY"|"BASE_PLUS_BONUS";notes:string}>>({});
  const [payTarget,setPayTarget]=useState<PayrollItem|null>(null),[payAmount,setPayAmount]=useState(""),[payDate,setPayDate]=useState(today()),[payMethod,setPayMethod]=useState("CASH"),[payReference,setPayReference]=useState(""),[payNotes,setPayNotes]=useState(""),[paymentIdempotencyKey,setPaymentIdempotencyKey]=useState("");
  const [historyTarget,setHistoryTarget]=useState<PayrollItem|null>(null),[paymentHistory,setPaymentHistory]=useState<PayrollPayment[]>([]),[historyLoading,setHistoryLoading]=useState(false);
  const [salaryHistory,setSalaryHistory]=useState<SalaryHistoryItem[]>([]),[salaryHistoryEmployeeId,setSalaryHistoryEmployeeId]=useState(""),[salaryHistoryLoading,setSalaryHistoryLoading]=useState(false);
@@ -36,7 +35,7 @@ export default function PayrollPage(){
    if(!has("payroll.view_own")){setError("ليس لديك صلاحية عرض الرواتب.");return}
    const r=await api<{data:OwnPayrollData}>("/api/payroll/my-account");setOwnPayroll(r.data);return;
   }
-  const [e,p]=await Promise.all([api<{data:Employee[]}>("/api/payroll/employees"),api<{data:PayrollData}>("/api/payroll?month="+encodeURIComponent(month))]);setEmployees(e.data);setPayroll(p.data);setAdjustments(Object.fromEntries(p.data.items.map(i=>[i.id,{bonus:String(i.bonus_amount??0),deduction:String(i.deduction_amount??0),deductionMode:i.deduction_mode==="PERCENTAGE"?"PERCENTAGE":"FIXED",deductionPercentage:String(i.deduction_percentage??""),deductionBasis:i.deduction_basis==="BASE_PLUS_BONUS"?"BASE_PLUS_BONUS":"BASE_SALARY",notes:i.notes??""}])));if(!employeeId&&e.data.find(x=>x.is_active))setEmployeeId(e.data.find(x=>x.is_active)!.id)
+  const [e,p]=await Promise.all([api<{data:Employee[]}>("/api/payroll/employees"),api<{data:PayrollData}>("/api/payroll?month="+encodeURIComponent(month))]);setEmployees(e.data);setPayroll(p.data);if(!employeeId&&e.data.find(x=>x.is_active))setEmployeeId(e.data.find(x=>x.is_active)!.id)
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الرواتب")}finally{setLoading(false)}}
  useEffect(()=>{if(permissions!==null)void load()},[month,permissions]);
  async function setSalary(e:FormEvent){e.preventDefault();setBusy(true);setError("");setNotice("");try{await api("/api/payroll/salary-profiles",{method:"POST",body:JSON.stringify({employeeId,monthlySalary:Number(monthlySalary),effectiveFrom,notes:salaryNotes||null})});setMonthlySalary("");setSalaryNotes("");setNotice("تم حفظ الراتب الأساسي مع الاحتفاظ بسجل الرواتب السابق.");await load();await showSalaryHistory()}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الراتب الأساسي")}finally{setBusy(false)}}
@@ -50,7 +49,6 @@ export default function PayrollPage(){
   finally{setSalaryHistoryLoading(false)}
  }
  async function generate(){setBusy(true);setError("");setNotice("");try{const r=await api<{data:{generatedItems:number}}>("/api/payroll/generate",{method:"POST",body:JSON.stringify({month})});setNotice("تم تجهيز مسير الشهر. عدد بنود الرواتب: "+r.data.generatedItems);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء مسير الرواتب")}finally{setBusy(false)}}
- async function saveAdjustments(item:PayrollItem){const a=adjustments[item.id];if(a?.deductionMode==="PERCENTAGE"&&(!a.deductionPercentage.trim()||!Number.isFinite(Number(a.deductionPercentage))||Number(a.deductionPercentage)<=0||Number(a.deductionPercentage)>100)){setError("أدخل نسبة خصم أكبر من صفر وحتى ١٠٠٪.");return}setBusy(true);setError("");try{await api("/api/payroll/items/"+item.id,{method:"PATCH",body:JSON.stringify({bonusAmount:Number(a?.bonus||0),deductionMode:a?.deductionMode??"FIXED",...(a?.deductionMode==="PERCENTAGE"?{deductionPercentage:Number(a.deductionPercentage)}:{deductionAmount:Number(a?.deduction||0)}),deductionBasis:a?.deductionBasis??"BASE_SALARY",notes:a?.notes||null})});setNotice("تم حفظ تعديلات "+item.employee_name);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ التعديلات")}finally{setBusy(false)}}
  async function showPaymentHistory(item:PayrollItem){setHistoryTarget(item);setPaymentHistory([]);setHistoryLoading(true);setError("");try{const result=await api<{data:PayrollPayment[]}>("/api/payroll/items/"+item.id+"/payments");setPaymentHistory(result.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل صرف الراتب")}finally{setHistoryLoading(false)}}
  async function openAdjustments(item:PayrollItem){
   setAdjustmentTarget(item);setAdjustmentLines([]);setAdjustmentLoading(true);setError("");setLineType("BONUS");setLineDescription("");setLineAmount("");setLineNotes("");
@@ -108,19 +106,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
       <article className={"card stat " + (((payroll.totals.missingExpenseCount ?? 0) + (payroll.totals.expenseMismatchCount ?? 0)) > 0 && payroll.period?.status !== "DRAFT" ? "warning" : "")}><div className="stat-label">بنود تحتاج مراجعة محاسبية</div><div className="stat-value">{payroll.period?.status === "DRAFT" ? "بعد الاعتماد" : ((payroll.totals.missingExpenseCount ?? 0) + (payroll.totals.expenseMismatchCount ?? 0))}</div><div className="form-hint">فرق المبالغ في المصروفات المرتبطة: {payroll.period?.status === "DRAFT" ? "—" : money(payroll.totals.expenseDifference ?? 0) + " ج.م"}</div><div className="form-hint">قيمة الرواتب التي ينقصها ربط مصروف: {payroll.period?.status === "DRAFT" ? "—" : money(payroll.totals.missingExpenseAmount ?? 0) + " ج.م"}</div></article>
     </div>
    {loading?<div className="empty">جارٍ تحميل مسير الرواتب...</div>:!payroll.period?<div className="empty">لا يوجد مسير لهذا الشهر. اضغط «تجهيز المسير من الرواتب السارية» بعد تعريف الرواتب الأساسية.</div>:!payroll.items.length?<div className="empty">لا توجد بنود رواتب في هذه الفترة.</div>:<div className="table-wrap"><table><thead><tr><th>الموظف</th><th>الأساسي</th><th>مكافأة</th><th>خصم</th><th>سداد السلفة</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{payroll.items.map((i) => {
-    const a = adjustments[i.id] ?? {
-      bonus: String(i.bonus_amount ?? 0),
-      deduction: String(i.deduction_amount ?? 0),
-      deductionMode: i.deduction_mode === "PERCENTAGE" ? "PERCENTAGE" as const : "FIXED" as const,
-      deductionPercentage: String(i.deduction_percentage ?? ""),
-      deductionBasis: i.deduction_basis === "BASE_PLUS_BONUS" ? "BASE_PLUS_BONUS" as const : "BASE_SALARY" as const,
-      notes: i.notes ?? ""
-    };
-    const basisAmount = a.deductionBasis === "BASE_PLUS_BONUS"
-      ? Number(i.base_salary) + Number(a.bonus || 0)
-      : Number(i.base_salary);
-    const previewDeduction = Math.round((basisAmount * Math.min(100, Math.max(0, Number(a.deductionPercentage || 0))) / 100 + Number.EPSILON) * 100) / 100;
-    return (
+        return (
       <tr key={i.id}>
         <td><div className="strong">{i.employee_name}</div><div className="form-hint">{i.employee_code} · {i.department_name || "بدون قسم"}</div></td>
         <td>{money(i.base_salary)}</td>
