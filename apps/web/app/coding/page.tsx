@@ -37,7 +37,7 @@ export default function CodingPage(){
  }
  useEffect(()=>{void load()},[]);
  useEffect(()=>{
-  const employeeId=(session as any)?.employeeId as string|undefined;
+  const employeeId=session?.employeeId ?? undefined;
   if(!employeeId||!employees.some(x=>x.id===employeeId))return;
   setPackedBy(current=>current||employeeId);
   setReceivedBy(current=>current||employeeId);
