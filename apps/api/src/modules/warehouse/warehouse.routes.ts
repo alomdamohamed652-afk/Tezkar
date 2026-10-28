@@ -199,7 +199,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
       FROM inventory_lots l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id
       JOIN warehouse_locations loc ON loc.id=l.location_id JOIN units u ON u.id=p.unit_id
       WHERE ${where.join(" AND ")} ORDER BY p.name,l.created_at,l.id`,params);
-    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
     const data=canViewCosts?r.rows:r.rows.map(({unit_cost,...row})=>row);
     return {data};
   });
@@ -217,7 +217,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,po.code AS order_code,po.order_name AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC,m.id DESC LIMIT $"+limitParam+" OFFSET $"+(limitParam+1),params);
     const hasMore=result.rows.length>parsed.data.limit;
     const rows=hasMore?result.rows.slice(0,parsed.data.limit):result.rows;
-    const canViewCosts=await canViewWarehouseCosts(request.user!.userId);
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
     const data=canViewCosts?rows:rows.map(({unit_cost,total_cost,order_id,order_stage_id,order_code,order_name,stage_name,scrap_origin_reference,...row})=>({
       ...row,
       ...(row.scrap_origin_type==="ORDER"?{scrap_origin_reference:undefined}:{scrap_origin_reference})
@@ -226,6 +226,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/warehouse/dashboard",{preHandler:[authenticateRequest,requirePermission("warehouse.dashboard")]},async(request)=>{
+    if(request.user!.roleCodes.some(code=>code.toLowerCase()==="shift_leader"))throw new AppError("FORBIDDEN","عرض القيم المالية للمخزون غير متاح لرئيس الوردية",403);
     const q=z.object({from:z.string().date().optional(),to:z.string().date().optional(),warehouseId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success) throw new AppError("VALIDATION_ERROR","فلاتر تكلفة المخزن غير صحيحة",422);
     const params:unknown[]=[]; const where:string[]=["1=1"];
