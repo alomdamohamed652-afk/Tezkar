@@ -51,6 +51,11 @@ async function assertAccountingDateOpen(client:import("pg").PoolClient,date:stri
 }
 
 export async function accountingRoutes(app:FastifyInstance){
+ app.get("/api/accounting/historical-expense-orders",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async()=>{
+  const result=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status<>'CANCELLED' ORDER BY created_at DESC,id");
+  return {data:result.rows};
+ });
+
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر المصروفات غير صحيح",422);
@@ -93,7 +98,7 @@ export async function accountingRoutes(app:FastifyInstance){
      }
     }
     if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن تسجيل مصروف على طلبية ملغاة",409);
-    if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف جديد على طلبية مكتملة؛ أعد فتحها أولًا",409);
+    if(order.rows[0].status==="COMPLETED"&&!p.data.historicalSettlement)throw new AppError("ORDER_NOT_EXPENSABLE","لا يمكن تسجيل مصروف جديد على طلبية مكتملة؛ أعد فتحها أولًا. يمكن للمحاسب تسجيل تسوية تاريخية موثقة فقط.",409);
    }
    if(p.data.paidFromEmployeeId){
     const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[p.data.paidFromEmployeeId]);

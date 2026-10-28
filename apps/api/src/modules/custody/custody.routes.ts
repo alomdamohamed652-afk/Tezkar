@@ -121,7 +121,7 @@ export async function custodyRoutes(app:FastifyInstance){
         ["cash_custody.order_collection","all"],["cash_custody.order_collection_own","own"],
         ["cash_custody.order_expense","all"],["cash_custody.order_expense_own","own"],
         ["cash_custody.worker_payment_out","all"],["cash_custody.worker_payment_out_own","own"],
-        ["custody.transfer","all"],["cash_custody.transfer","all"]
+        ["custody.transfer","all"],["cash_custody.transfer","all"],["worker_payments.pay","all"]
       ];
       let hasAny=false;let hasAll=false;
       for(const [code,scope] of permissionScopes){

@@ -469,6 +469,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{name:"Historical expense test period",periodStart:"1800-01-01",periodEnd:"1800-12-31"}
       });
       assert.equal(historicalPeriod.statusCode,201,historicalPeriod.body);
+      const historicalExpenseOrders=await app.inject({
+        method:"GET",url:"/api/accounting/historical-expense-orders",headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalExpenseOrders.statusCode,200,historicalExpenseOrders.body);
+      assert.ok(historicalExpenseOrders.json().data.length>0,
+        "historical expense entry should load order options through its own permission-scoped endpoint");
       const historicalExpense=await app.inject({
         method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
         payload:{category:"تسوية قديمة",description:"Historical expense inside open period",amount:12,expenseDate:historicalDate,expenseType:"DIRECT",paidFromEmployeeId:null,historicalSettlement:true,idempotencyKey:randomUUID()}
@@ -750,18 +756,114 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
+      const unpaidProductionBeforePayout=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(unpaidProductionBeforePayout.statusCode,200,unpaidProductionBeforePayout.body);
+      assert.equal(unpaidProductionBeforePayout.json().data.some((row:any)=>row.id===bonusProduction.id),true,
+        "the payments screen must list approved production that still has a due balance");
+      assert.equal(Number(unpaidProductionBeforePayout.json().data.find((row:any)=>row.id===bonusProduction.id).remaining_amount),130);
+      const invalidSelectedPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:129,method:"CASH",
+          settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
+      });
+      assert.equal(invalidSelectedPayout.statusCode,409,invalidSelectedPayout.body,
+        "selected-production settlement must match the outstanding balance of the selected records");
+      assert.equal(invalidSelectedPayout.json().error.code,"PRODUCTION_SETTLEMENT_AMOUNT_MISMATCH");
+      // A payment can include production earnings plus a separate adjustment.
+      // Only the production portion belongs in production allocation reconciliation.
+      // Legacy accounting adjustments can exist in the earnings ledger without a matching
+      // employee_earnings_adjustments row; they must still be included in available worker dues.
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',25,$2,'test-only non-production adjustment')",
+        [bonusWorkerEmployee.id,manager.id]
+      );
       const bonusAwarePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",idempotencyKey:randomUUID()}
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:155,method:"CASH",
+          settlementMode:"ALL_DUES",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
       });
       assert.equal(bonusAwarePayout.statusCode,201,bonusAwarePayout.body,
-        "available payout balance must include approved production bonuses and deductions");
-      assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),130);
+        "all-dues payout may include both approved production earnings and a separate adjustment");
+      assert.equal(Number(bonusAwarePayout.json().data.payment.gross_amount),155);
       const bonusAllocation=await apiPool.query(
-        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+        `SELECT COALESCE(SUM(a.amount),0) AS amount
+           FROM employee_earnings_settlement_allocations a
+           JOIN employee_earnings_settlements s ON s.id=a.settlement_id
+          WHERE s.worker_payment_id=$1`,
         [bonusAwarePayout.json().data.payment.id]
       );
-      assert.equal(Number(bonusAllocation.rows[0].amount),130);
+      assert.equal(Number(bonusAllocation.rows[0].amount),130,
+        "only the production portion must be allocated to the canonical settlement allocation ledger");
+      const queueAfterAdjustmentPayout=await app.inject({
+        method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
+      });
+      assert.equal(queueAfterAdjustmentPayout.statusCode,200,queueAfterAdjustmentPayout.body);
+      assert.equal(queueAfterAdjustmentPayout.json().data.some((row:any)=>row.payment_id===bonusAwarePayout.json().data.payment.id),false,
+        "a fully allocated production portion must not be flagged merely because gross payment also includes an adjustment");
+      const payoutEmployeeOptions=await app.inject({
+        method:"GET",url:"/api/worker-payments/eligible-employees",headers:{cookie:managerCookie}
+      });
+      assert.equal(payoutEmployeeOptions.statusCode,200,payoutEmployeeOptions.body);
+      assert.ok(payoutEmployeeOptions.json().data.some((row:any)=>row.id===bonusWorkerEmployee.id),
+        "payout screen should load worker options from a payout-scoped endpoint");
+
+      const unpaidProductionAfterPayout=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(unpaidProductionAfterPayout.statusCode,200,unpaidProductionAfterPayout.body);
+      assert.equal(unpaidProductionAfterPayout.json().data.some((row:any)=>row.id===bonusProduction.id),false,
+        "fully settled production must disappear from the unpaid production list");
+
+      // Older worker payments can already have a settlement row but no canonical
+      // production-allocation rows; those must still appear in the historical review queue.
+      const unallocatedHistoricalPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'historical allocation regression test',$3,'historical-allocation-regression') RETURNING id`,
+        [bonusWorkerEmployee.id,manager.id,randomUUID()]
+      )).rows[0];
+      const unallocatedHistoricalSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'historical allocation regression test',$2,$3) RETURNING id`,
+        [bonusWorkerEmployee.id,manager.id,unallocatedHistoricalPayment.id]
+      )).rows[0];
+      // Legacy and canonical ledgers can both contain the same historical attribution.
+      // The review UI must report the canonical settlement allocation only, not sum both.
+      await apiPool.query(
+        `INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,2)`,
+        [unallocatedHistoricalSettlement.id,bonusProduction.id]
+      );
+      await apiPool.query(
+        `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,2)`,
+        [unallocatedHistoricalPayment.id,bonusProduction.id]
+      );
+      const historicalOrderOptions=await app.inject({
+        method:"GET",url:"/api/worker-payments/historical-allocation-orders",headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalOrderOptions.statusCode,200,historicalOrderOptions.body);
+      assert.ok(historicalOrderOptions.json().data.length>0,
+        "historical review must provide order options through its own permission-scoped endpoint");
+
+      const historicalQueue=await app.inject({
+        method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalQueue.statusCode,200,historicalQueue.body);
+      assert.equal(historicalQueue.json().data.some((row:any)=>row.payment_id===unallocatedHistoricalPayment.id),true,
+        "historical payments linked to a settlement but missing production allocation must be visible");
+      const historicalQueueRow=historicalQueue.json().data.find((row:any)=>row.payment_id===unallocatedHistoricalPayment.id);
+      assert.ok(historicalQueueRow.settlement_id);
+      assert.equal(Number(historicalQueueRow.production_allocated),2,
+        "historical queue must not double-count matching legacy and canonical allocations");
+      assert.equal(Number(historicalQueueRow.production_allocation_count),1);
+      const blockedUntilHistoricalAllocation=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:1,method:"CASH",
+          settlementMode:"ALL_DUES",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
+      });
+      assert.equal(blockedUntilHistoricalAllocation.statusCode,409,blockedUntilHistoricalAllocation.body);
+      assert.equal(blockedUntilHistoricalAllocation.json().error.code,"HISTORICAL_PAYMENTS_NEED_ALLOCATION",
+        "new production settlement must wait until the employee's historic payment is attributed to production");
 
       const settlementsBeforeInsufficientCustody=await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",
