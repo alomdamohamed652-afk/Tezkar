@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -179,6 +180,7 @@ const machineProductionReportQuerySchema = z.object({
 }).refine(x => !x.from || !x.to || x.from <= x.to, { message: "تاريخ البداية يجب ألا يتجاوز تاريخ النهاية" });
 
 const machineProductionSchema = z.object({
+  idempotencyKey: z.string().uuid().optional(),
   orderStageId: z.string().uuid().nullable().optional(),
   warehouseId: z.string().uuid().nullable().optional(),
   locationId: z.string().uuid().nullable().optional(),
@@ -687,6 +689,9 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.create")] }, async (request, reply) => {
     const parsed=machineProductionSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات إنتاج الماكينة غير صحيحة",422);
+    const { idempotencyKey, ...fingerprintPayload } = parsed.data;
+    const idempotencyFingerprint = idempotencyKey ? createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex") : null;
+    let idempotentReplay = false;
     if(!parsed.data.orderStageId && (!parsed.data.warehouseId || !parsed.data.locationId)) throw new AppError("GENERAL_STOCK_DESTINATION_REQUIRED","اختر المخزن والموقع عند تسجيل إنتاج غير مرتبط بطلبية",422);
     if(parsed.data.orderStageId && (parsed.data.warehouseId || parsed.data.locationId)) throw new AppError("WAREHOUSE_STAGE_CONFLICT","إنتاج مرحلة الطلبية يذهب تلقائيًا إلى مخزن المرحلة؛ لا تحدد مخزنًا يدويًا",422);
     if(parsed.data.laserDesignVersionId && !parsed.data.cyclesCount) throw new AppError("CYCLES_REQUIRED","أدخل عدد دورات التشغيل عند ربط الإنتاج بإصدار تصميم ليزر",422);
@@ -695,6 +700,14 @@ export async function orderRoutes(app: FastifyInstance) {
     if(Number(parsed.data.scrapQuantity ?? 0)>0 && !parsed.data.scrapReasonId) throw new AppError("SCRAP_REASON_REQUIRED","اختر سبب الهالك من قائمة الأسباب المعتمدة",422);
     if(new Set(parsed.data.operatorEmployeeIds).size!==parsed.data.operatorEmployeeIds.length) throw new AppError("DUPLICATE_OPERATOR","لا يمكن اختيار نفس المشغل أكثر من مرة",422);
     const row=await withTransaction(async(client)=>{
+      if(idempotencyKey){
+        const existing=await client.query("SELECT * FROM machine_productions WHERE idempotency_key=$1 FOR UPDATE",[idempotencyKey]);
+        if(existing.rowCount){
+          if(existing.rows[0].idempotency_fingerprint!==idempotencyFingerprint) throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة المحاولة مستخدم مع بيانات إنتاج مختلفة",409);
+          idempotentReplay=true;
+          return existing.rows[0];
+        }
+      }
       await assertAccountingPeriodOpen(client, parsed.data.workDate);
       if(!parsed.data.orderStageId && !(await hasPermission(client,request.user!.userId,"machine_production.general_stock.create"))) throw new AppError("FORBIDDEN","لا تملك صلاحية تسجيل إنتاج ماكينة إلى مخزون عام دون طلبية",403);
       const machine=await client.query("SELECT id FROM machines WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.machineId]);
@@ -764,11 +777,20 @@ export async function orderRoutes(app: FastifyInstance) {
       const r=await client.query(
         `INSERT INTO machine_productions(
           order_stage_id,production_type_id,machine_id,product_id,employee_id,shift_id,work_date,quantity,unit_id,notes,created_by,
-          laser_design_version_id,cycles_count,expected_quantity,good_quantity,scrap_quantity,scrap_reason,scrap_reason_id,scrap_reason_detail
-        ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+          laser_design_version_id,cycles_count,expected_quantity,good_quantity,scrap_quantity,scrap_reason,scrap_reason_id,scrap_reason_detail,
+          idempotency_key,idempotency_fingerprint
+        ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+        ON CONFLICT(idempotency_key) DO NOTHING RETURNING *`,
         [parsed.data.orderStageId ?? null,parsed.data.productionTypeId ?? null,parsed.data.machineId,parsed.data.productId,parsed.data.employeeId ?? null,parsed.data.shiftId ?? null,parsed.data.workDate,parsed.data.quantity,unitId,parsed.data.notes ?? null,request.user!.userId,
-          parsed.data.laserDesignVersionId ?? null,parsed.data.cyclesCount ?? null,laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity,scrapReasonSnapshot,parsed.data.scrapReasonId ?? null,parsed.data.scrapReasonDetail?.trim() || null]
+          parsed.data.laserDesignVersionId ?? null,parsed.data.cyclesCount ?? null,laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity,scrapReasonSnapshot,parsed.data.scrapReasonId ?? null,parsed.data.scrapReasonDetail?.trim() || null,idempotencyKey ?? null,idempotencyFingerprint]
       );
+      if(!r.rowCount && idempotencyKey){
+        const existing=await client.query("SELECT * FROM machine_productions WHERE idempotency_key=$1 FOR UPDATE",[idempotencyKey]);
+        if(!existing.rowCount) throw new AppError("IDEMPOTENCY_RETRY_FAILED","تعذر التحقق من نتيجة إعادة المحاولة؛ أعد تحميل السجل قبل المتابعة",409);
+        if(existing.rows[0].idempotency_fingerprint!==idempotencyFingerprint) throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة المحاولة مستخدم مع بيانات إنتاج مختلفة",409);
+        idempotentReplay=true;
+        return existing.rows[0];
+      }
       for(const operatorId of operatorIds){
         await client.query(
           `INSERT INTO machine_production_operators(machine_production_id,employee_id,operator_role)
@@ -906,7 +928,7 @@ export async function orderRoutes(app: FastifyInstance) {
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"orders",entityType:"machine_production",entityId:r.rows[0].id,afterData:r.rows[0],...(parsed.data.orderStageId?{metadata:{inventoryWarehouseType:"ORDER_STAGE_ROUTED",inventoryMovementType:"MACHINE_PRODUCTION"}}:{metadata:{inventoryWarehouseType:"GENERAL_STOCK",inventoryMovementType:"MACHINE_PRODUCTION"}}),ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return r.rows[0];
     });
-    return reply.code(201).send({data:row});
+    return reply.code(idempotentReplay?200:201).send({data:row,idempotentReplay});
   });
 
   app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
