@@ -538,33 +538,43 @@ export async function paymentsRoutes(app:FastifyInstance){
         const grossAmount = Math.round(Number(payment.gross_amount) * 100) / 100;
         const settlementId = payment.settlement_id as string | null;
 
+        const existingLegacy = await client.query(`
+          SELECT COALESCE(SUM(wpa.amount),0)::numeric(14,2) AS allocated,
+                 COUNT(wpa.production_entry_id)::int AS allocation_count,
+                 COUNT(*) FILTER(WHERE wpa.production_entry_id IS NOT NULL AND
+                   (p.id IS NULL OR p.employee_id<>$2 OR os.order_id IS DISTINCT FROM $3::uuid OR
+                    ($4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid)))::int AS mismatches
+            FROM worker_payment_allocations wpa
+            LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
+            LEFT JOIN order_stages os ON os.id=p.order_stage_id
+           WHERE wpa.worker_payment_id=$1
+        `, [payment.id,payment.employee_id,payment.order_id,payment.order_stage_id]);
+        const legacyCount = Number(existingLegacy.rows[0]?.allocation_count ?? 0);
+        const legacyAmount = Math.round(Number(existingLegacy.rows[0]?.allocated ?? 0) * 100) / 100;
+        const legacyMismatches = Number(existingLegacy.rows[0]?.mismatches ?? 0);
+
         if (settlementId) {
           const existingSettlementAllocations = await client.query(
             "SELECT COUNT(*)::int AS count FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",
             [settlementId]
           );
           if (Number(existingSettlementAllocations.rows[0]?.count ?? 0) > 0) continue;
-        } else {
-          const existing = await client.query(`
-            SELECT COALESCE(SUM(wpa.amount),0)::numeric(14,2) AS allocated,
-                   COUNT(wpa.production_entry_id)::int AS allocation_count,
-                   COUNT(*) FILTER(WHERE wpa.production_entry_id IS NOT NULL AND
-                     (p.id IS NULL OR p.employee_id<>$2 OR os.order_id IS DISTINCT FROM $3::uuid OR
-                      ($4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid)))::int AS mismatches
-              FROM worker_payment_allocations wpa
-              LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
-              LEFT JOIN order_stages os ON os.id=p.order_stage_id
-             WHERE wpa.worker_payment_id=$1
-          `, [payment.id,payment.employee_id,payment.order_id,payment.order_stage_id]);
-          const allocationCount = Number(existing.rows[0]?.allocation_count ?? 0);
-          const existingAmount = Math.round(Number(existing.rows[0]?.allocated ?? 0) * 100) / 100;
-          const mismatchCount = Number(existing.rows[0]?.mismatches ?? 0);
-          if (allocationCount > 0) {
-            if (mismatchCount > 0 || Math.abs(existingAmount-grossAmount) > 0.009) {
-              skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,
-                reason:mismatchCount>0 ? "التوزيع القديم يشمل طلبية/مرحلة مختلفة عن المصروف المرتبط." : "إجمالي التوزيع القديم لا يساوي إجمالي الدفعة."});
-              continue;
-            }
+        }
+        if (legacyCount > 0) {
+          if (legacyMismatches > 0 || legacyAmount > grossAmount + 0.009) {
+            skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,
+              reason:legacyMismatches>0 ? "التوزيع القديم يشمل طلبية/مرحلة مختلفة عن المصروف المرتبط." : "إجمالي توزيع الإنتاج القديم أكبر من إجمالي الدفعة."});
+            continue;
+          }
+          if (settlementId) {
+            await client.query(`
+              INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount)
+              SELECT $1,wpa.production_entry_id,wpa.amount
+                FROM worker_payment_allocations wpa
+               WHERE wpa.worker_payment_id=$2
+              ON CONFLICT(settlement_id,production_entry_id) DO NOTHING
+            `, [settlementId,payment.id]);
+          } else {
             await client.query(`
               INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
               SELECT wpa.worker_payment_id,wpa.production_entry_id,wpa.amount
@@ -572,15 +582,17 @@ export async function paymentsRoutes(app:FastifyInstance){
                WHERE wpa.worker_payment_id=$1
               ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING
             `, [payment.id]);
-            await writeAudit(client,{
-              actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
-              action:"reconcile_historical_worker_payment",module:"payments",entityType:"worker_payment",entityId:payment.id,
-              afterData:{orderId:payment.order_id,orderStageId:payment.order_stage_id,grossAmount,allocationMode:"MIRRORED_EXISTING_ALLOCATION"},
-              ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
-            });
-            reconciledCount++;
-            continue;
           }
+          await writeAudit(client,{
+            actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+            action:"reconcile_historical_worker_payment",module:"payments",entityType:"worker_payment",entityId:payment.id,
+            afterData:{orderId:payment.order_id,orderStageId:payment.order_stage_id,grossAmount,
+              existingProductionAllocation:legacyAmount,
+              allocationMode:settlementId?"MIRRORED_LEGACY_TO_SETTLEMENT":"MIRRORED_EXISTING_ALLOCATION"},
+            ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
+          });
+          reconciledCount++;
+          continue;
         }
 
         const eligible = await client.query(`
