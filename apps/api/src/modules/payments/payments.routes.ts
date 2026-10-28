@@ -1082,7 +1082,9 @@ export async function paymentsRoutes(app:FastifyInstance){
                    + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
                       JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
                       WHERE wpa.production_entry_id=p.id
-                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                          WHERE es.worker_payment_id=wp.id)
                         AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
                  ) FILTER(WHERE p.status='APPROVED'),0) AS paid_against_approved
             FROM production_entries p
@@ -1471,7 +1473,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN prior_es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                     WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
+                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
                        THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
                      ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
@@ -1496,7 +1499,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN prior_es.id IS NOT NULL THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                     WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
+                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
                        THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
                      ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
@@ -1610,11 +1614,18 @@ export async function paymentsRoutes(app:FastifyInstance){
         const selected=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
             -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+              JOIN worker_payments wp ON wp.id=a.worker_payment_id
+              WHERE a.production_entry_id=p.id
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                  JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                  WHERE es.worker_payment_id=wp.id)),0)
             -COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
               JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
               WHERE wpa.production_entry_id=p.id
-                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                  JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                  WHERE es.worker_payment_id=wp.id)
                 AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0) AS remaining
           FROM production_entries p
           WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.id=ANY($2::uuid[])
