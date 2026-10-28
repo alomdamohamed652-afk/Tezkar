@@ -369,8 +369,10 @@ export async function payrollRoutes(app: FastifyInstance) {
           throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم مع بيانات صرف راتب مختلفة",409);
         const paid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM payroll_payments WHERE payroll_item_id=$1",[id]);
         const paidAmount=Number(paid.rows[0].amount);
-        const {idempotency_fingerprint:_fingerprint,net_amount,item_status,...payment}=saved;
-        return {payment,paidAmount,remainingAmount:Math.max(0,Number(net_amount)-paidAmount),status:item_status,replayed:true};
+        const payment={id:saved.id,payroll_item_id:saved.payroll_item_id,amount:saved.amount,payment_date:saved.payment_date,payment_method:saved.payment_method,reference:saved.reference,notes:saved.notes,paid_by:saved.paid_by,created_at:saved.created_at};
+        const netAmount=Number(saved.net_amount);
+        const itemStatus=saved.item_status;
+        return {payment,paidAmount,remainingAmount:Math.max(0,netAmount-paidAmount),status:itemStatus,replayed:true};
       }
       await assertAccountingPeriodOpen(client,paymentDate);
       const item = await client.query("SELECT i.*,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
@@ -418,7 +420,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         [request.user!.employeeId,paymentDate]
       );
       if(parsed.data.amount>Number(custodyBalance.rows[0]?.balance??0)+0.0001)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد العهدة لا يكفي لصافي النقد المطلوب لصرف الراتب؛ لم يتم تسجيل أي حركة",409);
-      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
         [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
       let custodyIn=null;
       if(committedAdvanceRepayment>0)custodyIn=await client.query(
