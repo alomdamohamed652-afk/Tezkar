@@ -183,7 +183,7 @@ export async function laserDesignRoutes(app: FastifyInstance) {
              COALESCE(c.pieces_per_cycle_override,v.pieces_per_cycle) AS pieces_per_cycle,
              COALESCE(c.standard_cycle_seconds_override,v.standard_cycle_seconds) AS standard_cycle_seconds,
              d.id AS design_id,d.code AS design_code,d.name AS design_name,d.thumbnail_url,
-             v.id AS design_version_id,v.version_no,v.material_type,v.material_thickness_mm,
+             v.product_id,v.id AS design_version_id,v.version_no,v.material_type,v.material_thickness_mm,
              v.width_mm,v.height_mm,v.unit_label
       FROM laser_machine_design_compatibility c
       JOIN machines m ON m.id=c.machine_id AND m.is_active=TRUE
