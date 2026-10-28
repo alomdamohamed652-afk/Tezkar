@@ -119,7 +119,7 @@ export default function FinanceExceptionsPage() {
         <div><h1 className="page-title">مراجعة الحالات المالية</h1><p className="page-subtitle">مركز واحد لمراجعة توزيع الدفعات التاريخية وربطها بالإنتاج والطلبيات. إجمالي المراجعة يحسب جزء الإنتاج فقط، لا أي بونص أو تسوية إضافية داخل الدفعة.</p></div>
         <div className="form-actions">
           <Link className="secondary-btn" href="/payments">القبض ومستحقات العمال</Link>
-          <Link className="secondary-btn" href="/finance/worker-settlements">تسويات العهدة</Link>
+          <Link className="secondary-btn" href="/finance/worker-settlements">مصروفات وتسويات تاريخية</Link>
           <Link className="secondary-btn" href="/custody">حركة العهدة</Link>
         </div>
       </header>
