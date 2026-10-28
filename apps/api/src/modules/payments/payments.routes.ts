@@ -680,17 +680,22 @@ export async function paymentsRoutes(app:FastifyInstance){
     const result = await pool.query(`
       SELECT wp.id AS payment_id,wp.gross_amount,wp.created_at,wp.employee_id,
              e.code AS employee_code,e.full_name AS employee_name,
-             ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,
-             COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0) AS production_allocated,
-             COALESCE((SELECT COUNT(*) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)::int AS production_allocation_count
+             ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,es.id AS settlement_id,
+             COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+               + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0) AS production_allocated,
+             (COALESCE((SELECT COUNT(*) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+               + COALESCE((SELECT COUNT(*) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0))::int AS production_allocation_count
         FROM worker_payments wp
         JOIN employees e ON e.id=wp.employee_id
+        LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
         LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         LEFT JOIN production_orders o ON o.id=ae.order_id
-       WHERE NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
-         AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+       WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa
+                         WHERE esa.settlement_id=es.id)
          AND (
-           NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+           es.id IS NOT NULL
+           OR NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
            OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
            OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
                       LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
@@ -732,17 +737,19 @@ export async function paymentsRoutes(app:FastifyInstance){
       // cannot consume the same remaining production earnings.
       await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[owner.rows[0].employee_id]);
       const paymentResult=await client.query(`
-        SELECT wp.*,e.full_name AS employee_name,ae.id AS expense_id,ae.order_id,ae.order_stage_id,
+        SELECT wp.*,e.full_name AS employee_name,ae.id AS expense_id,ae.order_id,ae.order_stage_id,es.id AS settlement_id,
                to_char(wp.created_at,'YYYY-MM-DD') AS payment_date
           FROM worker_payments wp
           JOIN employees e ON e.id=wp.employee_id
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+          LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE wp.id=$1 AND wp.employee_id=$2 FOR UPDATE OF wp
       `,[id,owner.rows[0].employee_id]);
       if(!paymentResult.rowCount)throw new AppError("HISTORICAL_PAYMENT_NOT_FOUND","الدفعة القديمة غير موجودة",404);
       const payment=paymentResult.rows[0];
       const amount=Math.round(Number(payment.gross_amount)*100)/100;
-      if(await client.query("SELECT 1 FROM employee_earnings_settlements WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_SETTLED","الدفعة مرتبطة بتسوية حديثة بالفعل",409);
+      const settlementId=payment.settlement_id as string|null;
+      if(settlementId&&await client.query("SELECT 1 FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",[settlementId]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة على سجلات الإنتاج بالفعل",409);
       if(await client.query("SELECT 1 FROM worker_payment_order_allocations WHERE worker_payment_id=$1",[id]).then(r=>r.rowCount))throw new AppError("HISTORICAL_PAYMENT_ALREADY_ALLOCATED","الدفعة موزعة على طلبية بالفعل",409);
       if(payment.order_id&&payment.order_id!==parsed.data.orderId)throw new AppError("HISTORICAL_PAYMENT_ORDER_MISMATCH","الدفعة مرتبطة محاسبيًا بطلبية مختلفة؛ لا يمكن تغييرها من هنا",409);
       if(payment.order_stage_id&&payment.order_stage_id!==(parsed.data.orderStageId??null))throw new AppError("HISTORICAL_PAYMENT_STAGE_MISMATCH","الدفعة مرتبطة محاسبيًا بمرحلة مختلفة؛ اختر المرحلة المرتبطة بها",409);
@@ -767,15 +774,22 @@ export async function paymentsRoutes(app:FastifyInstance){
         const valid=oldAllocations.rows.every(row=>row.employee_id===payment.employee_id&&row.order_id===parsed.data.orderId&&(!parsed.data.orderStageId||row.order_stage_id===parsed.data.orderStageId));
         if(!valid||Math.abs(oldTotal-amount)>0.009)throw new AppError("HISTORICAL_PAYMENT_ALLOCATION_AMBIGUOUS","توزيع الإنتاج القديم لا يطابق الموظف/الطلبية أو إجمالي الدفعة؛ يلزم مراجعة محاسبية يدوية",409);
         for(const row of oldAllocations.rows){
-          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.production_entry_id,row.amount]);
+          if(settlementId){
+            await client.query("INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,$3)",[settlementId,row.production_entry_id,row.amount]);
+          }else{
+            await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.production_entry_id,row.amount]);
+          }
         }
         remaining=0;
       }else{
         const eligible=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
             -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.production_entry_id=p.id
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)),0)
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+              JOIN worker_payments wpa_wp ON wpa_wp.id=a.worker_payment_id
+              WHERE a.production_entry_id=p.id
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wpa_wp.id)
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id)),0)
             -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
             FROM production_entries p JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
@@ -789,7 +803,11 @@ export async function paymentsRoutes(app:FastifyInstance){
           if(remaining<=0.009)break;
           const take=Math.round(Math.min(remaining,Number(row.remaining??0))*100)/100;
           if(take<=0)continue;
-          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.id,take]);
+          if(settlementId){
+            await client.query("INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,$3)",[settlementId,row.id,take]);
+          }else{
+            await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[id,row.id,take]);
+          }
           remaining=Math.round((remaining-take)*100)/100;
         }
         if(remaining>0.009)throw new AppError("HISTORICAL_ALLOCATION_INCOMPLETE","تعذر توزيع كامل الدفعة القديمة؛ تم إلغاء العملية لحماية الحسابات",409);
