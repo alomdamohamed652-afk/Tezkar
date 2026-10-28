@@ -47,13 +47,13 @@ CREATE TABLE IF NOT EXISTS laser_machine_design_compatibility (
   created_by UUID NOT NULL REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (effective_to IS NULL OR effective_to >= effective_from),
-  UNIQUE (machine_id, design_version_id, effective_from)
 );
 
 CREATE INDEX IF NOT EXISTS idx_laser_designs_status_name ON laser_designs(status, name);
 CREATE INDEX IF NOT EXISTS idx_laser_design_versions_design_status ON laser_design_versions(design_id, status, version_no DESC);
 CREATE INDEX IF NOT EXISTS idx_laser_machine_compatibility_machine_active ON laser_machine_design_compatibility(machine_id, is_active, effective_from);
 CREATE INDEX IF NOT EXISTS idx_laser_machine_compatibility_version ON laser_machine_design_compatibility(design_version_id, is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_laser_machine_design_active ON laser_machine_design_compatibility(machine_id, design_version_id) WHERE is_active=TRUE;
 
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('laser_designs.view','laser_designs','laser_design','view','all'),
