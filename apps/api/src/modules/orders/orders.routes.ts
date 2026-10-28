@@ -1046,13 +1046,12 @@ export async function orderRoutes(app: FastifyInstance) {
           AND (t.design_version_id IS NULL OR mp.laser_design_version_id=t.design_version_id)
           AND (t.shift_id IS NULL OR mp.shift_id=t.shift_id)
           AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
-          AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
         WHERE t.is_active=TRUE
           AND ($1::date IS NULL OR t.effective_to >= $1::date)
           AND ($2::date IS NULL OR t.effective_from <= $2::date)
           AND ($3::uuid IS NULL OR t.machine_id=$3::uuid)
-          AND ($4::uuid IS NULL OR t.design_version_id IS NULL OR t.design_version_id=$4::uuid)
-          AND ($6::uuid IS NULL OR t.shift_id IS NULL OR t.shift_id=$6::uuid)
+          AND ($4::uuid IS NULL OR t.design_version_id=$4::uuid)
+          AND ($6::uuid IS NULL OR t.shift_id=$6::uuid)
         GROUP BY t.id,t.period_type,t.effective_from,t.effective_to,t.target_quantity,t.target_cycles,
           m.id,m.code,m.name,d.code,d.name,v.version_no,sh.name
         ORDER BY t.effective_from DESC,m.name,d.name,t.period_type
@@ -1070,7 +1069,7 @@ export async function orderRoutes(app: FastifyInstance) {
         targetComparison: targetComparison.rows,
         targetComparisonBasis: "ACTIVE_TARGETS_BY_FULL_EFFECTIVE_PERIOD",
         operatorRankingBasis: "PRIMARY_OPERATOR_ONLY",
-        note: "لا تُنسب كمية الإنتاج كاملة إلى أعضاء الفريق الإضافيين؛ الترتيب الفردي يعتمد على المشغل الأساسي فقط حتى تُسجل سياسة توزيع صريحة. مقارنة المستهدفات تعرض المستهدفات النشطة للفترة الفعالة كاملة، بينما بقية مؤشرات التقرير تطبق فترة التقرير المحددة."
+        note: "لا تُنسب كمية الإنتاج كاملة إلى أعضاء الفريق الإضافيين؛ الترتيب الفردي يعتمد على المشغل الأساسي فقط حتى تُسجل سياسة توزيع صريحة. مقارنة المستهدفات تعرض المستهدفات النشطة للفترة الفعالة كاملة على مستوى الماكينة والتصميم والوردية، ولا تتغير بفلتر المشغل؛ بقية مؤشرات التقرير تطبق فلاتر التقرير المحددة."
       }
     };
   });
