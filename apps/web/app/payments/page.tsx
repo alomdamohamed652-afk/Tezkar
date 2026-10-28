@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 import {formatMoney} from "../../lib/format";
@@ -20,24 +20,37 @@ const fallbackMethods:Record<string,string>={CASH:"نقدي",VODAFONE_CASH:"فو
 const statuses:Record<string,string>={PENDING:"قيد المراجعة",APPROVED:"بانتظار الصرف",REJECTED:"مرفوض",PAID:"تم الصرف",CANCELLED:"ملغي"};
 
 export default function PaymentsPage(){
- const { has } = usePermissions();
+ const { has, permissions } = usePermissions();
  const [balance,setBalance]=useState(0),[accountBalance,setAccountBalance]=useState(0),[outstandingAdvanceAmount,setOutstandingAdvanceAmount]=useState(0),[dueAdvanceRepaymentAmount,setDueAdvanceRepaymentAmount]=useState(0),[amount,setAmount]=useState(""),[method,setMethod]=useState("CASH"),[transferReference,setTransferReference]=useState(""),[methods,setMethods]=useState<Record<string,string>>(fallbackMethods),[requests,setRequests]=useState<Request[]>([]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[isWorker,setIsWorker]=useState(false);
  const [cashCustodians,setCashCustodians]=useState<CashCustodian[]>([]),[cashCustodyEmployeeId,setCashCustodyEmployeeId]=useState("");
  const [legacyOrders,setLegacyOrders]=useState<OrderOption[]>([]),[historicalPayments,setHistoricalPayments]=useState<HistoricalPayment[]>([]),[historicalLoading,setHistoricalLoading]=useState(false),[historicalPaymentId,setHistoricalPaymentId]=useState(""),[historicalOrderId,setHistoricalOrderId]=useState(""),[historicalOrderStageId,setHistoricalOrderStageId]=useState(""),[historicalStages,setHistoricalStages]=useState<HistoricalStage[]>([]),[historicalSaving,setHistoricalSaving]=useState(false),[historicalMessage,setHistoricalMessage]=useState("");
  const [settlementSource,setSettlementSource]=useState<"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY">("CURRENT_CUSTODY"),[orders,setOrders]=useState<OrderOption[]>([]),[orderStages,setOrderStages]=useState<OrderStageOption[]>([]),[settlementOrderId,setSettlementOrderId]=useState(""),[settlementOrderStageId,setSettlementOrderStageId]=useState("");
  const [employees,setEmployees]=useState<Array<{id:string;code:string;full_name:string;is_active?:boolean}>>([]),[orderAccounts,setOrderAccounts]=useState<OrderAccountRow[]>([]),[orderAccountsLoading,setOrderAccountsLoading]=useState(false),[settlementEmployeeId,setSettlementEmployeeId]=useState(""),[settlementSummary,setSettlementSummary]=useState<{productionEarnings:number;bonuses:number;deductions:number;previouslySettled:number;outstandingAdvances:number;availableForSettlement:number;orderAccount?:{orderId:string;orderStageId:string|null;earned:number;paid:number;remaining:number}|null}|null>(null),[settlementAmount,setSettlementAmount]=useState(""),[settlementMethod,setSettlementMethod]=useState("CASH"),[settlementReference,setSettlementReference]=useState(""),[settlementNotes,setSettlementNotes]=useState(""),[settlementSaving,setSettlementSaving]=useState(false),[unpaidProduction,setUnpaidProduction]=useState<UnpaidProduction[]>([]),[selectedProductionIds,setSelectedProductionIds]=useState<string[]>([]),[productionLoading,setProductionLoading]=useState(false),[settlementMode,setSettlementMode]=useState<"SELECTED_PRODUCTION"|"ALL_DUES">("ALL_DUES");const [employeeStatement,setEmployeeStatement]=useState<EmployeeStatement|null>(null),[statementLoading,setStatementLoading]=useState(false);
- async function load(){
+ const load=useCallback(async()=>{
   try{
-   const me=await api<{data:{roleCodes:string[]}}>("/api/auth/me"); const worker=me.data.roleCodes.includes("worker"); setIsWorker(worker);
-   const [r,m]=await Promise.all([api<{data:Request[]}>("/api/payment-requests"),api<{data:{code:string;name:string}[]}>("/api/payment-methods")]);
-   setRequests(r.data); const map:Record<string,string>={};m.data.forEach(x=>map[x.code]=x.name);setMethods(map);
-   try{const cash=await api<{data:CashCustodian[]}>("/api/custodies/eligible-employees");setCashCustodians(cash.data);setCashCustodyEmployeeId(current=>current&&cash.data.some(x=>x.id===current)?current:(cash.data[0]?.id||""))}catch{setCashCustodians([]);setCashCustodyEmployeeId("");}
-   try{const e=await api<{data:Array<{id:string;code:string;full_name:string;is_active?:boolean}>}>("/api/employees");setEmployees(e.data.filter(x=>x.is_active!==false));setSettlementEmployeeId(current=>current&&e.data.some(x=>x.id===current)?current:(e.data.find(x=>x.is_active!==false)?.id||""))}catch{setEmployees([]);}
-   try{const o=await api<{data:OrderOption[]}>("/api/orders");setOrders(o.data.filter(x=>!["CANCELLED","COMPLETED"].includes(x.status)));setLegacyOrders(o.data.filter(x=>x.status!=="CANCELLED"));}catch{setOrders([]);}
-   if(worker){const b=await api<{data:{balance:number;availableEarnings:number;outstandingAdvanceAmount:number;dueAdvanceRepaymentAmount:number}}>("/api/payments/my-balance");setBalance(b.data.availableEarnings);setAccountBalance(b.data.balance);setOutstandingAdvanceAmount(b.data.outstandingAdvanceAmount);setDueAdvanceRepaymentAmount(b.data.dueAdvanceRepaymentAmount);}
+   const me=await api<{data:{roleCodes:string[]}}>("/api/auth/me");
+   const worker=me.data.roleCodes.includes("worker");
+   setIsWorker(worker);
+
+   // Request review is optional for payout-only roles; one forbidden endpoint must
+   // not prevent employee/custody data from loading for the direct-settlement form.
+   if(has("payment_requests.view")){
+    try{const r=await api<{data:Request[]}>("/api/payment-requests");setRequests(r.data)}catch{setRequests([])}
+    try{const m=await api<{data:{code:string;name:string}[]}>("/api/payment-methods");const map:Record<string,string>={};m.data.forEach(x=>map[x.code]=x.name);setMethods(map)}catch{setMethods(fallbackMethods)}
+   }else{
+    setRequests([]);
+    setMethods(fallbackMethods);
+   }
+
+   try{const cash=await api<{data:CashCustodian[]}>("/api/custodies/eligible-employees");setCashCustodians(cash.data);setCashCustodyEmployeeId(current=>current&&cash.data.some(x=>x.id===current)?current:(cash.data[0]?.id||""))}catch{setCashCustodians([]);setCashCustodyEmployeeId("")}
+   try{const e=await api<{data:Array<{id:string;code:string;full_name:string;is_active?:boolean}>}>("/api/employees");const active=e.data.filter(x=>x.is_active!==false);setEmployees(active);setSettlementEmployeeId(current=>current&&active.some(x=>x.id===current)?current:(active[0]?.id||""))}catch{setEmployees([])}
+   try{const o=await api<{data:OrderOption[]}>("/api/orders");setOrders(o.data.filter(x=>!["CANCELLED","COMPLETED"].includes(x.status)));setLegacyOrders(o.data.filter(x=>x.status!=="CANCELLED"))}catch{setOrders([]);setLegacyOrders([])}
+   if(worker&&has("payment_requests.view")){
+    try{const b=await api<{data:{balance:number;availableEarnings:number;outstandingAdvanceAmount:number;dueAdvanceRepaymentAmount:number}}>("/api/payments/my-balance");setBalance(b.data.availableEarnings);setAccountBalance(b.data.balance);setOutstandingAdvanceAmount(b.data.outstandingAdvanceAmount);setDueAdvanceRepaymentAmount(b.data.dueAdvanceRepaymentAmount)}catch{setBalance(0);setAccountBalance(0);setOutstandingAdvanceAmount(0);setDueAdvanceRepaymentAmount(0)}
+   }
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المدفوعات")}
- }
- useEffect(()=>{void load()},[]);
+ },[has]);
+ useEffect(()=>{if(permissions!==null)void load()},[permissions,load]);
  async function loadHistoricalPayments(){
   setHistoricalLoading(true);
   try{const r=await api<{data:HistoricalPayment[]}>("/api/worker-payments/historical-unallocated");setHistoricalPayments(r.data);setHistoricalPaymentId(current=>current&&r.data.some(x=>x.payment_id===current)?current:(r.data[0]?.payment_id||""))}
@@ -102,7 +115,7 @@ export default function PaymentsPage(){
   <main className="main"><header className="topbar"><div><h1 className="page-title">القبض والمدفوعات</h1><p className="page-subtitle">رصيد العامل وطلبات القبض ودورة اعتماد الدفع</p></div></header><section className="content">
    {error&&<div className="alert error">{error}</div>}
    <div className="stats">
-    <article className="card stat accent"><div className="stat-label">مستحقات الإنتاج غير المصروفة</div><div className="stat-value">{formatMoney(balance)}</div><div className="stat-note">الإجمالي المتاح قبل خصم السلف</div></article>
+    {isWorker&&<article className="card stat accent"><div className="stat-label">مستحقات الإنتاج غير المصروفة</div><div className="stat-value">{formatMoney(balance)}</div><div className="stat-note">الإجمالي المتاح قبل خصم السلف</div></article>}
     {isWorker&&<article className="card stat"><div className="stat-label">صافي رصيد حسابك</div><div className="stat-value" style={{color:accountBalance<0?"#dc2626":"#15803d"}}>{formatMoney(accountBalance)}</div><div className="stat-note">{accountBalance<0?"الرصيد بالسالب بسبب سلف/تسويات قائمة":"يشمل المستحقات والحركات المسجلة"}</div></article>}
     {isWorker&&<article className="card stat"><div className="stat-label">السلف المفتوحة</div><div className="stat-value">{formatMoney(outstandingAdvanceAmount)}</div><div className="stat-note">الرصيد المتبقي قبل أي خصم جديد</div></article>}
     {isWorker&&<article className="card stat"><div className="stat-label">قسط السلف المستحق الآن</div><div className="stat-value">{formatMoney(dueAdvanceRepaymentAmount)}</div><div className="stat-note">الاستقطاع الدوري من الإنتاج؛ يُخصم عند الصرف الفعلي</div></article>}
@@ -164,6 +177,6 @@ export default function PaymentsPage(){
 
     </>}
    </section>}
-   <section className="card"><div className="card-header"><h2 className="card-title">طلبات القبض</h2></div>{!requests.length?<div className="empty">لا توجد طلبات.</div>:<div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>إجمالي المستحق</th><th>السلف المفتوحة</th><th>خصم السلف</th><th>صافي المدفوع</th><th>الطريقة</th><th>التاريخ</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{requests.map(r=><tr key={r.id}><td className="mono">{r.code}</td><td className="strong">{r.employee_name}</td><td className="money">{formatMoney(r.amount)}</td><td className="money">{formatMoney(r.outstanding_advance_amount??0)}</td><td className="money">{r.advance_repayment_amount!=null?formatMoney(r.advance_repayment_amount):r.due_advance_repayment_amount!=null?formatMoney(r.due_advance_repayment_amount):"—"}</td><td className="money">{r.net_paid_amount!=null?formatMoney(r.net_paid_amount):"—"}</td><td>{methods[r.method]||fallbackMethods[r.method]||r.method}</td><td>{new Date(r.requested_at).toLocaleString("ar-EG")}</td><td><span className={"status "+r.status.toLowerCase()}>{statuses[r.status]||r.status}</span></td><td>{r.status==="PENDING"&&<div className="row-actions">{has("payment_requests.approve")&&<button className="approve-button" disabled={!cashCustodyEmployeeId} onClick={()=>action(r.id,"approve")}>اعتماد وصرف وخصم العهدة</button>}{has("payment_requests.reject")&&<button className="reject-button" onClick={()=>action(r.id,"reject")}>رفض</button>}</div>}{r.status==="APPROVED"&&has("worker_payments.pay")&&<button className="approve-button" disabled={!cashCustodyEmployeeId} onClick={()=>action(r.id,"pay")}>تسجيل الدفع وخصم العهدة</button>}{r.transfer_reference&&<div className="form-hint">مرجع التحويل: {r.transfer_reference}</div>}</td></tr>)}</tbody></table></div>}</section>
+   {has("payment_requests.view")&&<section className="card"><div className="card-header"><h2 className="card-title">طلبات القبض</h2></div>{!requests.length?<div className="empty">لا توجد طلبات.</div>:<div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>إجمالي المستحق</th><th>السلف المفتوحة</th><th>خصم السلف</th><th>صافي المدفوع</th><th>الطريقة</th><th>التاريخ</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{requests.map(r=><tr key={r.id}><td className="mono">{r.code}</td><td className="strong">{r.employee_name}</td><td className="money">{formatMoney(r.amount)}</td><td className="money">{formatMoney(r.outstanding_advance_amount??0)}</td><td className="money">{r.advance_repayment_amount!=null?formatMoney(r.advance_repayment_amount):r.due_advance_repayment_amount!=null?formatMoney(r.due_advance_repayment_amount):"—"}</td><td className="money">{r.net_paid_amount!=null?formatMoney(r.net_paid_amount):"—"}</td><td>{methods[r.method]||fallbackMethods[r.method]||r.method}</td><td>{new Date(r.requested_at).toLocaleString("ar-EG")}</td><td><span className={"status "+r.status.toLowerCase()}>{statuses[r.status]||r.status}</span></td><td>{r.status==="PENDING"&&<div className="row-actions">{has("payment_requests.approve")&&<button className="approve-button" disabled={!cashCustodyEmployeeId} onClick={()=>action(r.id,"approve")}>اعتماد وصرف وخصم العهدة</button>}{has("payment_requests.reject")&&<button className="reject-button" onClick={()=>action(r.id,"reject")}>رفض</button>}</div>}{r.status==="APPROVED"&&has("worker_payments.pay")&&<button className="approve-button" disabled={!cashCustodyEmployeeId} onClick={()=>action(r.id,"pay")}>تسجيل الدفع وخصم العهدة</button>}{r.transfer_reference&&<div className="form-hint">مرجع التحويل: {r.transfer_reference}</div>}</td></tr>)}</tbody></table></div>}</section>}
   </section></main></div>
 }
