@@ -2,6 +2,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
+import { SearchableSelect } from "../../components/searchable-select";
 import {formatMoney} from "../../lib/format";
 
 type Employee={id:string;code:string;full_name:string;department_name:string|null;is_active:boolean;salary_profile_id:string|null;monthly_salary:string|number|null;effective_from:string|null};
@@ -66,7 +67,7 @@ export default function PayrollPage(){
 return <div className="app-shell"><Sidebar active="/payroll"/><main className="main"><header className="topbar"><div><h1 className="page-title">مرتبات الموظفين الأساسيين</h1><p className="page-subtitle">إدارة الراتب الشهري، المكافآت والخصومات، اعتماد مسير الرواتب، وتسجيل الصرف الجزئي أو الكامل.</p></div></header><section className="content">
   {error&&<div className="alert error">{error}</div>}{notice&&<div className="alert success">{notice}</div>}
   {has("payroll.manage")&&<form className="card form-card" onSubmit={setSalary}><div className="card-header"><h2 className="card-title">تعريف راتب أساسي</h2><span className="form-hint">تغيير الراتب ينشئ سجلًا جديدًا ولا يمس الرواتب السابقة</span></div><div className="form-grid">
-   <label>الموظف<select value={employeeId} onChange={e=>{setEmployeeId(e.target.value);setSalaryHistory([]);setSalaryHistoryEmployeeId("")}} required><option value="">اختر الموظف</option>{employees.filter(x=>x.is_active).map(e=><option key={e.id} value={e.id}>{e.full_name} · {e.code}{e.monthly_salary!==null?" · الحالي "+money(e.monthly_salary)+" ج.م":""}</option>)}</select></label>
+   <label>الموظف<SearchableSelect value={employeeId} onChange={v=>{setEmployeeId(v);setSalaryHistory([]);setSalaryHistoryEmployeeId("")}} placeholder="اختر الموظف" options={[{value:"",label:"اختر الموظف"},...employees.filter(x=>x.is_active).map(e=>({value:e.id,label:e.full_name,meta:e.code+(e.monthly_salary!==null?" · الحالي "+money(e.monthly_salary)+" ج.م":"")}))]}/></label>
    <label>الراتب الشهري (ج.م)<input type="number" min="0" step="0.01" value={monthlySalary} onChange={e=>setMonthlySalary(e.target.value)} required/></label>
    <label>ساري من تاريخ<input type="date" value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)} required/></label>
    <label>ملاحظات<input value={salaryNotes} onChange={e=>setSalaryNotes(e.target.value)} maxLength={1000}/></label>
@@ -103,19 +104,13 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
         <td>
           {payroll.period?.status === "DRAFT" && has("payroll.manage") ? (
             <div style={{display:"grid",gap:6,minWidth:175}}>
-              <select aria-label="طريقة حساب الخصم" value={a.deductionMode} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionMode:e.target.value as "FIXED" | "PERCENTAGE"}}))}>
-                <option value="FIXED">مبلغ ثابت</option>
-                <option value="PERCENTAGE">نسبة مئوية</option>
-              </select>
+              <SearchableSelect ariaLabel="طريقة حساب الخصم" value={a.deductionMode} onChange={v => setAdjustments(s => ({...s,[i.id]:{...a,deductionMode:v as "FIXED" | "PERCENTAGE"}}))} options={[{value:"FIXED",label:"مبلغ ثابت"},{value:"PERCENTAGE",label:"نسبة مئوية"}]}/>
               {a.deductionMode === "FIXED" ? (
                 <input aria-label="قيمة الخصم بالجنيه" type="number" min="0" step="0.01" value={a.deduction} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deduction:e.target.value}}))}/>
               ) : (
                 <div style={{display:"grid",gap:5}}>
                   <input aria-label="نسبة الخصم بالمئة" type="number" min="0.01" max="100" step="0.01" placeholder="النسبة %" value={a.deductionPercentage} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionPercentage:e.target.value}}))}/>
-                  <select aria-label="أساس حساب الخصم" value={a.deductionBasis} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionBasis:e.target.value as "BASE_SALARY" | "BASE_PLUS_BONUS"}}))}>
-                    <option value="BASE_SALARY">الراتب الأساسي فقط</option>
-                    <option value="BASE_PLUS_BONUS">الأساسي + المكافأة</option>
-                  </select>
+                  <SearchableSelect ariaLabel="أساس حساب الخصم" value={a.deductionBasis} onChange={v => setAdjustments(s => ({...s,[i.id]:{...a,deductionBasis:v as "BASE_SALARY" | "BASE_PLUS_BONUS"}}))} options={[{value:"BASE_SALARY",label:"الراتب الأساسي فقط"},{value:"BASE_PLUS_BONUS",label:"الأساسي + المكافأة"}]}/>
                   <small className="form-hint">أساس الحساب: {money(basisAmount)} ج.م</small>
                   <small className="strong">الخصم المتوقع: {money(previewDeduction)} ج.م</small>
                 </div>
