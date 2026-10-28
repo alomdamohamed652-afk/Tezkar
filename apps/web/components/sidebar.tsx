@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { api } from "../lib/api";
 
-type Session={permissions:string[];username?:string;fullName?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
+type Session={permissions:string[];username?:string;fullName?:string|null;employeeId?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 type NavGroup={label:string;items:NavItem[]};
 
