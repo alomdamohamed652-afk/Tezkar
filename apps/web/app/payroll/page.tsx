@@ -70,7 +70,7 @@ export default function PayrollPage(){
    }else{
     const [year,monthNumber]=month.split("-").map(Number);const lastDay=new Date(year,monthNumber,0).getDate();
     const from=month+"-01",to=month+"-"+String(lastDay).padStart(2,"0");
-    const r=await api<{data:AttendanceDay[];summary:Record<string,number}>("/api/attendance/report?from="+encodeURIComponent(from)+"&to="+encodeURIComponent(to));
+    const r=await api<{data:AttendanceDay[];summary:Record<string,number>}>("/api/attendance/report?from="+encodeURIComponent(from)+"&to="+encodeURIComponent(to));
     setAttendanceDays(r.data.filter(row=>row.employeeId===item.employee_id).sort((a,b)=>a.date.localeCompare(b.date)));
    }
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل الحضور والانصراف. تأكد من صلاحية عرض الحضور.")}
