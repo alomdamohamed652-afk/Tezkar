@@ -1,15 +1,13 @@
 "use client";
 import {FormEvent,useEffect,useRef,useState} from "react";
 import Link from "next/link";
-import {api,ApiError} from "../../lib/api";
+import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 import {formatMoney,formatQuantity} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 
-type Custody={id:string;code:string;employee_id:string;employee_name:string;custody_type:string;description:string;quantity:number;unit_value:number;total_value:number;status:string;issued_at:string;due_date:string|null;returned_quantity:number;lost_quantity:number;remaining_quantity:number;transfer_count?:number};
 type Employee={id:string;full_name:string;code:string};
 type CustodyOrder={id:string;code:string;order_name:string;contract_value:number;collected_amount:number;remaining_collectible:number|null};
-type CustodyTransfer={id:string;code:string;from_employee_name:string;to_employee_name:string;remaining_quantity:number;notes:string|null;created_at:string;created_by_username:string};
 type AdminExpense={id:string;code:string;category:string;description:string;amount:number;expense_date:string;expense_type:"DIRECT"|"ADMINISTRATIVE";paid_from_employee_id:string|null;created_by_username:string|null};
 
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
