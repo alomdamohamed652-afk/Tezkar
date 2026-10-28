@@ -756,6 +756,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
+      const bonusSettlementSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(bonusSettlementSummary.statusCode,200,bonusSettlementSummary.body);
+      assert.equal(Number(bonusSettlementSummary.json().data.productionEarnings),130,
+        "settlement summary must use total_earning_amount, matching the payable balance and unpaid-production list");
       const unpaidProductionBeforePayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
