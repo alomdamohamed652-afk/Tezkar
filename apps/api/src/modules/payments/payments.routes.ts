@@ -199,7 +199,7 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null}
 ){
   const available=await getAvailableEarnings(client,input.employeeId);
   if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
@@ -240,26 +240,55 @@ async function executeWorkerPayment(
 
   if(!input.skipProductionAllocations){
     let allocationRemaining=input.grossAmount;
-    const productions=await client.query(
-      `SELECT pe.id,
-        GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
-          COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
-        FROM production_entries pe
-       WHERE pe.employee_id=$1 AND pe.status='APPROVED'
-       ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
-      [input.employeeId]);
-    for(const production of productions.rows){
-      if(allocationRemaining<=0.000001)break;
-      const take=Math.min(allocationRemaining,Number(production.remaining));
-      if(take<=0.000001)continue;
-      await client.query(
-        `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
-         VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
-         DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
-        [payment.rows[0].id,production.id,take]);
-      allocationRemaining-=take;
+    if(input.productionEntryIds){
+      const productions=await client.query(
+        `SELECT pe.id,
+          GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+            COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=pe.id),0)-
+            COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=pe.id),0)-
+            COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+              JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
+              WHERE wpa.production_entry_id=pe.id
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+          ) AS remaining
+          FROM production_entries pe
+         WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.id=ANY($2::uuid[])
+         ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
+        [input.employeeId,input.productionEntryIds]);
+      if(productions.rowCount!==new Set(input.productionEntryIds).size){
+        throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
+      }
+      for(const production of productions.rows){
+        if(allocationRemaining<=0.009)break;
+        const take=Math.round(Math.min(allocationRemaining,Number(production.remaining))*100)/100;
+        if(take<=0.009)continue;
+        await client.query(
+          "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,$3)",
+          [settlement.rows[0].id,production.id,take]);
+        allocationRemaining=Math.round((allocationRemaining-take)*100)/100;
+      }
+    }else{
+      const productions=await client.query(
+        `SELECT pe.id,
+          GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount)-
+            COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=pe.id),0)) AS remaining
+          FROM production_entries pe
+         WHERE pe.employee_id=$1 AND pe.status='APPROVED'
+         ORDER BY pe.work_date ASC,pe.created_at ASC,pe.id ASC FOR UPDATE`,
+        [input.employeeId]);
+      for(const production of productions.rows){
+        if(allocationRemaining<=0.000001)break;
+        const take=Math.min(allocationRemaining,Number(production.remaining));
+        if(take<=0.000001)continue;
+        await client.query(
+          `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount)
+           VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id)
+           DO UPDATE SET amount=worker_payment_allocations.amount+EXCLUDED.amount`,
+          [payment.rows[0].id,production.id,take]);
+        allocationRemaining-=take;
+      }
     }
-  
   }
   return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
 }
