@@ -262,7 +262,7 @@ const orderStageDesignSchema = z.object({
 
 
   app.get("/api/laser-order-stage-designs", {
-    preHandler: [authenticateRequest, requirePermission("laser_designs.order_plan.view")]
+    preHandler: [authenticateRequest, requirePermission("machine_production.view")]
   }, async request => {
     const query = request.query as { orderId?: string; orderStageId?: string; machineId?: string };
     const result = await pool.query(`
