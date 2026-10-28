@@ -768,7 +768,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // A payment can include production earnings plus a separate adjustment.
       // Only the production portion belongs in production allocation reconciliation.
       await apiPool.query(
-        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',25,$2,'test-only non-production adjustment')",
+        "INSERT INTO employee_earnings_adjustments(employee_id,adjustment_type,amount,reason,created_by) VALUES($1,'BONUS',25,'test-only non-production adjustment',$2)",
         [bonusWorkerEmployee.id,manager.id]
       );
       const bonusAwarePayout=await app.inject({
