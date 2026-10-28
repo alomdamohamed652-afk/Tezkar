@@ -29,7 +29,7 @@ const groups:NavGroup[]=[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
   {icon:"⇄",label:"مصروفات وتسويات تاريخية",href:"/finance/worker-settlements",permissions:["worker_payments.pay","finance.expenses.create"]},
   {icon:"⚠",label:"مراجعة الحالات المالية",href:"/finance/review",permissions:["worker_payments.pay"]},
-  {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
+  {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","worker_payments.view","worker_payments.pay"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
   {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own","cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"],conditional:"custody"},
