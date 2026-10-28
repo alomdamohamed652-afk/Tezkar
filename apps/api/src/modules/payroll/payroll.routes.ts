@@ -331,9 +331,9 @@ export async function payrollRoutes(app: FastifyInstance) {
             [`راتب شهر ${monthLabel} - ${item.full_name}`,grossSalary,period.rows[0].period_month,request.user!.userId]);
           await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
         }
-        // Post base salary, bonus and deduction as separate account movements.
-        // This makes each adjustment visible to the employee; the net effect remains
-        // base salary + bonus - deduction. Advance installments are only settled at payout.
+        // Base salary is posted once per payroll item. Each named bonus/deduction
+        // gets its own source-linked ledger entry so employee balances can be audited
+        // back to the exact line printed on the payslip.
         if(Number(item.base_salary)>0){
           await client.query(
             `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
@@ -341,27 +341,27 @@ export async function payrollRoutes(app: FastifyInstance) {
              ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
             [item.employee_id,Number(item.base_salary),request.user!.userId,`الراتب الأساسي لشهر ${monthLabel}`,item.id]
           );
-        }else if(Number(item.bonus_amount)>0){
-          await client.query(
-            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
-             VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
-             ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
-            [item.employee_id,Number(item.bonus_amount),request.user!.userId,`بونص راتب شهر ${monthLabel}`,item.id]
-          );
         }
-        if(Number(item.base_salary)>0&&Number(item.bonus_amount)>0){
-          await client.query(
-            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes)
-             VALUES($1,'ADJUSTMENT',$2,$3,$4)`,
-            [item.employee_id,Number(item.bonus_amount),request.user!.userId,`بونص راتب شهر ${monthLabel}`]
-          );
-        }
-        if(Number(item.deduction_amount)>0){
-          await client.query(
-            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
-             VALUES($1,'ADJUSTMENT',$2,$3,$4)`,
-            [item.employee_id,Number(item.deduction_amount),request.user!.userId,`خصم راتب شهر ${monthLabel}`]
-          );
+        const adjustmentLines=await client.query(
+          `SELECT id,line_type,description,amount FROM payroll_adjustment_lines
+            WHERE payroll_item_id=$1 ORDER BY created_at,id`,[item.id]
+        );
+        for(const line of adjustmentLines.rows){
+          if(line.line_type==="BONUS"){
+            await client.query(
+              `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id)
+               VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+               ON CONFLICT (payroll_adjustment_line_id) WHERE payroll_adjustment_line_id IS NOT NULL DO NOTHING`,
+              [item.employee_id,Number(line.amount),request.user!.userId,`مكافأة راتب شهر ${monthLabel}: ${line.description}`,line.id]
+            );
+          }else{
+            await client.query(
+              `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_adjustment_line_id)
+               VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+               ON CONFLICT (payroll_adjustment_line_id) WHERE payroll_adjustment_line_id IS NOT NULL DO NOTHING`,
+              [item.employee_id,Number(line.amount),request.user!.userId,`خصم راتب شهر ${monthLabel}: ${line.description}`,line.id]
+            );
+          }
         }
       }
       // Advance deductions remain reserved on the approved payroll item until the
