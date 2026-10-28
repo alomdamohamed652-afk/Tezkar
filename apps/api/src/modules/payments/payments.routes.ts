@@ -1077,6 +1077,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       employeeId: z.string().uuid(),
       cashCustodyEmployeeId: z.string().uuid().nullable().optional(),
       settlementSource: z.enum(["CURRENT_CUSTODY", "PREVIOUS_CUSTODY"]).default("CURRENT_CUSTODY"),
+      settlementMode: z.enum(["SELECTED_PRODUCTION", "ALL_DUES"]).default("ALL_DUES"),
+      productionEntryIds: z.array(z.string().uuid()).max(2000).optional(),
       orderId: z.string().uuid().nullable().optional(),
       orderStageId: z.string().uuid().nullable().optional(),
       idempotencyKey: z.string().uuid(),
@@ -1096,6 +1098,12 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
       }
+      if (value.settlementMode === "SELECTED_PRODUCTION" && (!value.productionEntryIds?.length || value.settlementSource !== "CURRENT_CUSTODY")) {
+        ctx.addIssue({ code: "custom", path: ["productionEntryIds"], message: "اختيار سجلات إنتاج محددة يتطلب عهدة حالية وسجل إنتاج واحدًا على الأقل" });
+      }
+      if (value.productionEntryIds && new Set(value.productionEntryIds).size !== value.productionEntryIds.length) {
+        ctx.addIssue({ code: "custom", path: ["productionEntryIds"], message: "لا يمكن تكرار سجل الإنتاج في التسوية نفسها" });
+      }
       if (value.allowOverpayment && (value.settlementSource !== "PREVIOUS_CUSTODY" || !value.orderId)) {
         ctx.addIssue({ code: "custom", path: ["allowOverpayment"], message: "القبض بأكثر من المستحق متاح فقط في تسوية عهدة سابقة مرتبطة بطلبية" });
       }
@@ -1112,6 +1120,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       const fingerprint = JSON.stringify({
         employeeId: parsed.data.employeeId,
         settlementSource: parsed.data.settlementSource,
+        settlementMode: parsed.data.settlementMode,
+        productionEntryIds: [...(parsed.data.productionEntryIds ?? [])].sort(),
         cashCustodyEmployeeId: parsed.data.cashCustodyEmployeeId ?? null,
         orderId: parsed.data.orderId ?? null,
         orderStageId: parsed.data.orderStageId ?? null,
@@ -1204,6 +1214,29 @@ export async function paymentsRoutes(app:FastifyInstance){
         }
       }
 
+      if(parsed.data.settlementSource==="CURRENT_CUSTODY" && parsed.data.productionEntryIds !== undefined){
+        const selected=await client.query(`
+          SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+              JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
+              WHERE wpa.production_entry_id=p.id
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0) AS remaining
+          FROM production_entries p
+          WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.id=ANY($2::uuid[])
+          ORDER BY p.work_date,p.created_at,p.id
+          FOR UPDATE
+        `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
+        if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
+        if(parsed.data.settlementMode==="SELECTED_PRODUCTION"){
+          const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
+          if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المختارة تمت تسويتها بالفعل",409);
+          if(Math.abs(parsed.data.amount-selectedDue)>0.009)throw new AppError("PRODUCTION_SETTLEMENT_AMOUNT_MISMATCH",`إجمالي السجلات المحددة ${selectedDue.toFixed(2)} ج.م؛ حدّث الاختيار قبل اعتماد التسوية.`,409);
+        }
+      }
+
       const settlement = await executeWorkerPayment(client, {
         userId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
@@ -1221,7 +1254,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
-        skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY"
+        skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
+        productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds : null
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
