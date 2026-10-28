@@ -335,9 +335,17 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(beforeApproval.statusCode, 409, beforeApproval.body);
       assert.equal(beforeApproval.json().error.code, "PAYROLL_NOT_APPROVED");
 
+      const attendanceSnapshot = Array.from({length:31},(_,index)=>{
+        const date = `2099-01-${String(index+1).padStart(2,"0")}`;
+        return [
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,reviewRequired:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,reviewRequired:false}
+        ];
+      }).flat();
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader }
+        headers: { cookie: cookieHeader },
+        payload: { attendanceSnapshot }
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
