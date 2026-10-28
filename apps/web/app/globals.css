@@ -1755,3 +1755,21 @@ textarea:hover:not(:disabled) {
     transition-duration: .01ms !important;
   }
 }
+
+@media print {
+  body * { visibility: hidden !important; }
+  #machine-production-report, #machine-production-report * { visibility: visible !important; }
+  #machine-production-report {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+  #machine-production-report .report-controls,
+  #machine-production-report button { display: none !important; }
+  #machine-production-report .table-wrap { overflow: visible !important; }
+  #machine-production-report table { width: 100% !important; font-size: 9pt !important; }
+}
