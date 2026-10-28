@@ -1,13 +1,11 @@
 "use client";
 import {FormEvent,useEffect,useState} from "react";
 import Link from "next/link";
-import Link from "next/link";
 import {api} from "../../../lib/api";
 import {Sidebar,usePermissions} from "../../../components/sidebar";
 import {SearchableSelect} from "../../../components/searchable-select";
 import {formatMoney} from "../../../lib/format";
 
-type Item={id:string;code:string;full_name?:string;order_name?:string;name?:string};
 type Order={id:string;code:string;order_name:string;status?:string};
 const today=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
 const number=(s:string)=>Number(s.replace(/[٠-٩]/g,x=>String("٠١٢٣٤٥٦٧٨٩".indexOf(x))).replace(/,/g,""));
