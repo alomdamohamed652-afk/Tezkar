@@ -18,6 +18,7 @@ const groups:NavGroup[]=[
   {icon:"◉",label:"إنتاجي",href:"/my-production",permissions:["production.view_own"]},
   {icon:"▰",label:"إنتاج الماكينات",href:"/machine-production",permissions:["machine_production.view"]},
   {icon:"▧",label:"مكتبة تصميمات الليزر",href:"/laser-designs",permissions:["laser_designs.view"]},
+  {icon:"▦",label:"خطة تصميمات الطلبيات",href:"/order-design-plan",permissions:["laser_designs.order_plan.view"]},
   {icon:"◷",label:"متابعة تشغيل الماكينات",href:"/machine-operations",permissions:["machine_production.live.view"]}
  ]},
  {label:"المخزون والتسليم",items:[
