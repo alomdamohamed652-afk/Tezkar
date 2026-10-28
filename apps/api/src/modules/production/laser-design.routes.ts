@@ -205,23 +205,22 @@ export async function laserDesignRoutes(app: FastifyInstance) {
       if (!version.rowCount || version.rows[0].version_status !== "ACTIVE" || version.rows[0].design_status !== "ACTIVE") {
         throw new AppError("LASER_DESIGN_VERSION_NOT_ACTIVE", "اختر إصدارًا نشطًا من تصميم نشط", 422);
       }
-      const effectiveFrom = parsed.data.effectiveFrom ?? new Date().toISOString().slice(0,10);
       const existing = await client.query(`
         SELECT id FROM laser_machine_design_compatibility
         WHERE machine_id=$1 AND design_version_id=$2 AND is_active=TRUE
-          AND (effective_to IS NULL OR effective_to >= $3::date)
+          AND (effective_to IS NULL OR effective_to >= COALESCE($3::date,CURRENT_DATE))
         LIMIT 1
-      `, [parsed.data.machineId,parsed.data.designVersionId,effectiveFrom]);
+      `, [parsed.data.machineId,parsed.data.designVersionId,parsed.data.effectiveFrom ?? null]);
       if (existing.rowCount) throw new AppError("COMPATIBILITY_ALREADY_EXISTS", "هذا التصميم مرتبط بالفعل بالماكينة؛ راجع سجل التوافق بدل إنشاء ربط مكرر", 409);
       const inserted = await client.query(`
         INSERT INTO laser_machine_design_compatibility(
           machine_id,design_version_id,settings_notes,pieces_per_cycle_override,
           standard_cycle_seconds_override,effective_from,created_by
-        ) VALUES($1,$2,$3,$4,$5,$6::date,$7)
+        ) VALUES($1,$2,$3,$4,$5,COALESCE($6::date,CURRENT_DATE),$7)
         RETURNING *
       `, [parsed.data.machineId,parsed.data.designVersionId,parsed.data.settingsNotes ?? null,
         parsed.data.piecesPerCycleOverride ?? null,parsed.data.standardCycleSecondsOverride ?? null,
-        effectiveFrom,request.user!.userId]);
+        parsed.data.effectiveFrom ?? null,request.user!.userId]);
       await audit(client, request, "create_compatibility", "laser_machine_design_compatibility", inserted.rows[0].id, inserted.rows[0]);
       return inserted.rows[0];
     });
