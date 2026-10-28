@@ -914,10 +914,13 @@ export async function paymentsRoutes(app:FastifyInstance){
                      THEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
                    ELSE COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0)
                  END AS allocated_amount,
-                 CASE WHEN es.id IS NOT NULL THEN 'SETTLED'
-                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
-                        OR EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
-                      ELSE 'UNALLOCATED' END AS allocation_status
+                 CASE
+                   WHEN es.id IS NOT NULL AND COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)>=wp.gross_amount-0.009 THEN 'SETTLED'
+                   WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
+                   WHEN es.id IS NOT NULL THEN 'UNALLOCATED'
+                   WHEN EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
+                   ELSE 'UNALLOCATED'
+                 END AS allocation_status
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
             LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
