@@ -59,7 +59,7 @@ export default function CustodyPage(){
  // Load employee options independently from the custody ledger so a ledger-view error
  // cannot block the picker. Support both all-scope and own-scope permissions.
  useEffect(()=>{
-  const pickerPermissions=["cash_custody.create","cash_custody.create_own","cash_custody.view","cash_custody.view_own","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"];
+  const pickerPermissions=["cash_custody.create","cash_custody.create_own","cash_custody.view","cash_custody.view_own","cash_custody.transfer","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"];
   if(!permissions?.some(code=>pickerPermissions.includes(code)))return;
   let active=true;
   api<{data:Employee[]}>("/api/custodies/eligible-employees")
