@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -330,7 +330,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
 
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
-        headers: { cookie: cookieHeader }, payload: { amount: 100 }
+        headers: { cookie: cookieHeader }, payload: { idempotencyKey: randomUUID(), amount: 100 }
       });
       assert.equal(beforeApproval.statusCode, 409, beforeApproval.body);
       assert.equal(beforeApproval.json().error.code, "PAYROLL_NOT_APPROVED");
@@ -408,7 +408,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
 
       const februaryPayment=await app.inject({
         method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
-        headers:{cookie:cookieHeader},payload:{amount:600,paymentMethod:"TEST"}
+        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"TEST"}
       });
       assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
       assert.equal(februaryPayment.json().data.status,"PAID");
@@ -494,17 +494,32 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(duplicateFebruaryApproval.json().error.code,"PAYROLL_PERIOD_LOCKED");
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,1);
 
+      const partialKey=randomUUID();
+      const partialPayload={idempotencyKey:partialKey,amount:600,paymentMethod:"TEST"};
       const partial = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
-        headers: { cookie: cookieHeader }, payload: { amount: 600, paymentMethod: "TEST" }
+        headers: { cookie: cookieHeader }, payload: partialPayload
       });
       assert.equal(partial.statusCode, 201, partial.body);
       assert.equal(partial.json().data.status, "PARTIAL");
       assert.equal(Number(partial.json().data.remainingAmount), 400);
+      const partialRetry=await app.inject({
+        method:"POST",url:`/api/payroll/items/${itemA.rows[0].id}/payments`,
+        headers:{cookie:cookieHeader},payload:partialPayload
+      });
+      assert.equal(partialRetry.statusCode,200,partialRetry.body,"retrying the same partial payout must return the original payment");
+      assert.equal(partialRetry.json().data.payment.id,partial.json().data.payment.id);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM payroll_payments WHERE idempotency_key=$1",[partialKey])).rows[0].count),1);
+      const reusedKey=await app.inject({
+        method:"POST",url:`/api/payroll/items/${itemA.rows[0].id}/payments`,
+        headers:{cookie:cookieHeader},payload:{...partialPayload,amount:601}
+      });
+      assert.equal(reusedKey.statusCode,409,reusedKey.body);
+      assert.equal(reusedKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
 
       const full = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
-        headers: { cookie: cookieHeader }, payload: { amount: 400, paymentMethod: "TEST" }
+        headers: { cookie: cookieHeader }, payload: { idempotencyKey: randomUUID(), amount: 400, paymentMethod: "TEST" }
       });
       assert.equal(full.statusCode, 201, full.body);
       assert.equal(full.json().data.status, "PAID");
@@ -517,14 +532,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
 
       const overpay = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
-        headers: { cookie: cookieHeader }, payload: { amount: 0.01, paymentMethod: "TEST" }
+        headers: { cookie: cookieHeader }, payload: { idempotencyKey: randomUUID(), amount: 0.01, paymentMethod: "TEST" }
       });
       assert.equal(overpay.statusCode, 409, overpay.body);
       assert.equal(overpay.json().error.code, "PAYROLL_OVERPAYMENT");
 
       const concurrent = await Promise.all([700, 700].map(amount => app.inject({
         method: "POST", url: `/api/payroll/items/${itemB.rows[0].id}/payments`,
-        headers: { cookie: cookieHeader }, payload: { amount, paymentMethod: "TEST" }
+        headers: { cookie: cookieHeader }, payload: { idempotencyKey: randomUUID(), amount, paymentMethod: "TEST" }
       })));
       assert.equal(concurrent.filter(response => response.statusCode === 201).length, 1,
         concurrent.map(response => `${response.statusCode}: ${response.body}`).join("\n"));
