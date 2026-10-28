@@ -647,14 +647,8 @@ export async function paymentsRoutes(app:FastifyInstance){
          WHERE ae.order_id IS NOT NULL
            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
-             (es.id IS NULL AND (
-               NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-               OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
-             ))
-             OR (es.id IS NOT NULL AND (
-               NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id)
-               OR ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
-             ))
+             (es.id IS NULL AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id))
+             OR (es.id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id))
            )
       `);
       return {reconciledCount,skippedCount:skipped.length,skipped:skipped.slice(0,50),
