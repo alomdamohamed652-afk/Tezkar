@@ -131,6 +131,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
         <td><div className="row-actions">
           {payroll.period?.status === "DRAFT" && has("payroll.manage") && <button className="secondary-btn" disabled={busy} onClick={() => saveAdjustments(i)}>حفظ التعديلات</button>}
           {(payroll.period?.status === "APPROVED" || payroll.period?.status === "CLOSED") && has("payroll.pay") && Number(i.remaining_amount) > 0 && <button className="primary-button" onClick={() => {setPayTarget(i);setPayAmount(String(i.remaining_amount));setPayDate(today());setPayMethod("CASH");setPayReference("");setPayNotes("");setPaymentIdempotencyKey(crypto.randomUUID());}}>صرف</button>}
+          {has("payroll.view") && <button className="secondary-btn" onClick={() => window.open("/payroll/slip?month="+encodeURIComponent(month)+"&item="+encodeURIComponent(i.id), "_blank", "noopener,noreferrer")}>مفردات المرتب</button>}
           {has("payroll.view") && Number(i.paid_amount) > 0 && <button className="secondary-btn" onClick={() => void showPaymentHistory(i)}>سجل الصرف</button>}
         </div></td>
       </tr>
