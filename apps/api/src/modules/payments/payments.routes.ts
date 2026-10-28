@@ -689,7 +689,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                    AND (prior_wp.created_at<wp.created_at OR (prior_wp.created_at=wp.created_at AND prior_wp.id<wp.id))),0)
              )) AS expected_production_amount,
              e.code AS employee_code,e.full_name AS employee_name,
-             ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,es.id AS settlement_id,
+             ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,original_stage_lookup.name AS order_stage_name,es.id AS settlement_id,
              CASE WHEN es.id IS NOT NULL
                THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
                ELSE COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
@@ -703,6 +703,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
         LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         LEFT JOIN production_orders o ON o.id=ae.order_id
+        LEFT JOIN order_stages original_stage ON original_stage.id=ae.order_stage_id
+        LEFT JOIN stages original_stage_lookup ON original_stage_lookup.id=original_stage.stage_id
        WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
          AND (
            (es.id IS NOT NULL AND (
@@ -820,7 +822,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const order=await client.query("SELECT id FROM production_orders WHERE id=$1 AND status<>'CANCELLED'",[parsed.data.orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة أو ملغاة",404);
       if(parsed.data.orderStageId){
-        const stage=await client.query("SELECT id FROM order_stages WHERE id=$1 AND order_id=$2 AND status<>'CANCELLED'",[parsed.data.orderStageId,parsed.data.orderId]);
+        const stage=await client.query("SELECT id FROM order_stages WHERE id=$1 AND order_id=$2 AND (status<>'CANCELLED' OR id=$3)",[parsed.data.orderStageId,parsed.data.orderId,payment.order_stage_id]);
         if(!stage.rowCount)throw new AppError("ORDER_STAGE_MISMATCH","المرحلة لا تتبع الطلبية المختارة",422);
       }
       const oldAllocations=await client.query(`
