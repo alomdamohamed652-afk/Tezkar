@@ -17,7 +17,7 @@ const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦
 export default function CustodyPage(){
  const {has,permissions}=usePermissions();
  type CashTx={id:string;code:string;employee_id?:string;employee_name:string;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;transfer_code?:string|null};
- const [employees,setEmployees]=useState<Employee[]>([]),[cashEmployeeId,setCashEmployeeId]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+ const [employees,setEmployees]=useState<Employee[]>([]),[cashEmployeeId,setCashEmployeeId]=useState(""),[error,setError]=useState("");
  const [unifiedOperation,setUnifiedOperation]=useState<"FUNDING"|"COLLECTION"|"ADMIN_EXPENSE"|"ORDER_EXPENSE">("FUNDING");
  useEffect(()=>{if(!permissions)return;const canFund=permissions.includes("cash_custody.create"),canCollect=permissions.some(code=>["cash_custody.order_collection","cash_custody.order_collection_own"].includes(code)),canExpense=permissions.some(code=>["cash_custody.order_expense","cash_custody.order_expense_own"].includes(code));setUnifiedOperation(current=>{if(current==="FUNDING"&&!canFund)return canCollect?"COLLECTION":canExpense?"ADMIN_EXPENSE":current;if(current==="COLLECTION"&&!canCollect)return canFund?"FUNDING":canExpense?"ADMIN_EXPENSE":current;if((current==="ADMIN_EXPENSE"||current==="ORDER_EXPENSE")&&!canExpense)return canFund?"FUNDING":canCollect?"COLLECTION":current;return current;});},[permissions]);
  const [cash,setCash]=useState<CashTx[]>([]),[cashDirection,setCashDirection]=useState<"IN"|"OUT">("IN"),[cashAmount,setCashAmount]=useState(""),[cashDate,setCashDate]=useState(new Date().toISOString().slice(0,10)),[cashDescription,setCashDescription]=useState(""),[cashNotes,setCashNotes]=useState(""),[cashSaving,setCashSaving]=useState(false),[duplicateMatches,setDuplicateMatches]=useState<CashTx[]>([]),[duplicateOpen,setDuplicateOpen]=useState(false);
@@ -123,7 +123,7 @@ export default function CustodyPage(){
   </div>
   {has("cash_custody.create")&&unifiedOperation==="FUNDING"&&<form className="form-grid" onSubmit={submitCash}>
    <div className="form-hint" style={{gridColumn:"1/-1"}}>داخل إداري — تمويل من المدير المالي (لا يُحتسب إيراد مبيعات).</div>
-   {(has("cash_custody.create")||has("cash_custody.view")||has("custody.create")||has("custody.view"))?<label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>:<div className="form-hint">الحركة هتتسجل على عهدتك الشخصية حسب صلاحيات حسابك.</div>}
+   {(has("cash_custody.create")||has("cash_custody.view"))?<label>صاحب العهدة<SearchableSelect value={cashEmployeeId} onChange={setCashEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))} placeholder="اختر الموظف"/></label>:<div className="form-hint">الحركة هتتسجل على عهدتك الشخصية حسب صلاحيات حسابك.</div>}
    <label>المبلغ<input inputMode="decimal" value={cashAmount} onChange={e=>setCashAmount(e.target.value)} required/></label>
    <label>التاريخ<input type="date" value={cashDate} onChange={e=>setCashDate(e.target.value)} required/></label>
    <label style={{gridColumn:"1/-1"}}>البيان<input value={cashDescription} onChange={e=>setCashDescription(e.target.value)} placeholder="مثال: تمويل عهدة من المدير المالي" required/></label>
