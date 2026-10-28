@@ -121,7 +121,7 @@ export default function FinanceExceptionsPage() {
           <Link className="secondary-btn" href="/payments">القبض ومستحقات العمال</Link>
           {has("payroll.view") && <Link className="secondary-btn" href="/payroll">المرتبات والخصومات</Link>}
           {(has("finance.expenses.view") || has("finance.expenses.create")) && <Link className="secondary-btn" href="/accounting">المصروفات والمالية</Link>}
-          <Link className="secondary-btn" href="/custody">العهدة النقدية</Link>
+          <Link className="secondary-btn" href="/custody">العهدة النقدية</Link><Link className="secondary-btn" href="/custody/assets">العهد العينية وتسويتها</Link>
         </div>
       </header>
       <section className="content">
