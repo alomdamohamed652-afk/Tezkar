@@ -343,12 +343,27 @@ export async function payrollRoutes(app: FastifyInstance) {
     return { data: result };
   });
 
+  app.get("/api/payroll/custody-holders", { preHandler: [authenticateRequest, requirePermission("payroll.pay")] }, async request => {
+    const q=request.query as {date?:string};
+    const parsedDate=z.string().date().safeParse(q.date??new Date().toISOString().slice(0,10));
+    if(!parsedDate.success)throw new AppError("VALIDATION_ERROR","تاريخ العهدة غير صحيح",422);
+    const result=await pool.query(`SELECT e.id,e.code,e.full_name,
+        COALESCE(SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END),0) AS balance
+      FROM employees e
+      LEFT JOIN cash_custody_transactions c ON c.employee_id=e.id AND c.transaction_date <= $1::date
+      WHERE e.is_active=TRUE
+      GROUP BY e.id,e.code,e.full_name
+      ORDER BY e.full_name`,[parsedDate.data]);
+    return {data:result.rows};
+  });
+
   app.post("/api/payroll/items/:id/payments", { preHandler: [authenticateRequest, requirePermission("payroll.pay")] }, async (request, reply) => {
     const id = (request.params as {id:string}).id;
     const parsed = paymentSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات صرف الراتب غير صحيحة", 422);
     const fromCustody=parsed.data.fromCustody ?? (parsed.data.paymentMethod==="CASH");
     const custodyEmployeeId=fromCustody ? (parsed.data.custodyEmployeeId ?? request.user!.employeeId) : null;
+    if(fromCustody && parsed.data.paymentMethod!=="CASH")throw new AppError("CUSTODY_CASH_ONLY","لا يمكن تسجيل تحويل أو محفظة كحركة صرف من عهدة نقدية؛ اختر النقدي أو ألغِ ربط العهدة",422);
     const result = await withTransaction(async client => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext('payroll-payment:' || $1))", [parsed.data.idempotencyKey]);
       const paymentDate=parsed.data.paymentDate??new Date().toISOString().slice(0,10);
