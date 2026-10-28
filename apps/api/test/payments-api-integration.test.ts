@@ -800,6 +800,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(queueAfterAdjustmentPayout.statusCode,200,queueAfterAdjustmentPayout.body);
       assert.equal(queueAfterAdjustmentPayout.json().data.some((row:any)=>row.payment_id===bonusAwarePayout.json().data.payment.id),false,
         "a fully allocated production portion must not be flagged merely because gross payment also includes an adjustment");
+      const payoutEmployeeOptions=await app.inject({
+        method:"GET",url:"/api/worker-payments/eligible-employees",headers:{cookie:managerCookie}
+      });
+      assert.equal(payoutEmployeeOptions.statusCode,200,payoutEmployeeOptions.body);
+      assert.ok(payoutEmployeeOptions.json().data.some((row:any)=>row.id===bonusWorkerEmployee.id),
+        "payout screen should load worker options from a payout-scoped endpoint");
+
       const unpaidProductionAfterPayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
