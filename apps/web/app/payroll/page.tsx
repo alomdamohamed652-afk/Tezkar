@@ -8,6 +8,7 @@ type Employee={id:string;code:string;full_name:string;department_name:string|nul
 type PayrollItem={id:string;employee_id:string;employee_code:string;employee_name:string;department_name:string|null;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount?:string|number;deduction_mode?:"FIXED"|"PERCENTAGE";deduction_percentage?:string|number|null;deduction_basis?:"BASE_SALARY"|"BASE_PLUS_BONUS";net_amount:string|number;paid_amount:string|number;remaining_amount:string|number;status:string;notes:string|null};
 type PayrollData={period:{id:string;period_month:string;status:string}|null;items:PayrollItem[];totals:{employees:number;net:number;paid:number;remaining:number;recordedExpense?:number;expenseDifference?:number;missingExpenseCount?:number;missingExpenseAmount?:number;expenseMismatchCount?:number}};
 type PayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;reference:string|null;notes:string|null;paid_by_username:string|null;created_at:string};
+type AdjustmentLine={id:string;payroll_item_id:string;line_type:"BONUS"|"DEDUCTION";description:string;amount:string|number;notes:string|null;created_by_username?:string|null};
 type SalaryHistoryItem={id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null;created_at:string;created_by_username:string|null};
 type OwnPayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;reference:string|null;notes:string|null};
 type OwnPayrollItem={id:string;employee_id:string;period_month:string;period_status:string;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount:string|number;net_amount:string|number;status:string;notes:string|null;paid_amount:string|number;remaining_amount:string|number;payments:OwnPayrollPayment[]};
@@ -28,6 +29,8 @@ export default function PayrollPage(){
  const [historyTarget,setHistoryTarget]=useState<PayrollItem|null>(null),[paymentHistory,setPaymentHistory]=useState<PayrollPayment[]>([]),[historyLoading,setHistoryLoading]=useState(false);
  const [salaryHistory,setSalaryHistory]=useState<SalaryHistoryItem[]>([]),[salaryHistoryEmployeeId,setSalaryHistoryEmployeeId]=useState(""),[salaryHistoryLoading,setSalaryHistoryLoading]=useState(false);
  const [ownPayroll,setOwnPayroll]=useState<OwnPayrollData|null>(null);
+ const [adjustmentTarget,setAdjustmentTarget]=useState<PayrollItem|null>(null),[adjustmentLines,setAdjustmentLines]=useState<AdjustmentLine[]>([]),[adjustmentLoading,setAdjustmentLoading]=useState(false);
+ const [lineType,setLineType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[lineDescription,setLineDescription]=useState(""),[lineAmount,setLineAmount]=useState(""),[lineNotes,setLineNotes]=useState("");
  async function load(){setLoading(true);setError("");try{
   if(!has("payroll.view")){
    if(!has("payroll.view_own")){setError("ليس لديك صلاحية عرض الرواتب.");return}
@@ -49,6 +52,30 @@ export default function PayrollPage(){
  async function generate(){setBusy(true);setError("");setNotice("");try{const r=await api<{data:{generatedItems:number}}>("/api/payroll/generate",{method:"POST",body:JSON.stringify({month})});setNotice("تم تجهيز مسير الشهر. عدد بنود الرواتب: "+r.data.generatedItems);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء مسير الرواتب")}finally{setBusy(false)}}
  async function saveAdjustments(item:PayrollItem){const a=adjustments[item.id];if(a?.deductionMode==="PERCENTAGE"&&(!a.deductionPercentage.trim()||!Number.isFinite(Number(a.deductionPercentage))||Number(a.deductionPercentage)<=0||Number(a.deductionPercentage)>100)){setError("أدخل نسبة خصم أكبر من صفر وحتى ١٠٠٪.");return}setBusy(true);setError("");try{await api("/api/payroll/items/"+item.id,{method:"PATCH",body:JSON.stringify({bonusAmount:Number(a?.bonus||0),deductionMode:a?.deductionMode??"FIXED",...(a?.deductionMode==="PERCENTAGE"?{deductionPercentage:Number(a.deductionPercentage)}:{deductionAmount:Number(a?.deduction||0)}),deductionBasis:a?.deductionBasis??"BASE_SALARY",notes:a?.notes||null})});setNotice("تم حفظ تعديلات "+item.employee_name);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ التعديلات")}finally{setBusy(false)}}
  async function showPaymentHistory(item:PayrollItem){setHistoryTarget(item);setPaymentHistory([]);setHistoryLoading(true);setError("");try{const result=await api<{data:PayrollPayment[]}>("/api/payroll/items/"+item.id+"/payments");setPaymentHistory(result.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل صرف الراتب")}finally{setHistoryLoading(false)}}
+ async function openAdjustments(item:PayrollItem){
+  setAdjustmentTarget(item);setAdjustmentLines([]);setAdjustmentLoading(true);setError("");setLineType("BONUS");setLineDescription("");setLineAmount("");setLineNotes("");
+  try{const r=await api<{data:AdjustmentLine[]}>("/api/payroll/items/"+item.id+"/adjustments");setAdjustmentLines(r.data)}
+  catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بنود المرتب")}
+  finally{setAdjustmentLoading(false)}
+ }
+ async function addAdjustment(e:FormEvent){
+  e.preventDefault();if(!adjustmentTarget)return;
+  setBusy(true);setError("");setNotice("");
+  try{
+   const r=await api<{data:AdjustmentLine}>("/api/payroll/items/"+adjustmentTarget.id+"/adjustments",{method:"POST",body:JSON.stringify({lineType,description:lineDescription,amount:Number(lineAmount),notes:lineNotes||null})});
+   setAdjustmentLines(s=>[...s,r.data]);setLineDescription("");setLineAmount("");setLineNotes("");
+   setNotice(lineType==="BONUS"?"تمت إضافة بند المكافأة.":"تمت إضافة بند الخصم.");
+   await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بند المكافأة أو الخصم")}
+  finally{setBusy(false)}
+ }
+ async function deleteAdjustment(line:AdjustmentLine){
+  if(!adjustmentTarget)return;
+  setBusy(true);setError("");
+  try{await api("/api/payroll/items/"+adjustmentTarget.id+"/adjustments/"+line.id,{method:"DELETE"});setAdjustmentLines(s=>s.filter(x=>x.id!==line.id));setNotice("تم حذف البند وإعادة حساب الإجمالي.");await load()}
+  catch(e){setError(e instanceof Error?e.message:"تعذر حذف البند")}
+  finally{setBusy(false)}
+ }
  async function approve(){if(!payroll.period)return;setBusy(true);setError("");try{await api("/api/payroll/periods/"+payroll.period.id+"/approve",{method:"POST"});setNotice("تم اعتماد مسير الرواتب.");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد المسير")}finally{setBusy(false)}}
  async function submitPayment(e:FormEvent){e.preventDefault();if(!payTarget||!paymentIdempotencyKey)return;setBusy(true);setError("");try{await api("/api/payroll/items/"+payTarget.id+"/payments",{method:"POST",body:JSON.stringify({idempotencyKey:paymentIdempotencyKey,amount:Number(payAmount),paymentDate:payDate,paymentMethod:payMethod,reference:payReference||null,notes:payNotes||null})});setPayTarget(null);setPayAmount("");setPayReference("");setPayNotes("");setPaymentIdempotencyKey("");setNotice("تم تسجيل صرف الراتب.");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الصرف")}finally{setBusy(false)}}
  if(!has("payroll.view"))return <div className="app-shell"><Sidebar active="/payroll"/><main className="main"><header className="topbar"><div><h1 className="page-title">مرتباتي</h1><p className="page-subtitle">الراتب الأساسي، المسيرات المعتمدة، الخصومات، أقساط السلف، والمدفوعات الفعلية.</p></div></header><section className="content">
@@ -97,39 +124,15 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
       <tr key={i.id}>
         <td><div className="strong">{i.employee_name}</div><div className="form-hint">{i.employee_code} · {i.department_name || "بدون قسم"}</div></td>
         <td>{money(i.base_salary)}</td>
-        <td>{payroll.period?.status === "DRAFT" && has("payroll.manage")
-          ? <input aria-label="مكافأة" type="number" min="0" step="0.01" style={{width:105}} value={a.bonus} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,bonus:e.target.value}}))}/>
-          : money(i.bonus_amount)}</td>
-        <td>
-          {payroll.period?.status === "DRAFT" && has("payroll.manage") ? (
-            <div style={{display:"grid",gap:6,minWidth:175}}>
-              <select aria-label="طريقة حساب الخصم" value={a.deductionMode} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionMode:e.target.value as "FIXED" | "PERCENTAGE"}}))}>
-                <option value="FIXED">مبلغ ثابت</option>
-                <option value="PERCENTAGE">نسبة مئوية</option>
-              </select>
-              {a.deductionMode === "FIXED" ? (
-                <input aria-label="قيمة الخصم بالجنيه" type="number" min="0" step="0.01" value={a.deduction} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deduction:e.target.value}}))}/>
-              ) : (
-                <div style={{display:"grid",gap:5}}>
-                  <input aria-label="نسبة الخصم بالمئة" type="number" min="0.01" max="100" step="0.01" placeholder="النسبة %" value={a.deductionPercentage} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionPercentage:e.target.value}}))}/>
-                  <select aria-label="أساس حساب الخصم" value={a.deductionBasis} onChange={e => setAdjustments(s => ({...s,[i.id]:{...a,deductionBasis:e.target.value as "BASE_SALARY" | "BASE_PLUS_BONUS"}}))}>
-                    <option value="BASE_SALARY">الراتب الأساسي فقط</option>
-                    <option value="BASE_PLUS_BONUS">الأساسي + المكافأة</option>
-                  </select>
-                  <small className="form-hint">أساس الحساب: {money(basisAmount)} ج.م</small>
-                  <small className="strong">الخصم المتوقع: {money(previewDeduction)} ج.م</small>
-                </div>
-              )}
-            </div>
-          ) : money(i.deduction_amount)}
-        </td>
+        <td>{money(i.bonus_amount)}</td>
+        <td>{money(i.deduction_amount)}</td>
         <td className="money">{money(i.advance_repayment_amount??0)}</td>
         <td className="strong">{money(i.net_amount)}</td>
         <td>{money(i.paid_amount)}</td>
         <td>{money(i.remaining_amount)}</td>
         <td><span className={"status " + (i.status === "PAID" ? "success" : i.status === "PARTIAL" ? "warning" : "muted")}>{itemStatus[i.status] || i.status}</span></td>
         <td><div className="row-actions">
-          {payroll.period?.status === "DRAFT" && has("payroll.manage") && <button className="secondary-btn" disabled={busy} onClick={() => saveAdjustments(i)}>حفظ التعديلات</button>}
+          {payroll.period?.status === "DRAFT" && has("payroll.manage") && <button className="secondary-btn" disabled={busy} onClick={() => void openAdjustments(i)}>بنود المكافآت والخصومات</button>}
           {(payroll.period?.status === "APPROVED" || payroll.period?.status === "CLOSED") && has("payroll.pay") && Number(i.remaining_amount) > 0 && <button className="primary-button" onClick={() => {setPayTarget(i);setPayAmount(String(i.remaining_amount));setPayDate(today());setPayMethod("CASH");setPayReference("");setPayNotes("");setPaymentIdempotencyKey(crypto.randomUUID());}}>صرف</button>}
           {has("payroll.view") && <button className="secondary-btn" onClick={() => window.open("/payroll/slip?month="+encodeURIComponent(month)+"&item="+encodeURIComponent(i.id), "_blank", "noopener,noreferrer")}>مفردات المرتب</button>}
           {has("payroll.view") && Number(i.paid_amount) > 0 && <button className="secondary-btn" onClick={() => void showPaymentHistory(i)}>سجل الصرف</button>}
@@ -140,6 +143,16 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
   </section>
   <section className="card"><div className="card-header"><h2 className="card-title">الرواتب الأساسية الحالية</h2></div><div className="table-wrap"><table><thead><tr><th>الموظف</th><th>القسم</th><th>الراتب الشهري</th><th>ساري من</th><th>الحالة</th></tr></thead><tbody>{employees.filter(e=>e.salary_profile_id).map(e=><tr key={e.id}><td>{e.full_name}<div className="form-hint">{e.code}</div></td><td>{e.department_name||"—"}</td><td>{money(e.monthly_salary||0)} ج.م</td><td>{e.effective_from?new Date(e.effective_from+"T00:00:00").toLocaleDateString("ar-EG"):"—"}</td><td><span className={"status "+(e.is_active?"success":"muted")}>{e.is_active?"نشط":"غير نشط"}</span></td></tr>)}{!employees.some(e=>e.salary_profile_id)&&<tr><td colSpan={5} className="empty">لم يتم تعريف رواتب أساسية بعد.</td></tr>}</tbody></table></div></section>
  </section>
+ {adjustmentTarget&&<div className="modal-backdrop" onClick={()=>setAdjustmentTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">بنود المكافآت والخصومات</h2><div className="form-hint">{adjustmentTarget.employee_name} · كل مكافأة أو خصم يُسجل ببيان مستقل</div></div><button className="secondary-btn" onClick={()=>setAdjustmentTarget(null)}>إغلاق</button></div>
+  {payroll.period?.status==="DRAFT"&&has("payroll.manage")&&<form onSubmit={addAdjustment}><div className="form-grid">
+   <label>نوع البند<select value={lineType} onChange={e=>setLineType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">مكافأة / بونص</option><option value="DEDUCTION">خصم</option></select></label>
+   <label>البيان<input value={lineDescription} onChange={e=>setLineDescription(e.target.value)} placeholder={lineType==="BONUS"?"مثال: بونص إنتاج":"مثال: خصم تأخير"} minLength={2} maxLength={240} required/></label>
+   <label>المبلغ بالجنيه<input type="number" min="0.01" step="0.01" value={lineAmount} onChange={e=>setLineAmount(e.target.value)} required/></label>
+   <label>ملاحظات (اختياري)<input value={lineNotes} onChange={e=>setLineNotes(e.target.value)} maxLength={1000}/></label>
+  </div><div className="form-actions"><button className="primary-button" disabled={busy||!lineDescription.trim()||Number(lineAmount)<=0}>إضافة البند</button></div></form>}
+  {adjustmentLoading?<div className="empty">جارٍ تحميل البنود...</div>:<div className="table-wrap"><table><thead><tr><th>النوع</th><th>البيان</th><th>المبلغ</th><th>ملاحظات</th><th>إجراء</th></tr></thead><tbody>{adjustmentLines.map(line=><tr key={line.id}><td>{line.line_type==="BONUS"?"مكافأة / بونص":"خصم"}</td><td>{line.description}</td><td className="strong">{money(line.amount)} ج.م</td><td>{line.notes||"—"}</td><td>{payroll.period?.status==="DRAFT"&&has("payroll.manage")&&<button className="secondary-btn" disabled={busy} onClick={()=>void deleteAdjustment(line)}>حذف</button>}</td></tr>)}{!adjustmentLines.length&&<tr><td colSpan={5} className="empty">لا توجد بنود مسجلة لهذا الموظف.</td></tr>}</tbody></table></div>}
+  <div className="stats"><article className="card stat"><div className="stat-label">إجمالي المكافآت</div><div className="stat-value">{money(adjustmentLines.filter(x=>x.line_type==="BONUS").reduce((s,x)=>s+Number(x.amount),0))} ج.م</div></article><article className="card stat"><div className="stat-label">إجمالي الخصومات</div><div className="stat-value">{money(adjustmentLines.filter(x=>x.line_type==="DEDUCTION").reduce((s,x)=>s+Number(x.amount),0))} ج.م</div></article></div>
+ </div></div>}
  {historyTarget&&<div className="modal-backdrop" onClick={()=>setHistoryTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">سجل صرف الراتب</h2><div className="form-hint">{historyTarget.employee_name} · إجمالي المدفوع {money(historyTarget.paid_amount)} ج.م</div></div><button className="secondary-btn" onClick={()=>setHistoryTarget(null)}>إغلاق</button></div>{historyLoading?<div className="empty">جارٍ تحميل سجل الصرف...</div>:!paymentHistory.length?<div className="empty">لا توجد عمليات صرف مسجلة.</div>:<div className="table-wrap"><table><thead><tr><th>تاريخ الصرف</th><th>المبلغ</th><th>الطريقة</th><th>المرجع/الإيصال</th><th>المسجل بواسطة</th><th>ملاحظات</th></tr></thead><tbody>{paymentHistory.map(p=><tr key={p.id}><td>{String(p.payment_date).slice(0,10)}</td><td className="strong">{money(p.amount)} ج.م</td><td>{paymentMethodLabel[p.payment_method||""]||p.payment_method||"—"}</td><td>{p.reference||"—"}</td><td>{p.paid_by_username||"—"}</td><td>{p.notes||"—"}</td></tr>)}</tbody></table></div>}</div></div>}
  {payTarget&&<div className="modal-backdrop" onClick={()=>setPayTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">صرف راتب</h2><div className="form-hint">{payTarget.employee_name} · المتبقي {money(payTarget.remaining_amount)} ج.م</div></div><button className="secondary-btn" onClick={()=>setPayTarget(null)}>إغلاق</button></div><form onSubmit={submitPayment}><div className="form-grid"><label>مبلغ الصرف (ج.م)<input type="number" min="0.01" max={Number(payTarget.remaining_amount)} step="0.01" value={payAmount} onChange={e=>{setPayAmount(e.target.value);setPaymentIdempotencyKey(crypto.randomUUID())}} required/></label><label>تاريخ الصرف<input type="date" value={payDate} onChange={e=>{setPayDate(e.target.value);setPaymentIdempotencyKey(crypto.randomUUID())}} required/></label><label>طريقة الصرف<select value={payMethod} onChange={e=>{setPayMethod(e.target.value);setPaymentIdempotencyKey(crypto.randomUUID())}}><option value="CASH">نقدي</option><option value="BANK_TRANSFER">تحويل بنكي</option><option value="WALLET">محفظة إلكترونية</option><option value="OTHER">أخرى</option></select></label><label>رقم مرجعي/إيصال<input value={payReference} onChange={e=>{setPayReference(e.target.value);setPaymentIdempotencyKey(crypto.randomUUID())}}/></label><label style={{gridColumn:"1 / -1"}}>ملاحظات<textarea rows={2} value={payNotes} onChange={e=>{setPayNotes(e.target.value);setPaymentIdempotencyKey(crypto.randomUUID())}}/></label></div><div className="form-actions"><button className="secondary-btn" type="button" onClick={()=>setPayTarget(null)}>إلغاء</button><button className="primary-button" disabled={busy||Number(payAmount)<=0||Number(payAmount)>Number(payTarget.remaining_amount)}>تأكيد الصرف</button></div></form></div></div>}
  </main></div>;
