@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -66,6 +66,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         import("../src/modules/payroll/payroll.routes.js"),
         import("../src/modules/operations-master/operations-master.routes.js"),
         import("../src/modules/advances/advances.routes.js"),
+        import("../src/modules/accounting/accounting.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -82,6 +83,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(payrollRoutes);
     await app.register(operationsMasterRoutes);
     await app.register(advanceRoutes);
+    await app.register(accountingRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -357,6 +359,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
+      const reconciliation = await app.inject({
+        method: "GET", url: "/api/accounting/reconciliation/payroll", headers: { cookie: cookieHeader }
+      });
+      assert.equal(reconciliation.statusCode, 200, reconciliation.body);
+      assert.deepEqual(reconciliation.json().data.counts,{
+        missingPayrollExpenses:0,
+        missingAdjustmentLedgerEntries:0,
+        cashPaymentsMissingCustodyOut:0
+      },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
       const linkedPayroll = await apiPool.query(
