@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 
 type Machine = { id: string; code: string; name: string; machine_type?: string | null };
+const localDateKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 type Design = { id: string; code: string; name: string; thumbnail_url?: string | null; file_reference?: string | null; status: "ACTIVE" | "ARCHIVED"; version_count: number; latest_version_no: number | null };
 type DesignVersion = { id: string; design_id: string; version_no: number; material_type: string; material_thickness_mm: string | number | null; width_mm: string | number | null; height_mm: string | number | null; unit_label: string; pieces_per_cycle: number; standard_cycle_seconds: string | number | null; notes?: string | null; status: "ACTIVE" | "ARCHIVED"; design_code: string; design_name: string; design_status?: "ACTIVE" | "ARCHIVED" };
 type Compatibility = { id: string; machine_id: string; design_version_id: string; settings_notes?: string | null; pieces_per_cycle_override?: number | null; standard_cycle_seconds_override?: string | number | null; effective_from: string; effective_to?: string | null; is_active: boolean; machine_code: string; machine_name: string; design_id: string; design_code: string; design_name: string; design_status: string; version_no: number; material_type: string; material_thickness_mm: string | number | null; unit_label: string; pieces_per_cycle: number; standard_cycle_seconds: string | number | null; version_status: string };
@@ -33,7 +34,7 @@ export default function LaserDesignsPage() {
   const [compatPieces, setCompatPieces] = useState("");
   const [compatSeconds, setCompatSeconds] = useState("");
   const [compatNotes, setCompatNotes] = useState("");
-  const [effectiveFrom, setEffectiveFrom] = useState(new Date().toISOString().slice(0, 10));
+  const [effectiveFrom, setEffectiveFrom] = useState(localDateKey());
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
