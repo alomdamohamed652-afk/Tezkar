@@ -33,7 +33,7 @@ export default function PayrollSlipPage() {
     if (!itemId) { setError("رابط مفردات المرتب غير مكتمل."); setLoading(false); return; }
     let active = true;
     api<{ data: PayrollData }>("/api/payroll?month=" + encodeURIComponent(selectedMonth))
-      .then(result => {
+      .then(async result => {
         if (!active) return;
         const found = result.data.items.find(row => row.id === itemId);
         if (!found) { setError("لم يتم العثور على بند المرتب لهذا الشهر. تأكد من اعتماد المسير وصحة الرابط."); return; }
