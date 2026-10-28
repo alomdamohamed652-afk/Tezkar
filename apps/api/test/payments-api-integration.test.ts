@@ -810,6 +810,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const historicalQueueRow=historicalQueue.json().data.find((row:any)=>row.payment_id===unallocatedHistoricalPayment.id);
       assert.ok(historicalQueueRow.settlement_id);
       assert.equal(Number(historicalQueueRow.production_allocated),0);
+      const blockedUntilHistoricalAllocation=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:1,method:"CASH",
+          settlementMode:"ALL_DUES",productionEntryIds:[bonusProduction.id],idempotencyKey:randomUUID()}
+      });
+      assert.equal(blockedUntilHistoricalAllocation.statusCode,409,blockedUntilHistoricalAllocation.body);
+      assert.equal(blockedUntilHistoricalAllocation.json().error.code,"HISTORICAL_PAYMENTS_NEED_ALLOCATION",
+        "new production settlement must wait until the employee's historic payment is attributed to production");
 
       const settlementsBeforeInsufficientCustody=await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",
