@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createHash } from "node:crypto";
+import { calculateExpectedQuantity, isRunQuantityWithinExpected } from "../production/laser-production.math.js";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -727,9 +728,9 @@ export async function orderRoutes(app: FastifyInstance) {
         `,[parsed.data.machineId,parsed.data.laserDesignVersionId,parsed.data.workDate]);
         if(!compatible.rowCount) throw new AppError("LASER_DESIGN_NOT_COMPATIBLE","إصدار التصميم غير متوافق مع الماكينة المختارة أو أن التوافق غير سارٍ في تاريخ الإنتاج",422);
         if(compatible.rows[0].product_id && compatible.rows[0].product_id!==parsed.data.productId) throw new AppError("LASER_DESIGN_PRODUCT_MISMATCH","المنتج المرتبط بإصدار التصميم لا يطابق منتج مرحلة الطلبية",409);
-        laserExpectedQuantity = Number(parsed.data.cyclesCount) * Number(compatible.rows[0].pieces_per_cycle);
+        laserExpectedQuantity = calculateExpectedQuantity(Number(parsed.data.cyclesCount),Number(compatible.rows[0].pieces_per_cycle));
         laserGoodQuantity = Number(parsed.data.goodQuantity ?? parsed.data.quantity);
-        if(laserGoodQuantity + laserScrapQuantity > laserExpectedQuantity + 0.0001) throw new AppError("LASER_QUANTITY_EXCEEDS_EXPECTED","مجموع الكمية الجيدة والهالك يتجاوز الناتج المتوقع من عدد الدورات",422);
+        if(!isRunQuantityWithinExpected(laserExpectedQuantity,laserGoodQuantity,laserScrapQuantity)) throw new AppError("LASER_QUANTITY_EXCEEDS_EXPECTED","مجموع الكمية الجيدة والهالك يتجاوز الناتج المتوقع من عدد الدورات",422);
       }
       const product = await client.query("SELECT id,unit_id,track_inventory FROM products WHERE id=$1 AND is_active=TRUE",[parsed.data.productId]);
       if(!product.rowCount) throw new AppError("PRODUCT_NOT_FOUND","المنتج غير موجود أو غير نشط",422);
