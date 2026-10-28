@@ -1797,3 +1797,10 @@ textarea:hover:not(:disabled) {
 .search-select-empty{padding:20px 12px;text-align:center;color:var(--muted,#64748b);font-size:.9rem}
 .search-select-trigger .search-select-current-meta{max-width:100%}
 @media(max-width:600px){.search-select-trigger{min-height:46px}.search-select-menu{max-width:calc(100vw - 24px)}}
+
+
+.search-select-option.active{outline:2px solid color-mix(in srgb,var(--primary,#2563eb) 28%,transparent);outline-offset:-2px;background:var(--primary-soft,#eff6ff)}
+.search-select-trigger-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.search-select-clear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;color:var(--muted,#64748b);font-size:1.2rem;line-height:1;cursor:pointer}
+.search-select-clear:hover{background:var(--surface-3,#f1f5f9);color:var(--danger,#b91c1c)}
+.search-select-empty small{font-size:.78rem;color:var(--muted,#64748b)}
