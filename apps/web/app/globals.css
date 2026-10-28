@@ -1857,3 +1857,86 @@ textarea:hover:not(:disabled) {
  .search-select-option{min-height:56px;padding:9px 10px!important}
  .search-select-option-label{font-size:13px}
 }
+
+
+/* Final dropdown polish: clear hierarchy, distinct employee codes, and no text overlap. */
+.search-select-menu{
+  border:1px solid #dbe4f0;
+  border-radius:14px;
+  padding:8px!important;
+  box-shadow:0 16px 42px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.06);
+}
+.search-select-option{
+  min-height:62px;
+  margin:2px 0;
+  border:1px solid transparent!important;
+  border-radius:10px!important;
+  padding:9px 11px!important;
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:stretch!important;
+  justify-content:center!important;
+  gap:5px!important;
+  text-align:right!important;
+  white-space:normal!important;
+  overflow:visible;
+}
+.search-select-option+.search-select-option{margin-top:3px}
+.search-select-option:hover,
+.search-select-option.active{
+  border-color:#dbeafe!important;
+  background:#f5f9ff!important;
+}
+.search-select-option.selected{
+  border-color:#bfdbfe!important;
+  background:#eff6ff!important;
+}
+.search-select-option-label{
+  width:100%;
+  min-width:0;
+  display:block;
+  font-size:13px;
+  font-weight:700;
+  line-height:1.65;
+  color:#172033;
+  overflow-wrap:anywhere;
+  word-break:normal;
+}
+.search-select-option-meta{
+  display:inline-flex!important;
+  align-self:flex-start;
+  width:max-content;
+  max-width:100%;
+  padding:2px 7px;
+  border:1px solid #e2e8f0;
+  border-radius:6px;
+  background:#f8fafc;
+  color:#64748b!important;
+  font-size:10px!important;
+  line-height:1.45!important;
+  letter-spacing:.02em;
+  direction:ltr;
+  unicode-bidi:isolate;
+  font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;
+}
+.search-select-option.selected .search-select-option-meta{
+  background:#fff;
+  border-color:#bfdbfe;
+  color:#1d4ed8!important;
+}
+.search-select-list{padding:1px 2px 3px!important}
+.search-select-current{gap:3px!important}
+.search-select-current-label{font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+.search-select-current-meta{
+  width:max-content;
+  max-width:100%;
+  padding:1px 5px;
+  border-radius:5px;
+  background:#f1f5f9;
+  font-size:10px!important;
+}
+@media(max-width:600px){
+ .search-select-option{min-height:58px;padding:8px 9px!important}
+ .search-select-option-label{font-size:12px}
+}
