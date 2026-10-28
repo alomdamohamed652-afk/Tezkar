@@ -789,6 +789,28 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unpaidProductionAfterPayout.json().data.some((row:any)=>row.id===bonusProduction.id),false,
         "fully settled production must disappear from the unpaid production list");
 
+      // Older worker payments can already have a settlement row but no canonical
+      // production-allocation rows; those must still appear in the historical review queue.
+      const unallocatedHistoricalPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key)
+         VALUES($1,10,10,0,'CASH',$2,'historical allocation regression test',$3) RETURNING id`,
+        [bonusWorkerEmployee.id,manager.id,randomUUID()]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'historical allocation regression test',$2,$3)`,
+        [bonusWorkerEmployee.id,manager.id,unallocatedHistoricalPayment.id]
+      );
+      const historicalQueue=await app.inject({
+        method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalQueue.statusCode,200,historicalQueue.body);
+      assert.equal(historicalQueue.json().data.some((row:any)=>row.payment_id===unallocatedHistoricalPayment.id),true,
+        "historical payments linked to a settlement but missing production allocation must be visible");
+      const historicalQueueRow=historicalQueue.json().data.find((row:any)=>row.payment_id===unallocatedHistoricalPayment.id);
+      assert.ok(historicalQueueRow.settlement_id);
+      assert.equal(Number(historicalQueueRow.production_allocated),0);
+
       const settlementsBeforeInsufficientCustody=await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",
         [workerEmployee.id]
