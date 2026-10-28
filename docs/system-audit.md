@@ -87,6 +87,12 @@ The direct payout endpoint currently validates selected production IDs and compa
 
 The historical allocation path is designed to mirror or allocate an existing payment without inserting a second payment. Preserve the transaction, period-lock, employee lock, source-link validation and audit record. Regression tests should assert the cash-payment count and custody balance remain unchanged after allocation.
 
+### P1 — partial payroll payout retries could create duplicate payments
+
+The payroll payment endpoint serialized requests by locking the payroll item and prevented overpayment, but it did not have a request idempotency key. If a partial payment succeeded while the browser/network timed out, retrying the same request with the same amount could create a second legitimate-looking partial payment as long as enough balance remained. The existing overpayment guard does not prevent this duplicate.
+
+**Fixed on this audit branch:** added `idempotency_key` and `idempotency_fingerprint` to `payroll_payments` with a unique partial index; the API now serializes requests by idempotency key, replays an identical request as HTTP 200, and rejects reuse of the same key with different data. The payroll UI retains the key for retries and regenerates it when the submitted form changes. Added integration coverage for replaying a partial payout and rejecting changed payloads. The new migration and code still require CI validation.
+
 ### P2 — screen responsibility is improved but should be monitored
 
 The current navigation separates cash custody, in-kind custody, historical expense correction, historical payment allocation and worker payout. Preserve those distinct responsibilities and avoid reintroducing a combined form that creates ambiguous or duplicated transactions.
