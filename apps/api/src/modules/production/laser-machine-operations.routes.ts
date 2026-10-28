@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { monthlyTargetBounds } from "./laser-production.math.js";
 
 const targetSchema = z.object({
   machineId: z.string().uuid(),
@@ -49,11 +50,7 @@ async function audit(client: any, request: any, action: string, entityType: stri
 
 function periodBounds(periodType: "DAY" | "MONTH" | "SHIFT", date: string) {
   if (periodType !== "MONTH") return { from: date, to: date };
-  const year = Number(date.slice(0,4));
-  const month = Number(date.slice(5,7));
-  const from = date;
-  const to = new Date(Date.UTC(year, month, 0)).toISOString().slice(0,10);
-  return { from, to };
+  return monthlyTargetBounds(date);
 }
 
 export async function laserMachineOperationsRoutes(app: FastifyInstance) {
