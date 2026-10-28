@@ -514,13 +514,19 @@ export async function paymentsRoutes(app:FastifyInstance){
       const candidates = await client.query(`
         SELECT wp.id
           FROM worker_payments wp
-          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-         WHERE ae.order_id IS NOT NULL
-           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
-             (es.id IS NULL)
-             OR NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id)
+             (ae.order_id IS NOT NULL AND (
+               es.id IS NULL
+               OR NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id)
+             ))
+             OR (
+               EXISTS(SELECT 1 FROM worker_payment_allocations legacy WHERE legacy.worker_payment_id=wp.id)
+               AND (es.id IS NULL
+                 OR NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id))
+             )
            )
          ORDER BY wp.created_at,wp.id
          LIMIT 500
@@ -533,7 +539,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           SELECT wp.id,wp.employee_id,wp.gross_amount,wp.created_at::date AS payment_date,e.full_name AS employee_name,
                  ae.order_id,ae.order_stage_id,es.id AS settlement_id
             FROM worker_payments wp
-            JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
             JOIN employees e ON e.id=wp.employee_id
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
            WHERE wp.id=$1
@@ -549,7 +555,8 @@ export async function paymentsRoutes(app:FastifyInstance){
           SELECT COALESCE(SUM(wpa.amount),0)::numeric(14,2) AS allocated,
                  COUNT(wpa.production_entry_id)::int AS allocation_count,
                  COUNT(*) FILTER(WHERE wpa.production_entry_id IS NOT NULL AND
-                   (p.id IS NULL OR p.employee_id<>$2 OR os.order_id IS DISTINCT FROM $3::uuid OR
+                   (p.id IS NULL OR p.employee_id<>$2 OR p.status<>'APPROVED' OR
+                    ($3::uuid IS NOT NULL AND os.order_id IS DISTINCT FROM $3::uuid) OR
                     ($4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid)))::int AS mismatches
             FROM worker_payment_allocations wpa
             LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
@@ -568,9 +575,11 @@ export async function paymentsRoutes(app:FastifyInstance){
           if (Number(existingSettlementAllocations.rows[0]?.count ?? 0) > 0) continue;
         }
         if (legacyCount > 0) {
-          if (legacyMismatches > 0 || legacyAmount > grossAmount + 0.009) {
+          if (legacyMismatches > 0 || Math.abs(legacyAmount-grossAmount) > 0.009) {
             skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,
-              reason:legacyMismatches>0 ? "التوزيع القديم يشمل طلبية/مرحلة مختلفة عن المصروف المرتبط." : "إجمالي توزيع الإنتاج القديم أكبر من إجمالي الدفعة."});
+              reason:legacyMismatches>0
+                ? "التوزيع القديم يشمل إنتاجًا غير معتمد أو عاملًا/طلبية/مرحلة مختلفة عن ربط الدفعة."
+                : `إجمالي توزيع الإنتاج القديم (${legacyAmount.toFixed(2)} ج.م) لا يساوي إجمالي الدفعة (${grossAmount.toFixed(2)} ج.م)؛ يلزم مراجعة يدوية.`});
             continue;
           }
           if (settlementId) {
@@ -668,13 +677,17 @@ export async function paymentsRoutes(app:FastifyInstance){
       const unresolved = await client.query(`
         SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
           FROM worker_payments wp
-          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-         WHERE ae.order_id IS NOT NULL
-           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
-             (es.id IS NULL AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id))
-             OR (es.id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id))
+             (es.id IS NULL AND (
+               NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+               OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+             ))
+             OR (es.id IS NOT NULL AND (
+               NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id)
+               OR ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
+             ))
            )
       `);
       return {reconciledCount,skippedCount:skipped.length,skipped:skipped.slice(0,50),
