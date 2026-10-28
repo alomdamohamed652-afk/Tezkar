@@ -976,7 +976,7 @@ export async function orderRoutes(app: FastifyInstance) {
       AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
       AND ($6::uuid IS NULL OR mp.shift_id=$6::uuid)
     `;
-    const [summary,machines,designs,operators] = await Promise.all([
+    const [summary,machines,designs,operators,targetComparison] = await Promise.all([
       pool.query(`
         SELECT
           COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)) FILTER (WHERE mp.status='ACTIVE'),0) AS good_quantity,
@@ -1024,6 +1024,38 @@ export async function orderRoutes(app: FastifyInstance) {
         WHERE mp.status='ACTIVE' AND ${filterSql}
         GROUP BY e.id,e.code,e.full_name
         ORDER BY good_quantity DESC,e.full_name ASC,e.id ASC
+      `,params),
+      pool.query(`
+        SELECT t.id AS target_id,t.period_type,t.effective_from,t.effective_to,t.target_quantity,t.target_cycles,
+          m.id AS machine_id,m.code AS machine_code,m.name AS machine_name,
+          d.code AS design_code,d.name AS design_name,v.version_no,
+          sh.name AS shift_name,
+          COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)),0) AS achieved_quantity,
+          COALESCE(SUM(COALESCE(mp.scrap_quantity,0)),0) AS scrap_quantity,
+          COALESCE(SUM(mp.cycles_count),0) AS achieved_cycles,
+          COUNT(mp.id)::int AS run_count,
+          ROUND(100.0*COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)),0)/NULLIF(t.target_quantity,0),2) AS attainment_percent,
+          GREATEST(0,t.target_quantity-COALESCE(SUM(COALESCE(mp.good_quantity,mp.quantity)),0)) AS remaining_quantity
+        FROM laser_machine_targets t
+        JOIN machines m ON m.id=t.machine_id
+        LEFT JOIN laser_design_versions v ON v.id=t.design_version_id
+        LEFT JOIN laser_designs d ON d.id=v.design_id
+        LEFT JOIN shifts sh ON sh.id=t.shift_id
+        LEFT JOIN machine_productions mp ON mp.machine_id=t.machine_id AND mp.status='ACTIVE'
+          AND mp.work_date BETWEEN t.effective_from AND t.effective_to
+          AND (t.design_version_id IS NULL OR mp.laser_design_version_id=t.design_version_id)
+          AND (t.shift_id IS NULL OR mp.shift_id=t.shift_id)
+          AND ($4::uuid IS NULL OR mp.laser_design_version_id=$4::uuid)
+          AND ($5::uuid IS NULL OR mp.employee_id=$5::uuid)
+        WHERE t.is_active=TRUE
+          AND ($1::date IS NULL OR t.effective_to >= $1::date)
+          AND ($2::date IS NULL OR t.effective_from <= $2::date)
+          AND ($3::uuid IS NULL OR t.machine_id=$3::uuid)
+          AND ($4::uuid IS NULL OR t.design_version_id IS NULL OR t.design_version_id=$4::uuid)
+          AND ($6::uuid IS NULL OR t.shift_id IS NULL OR t.shift_id=$6::uuid)
+        GROUP BY t.id,t.period_type,t.effective_from,t.effective_to,t.target_quantity,t.target_cycles,
+          m.id,m.code,m.name,d.code,d.name,v.version_no,sh.name
+        ORDER BY t.effective_from DESC,m.name,d.name,t.period_type
       `,params)
     ]);
     const totalGood = Number(summary.rows[0]?.good_quantity ?? 0);
@@ -1035,8 +1067,10 @@ export async function orderRoutes(app: FastifyInstance) {
         machineRanking: machines.rows,
         designRanking: designs.rows,
         operatorRanking: operators.rows,
+        targetComparison: targetComparison.rows,
+        targetComparisonBasis: "ACTIVE_TARGETS_BY_FULL_EFFECTIVE_PERIOD",
         operatorRankingBasis: "PRIMARY_OPERATOR_ONLY",
-        note: "لا تُنسب كمية الإنتاج كاملة إلى أعضاء الفريق الإضافيين؛ الترتيب الفردي يعتمد على المشغل الأساسي فقط حتى تُسجل سياسة توزيع صريحة."
+        note: "لا تُنسب كمية الإنتاج كاملة إلى أعضاء الفريق الإضافيين؛ الترتيب الفردي يعتمد على المشغل الأساسي فقط حتى تُسجل سياسة توزيع صريحة. مقارنة المستهدفات تعرض المستهدفات النشطة للفترة الفعالة كاملة، بينما بقية مؤشرات التقرير تطبق فترة التقرير المحددة."
       }
     };
   });
