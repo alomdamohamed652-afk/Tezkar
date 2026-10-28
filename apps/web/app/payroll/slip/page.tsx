@@ -102,7 +102,7 @@ export default function PayrollSlipPage() {
           <table><thead><tr><th>البيان</th><th>المبلغ (جنيه مصري)</th></tr></thead>
             <tbody>
               {deductionLines.map(line=><tr key={line.id}><td>{line.description}{line.notes?<small className="line-note">{line.notes}</small>:null}</td><td>{money(line.amount)}</td></tr>)}
-              {!deductionLines.length && <tr><td>لا توجد خصومات مسجلة</td><td>{money(0)}</td></tr>
+              {!deductionLines.length && <tr><td>لا توجد خصومات مسجلة</td><td>{money(0)}</td></tr>}
               <tr><td>سداد السلف / أقساط السلف</td><td>{money(item.advance_repayment_amount || 0)}</td></tr>
               <tr className="subtotal"><td>إجمالي الاستقطاعات</td><td>{money(totalDeductions)}</td></tr>
             </tbody>
