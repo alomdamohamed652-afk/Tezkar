@@ -84,8 +84,8 @@ export default function FinanceExceptionsPage() {
       const summary = result.data;
       setSuccess(
         `تم ربط ${summary.reconciledCount} دفعة قديمة بسجلات الإنتاج المؤكدة، من غير إنشاء أي دفعة أو حركة عهدة جديدة. ` +
-        `الحالات التي تحتاج مراجعة يدوية: ${summary.unresolvedCount} بإجمالي ${money(summary.unresolvedAmount)}. ` +
-        (summary.skippedCount ? `تم تجاوز ${summary.skippedCount} حالة غير مؤكدة لحماية الحسابات.` : "")
+        `دفعات مرتبطة بطلبية وما زالت بلا توزيع إنتاج: ${summary.unresolvedCount} بإجمالي ${money(summary.unresolvedAmount)}. ` +
+        (summary.skippedCount ? `تم تجاوز ${summary.skippedCount} حالة غير مؤكدة؛ راجع القائمة لتوزيعها يدويًا.` : "")
       );
       await load();
     } catch (e) {
