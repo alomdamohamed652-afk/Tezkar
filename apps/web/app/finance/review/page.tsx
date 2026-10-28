@@ -41,6 +41,7 @@ export default function FinanceExceptionsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [reconciling, setReconciling] = useState(false);
+  const [reconciliationSkipped, setReconciliationSkipped] = useState<Array<{paymentId:string;employeeName:string;amount:number;reason:string}>>([]);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -79,12 +80,13 @@ export default function FinanceExceptionsPage() {
     setError("");
     setSuccess("");
     try {
-      const result = await api<{data:{reconciledCount:number;skippedCount:number;unresolvedCount:number;unresolvedAmount:number}}>
+      const result = await api<{data:{reconciledCount:number;skippedCount:number;unresolvedCount:number;unresolvedAmount:number;skipped:Array<{paymentId:string;employeeName:string;amount:number;reason:string}>}}>
         ("/api/worker-payments/reconcile-historical-allocations", {method:"POST",body:JSON.stringify({})});
       const summary = result.data;
+      setReconciliationSkipped(summary.skipped ?? []);
       setSuccess(
         `تم ربط ${summary.reconciledCount} دفعة قديمة بسجلات الإنتاج المؤكدة، من غير إنشاء أي دفعة أو حركة عهدة جديدة. ` +
-        `دفعات مرتبطة بطلبية وما زالت بلا توزيع إنتاج: ${summary.unresolvedCount} بإجمالي ${money(summary.unresolvedAmount)}. ` +
+        `دفعات قديمة ما زالت بلا توزيع إنتاج مؤكد: ${summary.unresolvedCount} بإجمالي ${money(summary.unresolvedAmount)}. ` +
         (summary.skippedCount ? `تم تجاوز ${summary.skippedCount} حالة غير مؤكدة؛ راجع القائمة لتوزيعها يدويًا.` : "")
       );
       await load();
@@ -149,6 +151,12 @@ export default function FinanceExceptionsPage() {
       <section className="content">
         {error && <div role="alert" className="alert error">{error}</div>}
         {success && <div role="status" className="success-box">{success}</div>}
+        {reconciliationSkipped.length > 0 && <section className="card">
+          <div className="card-header"><div><h2 className="card-title">حالات تم تجاوزها وتحتاج مراجعة</h2><p className="form-hint">لم يتم تغيير توزيع هذه الدفعات لأن بياناتها لا تتطابق بشكل آمن.</p></div></div>
+          <div className="card-body"><div className="table-wrap"><table><thead><tr><th>العامل</th><th>المبلغ</th><th>سبب المراجعة</th><th>رقم الدفعة</th></tr></thead><tbody>
+            {reconciliationSkipped.map(item => <tr key={item.paymentId}><td>{item.employeeName}</td><td>{money(item.amount)}</td><td>{item.reason}</td><td><code>{item.paymentId}</code></td></tr>)}
+          </tbody></table></div></div>
+        </section>}
         {!allowed && <section className="card"><h2 className="card-title">لا توجد صلاحية</h2><p>تحتاج إلى صلاحية صرف مستحقات العاملين لمراجعة الدفعات التاريخية.</p></section>}
         {allowed && <>
           <div className="stats">
