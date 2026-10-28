@@ -250,11 +250,18 @@ async function executeWorkerPayment(
       `SELECT pe.id,
         GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount,0)
           -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=pe.id),0)
-          -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=pe.id),0)
+          -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            JOIN worker_payments awp ON awp.id=a.worker_payment_id
+            WHERE a.production_entry_id=pe.id
+              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
+                JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
+                WHERE aes.worker_payment_id=awp.id)),0)
           -COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
             JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
             WHERE wpa.production_entry_id=pe.id
-              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)
+              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                WHERE es.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
         ) AS remaining
         FROM production_entries pe
