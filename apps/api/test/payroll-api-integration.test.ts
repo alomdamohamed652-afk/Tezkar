@@ -352,6 +352,13 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
           {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,reviewRequired:false}
         ];
       }).flat();
+      const missingSnapshotApproval = await app.inject({
+        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers: { cookie: cookieHeader },
+        payload: {}
+      });
+      assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
+      assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader },
@@ -436,9 +443,17 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(februaryItem, "employee with a salary profile should be included in the February payroll");
       assert.equal(Number(februaryItem.advance_repayment_amount), 400);
       assert.equal(Number(februaryItem.net_amount), 600, "fixed and salary-percentage installments reduce take-home pay without exceeding salary");
+      const februaryAttendanceSnapshot = Array.from({length:28},(_,index)=>{
+        const date = `2099-02-${String(index+1).padStart(2,"0")}`;
+        return [
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,reviewRequired:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,reviewRequired:false}
+        ];
+      }).flat();
       const februaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
-        headers: { cookie: cookieHeader }
+        headers: { cookie: cookieHeader },
+        payload: {attendanceSnapshot:februaryAttendanceSnapshot}
       });
       assert.equal(februaryApproval.statusCode, 200, februaryApproval.body);
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,0,
