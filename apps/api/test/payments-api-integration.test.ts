@@ -36,9 +36,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -55,6 +55,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     await app.register(operationsMasterRoutes);
     await app.register(warehouseRoutes);
     await app.register(orderRoutes);
+    await app.register(productionRoutes);
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
@@ -919,6 +920,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(reconciledProductionStatement);
       assert.equal(Number(reconciledProductionStatement.paid_amount),10,
         "employee statement must not count settlement and order allocation rows for the same payment twice");
+
+      const productionRowsAfterDuplicateAllocation=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${bonusWorkerEmployee.id}&status=APPROVED&limit=200`,headers:{cookie:managerCookie}
+      });
+      assert.equal(productionRowsAfterDuplicateAllocation.statusCode,200,productionRowsAfterDuplicateAllocation.body);
+      const reconciledProductionRow=productionRowsAfterDuplicateAllocation.json().data.find((row:any)=>row.id===reconcileProduction.id);
+      assert.ok(reconciledProductionRow,"reconciled production row must remain visible");
+      assert.equal(Number(reconciledProductionRow.paid_amount),10,
+        "production history must prefer settlement allocations over duplicate order allocations");
+      assert.equal(Number(reconciledProductionRow.remaining_amount),0,
+        "duplicate allocation rows must not create an inconsistent production balance");
+      assert.equal(reconciledProductionRow.payment_status,"PAID",
+        "a settlement with a valid canonical allocation must not be flagged as historical unallocated");
 
       const currentCustodyGuardWorker=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES('Test Current Custody Guard Worker') RETURNING id"
