@@ -1774,7 +1774,6 @@ textarea:hover:not(:disabled) {
   #machine-production-report table { width: 100% !important; font-size: 9pt !important; }
 }
 
-
 /* Searchable select — shared ERP dropdown */
 .search-select{position:relative;width:100%;min-width:0}
 .search-select-trigger{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:44px;padding:8px 12px;border:1px solid var(--border-strong,#cbd5e1);border-radius:12px;background:var(--surface,#fff);color:var(--ink,#0f172a);text-align:right;cursor:pointer}

@@ -19,6 +19,15 @@ type Expense = { id: string; code: string; order_code: string | null; stage_name
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
 type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
+type PayrollReconciliation = {
+  checkedAt:string;
+  counts:{missingPayrollExpenses:number;missingAdjustmentLedgerEntries:number;cashPaymentsMissingCustodyOut:number};
+  issues:{
+    missingPayrollExpenses:Array<{payroll_item_id:string;employee_id:string;full_name:string;period_month:string;net_amount:string|number;accounting_expense_id:string|null;expense_amount:string|number|null;category:string|null}>;
+    missingAdjustmentLedgerEntries:Array<{adjustment_line_id:string;payroll_item_id:string;employee_id:string;full_name:string;period_month:string;line_type:string;description:string;amount:string|number}>;
+    cashPaymentsMissingCustodyOut:Array<{payment_id:string;payroll_item_id:string;employee_id:string;full_name:string;period_month:string;payment_date:string;amount:string|number;reference:string|null}>;
+  };
+};
 
 const orderLabel=(o:Order)=>o.code+" — "+o.order_name;
 const localDateInput=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
@@ -57,6 +66,8 @@ export default function AccountingPage() {
   const [periodSaving,setPeriodSaving]=useState(false);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
+  const [payrollReconciliation,setPayrollReconciliation]=useState<PayrollReconciliation|null>(null);
+  const [reconciliationLoading,setReconciliationLoading]=useState(false);
 
   async function load() {
     setError("");
@@ -86,6 +97,18 @@ export default function AccountingPage() {
     if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
     return()=>{active=false};
   },[has]);
+  async function runPayrollReconciliation(){
+    if(!has("finance.expenses.view"))return;
+    setReconciliationLoading(true);setError("");setMessage("");
+    try{
+      const result=await api<{data:PayrollReconciliation}>("/api/accounting/reconciliation/payroll");
+      setPayrollReconciliation(result.data);
+      const total=Object.values(result.data.counts).reduce((sum,value)=>sum+value,0);
+      setMessage(total===0?"فحص الرواتب اكتمل: لم تظهر فروق في الاختبارات الحالية.":"اكتمل فحص الرواتب؛ توجد "+total+" ملاحظة تحتاج مراجعة.");
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ فحص الترابط المالي");}
+    finally{setReconciliationLoading(false);}
+  }
+
   async function loadOrderFinance(periodId=dashboardPeriodId) {
     try {
       const suffix=periodId?"?periodId="+encodeURIComponent(periodId):"";
@@ -293,6 +316,23 @@ export default function AccountingPage() {
         </tbody></table></div>
        </section>
       </div>
+      {has("finance.expenses.view")&&<section className="card" style={{marginTop:16}}>
+       <div className="card-header">
+        <div><h2 className="card-title">مراجعة الترابط المالي</h2><div className="form-hint">فحص للقراءة فقط: يبحث عن مصروف راتب ناقص أو غير مطابق، وبنود مكافآت وخصومات غير مرتبطة بحساب الموظف، ودفعات نقدية بلا حركة عهدة. لا يغيّر أي رصيد.</div></div>
+        <button className="secondary-button" onClick={()=>void runPayrollReconciliation()} disabled={reconciliationLoading}>{reconciliationLoading?"جارٍ الفحص…":"فحص الترابط الآن"}</button>
+       </div>
+       {payrollReconciliation&&<>
+        <div className="stats finance-stats">
+         <article className="card stat"><div className="stat-label">مصروفات رواتب تحتاج مراجعة</div><div className="stat-value">{payrollReconciliation.counts.missingPayrollExpenses}</div></article>
+         <article className="card stat"><div className="stat-label">بنود غير مرتبطة بدفتر الموظف</div><div className="stat-value">{payrollReconciliation.counts.missingAdjustmentLedgerEntries}</div></article>
+         <article className="card stat"><div className="stat-label">دفعات نقدية بلا حركة عهدة</div><div className="stat-value">{payrollReconciliation.counts.cashPaymentsMissingCustodyOut}</div></article>
+        </div>
+        <div className="form-hint">آخر فحص: {new Date(payrollReconciliation.checkedAt).toLocaleString("ar-EG")}. النتائج تنبيهات للمراجعة فقط، ولا يتم إصلاح السجلات تلقائيًا.</div>
+        {payrollReconciliation.counts.missingPayrollExpenses>0&&<div className="table-wrap"><h3>مصروفات الرواتب</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>صافي المسير</th><th>مصروف الحسابات</th><th>التصنيف</th></tr></thead><tbody>{payrollReconciliation.issues.missingPayrollExpenses.map(x=><tr key={x.payroll_item_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{n(Number(x.net_amount))}</td><td>{x.expense_amount==null?"غير موجود":n(Number(x.expense_amount))}</td><td>{x.category||"—"}</td></tr>)}</tbody></table></div>}
+        {payrollReconciliation.counts.missingAdjustmentLedgerEntries>0&&<div className="table-wrap"><h3>المكافآت والخصومات</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>{payrollReconciliation.issues.missingAdjustmentLedgerEntries.map(x=><tr key={x.adjustment_line_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.line_type==="BONUS"?"مكافأة":"خصم"}</td><td>{x.description}</td><td>{n(Number(x.amount))}</td></tr>)}</tbody></table></div>}
+        {payrollReconciliation.counts.cashPaymentsMissingCustodyOut>0&&<div className="table-wrap"><h3>دفعات نقدية بلا حركة عهدة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>تاريخ الصرف</th><th>المبلغ</th><th>المرجع</th></tr></thead><tbody>{payrollReconciliation.issues.cashPaymentsMissingCustodyOut.map(x=><tr key={x.payment_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.payment_date}</td><td>{n(Number(x.amount))}</td><td>{x.reference||"—"}</td></tr>)}</tbody></table></div>}
+       </>}
+      </section>}
      </>}
 
      {tab==="in"&&<section className="card">

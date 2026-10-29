@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -66,6 +66,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         import("../src/modules/payroll/payroll.routes.js"),
         import("../src/modules/operations-master/operations-master.routes.js"),
         import("../src/modules/advances/advances.routes.js"),
+        import("../src/modules/accounting/accounting.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -82,6 +83,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(payrollRoutes);
     await app.register(operationsMasterRoutes);
     await app.register(advanceRoutes);
+    await app.register(accountingRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -327,6 +329,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO payroll_items(period_id,employee_id,salary_profile_id,base_salary,bonus_amount,deduction_amount) VALUES ($1,$2,$3,1000,100,100) RETURNING id",
         [period.rows[0].id, employeeB.rows[0].id, profileB.rows[0].id]
       );
+      const adjustmentLines = await apiPool.query(
+        `INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by)
+         VALUES ($1,'BONUS','Test bonus',100,$3),($1,'DEDUCTION','Test deduction',100,$3),
+                ($2,'BONUS','Test bonus',100,$3),($2,'DEDUCTION','Test deduction',100,$3)
+         RETURNING id`,
+        [itemA.rows[0].id,itemB.rows[0].id,userId]
+      );
+      assert.equal(adjustmentLines.rowCount,4);
 
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
@@ -335,12 +345,43 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(beforeApproval.statusCode, 409, beforeApproval.body);
       assert.equal(beforeApproval.json().error.code, "PAYROLL_NOT_APPROVED");
 
+      const attendanceSnapshot = Array.from({length:31},(_,index)=>{
+        const date = `2099-01-${String(index+1).padStart(2,"0")}`;
+        return [
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
+        ];
+      }).flat();
+      const missingSnapshotApproval = await app.inject({
+        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers: { cookie: cookieHeader },
+        payload: {}
+      });
+      assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
+      assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
+      const incompleteSnapshotApproval = await app.inject({
+        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers: { cookie: cookieHeader },
+        payload: { attendanceSnapshot: attendanceSnapshot.slice(0, 1) }
+      });
+      assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
+      assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader }
+        headers: { cookie: cookieHeader },
+        payload: { attendanceSnapshot }
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
+      const reconciliation = await app.inject({
+        method: "GET", url: "/api/accounting/reconciliation/payroll", headers: { cookie: cookieHeader }
+      });
+      assert.equal(reconciliation.statusCode, 200, reconciliation.body);
+      assert.deepEqual(reconciliation.json().data.counts,{
+        missingPayrollExpenses:0,
+        missingAdjustmentLedgerEntries:0,
+        cashPaymentsMissingCustodyOut:0
+      },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
       const linkedPayroll = await apiPool.query(
@@ -354,6 +395,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(linkedPayroll.rows.every((row: {amount:string;net_amount:string;payment_method:string;expense_date:string}) =>
         Number(row.amount) === Number(row.net_amount) && row.payment_method === "PAYROLL" &&
         String(row.expense_date).slice(0,10) === "2099-01-01"));
+      const linkedAdjustments = await apiPool.query(
+        `SELECT l.id,l.line_type,l.amount,e.credit_amount,e.debit_amount
+           FROM payroll_adjustment_lines l
+           LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id
+          WHERE l.payroll_item_id IN ($1,$2)`,
+        [itemA.rows[0].id,itemB.rows[0].id]
+      );
+      assert.equal(linkedAdjustments.rowCount,4);
+      assert.ok(linkedAdjustments.rows.every((row:{line_type:string;credit_amount:string|null;debit_amount:string|null}) =>
+        row.line_type==="BONUS" ? Number(row.credit_amount)===100 && Number(row.debit_amount??0)===0
+                                : Number(row.debit_amount)===100 && Number(row.credit_amount??0)===0),
+        "every approved named bonus/deduction must create one matching employee-ledger entry");
       const secondApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader }
@@ -397,9 +450,17 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(februaryItem, "employee with a salary profile should be included in the February payroll");
       assert.equal(Number(februaryItem.advance_repayment_amount), 400);
       assert.equal(Number(februaryItem.net_amount), 600, "fixed and salary-percentage installments reduce take-home pay without exceeding salary");
+      const februaryAttendanceSnapshot = Array.from({length:28},(_,index)=>{
+        const date = `2099-02-${String(index+1).padStart(2,"0")}`;
+        return [
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
+        ];
+      }).flat();
       const februaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
-        headers: { cookie: cookieHeader }
+        headers: { cookie: cookieHeader },
+        payload: {attendanceSnapshot:februaryAttendanceSnapshot}
       });
       assert.equal(februaryApproval.statusCode, 200, februaryApproval.body);
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,0,
@@ -415,17 +476,19 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000,"the base salary must be credited independently");
+      const januaryBonusLineId = adjustmentLines.rows[0].id;
+      const januaryDeductionLineId = adjustmentLines.rows[1].id;
       const bonusEntry=await apiPool.query(
-        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE $2",
-        [employeeA.rows[0].id,"بونص راتب شهر%"]
+        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND payroll_adjustment_line_id=$2",
+        [employeeA.rows[0].id,januaryBonusLineId]
       );
-      assert.equal(bonusEntry.rowCount,1,"bonus must appear as a separate employee-account credit");
+      assert.equal(bonusEntry.rowCount,1,"January bonus must appear as a separate source-linked employee-account credit");
       assert.equal(Number(bonusEntry.rows[0].credit_amount),100);
       const deductionEntry=await apiPool.query(
-        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE $2",
-        [employeeA.rows[0].id,"خصم راتب شهر%"]
+        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND payroll_adjustment_line_id=$2",
+        [employeeA.rows[0].id,januaryDeductionLineId]
       );
-      assert.equal(deductionEntry.rowCount,1,"deduction must appear as a separate employee-account debit");
+      assert.equal(deductionEntry.rowCount,1,"January deduction must appear as a separate source-linked employee-account debit");
       assert.equal(Number(deductionEntry.rows[0].debit_amount),100);
       const ownPayroll=await app.inject({method:"GET",url:"/api/payroll/my-account",headers:{cookie:cookieHeader}});
       assert.equal(ownPayroll.statusCode,200,ownPayroll.body);
