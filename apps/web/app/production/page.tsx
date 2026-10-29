@@ -7,7 +7,7 @@ import {formatInteger,formatMoney,formatQuantity} from "../../lib/format";
 import { SearchableSelect } from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
-type Employee={id:string;code:string;full_name:string};
+type Employee={id:string;code:string;full_name:string;is_active?:boolean};
 type Shift=Item & {rate_group_name:string};
 type ShiftLeader={id:string;shift_id:string;shift_name:string;employee_id:string;employee_name:string;assignment_type:string};
 type Order={id:string;code:string;order_name:string};
@@ -140,7 +140,8 @@ export default function ProductionPage(){
  const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
  const isShiftWage=resolvedMethod==="PER_DAY";
 
- const employeeOptions=useMemo(()=>employees.filter(x=>x.full_name).map(x=>({value:x.id,label:x.full_name,meta:x.code})),[employees]);
+ const activeEmployees=useMemo(()=>employees.filter(x=>x.is_active!==false),[employees]);
+ const employeeOptions=useMemo(()=>activeEmployees.filter(x=>x.full_name).map(x=>({value:x.id,label:x.full_name,meta:x.code})),[activeEmployees]);
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]);
  const stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]);
  const shiftOptions=useMemo(()=>shifts.map(x=>({value:x.id,label:x.name})),[shifts]);
