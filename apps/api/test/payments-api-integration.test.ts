@@ -765,6 +765,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(bonusSettlementSummary.statusCode,200,bonusSettlementSummary.body);
       assert.equal(Number(bonusSettlementSummary.json().data.productionEarnings),130,
         "settlement summary must use total_earning_amount, matching the payable balance and unpaid-production list");
+      assert.equal(Number(bonusSettlementSummary.json().data.availableForSettlement),130,
+        "the production net already includes its bonus and deduction; neither may be applied again");
+      assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.productionNet),130);
+      assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.standaloneAdjustmentsNet),0);
+      assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.ledgerOnlyAdjustmentsNet),0);
+      assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.calculatedAvailable),130,
+        "the diagnostic total must not double-count production-linked bonus or deduction");
       const unpaidProductionBeforePayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
