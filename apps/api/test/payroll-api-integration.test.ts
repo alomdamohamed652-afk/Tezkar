@@ -348,8 +348,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const attendanceSnapshot = Array.from({length:31},(_,index)=>{
         const date = `2099-01-${String(index+1).padStart(2,"0")}`;
         return [
-          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,reviewRequired:false},
-          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,reviewRequired:false}
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
         ];
       }).flat();
       const missingSnapshotApproval = await app.inject({
@@ -446,8 +446,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const februaryAttendanceSnapshot = Array.from({length:28},(_,index)=>{
         const date = `2099-02-${String(index+1).padStart(2,"0")}`;
         return [
-          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,reviewRequired:false},
-          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,reviewRequired:false}
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
         ];
       }).flat();
       const februaryApproval = await app.inject({
