@@ -920,6 +920,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledProductionStatement.paid_amount),10,
         "employee statement must not count settlement and order allocation rows for the same payment twice");
 
+      const productionRowsAfterDuplicateAllocation=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${bonusWorkerEmployee.id}&status=APPROVED&limit=200`,headers:{cookie:managerCookie}
+      });
+      assert.equal(productionRowsAfterDuplicateAllocation.statusCode,200,productionRowsAfterDuplicateAllocation.body);
+      const reconciledProductionRow=productionRowsAfterDuplicateAllocation.json().data.find((row:any)=>row.id===reconcileProduction.id);
+      assert.ok(reconciledProductionRow,"reconciled production row must remain visible");
+      assert.equal(Number(reconciledProductionRow.paid_amount),10,
+        "production history must prefer settlement allocations over duplicate order allocations");
+      assert.equal(Number(reconciledProductionRow.remaining_amount),0,
+        "duplicate allocation rows must not create an inconsistent production balance");
+      assert.equal(reconciledProductionRow.payment_status,"PAID",
+        "a settlement with a valid canonical allocation must not be flagged as historical unallocated");
+
       const currentCustodyGuardWorker=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES('Test Current Custody Guard Worker') RETURNING id"
       )).rows[0];
