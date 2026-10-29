@@ -454,17 +454,19 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000,"the base salary must be credited independently");
+      const januaryBonusLineId = adjustmentLines.rows[0].id;
+      const januaryDeductionLineId = adjustmentLines.rows[1].id;
       const bonusEntry=await apiPool.query(
-        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE $2",
-        [employeeA.rows[0].id,"مكافأة راتب شهر%"]
+        "SELECT credit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND payroll_adjustment_line_id=$2",
+        [employeeA.rows[0].id,januaryBonusLineId]
       );
-      assert.equal(bonusEntry.rowCount,1,"bonus must appear as a separate employee-account credit");
+      assert.equal(bonusEntry.rowCount,1,"January bonus must appear as a separate source-linked employee-account credit");
       assert.equal(Number(bonusEntry.rows[0].credit_amount),100);
       const deductionEntry=await apiPool.query(
-        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE $2",
-        [employeeA.rows[0].id,"خصم راتب شهر%"]
+        "SELECT debit_amount FROM employee_earnings_ledger WHERE employee_id=$1 AND payroll_adjustment_line_id=$2",
+        [employeeA.rows[0].id,januaryDeductionLineId]
       );
-      assert.equal(deductionEntry.rowCount,1,"deduction must appear as a separate employee-account debit");
+      assert.equal(deductionEntry.rowCount,1,"January deduction must appear as a separate source-linked employee-account debit");
       assert.equal(Number(deductionEntry.rows[0].debit_amount),100);
       const ownPayroll=await app.inject({method:"GET",url:"/api/payroll/my-account",headers:{cookie:cookieHeader}});
       assert.equal(ownPayroll.statusCode,200,ownPayroll.body);
