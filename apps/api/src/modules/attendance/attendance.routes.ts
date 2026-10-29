@@ -150,6 +150,55 @@ export async function attendanceRoutes(app:FastifyInstance){
   return {data:result};
  });
 
+ const manualDaySchema=z.object({
+  employeeId:z.string().uuid(),date:z.string().date(),
+  status:z.enum(["PRESENT","ABSENT","DAY_OFF","MISSING_PUNCH","MANUAL"]),
+  firstIn:z.string().regex(timePattern).nullable().optional(),
+  lastOut:z.string().regex(timePattern).nullable().optional(),
+  workedMinutes:z.number().int().min(0).max(1440),
+  lateMinutes:z.number().int().min(0).max(1440).default(0),
+  earlyMinutes:z.number().int().min(0).max(1440).default(0),
+  note:z.string().trim().min(2).max(500)
+ });
+ app.get("/api/attendance/manual-days",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
+  const q=z.object({from:z.string().date(),to:z.string().date(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
+  if(!q.success||q.data.to<q.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة لسجل الحضور اليدوي",422);
+  const args:unknown[]=[q.data.from,q.data.to];let filter="";
+  if(q.data.employeeId){args.push(q.data.employeeId);filter=" AND o.employee_id=$3";}
+  const result=await pool.query(`SELECT o.*,e.code AS employee_code,e.full_name AS employee_name,u.username AS updated_by_username
+    FROM attendance_day_overrides o JOIN employees e ON e.id=o.employee_id LEFT JOIN users u ON u.id=o.updated_by
+    WHERE o.attendance_date BETWEEN $1::date AND $2::date${filter}
+    ORDER BY o.attendance_date DESC,e.full_name`,args);
+  return {data:result.rows};
+ });
+ app.put("/api/attendance/manual-days",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async(request,reply)=>{
+  const parsed=manualDaySchema.safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات يوم الحضور اليدوي غير صحيحة",422);
+  const d=parsed.data;
+  if(d.firstIn&&d.lastOut&&d.lastOut<d.firstIn&&d.workedMinutes===0)throw new AppError("INVALID_ATTENDANCE_TIMES","وقت الخروج يجب أن يكون بعد الدخول، أو أدخل عدد الدقائق الفعلي للوردية الليلية",422);
+  const saved=await withTransaction(async client=>{
+   const employee=await client.query("SELECT id FROM employees WHERE id=$1",[d.employeeId]);
+   if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+   const before=await client.query("SELECT * FROM attendance_day_overrides WHERE employee_id=$1 AND attendance_date=$2::date FOR UPDATE",[d.employeeId,d.date]);
+   const result=await client.query(`INSERT INTO attendance_day_overrides(employee_id,attendance_date,status,first_in,last_out,worked_minutes,late_minutes,early_minutes,note,created_by,updated_by)
+    VALUES($1,$2::date,$3,$4::time,$5::time,$6,$7,$8,$9,$10,$10)
+    ON CONFLICT(employee_id,attendance_date) DO UPDATE SET status=EXCLUDED.status,first_in=EXCLUDED.first_in,last_out=EXCLUDED.last_out,worked_minutes=EXCLUDED.worked_minutes,late_minutes=EXCLUDED.late_minutes,early_minutes=EXCLUDED.early_minutes,note=EXCLUDED.note,updated_by=EXCLUDED.updated_by,updated_at=now()
+    RETURNING *`,[d.employeeId,d.date,d.status,d.firstIn??null,d.lastOut??null,d.workedMinutes,d.lateMinutes,d.earlyMinutes,d.note,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:before.rowCount?"update_manual_attendance_day":"create_manual_attendance_day",module:"attendance",entityType:"attendance_day_override",entityId:result.rows[0].id,beforeData:before.rows[0]??null,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return result.rows[0];
+  });
+  return reply.code(200).send({data:saved});
+ });
+ app.delete("/api/attendance/manual-days/:employeeId/:date",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async request=>{
+  const params=z.object({employeeId:z.string().uuid(),date:z.string().date()}).safeParse(request.params);
+  if(!params.success)throw new AppError("VALIDATION_ERROR","بيانات الحذف غير صحيحة",422);
+  await withTransaction(async client=>{
+   const before=await client.query("DELETE FROM attendance_day_overrides WHERE employee_id=$1 AND attendance_date=$2::date RETURNING *",[params.data.employeeId,params.data.date]);
+   if(!before.rowCount)throw new AppError("MANUAL_ATTENDANCE_NOT_FOUND","لا يوجد تعديل يدوي لهذا اليوم",404);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"delete_manual_attendance_day",module:"attendance",entityType:"attendance_day_override",entityId:before.rows[0].id,beforeData:before.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+  });
+  return {ok:true};
+ });
  app.get("/api/attendance/report",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
   const q=request.query as {from?:string;to?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
   if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
@@ -192,6 +241,16 @@ export async function attendanceRoutes(app:FastifyInstance){
     const correctionHistory=assigned.filter(p=>p.correction_decision).map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,decision:p.correction_decision}));
     report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,correctionHistory,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length});
    }
+  }
+  const overrides=(await pool.query(`SELECT employee_id,attendance_date::text,status,first_in::text,last_out::text,worked_minutes,late_minutes,early_minutes,note,updated_at,updated_by FROM attendance_day_overrides WHERE attendance_date BETWEEN $1::date AND $2::date`,[dates.data.from,dates.data.to])).rows;
+  const overrideMap=new Map(overrides.map(o=>[o.employee_id+"|"+String(o.attendance_date).slice(0,10),o]));
+  for(let index=0;index<report.length;index++){
+    const row=report[index] as Record<string,unknown>;
+    const override=overrideMap.get(String(row.employeeId)+"|"+String(row.date));
+    if(!override)continue;
+    const firstIn=override.first_in?String(row.date)+"T"+String(override.first_in).slice(0,8):null;
+    const lastOut=override.last_out?String(row.date)+"T"+String(override.last_out).slice(0,8):null;
+    report[index]={...row,firstIn,lastOut,workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
   }
   const totals={rows:report.length,totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
   return {data:report,summary:totals};
