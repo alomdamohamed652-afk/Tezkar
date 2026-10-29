@@ -286,6 +286,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
       if(!body.success)throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","بيانات سجل الحضور المرسلة غير صحيحة",422);
       const snapshot=body.data.attendanceSnapshot;
+      if(!snapshot || snapshot.length===0)
+        throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لا يمكن اعتماد مسير المرتبات قبل إرفاق سجل الحضور الكامل للشهر",422);
       const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,accountingDate);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
