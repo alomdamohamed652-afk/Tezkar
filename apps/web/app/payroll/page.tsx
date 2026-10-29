@@ -102,9 +102,16 @@ export default function PayrollPage(){
   catch(e){setError(e instanceof Error?e.message:"تعذر حذف البند")}
   finally{setBusy(false)}
  }
- async function approve(){if(!payroll.period)return;setBusy(true);setError("");try{
-   await api("/api/payroll/periods/"+payroll.period.id+"/approve",{method:"POST",body:JSON.stringify({})});
-   setNotice("تم اعتماد مسير الرواتب. سجل الحضور متاح للمراجعة بشكل مستقل ويمكن إرفاق نسخة منه عند الحاجة.");await load()
+ async function approve(){if(!payroll.period)return;setBusy(true);setError("");setNotice("");try{
+   const [year,monthNumber]=month.split("-").map(Number);const lastDay=new Date(year,monthNumber,0).getDate();
+   const from=month+"-01",to=month+"-"+String(lastDay).padStart(2,"0");
+   const attendance=await api<{data:AttendanceDay[]}>("/api/attendance/report?from="+encodeURIComponent(from)+"&to="+encodeURIComponent(to));
+   const payrollEmployeeIds=new Set(payroll.items.map(item=>item.employee_id));
+   const attendanceSnapshot=attendance.data.filter(row=>payrollEmployeeIds.has(row.employeeId));
+   const expectedCount=payroll.items.length*lastDay;
+   if(attendanceSnapshot.length!==expectedCount)throw new Error("سجل الحضور غير مكتمل لكل موظفي المسير وأيام الشهر؛ راجع بيانات الحضور قبل الاعتماد.");
+   await api("/api/payroll/periods/"+payroll.period.id+"/approve",{method:"POST",body:JSON.stringify({attendanceSnapshot})});
+   setNotice("تم اعتماد مسير الرواتب وحفظ نسخة ثابتة من سجل الحضور لكل موظف ولكل يوم في الشهر.");await load()
   }catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد مسير الرواتب.")}finally{setBusy(false)}}
  async function submitPayment(e:FormEvent){e.preventDefault();if(!payTarget||!paymentIdempotencyKey||(fromCustody&&!custodyEmployeeId))return;setBusy(true);setError("");try{await api("/api/payroll/items/"+payTarget.id+"/payments",{method:"POST",body:JSON.stringify({idempotencyKey:paymentIdempotencyKey,amount:Number(payAmount),paymentDate:payDate,paymentMethod:payMethod,reference:payReference||null,notes:payNotes||null,fromCustody,custodyEmployeeId:fromCustody?custodyEmployeeId:null})});setPayTarget(null);setPayAmount("");setPayReference("");setPayNotes("");setPaymentIdempotencyKey("");setNotice("تم تسجيل صرف الراتب.");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الصرف")}finally{setBusy(false)}}
  if(!has("payroll.view"))return <div className="app-shell"><Sidebar active="/payroll"/><main className="main"><header className="topbar"><div><h1 className="page-title">مرتباتي</h1><p className="page-subtitle">الراتب الأساسي، المسيرات المعتمدة، الخصومات، أقساط السلف، والمدفوعات الفعلية.</p></div></header><section className="content">
