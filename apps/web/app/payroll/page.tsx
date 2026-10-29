@@ -2,6 +2,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
+import { SearchableSelect } from "../../components/searchable-select";
 import {formatMoney} from "../../lib/format";
 
 type Employee={id:string;code:string;full_name:string;department_name:string|null;is_active:boolean;salary_profile_id:string|null;monthly_salary:string|number|null;effective_from:string|null};
@@ -129,7 +130,7 @@ export default function PayrollPage(){
 return <div className="app-shell"><Sidebar active="/payroll"/><main className="main"><header className="topbar"><div><h1 className="page-title">مسيرات الرواتب والحضور</h1><p className="page-subtitle">جهّز مسير الشهر كمسودة، راجع سجل كل موظف من يوم ١ لآخر يوم، أضف المكافآت والخصومات ببيان مستقل، ثم اعتمد المسير وسجّل الصرف من العهدة أو بوسيلة غير نقدية.</p></div></header><section className="content">
   {error&&<div className="alert error">{error}</div>}{notice&&<div className="alert success">{notice}</div>}
   {has("payroll.manage")&&<form className="card form-card" onSubmit={setSalary}><div className="card-header"><h2 className="card-title">تعريف راتب أساسي</h2><span className="form-hint">تغيير الراتب ينشئ سجلًا جديدًا ولا يمس الرواتب السابقة</span></div><div className="form-grid">
-   <label>الموظف<select value={employeeId} onChange={e=>{setEmployeeId(e.target.value);setSalaryHistory([]);setSalaryHistoryEmployeeId("")}} required><option value="">اختر الموظف</option>{employees.filter(x=>x.is_active).map(e=><option key={e.id} value={e.id}>{e.full_name} · {e.code}{e.monthly_salary!==null?" · الحالي "+money(e.monthly_salary)+" ج.م":""}</option>)}</select></label>
+   <label>الموظف<SearchableSelect value={employeeId} onChange={v=>{setEmployeeId(v);setSalaryHistory([]);setSalaryHistoryEmployeeId("")}} placeholder="اختر الموظف" options={[{value:"",label:"اختر الموظف"},...employees.filter(x=>x.is_active).map(e=>({value:e.id,label:e.full_name,meta:e.code+(e.monthly_salary!==null?" · الحالي "+money(e.monthly_salary)+" ج.م":"")}))]}/></label>
    <label>الراتب الشهري (ج.م)<input type="number" min="0" step="0.01" value={monthlySalary} onChange={e=>setMonthlySalary(e.target.value)} required/></label>
    <label>ساري من تاريخ<input type="date" value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)} required/></label>
    <label>ملاحظات<input value={salaryNotes} onChange={e=>setSalaryNotes(e.target.value)} maxLength={1000}/></label>
@@ -170,7 +171,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
  </section>
  {adjustmentTarget&&<div className="modal-backdrop" onClick={()=>setAdjustmentTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">بنود المكافآت والخصومات</h2><div className="form-hint">{adjustmentTarget.employee_name} · كل مكافأة أو خصم يُسجل ببيان مستقل</div></div><button className="secondary-btn" onClick={()=>setAdjustmentTarget(null)}>إغلاق</button></div>
   {payroll.period?.status==="DRAFT"&&has("payroll.manage")&&<form onSubmit={addAdjustment}><div className="form-grid">
-   <label>نوع البند<select value={lineType} onChange={e=>setLineType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">مكافأة / بونص</option><option value="DEDUCTION">خصم</option></select></label>
+   <label>نوع البند<SearchableSelect value={lineType} onChange={v=>setLineType(v as "BONUS"|"DEDUCTION")} options={[{value:"BONUS",label:"مكافأة / بونص"},{value:"DEDUCTION",label:"خصم"}]}/></label>
    <label>البيان<input value={lineDescription} onChange={e=>setLineDescription(e.target.value)} placeholder={lineType==="BONUS"?"مثال: بونص إنتاج":"مثال: خصم تأخير"} minLength={2} maxLength={240} required/></label>
    <label>المبلغ بالجنيه<input type="number" min="0.01" step="0.01" value={lineAmount} onChange={e=>setLineAmount(e.target.value)} required/></label>
    <label>ملاحظات (اختياري)<input value={lineNotes} onChange={e=>setLineNotes(e.target.value)} maxLength={1000}/></label>
