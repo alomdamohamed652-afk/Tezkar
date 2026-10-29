@@ -359,6 +359,13 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
       assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
+      const incompleteSnapshotApproval = await app.inject({
+        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers: { cookie: cookieHeader },
+        payload: { attendanceSnapshot: attendanceSnapshot.slice(0, 1) }
+      });
+      assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
+      assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader },
