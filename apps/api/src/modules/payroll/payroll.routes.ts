@@ -311,7 +311,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           suppliedKeys.add(key);
         }
         if(suppliedKeys.size!==expectedKeys.size)
-          throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","لو هترفق سجل الحضور لازم يكون كاملًا لكل الموظفين وأيام الشهر. تقدر تعتمد المسير من غير إرفاقه.",422);
+          throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور المرفق غير مكتمل؛ لازم يحتوي على سجل لكل موظف ولكل يوم في الشهر قبل اعتماد المسير.",422);
         for(const row of snapshot){
           const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
           await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
