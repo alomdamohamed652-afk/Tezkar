@@ -547,8 +547,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
         [februaryPayment.json().data.payment.id]
       );
-      assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="OUT")?.amount),1000);
-      assert.equal(Number(custodySummary.rows.find((x:any)=>x.direction==="IN")?.amount),400);
+      assert.equal(custodySummary.rowCount,0,"non-cash payroll payments must not create cash-custody movements");
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
