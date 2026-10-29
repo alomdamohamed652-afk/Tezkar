@@ -225,6 +225,42 @@ export async function warehouseRoutes(app: FastifyInstance) {
     return {data,pagination:{limit:parsed.data.limit,offset:parsed.data.offset,hasMore}};
   });
 
+  app.get("/api/warehouse/final-product-audit",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
+    // Read-only audit: show production receipts that came from stages not marked as final.
+    // Never mutate balances automatically; existing stock must be reconciled from its source.
+    const result=await pool.query(`
+      SELECT p.id AS product_id,p.code AS product_code,p.name AS product_name,
+             w.id AS warehouse_id,w.name AS warehouse_name,w.warehouse_type,
+             l.id AS location_id,l.name AS location_name,u.name AS unit_name,
+             os.id AS order_stage_id,st.name AS stage_name,os.is_final_product,
+             po.code AS order_code,po.order_name,
+             SUM(CASE WHEN m.movement_type IN ('IN','RETURN') THEN m.quantity
+                      WHEN m.movement_type IN ('OUT','TRANSFER_OUT') THEN -m.quantity
+                      ELSE 0 END) AS net_production_receipts,
+             COALESCE(sb.quantity,0) AS current_balance,
+             MAX(m.created_at) AS last_receipt_at
+        FROM stock_movements m
+        JOIN products p ON p.id=m.product_id
+        JOIN warehouses w ON w.id=m.warehouse_id
+        JOIN warehouse_locations l ON l.id=m.location_id
+        JOIN units u ON u.id=m.unit_id
+        LEFT JOIN order_stages os ON os.id=m.order_stage_id
+        LEFT JOIN stages st ON st.id=os.stage_id
+        LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id)
+        LEFT JOIN stock_balances sb ON sb.product_id=m.product_id AND sb.warehouse_id=m.warehouse_id AND sb.location_id=m.location_id
+       WHERE m.reference_type='PRODUCTION'
+         AND (os.id IS NULL OR os.is_final_product IS DISTINCT FROM TRUE)
+       GROUP BY p.id,p.code,p.name,w.id,w.name,w.warehouse_type,l.id,l.name,u.name,
+                os.id,st.name,os.is_final_product,po.code,po.order_name,sb.quantity
+      HAVING SUM(CASE WHEN m.movement_type IN ('IN','RETURN') THEN m.quantity
+                      WHEN m.movement_type IN ('OUT','TRANSFER_OUT') THEN -m.quantity
+                      ELSE 0 END) > 0
+       ORDER BY MAX(m.created_at) DESC
+       LIMIT 500
+    `);
+    return {data:result.rows};
+  });
+
   app.get("/api/warehouse/dashboard",{preHandler:[authenticateRequest,requirePermission("warehouse.dashboard")]},async(request)=>{
     if(request.user!.roleCodes.some(code=>code.toLowerCase()==="shift_leader"))throw new AppError("FORBIDDEN","عرض القيم المالية للمخزون غير متاح لرئيس الوردية",403);
     const q=z.object({from:z.string().date().optional(),to:z.string().date().optional(),warehouseId:z.string().uuid().optional()}).safeParse(request.query);
