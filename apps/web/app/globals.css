@@ -1773,3 +1773,28 @@ textarea:hover:not(:disabled) {
   #machine-production-report .table-wrap { overflow: visible !important; }
   #machine-production-report table { width: 100% !important; font-size: 9pt !important; }
 }
+
+
+/* Searchable dropdown: keep employee names and codes readable in RTL. */
+.search-select-option{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr);
+  justify-items:stretch;
+  align-content:center;
+  gap:4px!important;
+  min-height:58px;
+  padding:10px 12px!important;
+  line-height:1.5!important;
+  white-space:normal;
+  text-align:right;
+}
+.search-select-option-label{display:block;min-width:0;max-width:100%;color:inherit;font-size:14px;font-weight:650;line-height:1.65;overflow-wrap:anywhere;word-break:normal}
+.search-select-option-meta{display:block;align-self:start;max-width:100%;margin:0;color:var(--muted,#64748b);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px!important;font-weight:600!important;line-height:1.4!important;direction:ltr;unicode-bidi:isolate;text-align:right;overflow-wrap:anywhere}
+.search-select-option.selected .search-select-option-meta,.search-select-option.active .search-select-option-meta{color:#475569}
+.search-select-list{padding:2px 0;scrollbar-gutter:stable both-edges}
+.search-select-menu{padding:9px!important}
+.search-select-search{flex:0 0 auto;line-height:1.5}
+.search-select-current{max-width:100%;overflow:hidden}
+.search-select-current-label{display:block;line-height:1.5;overflow-wrap:anywhere}
+.search-select-current-meta{display:block;direction:ltr;unicode-bidi:isolate;text-align:right;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+@media(max-width:600px){.search-select-option{min-height:56px;padding:9px 10px!important}.search-select-option-label{font-size:13px}}
