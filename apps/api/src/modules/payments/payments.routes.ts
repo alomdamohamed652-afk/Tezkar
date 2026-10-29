@@ -66,12 +66,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
       COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FILTER(WHERE pe.status='APPROVED'),0) AS production_earned,
       COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
         FROM employee_earnings_adjustments a
-        WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0)
-      + COALESCE((SELECT SUM(l.credit_amount-l.debit_amount)
-        FROM employee_earnings_ledger l
-        WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
-          AND l.advance_repayment_id IS NULL
-          AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
+        WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
