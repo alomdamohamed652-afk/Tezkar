@@ -1316,6 +1316,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]}),
         client.query(`
           SELECT
+            (SELECT COUNT(*)::int FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED') AS approved_count,
             COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
               FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED'),0) AS production_net,
             COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
@@ -1353,7 +1354,13 @@ export async function paymentsRoutes(app:FastifyInstance){
           standaloneAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0),
           ledgerOnlyAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0),
           previouslySettled: Number(availabilityBreakdown.rows[0]?.settled ?? 0) + Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0),
-          calculatedAvailable: Math.round((Number(availabilityBreakdown.rows[0]?.production_net ?? 0) + Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0) + Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0) - Number(availabilityBreakdown.rows[0]?.settled ?? 0) - Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0))*100)/100
+          calculationMode: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0 ? "PRODUCTION" : "LEDGER_FALLBACK",
+          approvedProductionCount: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0),
+          ledgerBalance: Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0),
+          outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
+          calculatedAvailable: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0
+            ? Math.round((Number(availabilityBreakdown.rows[0]?.production_net ?? 0) + Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0) + Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0) - Number(availabilityBreakdown.rows[0]?.settled ?? 0) - Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0))*100)/100
+            : Math.round((Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0) + Number(advances.rows[0]?.amount ?? 0))*100)/100
         },
         orderAccount: parsed.data.orderId ? {
           orderId: parsed.data.orderId,
