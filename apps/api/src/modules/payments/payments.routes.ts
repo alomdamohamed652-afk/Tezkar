@@ -204,10 +204,10 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null;availableBalanceOverride?:number|null}
 ){
-  const available=await getAvailableEarnings(client,input.employeeId);
-  if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
+  const available=input.availableBalanceOverride??await getAvailableEarnings(client,input.employeeId);
+  if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`المتاح للتسوية ${available.toFixed(2)} ج.م فقط`,409);
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
   const payment=await client.query(
@@ -1702,6 +1702,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
         skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
+        availableBalanceOverride: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? (orderProductionCount > 0 ? orderAvailable : available) : null,
         productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
