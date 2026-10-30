@@ -122,6 +122,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    if(code.rows[0].status!=="ACTIVE")throw new AppError("CODE_NOT_ACTIVE","الكود غير نشط",409);
    const product=await c.query("SELECT id,name FROM products WHERE id=$1 AND is_active=TRUE",[p.data.productId]);
    if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج المحدد غير موجود أو غير نشط",422);
+   if(product.rows[0].id!==code.rows[0].product_id)throw new AppError("PRODUCT_MISMATCH","لا يمكن تغيير المنتج الرئيسي المرتبط بالكود",409);
    const ids=[p.data.productionPartnerEmployeeId,p.data.packerEmployeeId,p.data.packerPartnerEmployeeId].filter(Boolean);
    if(ids.length){const valid=await c.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[ids]);if(valid.rowCount!==new Set(ids).size)throw new AppError("EMPLOYEE_NOT_FOUND","يوجد عامل غير موجود أو غير نشط",422);}
    const display=p.data.displayProductName?.trim()||product.rows[0].name;
