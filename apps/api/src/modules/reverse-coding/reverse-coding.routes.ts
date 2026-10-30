@@ -110,7 +110,9 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const r=await pool.query(`SELECT c.id code_id,c.code,c.quantity,c.status code_status,g.packaging_type,g.weight_min_kg,g.weight_max_kg,
     p.name product_name,cr.id carton_record_id,cr.display_product_name,cr.actual_weight_kg,cr.notes,cr.updated_at,
     pe.full_name production_owner_name,pp.full_name production_partner_name,
-    pa.full_name packer_name,pap.full_name packer_partner_name
+    pa.full_name packer_name,pap.full_name packer_partner_name,
+    COALESCE(ce.full_name,cu.username) coded_by_name,cu.username coded_by_username,
+    COALESCE(re.full_name,ru.username) received_by_name,ru.username received_by_username
    FROM reverse_codes c
    JOIN reverse_code_groups g ON g.id=c.group_id
    LEFT JOIN reverse_code_carton_records cr ON cr.code_id=c.id
@@ -119,6 +121,10 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    LEFT JOIN employees pp ON pp.id=cr.production_partner_employee_id
    LEFT JOIN employees pa ON pa.id=cr.packer_employee_id
    LEFT JOIN employees pap ON pap.id=cr.packer_partner_employee_id
+   LEFT JOIN users cu ON cu.id=cr.coded_by
+   LEFT JOIN employees ce ON ce.id=cu.employee_id
+   LEFT JOIN users ru ON ru.id=cr.received_by
+   LEFT JOIN employees re ON re.id=ru.employee_id
    WHERE c.code ILIKE '%'||$1||'%'
    ORDER BY CASE WHEN c.code=$1 THEN 0 WHEN c.code ILIKE $1||'%' THEN 1 ELSE 2 END,c.created_at DESC
    LIMIT 50`,[q]);
