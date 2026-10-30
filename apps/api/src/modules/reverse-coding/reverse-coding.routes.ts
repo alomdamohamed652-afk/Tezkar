@@ -94,11 +94,11 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  app.post("/api/reverse-coding/print",{preHandler:[authenticateRequest,requirePermission("reverse_coding.print")]},async request=>{
   const p=z.object({codeIds:z.array(z.string().uuid()).min(1).max(5000)}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","حدد كودًا واحدًا على الأقل للطباعة",422);
   const ids=[...new Set(p.data.codeIds)];return withTransaction(async c=>{
-   const rows=await c.query(`SELECT c.*,g.name,g.packaging_type,g.notes group_notes,p.name product_name,p.code product_code,o.code order_code,o.order_name,s.setting_value company
+   const rows=await c.query(`SELECT c.*,g.packaging_type,g.notes group_notes,g.display_product_name,g.weight_min_kg,g.weight_max_kg,p.name product_name,p.code product_code,o.code order_code,o.order_name,s.setting_value company
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id
     LEFT JOIN reverse_code_settings s ON s.setting_key='company' WHERE c.id=ANY($1::uuid[]) AND c.status='ACTIVE' ORDER BY c.code_number FOR UPDATE OF c`,[ids]);
    if(rows.rowCount!==ids.length)throw new AppError("CODE_NOT_PRINTABLE","بعض الأكواد غير موجودة أو غير نشطة",409);
-   const result=[];for(const r of rows.rows){const snap=r.print_snapshot??{code:r.code,quantity:r.quantity,weightGrams:r.weight_grams,createdAt:r.created_at,name:r.name,packagingType:r.packaging_type,productName:r.product_name,productCode:r.product_code,orderCode:r.order_code,orderName:r.order_name,company:r.company??{}},reprint=Boolean(r.first_printed_at);
+   const result=[];for(const r of rows.rows){const snap=r.print_snapshot??{code:r.code,quantity:r.quantity,weightGrams:r.weight_grams,createdAt:r.created_at,packagingType:r.packaging_type,productName:r.display_product_name||r.product_name,productId:r.product_id,weightMinKg:r.weight_min_kg,weightMaxKg:r.weight_max_kg,productCode:r.product_code,orderCode:r.order_code,orderName:r.order_name,company:r.company??{}},reprint=Boolean(r.first_printed_at);
     await c.query("UPDATE reverse_codes SET print_snapshot=$1::jsonb,first_printed_at=COALESCE(first_printed_at,now()),last_printed_at=now(),print_count=print_count+1,updated_at=now() WHERE id=$2",[JSON.stringify(snap),r.id]);
     await c.query("INSERT INTO reverse_code_print_logs(code_id,printed_by,reprint) VALUES($1,$2,$3)",[r.id,request.user!.userId,reprint]);result.push({id:r.id,snapshot:snap});}
    await audit(c,request,"print","reverse_codes",ids[0]??null,undefined,{count:result.length});return {data:result};
@@ -107,11 +107,11 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  app.post("/api/reverse-coding/scan",{preHandler:[authenticateRequest,requirePermission("reverse_coding.scan")]},async request=>{
   const p=z.object({values:z.array(z.string().trim().min(1).max(200)).min(1).max(200),sessionId:z.string().uuid().nullable().optional()}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المسح غير صحيحة",422);
   return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){const duplicate=seen.has(value);seen.add(value);
-   const f=await c.query(`SELECT c.id,c.code,c.quantity,c.weight_grams,c.status,c.first_printed_at,c.created_at,g.id group_id,g.name,g.packaging_type,g.product_id,g.order_id,g.notes,p.name product_name,p.code product_code,o.code order_code,o.order_name
+   const f=await c.query(`SELECT c.id,c.code,c.quantity,c.weight_grams,c.status,c.first_printed_at,c.created_at,g.id group_id,g.name,g.packaging_type,g.product_id,g.order_id,g.notes,g.display_product_name,g.weight_min_kg,g.weight_max_kg,p.name product_name,p.code product_code,o.code order_code,o.order_name
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id WHERE c.code=$1 LIMIT 1`,[value]),row=f.rows[0]??null;
    const alreadyScanned=Boolean(!duplicate&&p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount);
    const result=classifyReverseCodeScan({duplicateInRequest:duplicate,alreadyScannedInSession:alreadyScanned,codeStatus:row?.status??null});
-   await c.query("INSERT INTO reverse_code_scan_logs(code_id,scanned_value,session_id,result,scanned_by) VALUES($1,$2,$3,$4,$5)",[row?.id??null,value,p.data.sessionId??null,result,request.user!.userId]);out.push({value,result,code:row});}return {data:out};});
+   await c.query("INSERT INTO reverse_code_scan_logs(code_id,scanned_value,session_id,result,scanned_by) VALUES($1,$2,$3,$4,$5)",[row?.id??null,value,p.data.sessionId??null,result,request.user!.userId]);const carton=row?await c.query("SELECT * FROM reverse_code_carton_records WHERE code_id=$1",[row.id]):{rows:[]};out.push({value,result,code:row,carton:carton.rows[0]??null});}return {data:out};});
  });
  app.get("/api/reverse-coding/scans",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async()=>{const r=await pool.query("SELECT l.*,c.code,g.name group_name,u.username FROM reverse_code_scan_logs l LEFT JOIN reverse_codes c ON c.id=l.code_id LEFT JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN users u ON u.id=l.scanned_by ORDER BY l.scanned_at DESC LIMIT 500");return {data:r.rows};});
 }
