@@ -13,13 +13,14 @@ async function audit(client:any,request:any,action:string,type:string,id:string|
 }
 export async function reverseCodingRoutes(app:FastifyInstance){
  app.get("/api/reverse-coding/bootstrap",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async()=>{
-  const [products,orders,employees,settings]=await Promise.all([
+  const [products,orders,employees,settings,labelSettings]=await Promise.all([
    pool.query("SELECT id,code,name FROM products WHERE is_active=TRUE ORDER BY name"),
    pool.query("SELECT id,code,order_name FROM production_orders ORDER BY created_at DESC LIMIT 500"),
    pool.query("SELECT id,code,full_name AS name FROM employees WHERE is_active=TRUE ORDER BY full_name"),
-   pool.query("SELECT setting_value FROM reverse_code_settings WHERE setting_key='company'")
+   pool.query("SELECT setting_value FROM reverse_code_settings WHERE setting_key='company'"),
+   pool.query("SELECT setting_value FROM reverse_code_settings WHERE setting_key='label_layout'")
   ]);
-  return {data:{products:products.rows,orders:orders.rows,employees:employees.rows,company:settings.rows[0]?.setting_value??{}}};
+  return {data:{products:products.rows,orders:orders.rows,employees:employees.rows,company:settings.rows[0]?.setting_value??{},labelSettings:labelSettings.rows[0]?.setting_value??{width:80,height:50,margin:2}}};
  });
  app.put("/api/reverse-coding/company-settings",{preHandler:[authenticateRequest,requirePermission("reverse_coding.manage")]},async request=>{
   const p=z.object({companyName:z.string().trim().min(2).max(160),address:z.string().trim().max(300).nullable().optional(),phone:z.string().trim().max(60).nullable().optional(),logoUrl:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
@@ -27,6 +28,14 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const saved=await withTransaction(async c=>{
    const r=await c.query("INSERT INTO reverse_code_settings(setting_key,setting_value,updated_by) VALUES('company',$1::jsonb,$2) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING setting_value",[JSON.stringify(p.data),request.user!.userId]);
    await audit(c,request,"update_company_label_settings","reverse_code_settings",null,undefined,r.rows[0].setting_value);return r.rows[0].setting_value;
+  });return {data:saved};
+ });
+ app.put("/api/reverse-coding/label-settings",{preHandler:[authenticateRequest,requirePermission("reverse_coding.manage")]},async request=>{
+  const p=z.object({width:z.number().min(20).max(300),height:z.number().min(15).max(300),margin:z.number().min(0).max(10)}).safeParse(request.body);
+  if(!p.success)throw new AppError("VALIDATION_ERROR","مقاس الملصق غير صحيح",422);
+  const saved=await withTransaction(async c=>{
+   const r=await c.query("INSERT INTO reverse_code_settings(setting_key,setting_value,updated_by) VALUES('label_layout',$1::jsonb,$2) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING setting_value",[JSON.stringify(p.data),request.user!.userId]);
+   await audit(c,request,"update_label_layout","reverse_code_settings",null,undefined,r.rows[0].setting_value);return r.rows[0].setting_value;
   });return {data:saved};
  });
  app.get("/api/reverse-coding/groups",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async request=>{
