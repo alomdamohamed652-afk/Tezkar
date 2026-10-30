@@ -62,7 +62,8 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const id=String((request.params as any).id),p=z.object({notes:z.string().trim().max(1000).nullable().optional(),weightGrams:z.number().nonnegative().max(1000000).nullable().optional(),employeeIds:z.array(z.string().uuid()).max(50).optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الوزن أو العمال أو الملاحظات غير صحيحة",422);
   return withTransaction(async c=>{
-   const current=await c.query("SELECT c.* FROM reverse_codes c WHERE c.id=$1 FOR UPDATE", [id]);\n   const previousWorkers=await c.query("SELECT employee_id FROM reverse_code_workers WHERE code_id=$1 ORDER BY employee_id",[id]);
+   const current=await c.query("SELECT c.* FROM reverse_codes c WHERE c.id=$1 FOR UPDATE", [id]);
+   const previousWorkers=await c.query("SELECT employee_id FROM reverse_code_workers WHERE code_id=$1 ORDER BY employee_id",[id]);
    if(!current.rowCount)throw new AppError("CODE_NOT_FOUND","الكود غير موجود",404);
    if(p.data.weightGrams!==undefined){if(current.rows[0].first_printed_at)throw new AppError("PRINTED_CODE_LOCKED","لا يمكن تعديل وزن الكود بعد طباعته",409);await c.query("UPDATE reverse_codes SET weight_grams=$1,updated_at=now() WHERE id=$2",[p.data.weightGrams,id]);}
    if(p.data.employeeIds){const ids=[...new Set(p.data.employeeIds)],valid=await c.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[ids]);if(valid.rowCount!==ids.length)throw new AppError("EMPLOYEE_NOT_FOUND","يوجد عامل غير موجود أو غير نشط",422);await c.query("DELETE FROM reverse_code_workers WHERE code_id=$1",[id]);for(const eid of ids)await c.query("INSERT INTO reverse_code_workers(code_id,employee_id) VALUES($1,$2)",[id,eid]);}

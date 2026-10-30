@@ -9,7 +9,9 @@ type OrderItem={id:string;code:string;order_name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
-type ScanResult={value:string;result:string;code:Code&{name?:string;packaging_type?:string;product_name?:string;order_code?:string}|null};\ntype ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};\nconst createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?crypto.randomUUID():"session-"+Date.now()+"-"+Math.random().toString(36).slice(2);
+type ScanResult={value:string;result:string;code:Code&{name?:string;packaging_type?:string;product_name?:string;order_code?:string}|null};
+type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
+const createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?crypto.randomUUID():"session-"+Date.now()+"-"+Math.random().toString(36).slice(2);
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
 export default function ReverseCodingPage(){
@@ -19,10 +21,11 @@ export default function ReverseCodingPage(){
  const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState("");
  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
  const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editWeight,setEditWeight]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
- const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState("");\n const [scanSession,setScanSession]=useState(createScanSession),[recentScans,setRecentScans]=useState<ScanLog[]>([]);
+ const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState("");
+ const [scanSession,setScanSession]=useState(createScanSession),[recentScans,setRecentScans]=useState<ScanLog[]>([]);
  const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState("");
  const [printRows,setPrintRows]=useState<any[]>([]);
- const videoRef=useRef<HTMLVideoElement|null>(null),streamRef=useRef<MediaStream|null>(null),frameRef=useRef<number>(0),detectorRef=useRef<any>(null),scanBusyRef=useRef(false);
+ const videoRef=useRef<HTMLVideoElement|null>(null),streamRef=useRef<MediaStream|null>(null),frameRef=useRef<number>(0),detectorRef=useRef<any>(null),scanBusyRef=useRef(false),lastDetectedRef=useRef("");
  async function load(){
   try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];orders:OrderItem[];employees:Item[];company:Company}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
    setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setOrders(b.data.orders);setEmployees(b.data.employees);setCompany(b.data.company??{});
@@ -73,12 +76,12 @@ export default function ReverseCodingPage(){
   if(!scanning)return;
   let active=true;
   const tick=async()=>{if(!active)return;const video=videoRef.current;
-   if(video&&video.readyState>=2&&detectorRef.current&&!scanBusyRef.current){scanBusyRef.current=true;try{const found=await detectorRef.current.detect(video);if(found?.[0]?.rawValue)await submitScan(found[0].rawValue);}catch{}finally{scanBusyRef.current=false;}}
+   if(video&&video.readyState>=2&&detectorRef.current&&!scanBusyRef.current){scanBusyRef.current=true;try{const found=await detectorRef.current.detect(video);if(found?.[0]?.rawValue&&found[0].rawValue!==lastDetectedRef.current){lastDetectedRef.current=found[0].rawValue;await submitScan(found[0].rawValue);}}catch{}finally{scanBusyRef.current=false;}}
    if(active)frameRef.current=window.requestAnimationFrame(tick);
   };
   frameRef.current=window.requestAnimationFrame(tick);
   return()=>{active=false;window.cancelAnimationFrame(frameRef.current);};
- },[scanning]);
+ },[scanning,scanSession]);
  function stopCamera(){setScanning(false);if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;}if(videoRef.current)videoRef.current.srcObject=null;}
  useEffect(()=>()=>{if(streamRef.current)streamRef.current.getTracks().forEach(t=>t.stop());window.cancelAnimationFrame(frameRef.current);},[]);
  if(!has("reverse_coding.view"))return <div className="app-shell"><Sidebar active="/reverse-coding"/><main className="main"><div className="card">ليس لديك صلاحية عرض نظام التكويد العكسي.</div></main></div>;
@@ -135,11 +138,12 @@ export default function ReverseCodingPage(){
    <section style={panel}>
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>مسح الأكواد</h2>
     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input style={{...input,flex:1,minWidth:180}} value={scanValue} onChange={e=>setScanValue(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();void submitScan(scanValue);}}} placeholder="امسح الباركود هنا أو اكتب الكود"/>
-     <button style={btn} onClick={()=>void submitScan(scanValue)} disabled={!scanValue.trim()||!has("reverse_coding.scan")}>تسجيل المسح</button><button style={{...btn,background:scanning?"#b91c1c":"#0f766e"}} onClick={()=>scanning?stopCamera():void startCamera()} disabled={!has("reverse_coding.scan")}>{scanning?"إيقاف الكاميرا":"فتح الكاميرا"}</button><button style={{...btn,background:"#475569"}} onClick={()=>{setScanSession(createScanSession());setScanResults([]);}}>جلسة مسح جديدة</button></div>
+     <button style={btn} onClick={()=>void submitScan(scanValue)} disabled={!scanValue.trim()||!has("reverse_coding.scan")}>تسجيل المسح</button><button style={{...btn,background:scanning?"#b91c1c":"#0f766e"}} onClick={()=>scanning?stopCamera():void startCamera()} disabled={!has("reverse_coding.scan")}>{scanning?"إيقاف الكاميرا":"فتح الكاميرا"}</button><button style={{...btn,background:"#475569"}} onClick={()=>{setScanSession(createScanSession());setScanResults([]);lastDetectedRef.current="";}}>جلسة مسح جديدة</button></div>
     {cameraError&&<p style={{fontSize:12,color:"#b91c1c"}}>{cameraError}</p>}
     {scanning&&<div style={{marginTop:12}}><video ref={videoRef} playsInline muted style={{width:"100%",maxHeight:330,background:"#111",borderRadius:12,objectFit:"cover"}}/><p style={{fontSize:12,color:"var(--muted,#64748b)"}}>وجّه الكاميرا نحو الباركود أو QR. المسح يسجل النتيجة فقط ولا يغيّر حالة الكود أو المخزون.</p></div>}
     {!!scanResults.length&&<div style={{display:"grid",gap:7,marginTop:12}}>{scanResults.slice(0,20).map((r,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",gap:8,padding:10,borderRadius:9,background:"var(--surface,#f8fafc)"}}><div><strong style={{fontFamily:"monospace"}}>{r.value}</strong><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{r.code?.name??"—"} · {r.code?.packaging_type??""} · {r.code?.quantity?number(r.code.quantity)+" قطعة":""} · {r.code?.weight_grams??"—"} جم · {r.code?.order_code??"بدون طلبية"} · {r.code?.product_name??"بدون منتج"}</div></div><strong style={{fontSize:12,color:r.result==="FOUND"?"#15803d":r.result==="UNKNOWN"?"#b91c1c":"#b45309"}}>{resultLabels[r.result]??r.result}</strong></div>)}</div>}
    </section>
+   <section style={panel}><h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>سجل المسح الأخير</h2><div style={{display:"grid",gap:7}}>{recentScans.slice(0,12).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:9,borderRadius:8,background:"var(--surface,#f8fafc)",fontSize:12}}><div><strong style={{fontFamily:"monospace"}}>{log.scanned_value}</strong><div style={{color:"var(--muted,#64748b)"}}>{log.group_name??"غير معروف"} · {log.username??"—"} · {new Date(log.scanned_at).toLocaleString("ar-EG")}</div></div><strong>{resultLabels[log.result]??log.result}</strong></div>)}{!recentScans.length&&<p style={{color:"var(--muted,#64748b)"}}>لا توجد عمليات مسح مسجلة.</p>}</div></section>
    {has("reverse_coding.manage")&&<section style={panel}>
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>بيانات الشركة على الملصق</h2>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12}}>
