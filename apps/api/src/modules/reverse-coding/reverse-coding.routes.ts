@@ -13,7 +13,7 @@ async function audit(client:any,request:any,action:string,type:string,id:string|
  await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action,module:"reverse_coding",entityType:type,entityId:id,beforeData,afterData,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
 }
 export async function reverseCodingRoutes(app:FastifyInstance){
- app.get("/api/reverse-coding/bootstrap",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async()=>{
+ app.get("/api/reverse-coding/bootstrap",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async request=>{
   const [products,orders,employees,users,settings,labelSettings]=await Promise.all([
    pool.query("SELECT id,code,name FROM products WHERE is_active=TRUE ORDER BY name"),
    pool.query("SELECT id,code,order_name FROM production_orders ORDER BY created_at DESC LIMIT 500"),
