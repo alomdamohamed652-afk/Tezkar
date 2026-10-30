@@ -204,10 +204,10 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null;availableBalanceOverride?:number|null}
 ){
-  const available=await getAvailableEarnings(client,input.employeeId);
-  if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`مستحقات الإنتاج المتاحة ${available.toFixed(2)} ج.م فقط`,409);
+  const available=input.availableBalanceOverride??await getAvailableEarnings(client,input.employeeId);
+  if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`المتاح للتسوية ${available.toFixed(2)} ج.م فقط`,409);
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
   const payment=await client.query(
@@ -1232,7 +1232,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         [parsed.data.employeeId]
       );
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "العامل غير موجود أو غير نشط", 404);
-      const [production, adjustments, settlements, legacyPayments, advances, ledger, orderAccount] = await Promise.all([
+      const [production, adjustments, settlements, legacyPayments, advances, ledger, orderAccount, availabilityBreakdown] = await Promise.all([
         client.query(`SELECT COALESCE(SUM(COALESCE(total_earning_amount,earning_amount)),0) AS amount
           FROM production_entries WHERE employee_id=$1 AND status='APPROVED'`, [parsed.data.employeeId]),
         client.query(`SELECT
@@ -1313,7 +1313,25 @@ export async function paymentsRoutes(app:FastifyInstance){
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
-        `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]})
+        `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]}),
+        client.query(`
+          SELECT
+            (SELECT COUNT(*)::int FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED') AS approved_count,
+            COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
+              FROM production_entries p WHERE p.employee_id=$1 AND p.status='APPROVED'),0) AS production_net,
+            COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+              FROM employee_earnings_adjustments a
+              WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0) AS standalone_adjustments_net,
+            COALESCE((SELECT SUM(l.credit_amount-l.debit_amount)
+              FROM employee_earnings_ledger l
+              WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
+                AND l.advance_repayment_id IS NULL
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
+            COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+            COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+              LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+              WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid
+        `,[parsed.data.employeeId])
       ]);
       const earned = Number(production.rows[0]?.amount ?? 0);
       const bonus = Number(adjustments.rows[0]?.bonuses ?? 0);
@@ -1331,6 +1349,19 @@ export async function paymentsRoutes(app:FastifyInstance){
         previouslySettled: settled + legacyPaid,
         outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
         availableForSettlement: available,
+        availableBreakdown: {
+          productionNet: Number(availabilityBreakdown.rows[0]?.production_net ?? 0),
+          standaloneAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0),
+          ledgerOnlyAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0),
+          previouslySettled: Number(availabilityBreakdown.rows[0]?.settled ?? 0) + Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0),
+          calculationMode: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0 ? "PRODUCTION" : "LEDGER_FALLBACK",
+          approvedProductionCount: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0),
+          ledgerBalance: Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0),
+          outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
+          calculatedAvailable: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0
+            ? Math.round((Number(availabilityBreakdown.rows[0]?.production_net ?? 0) + Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0) + Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0) - Number(availabilityBreakdown.rows[0]?.settled ?? 0) - Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0))*100)/100
+            : Math.round((Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0) + Number(advances.rows[0]?.amount ?? 0))*100)/100
+        },
         orderAccount: parsed.data.orderId ? {
           orderId: parsed.data.orderId,
           orderStageId: parsed.data.orderStageId ?? null,
@@ -1671,6 +1702,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
         skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
+        availableBalanceOverride: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? (orderProductionCount > 0 ? orderAvailable : available) : null,
         productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
