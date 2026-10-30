@@ -55,7 +55,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
     SELECT $1,code_number,'RVC-'||to_char(current_date,'YY')||'-'||lpad(code_number::text,8,'0'),quantity,$3
     FROM numbered ORDER BY ord
     RETURNING id,code,quantity,weight_grams,status,first_printed_at`,[g.id,quantities,p.weightGrams??null])).rows;
-   await audit(c,request,"create","reverse_code_group",g.id,undefined,{group:g,codes});return {...g,codes};
+   await audit(c,request,"create","reverse_code_group",g.id,undefined,{group:g,codeCount:codes.length,firstCode:codes[0]?.code??null,lastCode:codes[codes.length-1]?.code??null});return {...g,codes};
   });return reply.code(201).send({data:created});
  });
  app.get("/api/reverse-coding/groups/:id",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async request=>{
@@ -81,7 +81,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   });
  });
  app.post("/api/reverse-coding/print",{preHandler:[authenticateRequest,requirePermission("reverse_coding.print")]},async request=>{
-  const p=z.object({codeIds:z.array(z.string().uuid()).min(1).max(1000)}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","حدد كودًا واحدًا على الأقل للطباعة",422);
+  const p=z.object({codeIds:z.array(z.string().uuid()).min(1).max(5000)}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","حدد كودًا واحدًا على الأقل للطباعة",422);
   const ids=[...new Set(p.data.codeIds)];return withTransaction(async c=>{
    const rows=await c.query(`SELECT c.*,g.name,g.packaging_type,g.notes group_notes,p.name product_name,p.code product_code,o.code order_code,o.order_name,s.setting_value company
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id
