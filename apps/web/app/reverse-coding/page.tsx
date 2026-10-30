@@ -5,7 +5,6 @@ import { Sidebar,usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
 
 type Item={id:string;code:string;name:string};
-type OrderItem={id:string;code:string;order_name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
@@ -17,9 +16,9 @@ const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"ك�
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
 export default function ReverseCodingPage(){
  const {has}=usePermissions();
- const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[orders,setOrders]=useState<OrderItem[]>([]),[employees,setEmployees]=useState<Item[]>([]);
+ const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]);
  const [company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
- const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState(""),[codeCount,setCodeCount]=useState("1"),[weightMinKg,setWeightMinKg]=useState(""),[weightMaxKg,setWeightMaxKg]=useState(""),[displayProductName,setDisplayProductName]=useState("");
+ const [packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[perCode,setPerCode]=useState("600"),[codeCount,setCodeCount]=useState("1"),[weightMinKg,setWeightMinKg]=useState(""),[weightMaxKg,setWeightMaxKg]=useState(""),[displayProductName,setDisplayProductName]=useState("");
  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
  const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editWeight,setEditWeight]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
  const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState(""),[scannedCode,setScannedCode]=useState<ScanResult|null>(null),[cartonProductId,setCartonProductId]=useState(""),[cartonDisplayName,setCartonDisplayName]=useState(""),[productionPartnerId,setProductionPartnerId]=useState(""),[packerId,setPackerId]=useState(""),[packerPartnerId,setPackerPartnerId]=useState(""),[actualWeightKg,setActualWeightKg]=useState(""),[cartonNotes,setCartonNotes]=useState("");
@@ -31,8 +30,8 @@ export default function ReverseCodingPage(){
  const [labelSaved,setLabelSaved]=useState(false);
  const videoRef=useRef<HTMLVideoElement|null>(null),streamRef=useRef<MediaStream|null>(null),frameRef=useRef<number>(0),detectorRef=useRef<any>(null),scanBusyRef=useRef(false),lastDetectedRef=useRef("");
  async function load(){
-  try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];orders:OrderItem[];employees:Item[];company:Company;labelSettings:LabelLayout}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
-   setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setOrders(b.data.orders);setEmployees(b.data.employees);setCompany(b.data.company??{});
+  try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];employees:Item[];company:Company;labelSettings:LabelLayout}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
+   setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setEmployees(b.data.employees);setCompany(b.data.company??{});
    setCompanyName(b.data.company?.companyName??"");setAddress(b.data.company?.address??"");setPhone(b.data.company?.phone??"");setLogoUrl(b.data.company?.logoUrl??"");
    const layout=b.data.labelSettings??{width:80,height:50,margin:2};setLabelSize(layout);setLabelPreset(["80x50","100x150","100x100","60x40","50x30","40x30"].includes(`${layout.width}x${layout.height}`)?`${layout.width}x${layout.height}`:"custom");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد العكسي");}
@@ -42,7 +41,7 @@ export default function ReverseCodingPage(){
  async function createGroup(e:FormEvent){
   e.preventDefault();setBusy(true);setError("");
   try{const r=await api<{data:Group}>("/api/reverse-coding/groups",{method:"POST",body:JSON.stringify({packagingType:packaging,productId,displayProductName:displayProductName.trim()||null,codeCount:Number(codeCount),piecesPerCode:Number(perCode),weightMinKg:weightMinKg===""?null:Number(weightMinKg),weightMaxKg:weightMaxKg===""?null:Number(weightMaxKg)})});
-   setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setName("");setTotal("");setPerCode("");setWeight("");setNotes("");setCodeCount("1");setWeightMinKg("");setWeightMaxKg("");setDisplayProductName("");
+   setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setCodeCount("1");setWeightMinKg("");setWeightMaxKg("");setDisplayProductName("");
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الأكواد");}finally{setBusy(false);}
  }
  async function openGroup(g:Group){try{const r=await api<{data:Group}>("/api/reverse-coding/groups/"+g.id);setSelected(r.data);setSelectedCodes([]);}catch(e){setError(e instanceof Error?e.message:"تعذر فتح المجموعة");}}
