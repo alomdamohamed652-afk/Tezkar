@@ -117,7 +117,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const p=z.object({productId:z.string().uuid(),displayProductName:z.string().trim().min(1).max(180).nullable().optional(),productionPartnerEmployeeId:z.string().uuid().nullable().optional(),packerEmployeeId:z.string().uuid().nullable().optional(),packerPartnerEmployeeId:z.string().uuid().nullable().optional(),actualWeightKg:z.number().nonnegative().max(100000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الكرتونة غير صحيحة",422);
   return withTransaction(async c=>{
-   const code=await c.query("SELECT c.id,c.code,c.quantity,c.status,g.product_id,p.name product_name FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id WHERE c.id=$1 FOR UPDATE OF c",[id]);
+   const code=await c.query("SELECT c.id,c.code,c.quantity,c.status,g.product_id,g.display_product_name,p.name product_name FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id WHERE c.id=$1 FOR UPDATE OF c",[id]);
    if(!code.rowCount)throw new AppError("CODE_NOT_FOUND","الكود غير موجود",404);
    if(code.rows[0].status!=="ACTIVE")throw new AppError("CODE_NOT_ACTIVE","الكود غير نشط",409);
    const product=await c.query("SELECT id,name FROM products WHERE id=$1 AND is_active=TRUE",[p.data.productId]);
@@ -125,8 +125,8 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    if(product.rows[0].id!==code.rows[0].product_id)throw new AppError("PRODUCT_MISMATCH","لا يمكن تغيير المنتج الرئيسي المرتبط بالكود",409);
    const ids=[p.data.productionPartnerEmployeeId,p.data.packerEmployeeId,p.data.packerPartnerEmployeeId].filter(Boolean);
    if(ids.length){const valid=await c.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[ids]);if(valid.rowCount!==new Set(ids).size)throw new AppError("EMPLOYEE_NOT_FOUND","يوجد عامل غير موجود أو غير نشط",422);}
-   const display=p.data.displayProductName?.trim()||product.rows[0].name;
-   if(display!==product.rows[0].name&&!await hasPermission(c,request.user!.userId,"reverse_coding.rename_product_label","all"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تغيير اسم المنتج الظاهر على الملصق",403);
+   const display=code.rows[0].display_product_name||product.rows[0].name;
+   
    const saved=await c.query("INSERT INTO reverse_code_carton_records(code_id,product_id,display_product_name,production_partner_employee_id,packer_employee_id,packer_partner_employee_id,coded_by,received_by,actual_weight_kg,notes,saved_by) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$7) ON CONFLICT(code_id) DO UPDATE SET product_id=EXCLUDED.product_id,display_product_name=EXCLUDED.display_product_name,production_partner_employee_id=EXCLUDED.production_partner_employee_id,packer_employee_id=EXCLUDED.packer_employee_id,packer_partner_employee_id=EXCLUDED.packer_partner_employee_id,actual_weight_kg=EXCLUDED.actual_weight_kg,notes=EXCLUDED.notes,saved_by=EXCLUDED.saved_by,updated_at=now() RETURNING *",[id,p.data.productId,display,p.data.productionPartnerEmployeeId??null,p.data.packerEmployeeId??null,p.data.packerPartnerEmployeeId??null,request.user!.userId,p.data.actualWeightKg??null,p.data.notes??null]);
    await audit(c,request,"save_carton_record","reverse_code_carton_record",saved.rows[0].id,undefined,saved.rows[0]);
    return {data:{...saved.rows[0],code:code.rows[0].code,product_name:product.rows[0].name}};
