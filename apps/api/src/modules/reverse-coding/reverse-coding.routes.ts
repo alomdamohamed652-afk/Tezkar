@@ -62,10 +62,10 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const id=String((request.params as any).id),p=z.object({notes:z.string().trim().max(1000).nullable().optional(),employeeIds:z.array(z.string().uuid()).max(50).optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات العمال أو الملاحظات غير صحيحة",422);
   return withTransaction(async c=>{
-   const current=await c.query("SELECT c.*,g.notes FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id WHERE c.id=$1 FOR UPDATE OF c,g", [id]);
+   const current=await c.query("SELECT c.* FROM reverse_codes c WHERE c.id=$1 FOR UPDATE", [id]);
    if(!current.rowCount)throw new AppError("CODE_NOT_FOUND","الكود غير موجود",404);
    if(p.data.employeeIds){const ids=[...new Set(p.data.employeeIds)],valid=await c.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[ids]);if(valid.rowCount!==ids.length)throw new AppError("EMPLOYEE_NOT_FOUND","يوجد عامل غير موجود أو غير نشط",422);await c.query("DELETE FROM reverse_code_workers WHERE code_id=$1",[id]);for(const eid of ids)await c.query("INSERT INTO reverse_code_workers(code_id,employee_id) VALUES($1,$2)",[id,eid]);}
-   if(p.data.notes!==undefined)await c.query("UPDATE reverse_code_groups SET notes=$1 WHERE id=$2",[p.data.notes,current.rows[0].group_id]);
+   if(p.data.notes!==undefined)await c.query("UPDATE reverse_codes SET notes=$1,updated_at=now() WHERE id=$2",[p.data.notes,id]);
    const workers=await c.query("SELECT e.id,e.full_name name,e.code FROM reverse_code_workers w JOIN employees e ON e.id=w.employee_id WHERE w.code_id=$1",[id]);
    await audit(c,request,"update_metadata","reverse_code",id,{notes:current.rows[0].notes},{notes:p.data.notes??current.rows[0].notes,employees:workers.rows});
    return {data:{id,notes:p.data.notes??current.rows[0].notes,employees:workers.rows}};

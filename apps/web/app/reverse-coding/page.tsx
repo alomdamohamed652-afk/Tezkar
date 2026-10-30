@@ -1,12 +1,12 @@
 "use client";
-import { useEffect,useMemo,useRef,useState } from "react";
+import { useEffect,useMemo,useRef,useState,type CSSProperties,type FormEvent } from "react";
 import { api } from "../../lib/api";
 import { Sidebar,usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
 
 type Item={id:string;code:string;name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
-type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
+type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
 type ScanResult={value:string;result:string;code:Code&{name?:string;packaging_type?:string;product_name?:string;order_code?:string}|null};
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
@@ -16,7 +16,7 @@ export default function ReverseCodingPage(){
  const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[orders,setOrders]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]);
  const [company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
  const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState("");
- const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
+ const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);\n const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
  const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState("");
  const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState("");
  const [printRows,setPrintRows]=useState<any[]>([]);
@@ -29,7 +29,7 @@ export default function ReverseCodingPage(){
  }
  useEffect(()=>{if(has("reverse_coding.view"))void load();},[has]);
  const filtered=useMemo(()=>groups.filter(g=>(g.name+" "+g.packaging_type+" "+(g.order_code??"")).toLowerCase().includes(search.toLowerCase())),[groups,search]);
- async function createGroup(e:React.FormEvent){
+ async function createGroup(e:FormEvent){
   e.preventDefault();setBusy(true);setError("");
   try{const r=await api<{data:Group}>("/api/reverse-coding/groups",{method:"POST",body:JSON.stringify({name,packagingType:packaging,productId:productId||null,orderId:orderId||null,totalQuantity:Number(total),piecesPerCode:Number(perCode),weightGrams:weight===""?null:Number(weight),notes:notes||null})});
    setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setName("");setTotal("");setPerCode("");setWeight("");setNotes("");
@@ -43,7 +43,7 @@ export default function ReverseCodingPage(){
    setPrintRows(r.data);window.setTimeout(()=>window.print(),250);await load();if(selected)await openGroup(selected);
   }catch(e){setError(e instanceof Error?e.message:"تعذرت الطباعة");}finally{setBusy(false);}
  }
- async function saveCompany(){
+ async function saveCodeMetadata(){\n  if(!editingCode)return;setBusy(true);try{await api("/api/reverse-coding/codes/"+editingCode.id+"/metadata",{method:"PATCH",body:JSON.stringify({notes:editNotes||null,employeeIds:editEmployees})});if(selected)await openGroup(selected);setEditingCode(null);}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بيانات الكود");}finally{setBusy(false);}\n }\n async function saveCompany(){
   setBusy(true);try{const r=await api<{data:Company}>("/api/reverse-coding/company-settings",{method:"PUT",body:JSON.stringify({companyName,address:address||null,phone:phone||null,logoUrl:logoUrl||null})});setCompany(r.data);setError("");}
   catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بيانات الشركة");}finally{setBusy(false);}
  }
@@ -77,9 +77,9 @@ export default function ReverseCodingPage(){
  function stopCamera(){setScanning(false);if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;}if(videoRef.current)videoRef.current.srcObject=null;}
  useEffect(()=>()=>{if(streamRef.current)streamRef.current.getTracks().forEach(t=>t.stop());window.cancelAnimationFrame(frameRef.current);},[]);
  if(!has("reverse_coding.view"))return <div className="app-shell"><Sidebar active="/reverse-coding"/><main className="main"><div className="card">ليس لديك صلاحية عرض نظام التكويد العكسي.</div></main></div>;
- const panel:React.CSSProperties={background:"var(--card,#fff)",border:"1px solid var(--border,#e5e7eb)",borderRadius:14,padding:18,marginBottom:16};
- const field:React.CSSProperties={display:"grid",gap:6,fontSize:13,fontWeight:650};
- const input:React.CSSProperties={width:"100%",minHeight:42,border:"1px solid var(--border,#d1d5db)",borderRadius:9,padding:"8px 11px",background:"var(--input,#fff)",color:"inherit"};
+ const panel:CSSProperties={background:"var(--card,#fff)",border:"1px solid var(--border,#e5e7eb)",borderRadius:14,padding:18,marginBottom:16};
+ const field:CSSProperties={display:"grid",gap:6,fontSize:13,fontWeight:650};
+ const input:CSSProperties={width:"100%",minHeight:42,border:"1px solid var(--border,#d1d5db)",borderRadius:9,padding:"8px 11px",background:"var(--input,#fff)",color:"inherit"};
  const btn:React.CSSProperties={border:0,borderRadius:9,padding:"10px 16px",fontWeight:750,cursor:"pointer",background:"#1d4ed8",color:"#fff"};
  return <><div className="app-shell"><Sidebar active="/reverse-coding"/><main className="main">
   <header className="topbar"><div><h1 className="page-title">نظام التكويد العكسي</h1><p className="page-subtitle">إنشاء مجموعات أكواد مستقلة، وطباعة الملصقات، ومسح الأكواد وتتبعها.</p></div></header>
@@ -121,7 +121,7 @@ export default function ReverseCodingPage(){
       <div style={{display:"grid",gap:8,maxHeight:450,overflow:"auto"}}>{selected.codes?.map(c=><label key={c.id} style={{display:"flex",alignItems:"center",gap:10,border:"1px solid var(--border,#e5e7eb)",borderRadius:9,padding:10}}>
        <input type="checkbox" checked={selectedCodes.includes(c.id)} onChange={()=>toggleCode(c.id)}/>
        <div style={{minWidth:0,flex:1}}><div style={{fontWeight:800,fontFamily:"monospace"}}>{c.code}</div><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{number(c.quantity)} قطعة · {c.weight_grams??"—"} جم · {c.first_printed_at?"تمت الطباعة":"لم يطبع بعد"}</div></div>
-       <span style={{fontSize:11,color:c.status==="ACTIVE"?"#15803d":"#b91c1c"}}>{c.status==="ACTIVE"?"نشط":"غير نشط"}</span>
+       <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:11,color:c.status==="ACTIVE"?"#15803d":"#b91c1c"}}>{c.status==="ACTIVE"?"نشط":"غير نشط"}</span><button type="button" style={{...btn,background:"#475569",padding:"6px 9px",fontSize:11}} onClick={()=>{setEditingCode(c);setEditNotes(c.notes??"");setEditEmployees((c.employees??[]).map(e=>e.id));}}>بيانات العمال</button></div>
       </label>)}</div>
      </>}
     </section>

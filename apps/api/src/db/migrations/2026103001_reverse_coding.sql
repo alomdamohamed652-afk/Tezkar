@@ -47,3 +47,5 @@ ON CONFLICT(code) DO NOTHING;
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager'
 AND p.code IN('reverse_coding.view','reverse_coding.manage','reverse_coding.scan','reverse_coding.print') ON CONFLICT DO NOTHING;
+
+ALTER TABLE reverse_codes ADD COLUMN IF NOT EXISTS notes TEXT NULL;
