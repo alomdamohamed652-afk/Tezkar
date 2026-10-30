@@ -31,3 +31,11 @@ INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
 WHERE r.code='manager' AND p.code='reverse_coding.rename_product_label'
 ON CONFLICT DO NOTHING;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='reverse_code_groups_weight_range_check') THEN
+    ALTER TABLE reverse_code_groups ADD CONSTRAINT reverse_code_groups_weight_range_check
+      CHECK (weight_min_kg IS NULL OR weight_max_kg IS NULL OR weight_min_kg <= weight_max_kg);
+  END IF;
+END $$;
