@@ -7,7 +7,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { classifyReverseCodeScan, splitReverseCodeQuantities } from "./reverse-coding.logic.js";
 
-const createSchema=z.object({name:z.string().trim().min(2).max(160),packagingType:z.string().trim().min(2).max(100),productId:z.string().uuid().nullable().optional(),orderId:z.string().uuid().nullable().optional(),totalQuantity:z.number().int().positive().max(10000000),piecesPerCode:z.number().int().positive().max(1000000),weightGrams:z.number().nonnegative().max(1000000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()});
+const createSchema=z.object({name:z.string().trim().min(2).max(160),packagingType:z.string().trim().min(2).max(100),productId:z.string().uuid().nullable().optional(),orderId:z.string().uuid().nullable().optional(),totalQuantity:z.number().int().positive().max(10000000),piecesPerCode:z.number().int().positive().max(1000000),weightGrams:z.number().nonnegative().max(1000000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).refine(value=>Math.ceil(value.totalQuantity/value.piecesPerCode)<=5000,{message:"عدد الأكواد في المجموعة الواحدة لا يمكن أن يتجاوز ٥٠٠٠"});
 async function audit(client:any,request:any,action:string,type:string,id:string|null,beforeData?:unknown,afterData?:unknown){
  await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action,module:"reverse_coding",entityType:type,entityId:id,beforeData,afterData,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
 }
@@ -46,9 +46,15 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const created=await withTransaction(async c=>{
    const n=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),quantities=splitReverseCodeQuantities(p.totalQuantity,p.piecesPerCode),count=quantities.length;
    const g=(await c.query("INSERT INTO reverse_code_groups(group_number,name,packaging_type,product_id,order_id,total_quantity,pieces_per_code,code_count,created_by,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[n,p.name,p.packagingType,p.productId??null,p.orderId??null,p.totalQuantity,p.piecesPerCode,count,request.user!.userId,p.notes??null])).rows[0];
-   const codes=[];
-   for(const qty of quantities){const seq=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),code=`RVC-${String(new Date().getFullYear()).slice(-2)}-${String(seq).padStart(8,"0")}`;
-    codes.push((await c.query("INSERT INTO reverse_codes(group_id,code_number,code,quantity,weight_grams) VALUES($1,$2,$3,$4,$5) RETURNING id,code,quantity,weight_grams,status,first_printed_at",[g.id,seq,code,qty,p.weightGrams??null])).rows[0]);}
+   const codes=(await c.query(`WITH source AS MATERIALIZED (
+     SELECT quantity,ord FROM unnest($2::integer[]) WITH ORDINALITY AS items(quantity,ord) ORDER BY ord
+    ), numbered AS MATERIALIZED (
+     SELECT nextval('reverse_code_number_seq') AS code_number,quantity,ord FROM source
+    )
+    INSERT INTO reverse_codes(group_id,code_number,code,quantity,weight_grams)
+    SELECT $1,code_number,'RVC-'||to_char(current_date,'YY')||'-'||lpad(code_number::text,8,'0'),quantity,$3
+    FROM numbered ORDER BY ord
+    RETURNING id,code,quantity,weight_grams,status,first_printed_at`,[g.id,quantities,p.weightGrams??null])).rows;
    await audit(c,request,"create","reverse_code_group",g.id,undefined,{group:g,codes});return {...g,codes};
   });return reply.code(201).send({data:created});
  });
