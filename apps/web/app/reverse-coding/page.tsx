@@ -3,6 +3,7 @@ import { useEffect,useMemo,useRef,useState,type CSSProperties,type FormEvent } f
 import { api } from "../../lib/api";
 import { Sidebar,usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
+import { SearchableSelect } from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
@@ -15,18 +16,9 @@ const createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?c
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
 type EmployeeSelectProps={employees:Item[];value:string;onChange:(id:string)=>void;placeholder:string;inputStyle:CSSProperties;disabled?:boolean};
-function SearchableEmployeeSelect({employees,value,onChange,placeholder,inputStyle,disabled=false}:EmployeeSelectProps){
- const [query,setQuery]=useState(""),[open,setOpen]=useState(false);
- const selected=employees.find(x=>x.id===value);
- const label=selected?((selected.code?selected.code+" — ":"")+selected.name):"";
- const filtered=useMemo(()=>employees.filter(x=>(x.name+" "+x.code).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0,30),[employees,query]);
- useEffect(()=>{if(!open)setQuery(label);},[label,open]);
- return <div style={{position:"relative",width:"100%"}}>
-  <input style={inputStyle} value={open?query:label} disabled={disabled} placeholder={placeholder} onFocus={()=>{setQuery(label);setOpen(true);}} onChange={e=>{setQuery(e.target.value);setOpen(true);if(value)onChange("");}} onBlur={()=>setOpen(false)} autoComplete="off"/>
-  {open&&!disabled&&<div style={{position:"absolute",zIndex:40,top:"calc(100% + 4px)",right:0,left:0,maxHeight:230,overflowY:"auto",background:"var(--card,#fff)",border:"1px solid var(--border,#d1d5db)",borderRadius:9,boxShadow:"0 8px 24px rgba(0,0,0,.12)"}}>
-   {filtered.length?filtered.map(x=><button type="button" key={x.id} onMouseDown={e=>e.preventDefault()} onClick={()=>{onChange(x.id);setQuery((x.code?x.code+" — ":"")+x.name);setOpen(false);}} style={{display:"block",width:"100%",textAlign:"right",padding:"9px 11px",border:0,borderBottom:"1px solid var(--border,#e5e7eb)",background:x.id===value?"var(--surface,#f1f5f9)":"transparent",color:"inherit",cursor:"pointer"}}>{x.code?x.code+" — ":""}{x.name}</button>):<div style={{padding:11,fontSize:12,color:"var(--muted,#64748b)"}}>لا توجد نتائج مطابقة</div>}
-  </div>}
- </div>;
+function SearchableEmployeeSelect({employees,value,onChange,placeholder,disabled=false}:EmployeeSelectProps){
+ const options=useMemo(()=>employees.map(x=>({value:x.id,label:x.name,meta:x.code||undefined})),[employees]);
+ return <SearchableSelect value={value} onChange={onChange} options={options} placeholder={placeholder} searchPlaceholder="ابحث باسم الموظف أو الكود" disabled={disabled}/>;
 }
 export default function ReverseCodingPage(){
  const {has}=usePermissions();
