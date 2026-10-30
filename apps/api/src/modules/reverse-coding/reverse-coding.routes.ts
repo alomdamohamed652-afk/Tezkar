@@ -112,8 +112,8 @@ export async function reverseCodingRoutes(app:FastifyInstance){
     pa.full_name packer_name,pap.full_name packer_partner_name
    FROM reverse_codes c
    JOIN reverse_code_groups g ON g.id=c.group_id
-   LEFT JOIN products p ON p.id=COALESCE(cr.product_id,g.product_id)
    LEFT JOIN reverse_code_carton_records cr ON cr.code_id=c.id
+   LEFT JOIN products p ON p.id=COALESCE(cr.product_id,g.product_id)
    LEFT JOIN employees pe ON pe.id=cr.production_employee_id
    LEFT JOIN employees pp ON pp.id=cr.production_partner_employee_id
    LEFT JOIN employees pa ON pa.id=cr.packer_employee_id
