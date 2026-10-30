@@ -4,6 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { classifyReverseCodeScan, splitReverseCodeQuantities } from "./reverse-coding.logic.js";
 
@@ -50,11 +51,12 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  app.post("/api/reverse-coding/groups",{preHandler:[authenticateRequest,requirePermission("reverse_coding.manage")]},async(request,reply)=>{
   const parsed=createSchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات مجموعة الأكواد غير صحيحة",422);
   const p=parsed.data;
+  if(p.displayProductName){const client=await pool.connect();try{if(!await hasPermission(client,request.user.userId,"reverse_coding.rename_product_label","all"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تغيير اسم المنتج الظاهر على الملصق",403);}finally{client.release();}}
   if(p.productId&&!(await pool.query("SELECT 1 FROM products WHERE id=$1",[p.productId])).rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج المحدد غير موجود",422);
   if(p.orderId&&!(await pool.query("SELECT 1 FROM production_orders WHERE id=$1",[p.orderId])).rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية المحددة غير موجودة",422);
   const created=await withTransaction(async c=>{
-   const n=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),quantities=splitReverseCodeQuantities(p.totalQuantity,p.piecesPerCode),count=quantities.length;
-   const g=(await c.query("INSERT INTO reverse_code_groups(group_number,name,packaging_type,product_id,order_id,total_quantity,pieces_per_code,code_count,created_by,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[n,p.name,p.packagingType,p.productId??null,p.orderId??null,p.totalQuantity,p.piecesPerCode,count,request.user!.userId,p.notes??null])).rows[0];
+   const n=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),totalQuantity=p.codeCount*p.piecesPerCode,quantities=Array.from({length:p.codeCount},()=>p.piecesPerCode),count=quantities.length;
+   const g=(await c.query("INSERT INTO reverse_code_groups(group_number,name,packaging_type,product_id,order_id,total_quantity,pieces_per_code,code_count,created_by,notes,display_product_name,weight_min_kg,weight_max_kg) VALUES($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",[n,"تشغيل "+n,p.packagingType,p.productId,totalQuantity,p.piecesPerCode,count,request.user.userId,p.notes??null,p.displayProductName?.trim()||null,p.weightMinKg??null,p.weightMaxKg??null])).rows[0];
    const codes=(await c.query(`WITH source AS MATERIALIZED (
      SELECT quantity,ord FROM unnest($2::integer[]) WITH ORDINALITY AS items(quantity,ord) ORDER BY ord
     ), numbered AS MATERIALIZED (
