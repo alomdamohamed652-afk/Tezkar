@@ -13,15 +13,16 @@ async function audit(client:any,request:any,action:string,type:string,id:string|
  await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action,module:"reverse_coding",entityType:type,entityId:id,beforeData,afterData,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
 }
 export async function reverseCodingRoutes(app:FastifyInstance){
- app.get("/api/reverse-coding/bootstrap",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async()=>{
-  const [products,orders,employees,settings,labelSettings]=await Promise.all([
+ app.get("/api/reverse-coding/bootstrap",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async request=>{
+  const [products,orders,employees,users,settings,labelSettings]=await Promise.all([
    pool.query("SELECT id,code,name FROM products WHERE is_active=TRUE ORDER BY name"),
    pool.query("SELECT id,code,order_name FROM production_orders ORDER BY created_at DESC LIMIT 500"),
    pool.query("SELECT id,code,full_name AS name FROM employees WHERE is_active=TRUE ORDER BY full_name"),
+   pool.query("SELECT u.id,u.username,COALESCE(e.full_name,u.username) AS name FROM users u LEFT JOIN employees e ON e.id=u.employee_id WHERE u.is_active=TRUE ORDER BY name"),
    pool.query("SELECT setting_value FROM reverse_code_settings WHERE setting_key='company'"),
    pool.query("SELECT setting_value FROM reverse_code_settings WHERE setting_key='label_layout'")
   ]);
-  return {data:{products:products.rows,orders:orders.rows,employees:employees.rows,company:settings.rows[0]?.setting_value??{},labelSettings:labelSettings.rows[0]?.setting_value??{width:80,height:50,margin:2}}};
+  return {data:{products:products.rows,orders:orders.rows,employees:employees.rows,users:users.rows,currentUserId:request.user!.userId,company:settings.rows[0]?.setting_value??{},labelSettings:labelSettings.rows[0]?.setting_value??{width:80,height:50,margin:2}}};
  });
  app.put("/api/reverse-coding/company-settings",{preHandler:[authenticateRequest,requirePermission("reverse_coding.manage")]},async request=>{
   const p=z.object({companyName:z.string().trim().min(2).max(160),address:z.string().trim().max(300).nullable().optional(),phone:z.string().trim().max(60).nullable().optional(),logoUrl:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
@@ -109,7 +110,9 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const r=await pool.query(`SELECT c.id code_id,c.code,c.quantity,c.status code_status,g.packaging_type,g.weight_min_kg,g.weight_max_kg,
     p.name product_name,cr.id carton_record_id,cr.display_product_name,cr.actual_weight_kg,cr.notes,cr.updated_at,
     pe.full_name production_owner_name,pp.full_name production_partner_name,
-    pa.full_name packer_name,pap.full_name packer_partner_name
+    pa.full_name packer_name,pap.full_name packer_partner_name,
+    COALESCE(ce.full_name,cu.username) coded_by_name,cu.username coded_by_username,
+    COALESCE(re.full_name,ru.username) received_by_name,ru.username received_by_username
    FROM reverse_codes c
    JOIN reverse_code_groups g ON g.id=c.group_id
    LEFT JOIN reverse_code_carton_records cr ON cr.code_id=c.id
@@ -118,6 +121,10 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    LEFT JOIN employees pp ON pp.id=cr.production_partner_employee_id
    LEFT JOIN employees pa ON pa.id=cr.packer_employee_id
    LEFT JOIN employees pap ON pap.id=cr.packer_partner_employee_id
+   LEFT JOIN users cu ON cu.id=cr.coded_by
+   LEFT JOIN employees ce ON ce.id=cu.employee_id
+   LEFT JOIN users ru ON ru.id=cr.received_by
+   LEFT JOIN employees re ON re.id=ru.employee_id
    WHERE c.code ILIKE '%'||$1||'%'
    ORDER BY CASE WHEN c.code=$1 THEN 0 WHEN c.code ILIKE $1||'%' THEN 1 ELSE 2 END,c.created_at DESC
    LIMIT 50`,[q]);
@@ -134,7 +141,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  });
  app.post("/api/reverse-coding/codes/:id/carton",{preHandler:[authenticateRequest,requirePermission("reverse_coding.scan")]},async request=>{
   const id=String((request.params as any).id);
-  const p=z.object({productId:z.string().uuid(),displayProductName:z.string().trim().min(1).max(180).nullable().optional(),productionEmployeeId:z.string().uuid().nullable().optional(),productionPartnerEmployeeId:z.string().uuid().nullable().optional(),packerEmployeeId:z.string().uuid().nullable().optional(),packerPartnerEmployeeId:z.string().uuid().nullable().optional(),actualWeightKg:z.number().nonnegative().max(100000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
+  const p=z.object({productId:z.string().uuid(),displayProductName:z.string().trim().min(1).max(180).nullable().optional(),codedBy:z.string().uuid().optional(),receivedBy:z.string().uuid().optional(),productionEmployeeId:z.string().uuid().nullable().optional(),productionPartnerEmployeeId:z.string().uuid().nullable().optional(),packerEmployeeId:z.string().uuid().nullable().optional(),packerPartnerEmployeeId:z.string().uuid().nullable().optional(),actualWeightKg:z.number().nonnegative().max(100000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الكرتونة غير صحيحة",422);
   return withTransaction(async c=>{
    const code=await c.query("SELECT c.id,c.code,c.quantity,c.status,g.product_id,g.display_product_name,p.name product_name FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id WHERE c.id=$1 FOR UPDATE OF c",[id]);
@@ -143,6 +150,8 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    const product=await c.query("SELECT id,name FROM products WHERE id=$1 AND is_active=TRUE",[p.data.productId]);
    if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج المحدد غير موجود أو غير نشط",422);
    if(product.rows[0].id!==code.rows[0].product_id)throw new AppError("PRODUCT_MISMATCH","لا يمكن تغيير المنتج الرئيسي المرتبط بالكود",409);
+   const codedBy=p.data.codedBy??request.user!.userId,receivedBy=p.data.receivedBy??request.user!.userId;
+   const accountIds=[codedBy,receivedBy];const validAccounts=await c.query("SELECT id FROM users WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[accountIds]);if(validAccounts.rowCount!==new Set(accountIds).size)throw new AppError("USER_NOT_FOUND","المسؤول عن التكويد أو المستلم غير موجود أو غير نشط",422);
    const ids=[p.data.productionEmployeeId,p.data.productionPartnerEmployeeId,p.data.packerEmployeeId,p.data.packerPartnerEmployeeId].filter(Boolean);
    if(ids.length){const valid=await c.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[ids]);if(valid.rowCount!==new Set(ids).size)throw new AppError("EMPLOYEE_NOT_FOUND","يوجد عامل غير موجود أو غير نشط",422);}
    if(!p.data.productionEmployeeId)throw new AppError("PRODUCTION_OWNER_REQUIRED","يجب تحديد القائم بالإنتاج",422);
@@ -150,7 +159,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    if(p.data.displayProductName?.trim() && !await hasPermission(c,request.user!.userId,"reverse_coding.rename_product_label","all"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تغيير اسم المنتج الظاهر على الملصق",403);
    const display=p.data.displayProductName?.trim()||code.rows[0].display_product_name||product.rows[0].name;
    
-   const saved=await c.query("INSERT INTO reverse_code_carton_records(code_id,product_id,display_product_name,production_employee_id,production_partner_employee_id,packer_employee_id,packer_partner_employee_id,coded_by,received_by,actual_weight_kg,notes,saved_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$8) ON CONFLICT(code_id) DO UPDATE SET product_id=EXCLUDED.product_id,display_product_name=EXCLUDED.display_product_name,production_employee_id=EXCLUDED.production_employee_id,production_partner_employee_id=EXCLUDED.production_partner_employee_id,packer_employee_id=EXCLUDED.packer_employee_id,packer_partner_employee_id=EXCLUDED.packer_partner_employee_id,actual_weight_kg=EXCLUDED.actual_weight_kg,notes=EXCLUDED.notes,saved_by=EXCLUDED.saved_by,updated_at=now() RETURNING *",[id,p.data.productId,display,p.data.productionEmployeeId,p.data.productionPartnerEmployeeId??null,p.data.packerEmployeeId??null,p.data.packerPartnerEmployeeId??null,request.user!.userId,p.data.actualWeightKg??null,p.data.notes??null]);
+   const saved=await c.query("INSERT INTO reverse_code_carton_records(code_id,product_id,display_product_name,production_employee_id,production_partner_employee_id,packer_employee_id,packer_partner_employee_id,coded_by,received_by,actual_weight_kg,notes,saved_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(code_id) DO UPDATE SET product_id=EXCLUDED.product_id,display_product_name=EXCLUDED.display_product_name,production_employee_id=EXCLUDED.production_employee_id,production_partner_employee_id=EXCLUDED.production_partner_employee_id,packer_employee_id=EXCLUDED.packer_employee_id,packer_partner_employee_id=EXCLUDED.packer_partner_employee_id,coded_by=EXCLUDED.coded_by,received_by=EXCLUDED.received_by,actual_weight_kg=EXCLUDED.actual_weight_kg,notes=EXCLUDED.notes,saved_by=EXCLUDED.saved_by,updated_at=now() RETURNING *",[id,p.data.productId,display,p.data.productionEmployeeId,p.data.productionPartnerEmployeeId??null,p.data.packerEmployeeId??null,p.data.packerPartnerEmployeeId??null,codedBy,receivedBy,p.data.actualWeightKg??null,p.data.notes??null]);
    await audit(c,request,"save_carton_record","reverse_code_carton_record",saved.rows[0].id,undefined,saved.rows[0]);
    return {data:{...saved.rows[0],code:code.rows[0].code,product_name:product.rows[0].name}};
   });
