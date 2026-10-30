@@ -14,6 +14,20 @@ type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;cod
 const createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?crypto.randomUUID():"session-"+Date.now()+"-"+Math.random().toString(36).slice(2);
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
+type EmployeeSelectProps={employees:Item[];value:string;onChange:(id:string)=>void;placeholder:string;inputStyle:CSSProperties;disabled?:boolean};
+function SearchableEmployeeSelect({employees,value,onChange,placeholder,inputStyle,disabled=false}:EmployeeSelectProps){
+ const [query,setQuery]=useState(""),[open,setOpen]=useState(false);
+ const selected=employees.find(x=>x.id===value);
+ const label=selected?((selected.code?selected.code+" — ":"")+selected.name):"";
+ const filtered=useMemo(()=>employees.filter(x=>(x.name+" "+x.code).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0,30),[employees,query]);
+ useEffect(()=>{if(!open)setQuery(label);},[label,open]);
+ return <div style={{position:"relative",width:"100%"}}>
+  <input style={inputStyle} value={open?query:label} disabled={disabled} placeholder={placeholder} onFocus={()=>{setQuery(label);setOpen(true);}} onChange={e=>{setQuery(e.target.value);setOpen(true);if(value)onChange("");}} onBlur={()=>setOpen(false)} autoComplete="off"/>
+  {open&&!disabled&&<div style={{position:"absolute",zIndex:40,top:"calc(100% + 4px)",right:0,left:0,maxHeight:230,overflowY:"auto",background:"var(--card,#fff)",border:"1px solid var(--border,#d1d5db)",borderRadius:9,boxShadow:"0 8px 24px rgba(0,0,0,.12)"}}>
+   {filtered.length?filtered.map(x=><button type="button" key={x.id} onMouseDown={e=>e.preventDefault()} onClick={()=>{onChange(x.id);setQuery((x.code?x.code+" — ":"")+x.name);setOpen(false);}} style={{display:"block",width:"100%",textAlign:"right",padding:"9px 11px",border:0,borderBottom:"1px solid var(--border,#e5e7eb)",background:x.id===value?"var(--surface,#f1f5f9)":"transparent",color:"inherit",cursor:"pointer"}}>{x.code?x.code+" — ":""}{x.name}</button>):<div style={{padding:11,fontSize:12,color:"var(--muted,#64748b)"}}>لا توجد نتائج مطابقة</div>}
+  </div>}
+ </div>;
+}
 export default function ReverseCodingPage(){
  const {has}=usePermissions();
  const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]);
@@ -23,6 +37,7 @@ export default function ReverseCodingPage(){
  const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editWeight,setEditWeight]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
  const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState(""),[scannedCode,setScannedCode]=useState<ScanResult|null>(null),[cartonProductId,setCartonProductId]=useState(""),[cartonDisplayProductName,setCartonDisplayProductName]=useState(""),[productionOwnerId,setProductionOwnerId]=useState(""),[productionPartnerId,setProductionPartnerId]=useState(""),[packerId,setPackerId]=useState(""),[packerPartnerId,setPackerPartnerId]=useState(""),[actualWeightKg,setActualWeightKg]=useState(""),[cartonNotes,setCartonNotes]=useState("");
  const [scanSession,setScanSession]=useState(createScanSession),[recentScans,setRecentScans]=useState<ScanLog[]>([]);
+ const [cartonSearch,setCartonSearch]=useState(""),[cartonLookupResults,setCartonLookupResults]=useState<any[]>([]),[cartonLookupBusy,setCartonLookupBusy]=useState(false);
  const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState("");
  const [printRows,setPrintRows]=useState<any[]>([]);
  const [labelSize,setLabelSize]=useState({width:80,height:50,margin:2});
@@ -70,6 +85,12 @@ export default function ReverseCodingPage(){
   catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المسح");}
  }
  
+ async function searchCartons(){
+  const q=cartonSearch.trim();if(!q)return;setCartonLookupBusy(true);setError("");
+  try{const r=await api<{data:any[]}>("/api/reverse-coding/cartons?search="+encodeURIComponent(q));setCartonLookupResults(r.data);}
+  catch(e){setError(e instanceof Error?e.message:"تعذر البحث عن الكرتونة");}
+  finally{setCartonLookupBusy(false);}
+ }
  async function startCamera(){
   setCameraError("");
   try{
@@ -142,6 +163,25 @@ export default function ReverseCodingPage(){
     </section>
    </div>
    <section style={panel}>
+    <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>البحث عن كود كرتونة ومعرفة المسؤولين</h2>
+    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+     <input style={{...input,flex:1,minWidth:220}} value={cartonSearch} onChange={e=>setCartonSearch(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();void searchCartons();}}} placeholder="اكتب كود الكرتونة مثل RVC-26-00000001"/>
+     <button type="button" style={btn} onClick={()=>void searchCartons()} disabled={cartonLookupBusy||cartonSearch.trim().length<2}>{cartonLookupBusy?"جارٍ البحث...":"بحث عن الكود"}</button>
+    </div>
+    {!!cartonLookupResults.length&&<div style={{display:"grid",gap:10,marginTop:14}}>
+     {cartonLookupResults.map((r:any)=><article key={r.code_id} style={{border:"1px solid var(--border,#e5e7eb)",borderRadius:11,padding:13}}>
+      <div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><strong style={{fontFamily:"monospace",fontSize:18}}>{r.code}</strong><span style={{fontSize:12,color:r.code_status==="ACTIVE"?"#15803d":"#b91c1c"}}>{r.code_status==="ACTIVE"?"نشط":"غير نشط"}</span></div>
+      <div style={{fontSize:13,marginTop:7}}>{r.display_product_name||r.product_name||"—"} · {number(Number(r.quantity))} قطعة · {r.packaging_type}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:8,marginTop:12}}>
+       {[["القائم بالإنتاج",r.production_owner_name],["شريك الإنتاج",r.production_partner_name],["القائم بالتقفيل",r.packer_name],["شريك التقفيل",r.packer_partner_name],["الوزن الفعلي",r.actual_weight_kg==null?"لم يسجل":Number(r.actual_weight_kg)+" كجم"],["تاريخ آخر تحديث",r.updated_at?new Date(r.updated_at).toLocaleString("ar-EG"):"لم تُسجل بيانات الكرتونة"]].map(([k,v])=><div key={String(k)} style={{padding:9,borderRadius:8,background:"var(--surface,#f8fafc)"}}><div style={{fontSize:11,color:"var(--muted,#64748b)"}}>{k}</div><strong style={{fontSize:13}}>{v||"—"}</strong></div>)}
+      </div>
+      {r.notes&&<p style={{fontSize:12,margin:"10px 0 0"}}>ملاحظات: {r.notes}</p>}
+      {!r.carton_record_id&&<p style={{fontSize:12,color:"#b45309",margin:"10px 0 0"}}>الكود موجود، لكن بيانات المسؤولين لم تُسجل عليه بعد.</p>}
+     </article>)}
+    </div>}
+    {cartonSearch.trim().length>=2&&!cartonLookupBusy&&!cartonLookupResults.length&&<p style={{fontSize:12,color:"var(--muted,#64748b)",marginTop:10}}>لا توجد كراتين مطابقة لعملية البحث الأخيرة.</p>}
+   </section>
+   <section style={panel}>
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>مسح الأكواد</h2>
     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input style={{...input,flex:1,minWidth:180}} value={scanValue} onChange={e=>setScanValue(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();void submitScan(scanValue);}}} placeholder="امسح الباركود هنا أو اكتب الكود"/>
      <button style={btn} onClick={()=>void submitScan(scanValue)} disabled={!scanValue.trim()||!has("reverse_coding.scan")}>تسجيل المسح</button><button style={{...btn,background:scanning?"#b91c1c":"#0f766e"}} onClick={()=>scanning?stopCamera():void startCamera()} disabled={!has("reverse_coding.scan")}>{scanning?"إيقاف الكاميرا":"فتح الكاميرا"}</button><button style={{...btn,background:"#475569"}} onClick={()=>{setScanSession(createScanSession());setScanResults([]);lastDetectedRef.current="";}}>جلسة مسح جديدة</button></div>
@@ -149,10 +189,10 @@ export default function ReverseCodingPage(){
      <div style={{gridColumn:"1/-1"}}><strong style={{fontSize:23,fontWeight:950}}>{scannedCode.code.code}</strong><div>{number(scannedCode.code.quantity)} قطعة · الوزن المتوقع {scannedCode.code.weight_min_kg??"—"} إلى {scannedCode.code.weight_max_kg??"—"} كجم</div></div>
      <label style={field}>المنتج الرئيسي<select style={input} value={cartonProductId} disabled required>{products.map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select></label>
      <label style={field}>اسم المنتج الظاهر على الملصق<input style={input} value={cartonDisplayProductName} onChange={e=>setCartonDisplayProductName(e.target.value)} disabled={!has("reverse_coding.rename_product_label")} placeholder="اسم المنتج على الملصق"/></label>
-     <label style={field}>القائم بالإنتاج<select style={input} value={productionOwnerId} onChange={e=>setProductionOwnerId(e.target.value)} required><option value="">اختر المسؤول عن الإنتاج</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
-     <label style={field}>شريك الإنتاج (اختياري)<select style={input} value={productionPartnerId} onChange={e=>setProductionPartnerId(e.target.value)}><option value="">بدون شريك</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
-     <label style={field}>القائم بالتقفيل<select style={input} value={packerId} onChange={e=>setPackerId(e.target.value)} required><option value="">اختر المسؤول</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
-     <label style={field}>شريك التقفيل (اختياري)<select style={input} value={packerPartnerId} onChange={e=>setPackerPartnerId(e.target.value)}><option value="">بدون شريك</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
+     <label style={field}>القائم بالإنتاج<SearchableEmployeeSelect employees={employees} value={productionOwnerId} onChange={setProductionOwnerId} placeholder="ابحث باسم العامل أو كوده" inputStyle={input}/></label>
+     <label style={field}>شريك الإنتاج (اختياري)<SearchableEmployeeSelect employees={employees} value={productionPartnerId} onChange={setProductionPartnerId} placeholder="ابحث عن شريك الإنتاج" inputStyle={input}/></label>
+     <label style={field}>القائم بالتقفيل<SearchableEmployeeSelect employees={employees} value={packerId} onChange={setPackerId} placeholder="ابحث باسم العامل أو كوده" inputStyle={input}/></label>
+     <label style={field}>شريك التقفيل (اختياري)<SearchableEmployeeSelect employees={employees} value={packerPartnerId} onChange={setPackerPartnerId} placeholder="ابحث عن شريك التقفيل" inputStyle={input}/></label>
      <label style={field}>الوزن الفعلي (كجم)<input style={input} type="number" min="0" step="0.001" value={actualWeightKg} onChange={e=>setActualWeightKg(e.target.value)} placeholder="وزن الكرتونة بعد التقفيل"/></label>
      <label style={{...field,gridColumn:"1/-1"}}>ملاحظات<textarea style={{...input,minHeight:65}} value={cartonNotes} onChange={e=>setCartonNotes(e.target.value)}/></label>
      <div style={{gridColumn:"1/-1",display:"flex",justifyContent:"flex-end",gap:8}}><button type="button" style={{...btn,background:"#64748b"}} onClick={()=>setScannedCode(null)}>إلغاء</button><button style={btn} disabled={busy||!cartonProductId||!productionOwnerId||!packerId}>{busy?"جارٍ الحفظ...":"حفظ بيانات الكرتونة"}</button></div>
