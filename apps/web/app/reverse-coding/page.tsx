@@ -9,7 +9,7 @@ type Group={id:string;name:string;packaging_type:string;total_quantity:number;pi
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
 type LabelLayout={width:number;height:number;margin:number};
-type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;order_code?:string;weight_min_kg?:string;weight_max_kg?:string})|null;carton?:any};
+type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;display_product_name?:string|null;order_code?:string;weight_min_kg?:string|null;weight_max_kg?:string|null})|null;carton?:any};
 type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
 const createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?crypto.randomUUID():"session-"+Date.now()+"-"+Math.random().toString(36).slice(2);
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
