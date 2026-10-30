@@ -68,7 +68,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    if(p.data.notes!==undefined)await c.query("UPDATE reverse_codes SET notes=$1,updated_at=now() WHERE id=$2",[p.data.notes,id]);
    const workers=await c.query("SELECT e.id,e.full_name name,e.code FROM reverse_code_workers w JOIN employees e ON e.id=w.employee_id WHERE w.code_id=$1",[id]);
    await audit(c,request,"update_metadata","reverse_code",id,{notes:current.rows[0].notes},{notes:p.data.notes!==undefined?p.data.notes:current.rows[0].notes,employees:workers.rows});
-   return {data:{id,notes:p.data.notes??current.rows[0].notes,employees:workers.rows}};
+   return {data:{id,notes:p.data.notes!==undefined?p.data.notes:current.rows[0].notes,employees:workers.rows}};
   });
  });
  app.post("/api/reverse-coding/print",{preHandler:[authenticateRequest,requirePermission("reverse_coding.print")]},async request=>{

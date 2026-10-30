@@ -62,7 +62,7 @@ export default function ReverseCodingPage(){
   try{
    const Detector=(window as any).BarcodeDetector;
    if(!Detector)throw new Error("المتصفح لا يدعم قراءة الباركود بالكاميرا. استخدم ماسح الباركود أو خانة الإدخال.");
-   detectorRef.current=new Detector({formats:["code_128","qr_code","ean_13","code_39"]});
+   detectorRef.current=new Detector({formats:["code_128","qr_code"]});
    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
    streamRef.current=stream;setScanning(true);
    window.setTimeout(()=>{if(videoRef.current){videoRef.current.srcObject=stream;void videoRef.current.play();}},100);
