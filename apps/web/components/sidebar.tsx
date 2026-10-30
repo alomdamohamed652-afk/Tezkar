@@ -26,7 +26,8 @@ const groups:NavGroup[]=[
   {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view"]},
   {icon:"↓",label:"مسحوبات الوردية",href:"/shift-withdrawals",permissions:["warehouse.view"]},
   {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
-  {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]}
+  {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]},
+  {icon:"▣",label:"التكويد العكسي",href:"/reverse-coding",permissions:["reverse_coding.view"]}
  ]},
  {label:"المالية",items:[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
