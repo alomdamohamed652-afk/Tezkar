@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { classifyReverseCodeScan, splitReverseCodeQuantities } from "./reverse-coding.logic.js";
 
 const createSchema=z.object({name:z.string().trim().min(2).max(160),packagingType:z.string().trim().min(2).max(100),productId:z.string().uuid().nullable().optional(),orderId:z.string().uuid().nullable().optional(),totalQuantity:z.number().int().positive().max(10000000),piecesPerCode:z.number().int().positive().max(1000000),weightGrams:z.number().nonnegative().max(1000000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()});
 async function audit(client:any,request:any,action:string,type:string,id:string|null,beforeData?:unknown,afterData?:unknown){
@@ -43,11 +44,11 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   if(p.productId&&!(await pool.query("SELECT 1 FROM products WHERE id=$1",[p.productId])).rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج المحدد غير موجود",422);
   if(p.orderId&&!(await pool.query("SELECT 1 FROM production_orders WHERE id=$1",[p.orderId])).rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية المحددة غير موجودة",422);
   const created=await withTransaction(async c=>{
-   const n=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),count=Math.ceil(p.totalQuantity/p.piecesPerCode);
+   const n=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),quantities=splitReverseCodeQuantities(p.totalQuantity,p.piecesPerCode),count=quantities.length;
    const g=(await c.query("INSERT INTO reverse_code_groups(group_number,name,packaging_type,product_id,order_id,total_quantity,pieces_per_code,code_count,created_by,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[n,p.name,p.packagingType,p.productId??null,p.orderId??null,p.totalQuantity,p.piecesPerCode,count,request.user!.userId,p.notes??null])).rows[0];
-   const codes=[];let left=p.totalQuantity;
-   for(let i=0;i<count;i++){const qty=Math.min(p.piecesPerCode,left),seq=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),code=`RVC-${String(new Date().getFullYear()).slice(-2)}-${String(seq).padStart(8,"0")}`;
-    codes.push((await c.query("INSERT INTO reverse_codes(group_id,code_number,code,quantity,weight_grams) VALUES($1,$2,$3,$4,$5) RETURNING id,code,quantity,weight_grams,status,first_printed_at",[g.id,seq,code,qty,p.weightGrams??null])).rows[0]);left-=qty;}
+   const codes=[];
+   for(const qty of quantities){const seq=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),code=`RVC-${String(new Date().getFullYear()).slice(-2)}-${String(seq).padStart(8,"0")}`;
+    codes.push((await c.query("INSERT INTO reverse_codes(group_id,code_number,code,quantity,weight_grams) VALUES($1,$2,$3,$4,$5) RETURNING id,code,quantity,weight_grams,status,first_printed_at",[g.id,seq,code,qty,p.weightGrams??null])).rows[0]);}
    await audit(c,request,"create","reverse_code_group",g.id,undefined,{group:g,codes});return {...g,codes};
   });return reply.code(201).send({data:created});
  });
@@ -88,10 +89,11 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  });
  app.post("/api/reverse-coding/scan",{preHandler:[authenticateRequest,requirePermission("reverse_coding.scan")]},async request=>{
   const p=z.object({values:z.array(z.string().trim().min(1).max(200)).min(1).max(200),sessionId:z.string().uuid().nullable().optional()}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المسح غير صحيحة",422);
-  return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){let result="UNKNOWN";const duplicate=seen.has(value);seen.add(value);
+  return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){const duplicate=seen.has(value);seen.add(value);
    const f=await c.query(`SELECT c.id,c.code,c.quantity,c.weight_grams,c.status,c.first_printed_at,c.created_at,g.id group_id,g.name,g.packaging_type,g.product_id,g.order_id,g.notes,p.name product_name,p.code product_code,o.code order_code,o.order_name
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id WHERE c.code=$1 LIMIT 1`,[value]),row=f.rows[0]??null;
-   if(duplicate)result="DUPLICATE";else if(row?.status==="VOIDED")result="VOIDED";else if(row){result="FOUND";if(p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount)result="DUPLICATE";}
+   const alreadyScanned=Boolean(!duplicate&&p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount);
+   const result=classifyReverseCodeScan({duplicateInRequest:duplicate,alreadyScannedInSession:alreadyScanned,codeStatus:row?.status??null});
    await c.query("INSERT INTO reverse_code_scan_logs(code_id,scanned_value,session_id,result,scanned_by) VALUES($1,$2,$3,$4,$5)",[row?.id??null,value,p.data.sessionId??null,result,request.user!.userId]);out.push({value,result,code:row});}return {data:out};});
  });
  app.get("/api/reverse-coding/scans",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async()=>{const r=await pool.query("SELECT l.*,c.code,g.name group_name,u.username FROM reverse_code_scan_logs l LEFT JOIN reverse_codes c ON c.id=l.code_id LEFT JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN users u ON u.id=l.scanned_by ORDER BY l.scanned_at DESC LIMIT 500");return {data:r.rows};});
