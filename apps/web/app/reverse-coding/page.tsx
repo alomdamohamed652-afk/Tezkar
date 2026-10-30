@@ -4,7 +4,7 @@ import { api } from "../../lib/api";
 import { Sidebar,usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
 
-type Item={id:string;code:string;name:string};
+type Item={id:string;code:string;name:string};\ntype OrderItem={id:string;code:string;order_name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
@@ -13,7 +13,7 @@ const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"ك�
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
 export default function ReverseCodingPage(){
  const {has}=usePermissions();
- const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[orders,setOrders]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]);
+ const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[orders,setOrders]=useState<OrderItem[]>([]),[employees,setEmployees]=useState<Item[]>([]);
  const [company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
  const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState("");
  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
@@ -23,7 +23,7 @@ export default function ReverseCodingPage(){
  const [printRows,setPrintRows]=useState<any[]>([]);
  const videoRef=useRef<HTMLVideoElement|null>(null),streamRef=useRef<MediaStream|null>(null),frameRef=useRef<number>(0),detectorRef=useRef<any>(null),scanBusyRef=useRef(false);
  async function load(){
-  try{const [g,b]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];orders:Item[];employees:Item[];company:Company}}>("/api/reverse-coding/bootstrap")]);
+  try{const [g,b]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];orders:OrderItem[];employees:Item[];company:Company}}>("/api/reverse-coding/bootstrap")]);
    setGroups(g.data);setProducts(b.data.products);setOrders(b.data.orders);setEmployees(b.data.employees);setCompany(b.data.company??{});
    setCompanyName(b.data.company?.companyName??"");setAddress(b.data.company?.address??"");setPhone(b.data.company?.phone??"");setLogoUrl(b.data.company?.logoUrl??"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد العكسي");}
@@ -134,7 +134,7 @@ export default function ReverseCodingPage(){
    <section style={panel}>
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>مسح الأكواد</h2>
     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input style={{...input,flex:1,minWidth:180}} value={scanValue} onChange={e=>setScanValue(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();void submitScan(scanValue);}}} placeholder="امسح الباركود هنا أو اكتب الكود"/>
-     <button style={btn} onClick={()=>void submitScan(scanValue)} disabled={!scanValue.trim()||!has("reverse_coding.scan")}>تسجيل المسح</button><button style={{...btn,background:scanning?"#b91c1c":"#0f766e"}} onClick={()=>scanning?stopCamera():void startCamera()}>{scanning?"إيقاف الكاميرا":"فتح الكاميرا"}</button></div>
+     <button style={btn} onClick={()=>void submitScan(scanValue)} disabled={!scanValue.trim()||!has("reverse_coding.scan")}>تسجيل المسح</button><button style={{...btn,background:scanning?"#b91c1c":"#0f766e"}} onClick={()=>scanning?stopCamera():void startCamera()} disabled={!has("reverse_coding.scan")}>{scanning?"إيقاف الكاميرا":"فتح الكاميرا"}</button></div>
     {cameraError&&<p style={{fontSize:12,color:"#b91c1c"}}>{cameraError}</p>}
     {scanning&&<div style={{marginTop:12}}><video ref={videoRef} playsInline muted style={{width:"100%",maxHeight:330,background:"#111",borderRadius:12,objectFit:"cover"}}/><p style={{fontSize:12,color:"var(--muted,#64748b)"}}>وجّه الكاميرا نحو الباركود أو QR. المسح يسجل النتيجة فقط ولا يغيّر حالة الكود أو المخزون.</p></div>}
     {!!scanResults.length&&<div style={{display:"grid",gap:7,marginTop:12}}>{scanResults.slice(0,20).map((r,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",gap:8,padding:10,borderRadius:9,background:"var(--surface,#f8fafc)"}}><div><strong style={{fontFamily:"monospace"}}>{r.value}</strong><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{r.code?.name??"—"} · {r.code?.quantity?number(r.code.quantity)+" قطعة":""}</div></div><strong style={{fontSize:12,color:r.result==="FOUND"?"#15803d":r.result==="UNKNOWN"?"#b91c1c":"#b45309"}}>{resultLabels[r.result]??r.result}</strong></div>)}</div>}
