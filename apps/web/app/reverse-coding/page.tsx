@@ -155,7 +155,7 @@ export default function ReverseCodingPage(){
   <div className="reverse-label-title">{s.packagingType} · {s.name}</div><div className="reverse-label-code">{s.code}</div><div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div>
   <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: <b>{s.weightGrams??"—"} جم</b></span></div>
   <div className="reverse-label-meta"><span>الطلبية: <b>{s.orderCode||"—"}</b></span><span>المنتج: <b>{s.productName||"—"}</b></span></div>
-  <footer>TEZKAR · {new Date().toLocaleDateString("en-GB")}</footer>
+  <footer>TEZKAR · {s.createdAt?new Date(s.createdAt).toLocaleDateString("en-GB"):""}</footer>
  </article>})}</div>
  <style jsx global>{`
  .reverse-print-area{display:none}
