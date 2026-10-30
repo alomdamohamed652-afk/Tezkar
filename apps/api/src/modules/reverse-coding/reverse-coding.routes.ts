@@ -6,7 +6,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { classifyReverseCodeScan, splitReverseCodeQuantities } from "./reverse-coding.logic.js";
+import { classifyReverseCodeScan } from "./reverse-coding.logic.js";
 
 const createSchema=z.object({packagingType:z.string().trim().min(2).max(100),productId:z.string().uuid(),displayProductName:z.string().trim().min(1).max(180).nullable().optional(),codeCount:z.number().int().positive().max(5000),piecesPerCode:z.number().int().positive().max(1000000),weightMinKg:z.number().nonnegative().max(100000).nullable().optional(),weightMaxKg:z.number().nonnegative().max(100000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).refine(v=>v.weightMinKg==null||v.weightMaxKg==null||v.weightMinKg<=v.weightMaxKg,{message:'الحد الأدنى للوزن يجب ألا يتجاوز الحد الأقصى'}).refine(v=>v.codeCount*v.piecesPerCode<=10000000,{message:'إجمالي القطع يتجاوز الحد المسموح'});
 async function audit(client:any,request:any,action:string,type:string,id:string|null,beforeData?:unknown,afterData?:unknown){
@@ -51,9 +51,8 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  app.post("/api/reverse-coding/groups",{preHandler:[authenticateRequest,requirePermission("reverse_coding.manage")]},async(request,reply)=>{
   const parsed=createSchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات مجموعة الأكواد غير صحيحة",422);
   const p=parsed.data;
-  if(p.displayProductName){const client=await pool.connect();try{if(!await hasPermission(client,request.user.userId,"reverse_coding.rename_product_label","all"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تغيير اسم المنتج الظاهر على الملصق",403);}finally{client.release();}}
+  if(p.displayProductName){const client=await pool.connect();try{if(!await hasPermission(client,request.user!.userId,"reverse_coding.rename_product_label","all"))throw new AppError("FORBIDDEN","ليس لديك صلاحية تغيير اسم المنتج الظاهر على الملصق",403);}finally{client.release();}}
   if(p.productId&&!(await pool.query("SELECT 1 FROM products WHERE id=$1",[p.productId])).rowCount)throw new AppError("PRODUCT_NOT_FOUND","المنتج المحدد غير موجود",422);
-  if(p.orderId&&!(await pool.query("SELECT 1 FROM production_orders WHERE id=$1",[p.orderId])).rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية المحددة غير موجودة",422);
   const created=await withTransaction(async c=>{
    const n=Number((await c.query("SELECT nextval('reverse_code_number_seq') n")).rows[0].n),totalQuantity=p.codeCount*p.piecesPerCode,quantities=Array.from({length:p.codeCount},()=>p.piecesPerCode),count=quantities.length;
    const g=(await c.query("INSERT INTO reverse_code_groups(group_number,name,packaging_type,product_id,order_id,total_quantity,pieces_per_code,code_count,created_by,notes,display_product_name,weight_min_kg,weight_max_kg) VALUES($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",[n,"تشغيل "+n,p.packagingType,p.productId,totalQuantity,p.piecesPerCode,count,request.user.userId,p.notes??null,p.displayProductName?.trim()||null,p.weightMinKg??null,p.weightMaxKg??null])).rows[0];
@@ -65,7 +64,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
     INSERT INTO reverse_codes(group_id,code_number,code,quantity,weight_grams)
     SELECT $1,code_number,'RVC-'||to_char(current_date,'YY')||'-'||lpad(code_number::text,8,'0'),quantity,$3
     FROM numbered ORDER BY ord
-    RETURNING id,code,quantity,weight_grams,status,first_printed_at`,[g.id,quantities,p.weightGrams??null])).rows;
+    RETURNING id,code,quantity,weight_grams,status,first_printed_at`,[g.id,quantities,null])).rows;
    await audit(c,request,"create","reverse_code_group",g.id,undefined,{group:g,codeCount:codes.length,firstCode:codes[0]?.code??null,lastCode:codes[codes.length-1]?.code??null});return {...g,codes};
   });return reply.code(201).send({data:created});
  });
@@ -94,11 +93,11 @@ export async function reverseCodingRoutes(app:FastifyInstance){
  app.post("/api/reverse-coding/print",{preHandler:[authenticateRequest,requirePermission("reverse_coding.print")]},async request=>{
   const p=z.object({codeIds:z.array(z.string().uuid()).min(1).max(5000)}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","حدد كودًا واحدًا على الأقل للطباعة",422);
   const ids=[...new Set(p.data.codeIds)];return withTransaction(async c=>{
-   const rows=await c.query(`SELECT c.*,g.packaging_type,g.notes group_notes,g.display_product_name,g.weight_min_kg,g.weight_max_kg,p.name product_name,p.code product_code,o.code order_code,o.order_name,s.setting_value company
-    FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id
+   const rows=await c.query(`SELECT c.*,g.packaging_type,g.notes group_notes,g.product_id,g.display_product_name,g.weight_min_kg,g.weight_max_kg,p.name product_name,p.code product_code,o.code order_code,o.order_name,s.setting_value company
+    FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id LEFT JOIN reverse_code_carton_records cr ON cr.code_id=c.id
     LEFT JOIN reverse_code_settings s ON s.setting_key='company' WHERE c.id=ANY($1::uuid[]) AND c.status='ACTIVE' ORDER BY c.code_number FOR UPDATE OF c`,[ids]);
    if(rows.rowCount!==ids.length)throw new AppError("CODE_NOT_PRINTABLE","بعض الأكواد غير موجودة أو غير نشطة",409);
-   const result=[];for(const r of rows.rows){const snap=r.print_snapshot??{code:r.code,quantity:r.quantity,weightGrams:r.weight_grams,createdAt:r.created_at,packagingType:r.packaging_type,productName:r.display_product_name||r.product_name,productId:r.product_id,weightMinKg:r.weight_min_kg,weightMaxKg:r.weight_max_kg,productCode:r.product_code,orderCode:r.order_code,orderName:r.order_name,company:r.company??{}},reprint=Boolean(r.first_printed_at);
+   const result=[];for(const r of rows.rows){const snap=r.print_snapshot??{code:r.code,quantity:r.quantity,weightGrams:r.weight_grams,createdAt:r.created_at,packagingType:r.packaging_type,productName:cr.display_product_name||r.display_product_name||r.product_name,productId:r.product_id,weightMinKg:r.weight_min_kg,weightMaxKg:r.weight_max_kg,productCode:r.product_code,orderCode:r.order_code,orderName:r.order_name,company:r.company??{}},reprint=Boolean(r.first_printed_at);
     await c.query("UPDATE reverse_codes SET print_snapshot=$1::jsonb,first_printed_at=COALESCE(first_printed_at,now()),last_printed_at=now(),print_count=print_count+1,updated_at=now() WHERE id=$2",[JSON.stringify(snap),r.id]);
     await c.query("INSERT INTO reverse_code_print_logs(code_id,printed_by,reprint) VALUES($1,$2,$3)",[r.id,request.user!.userId,reprint]);result.push({id:r.id,snapshot:snap});}
    await audit(c,request,"print","reverse_codes",ids[0]??null,undefined,{count:result.length});return {data:result};
