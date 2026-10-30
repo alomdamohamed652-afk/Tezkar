@@ -191,11 +191,12 @@ export default function ReverseCodingPage(){
  <style jsx global>{`
  .reverse-print-area{display:none}
  @media print{
-  @page{size:${labelSize.width}mm ${labelSize.height}mm;margin:${labelSize.margin}mm}
+  @page{size:${labelSize.width}mm ${labelSize.height}mm;margin:0}
+  html,body{margin:0!important;padding:0!important}
   body *{visibility:hidden!important}
   .reverse-print-area,.reverse-print-area *{visibility:visible!important}
-  .reverse-print-area{display:block!important;position:absolute;inset:0;width:${labelSize.width}mm}
-  .reverse-label{display:flex;flex-direction:column;justify-content:space-between;width:${labelSize.width}mm;height:${labelSize.height}mm;min-height:${labelSize.height}mm;max-height:${labelSize.height}mm;overflow:hidden;border:0;padding:2mm;box-sizing:border-box;page-break-after:always;break-after:page;page-break-inside:avoid;color:#111;background:#fff;font-family:Arial,sans-serif}
+  .reverse-print-area{display:block!important;position:static!important;width:${labelSize.width}mm;margin:0!important;padding:0!important}
+  .reverse-label{display:flex;flex-direction:column;justify-content:space-between;width:${labelSize.width}mm;height:${labelSize.height}mm;min-height:${labelSize.height}mm;max-height:${labelSize.height}mm;margin:0;padding:${labelSize.margin}mm;overflow:hidden;border:0;box-sizing:border-box;page-break-after:always;break-after:page;page-break-inside:avoid;break-inside:avoid;color:#111;background:#fff;font-family:Arial,sans-serif}
   .reverse-label:last-child{page-break-after:auto;break-after:auto}
   .reverse-label header{display:flex;align-items:center;gap:1.5mm;border-bottom:.2mm solid #aaa;padding-bottom:1mm;min-height:7mm;overflow:hidden}
   .reverse-label header div{display:grid;gap:.3mm;min-width:0}.reverse-label header strong{font-size:clamp(8px,2.8mm,12px)}.reverse-label header small{font-size:clamp(6px,1.7mm,8px);overflow-wrap:anywhere}
