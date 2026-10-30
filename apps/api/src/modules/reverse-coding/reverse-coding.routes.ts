@@ -90,7 +90,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    const result=[];for(const r of rows.rows){const snap=r.print_snapshot??{code:r.code,quantity:r.quantity,weightGrams:r.weight_grams,createdAt:r.created_at,name:r.name,packagingType:r.packaging_type,productName:r.product_name,productCode:r.product_code,orderCode:r.order_code,orderName:r.order_name,company:r.company??{}},reprint=Boolean(r.first_printed_at);
     await c.query("UPDATE reverse_codes SET print_snapshot=$1::jsonb,first_printed_at=COALESCE(first_printed_at,now()),last_printed_at=now(),print_count=print_count+1,updated_at=now() WHERE id=$2",[JSON.stringify(snap),r.id]);
     await c.query("INSERT INTO reverse_code_print_logs(code_id,printed_by,reprint) VALUES($1,$2,$3)",[r.id,request.user!.userId,reprint]);result.push({id:r.id,snapshot:snap});}
-   await audit(c,request,"print","reverse_codes",ids[0],undefined,{count:result.length});return {data:result};
+   await audit(c,request,"print","reverse_codes",ids[0]??null,undefined,{count:result.length});return {data:result};
   });
  });
  app.post("/api/reverse-coding/scan",{preHandler:[authenticateRequest,requirePermission("reverse_coding.scan")]},async request=>{
