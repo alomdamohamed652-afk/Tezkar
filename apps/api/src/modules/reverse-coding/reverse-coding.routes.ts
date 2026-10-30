@@ -7,7 +7,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const createSchema=z.object({name:z.string().trim().min(2).max(160),packagingType:z.string().trim().min(2).max(100),productId:z.string().uuid().nullable().optional(),orderId:z.string().uuid().nullable().optional(),totalQuantity:z.number().int().positive().max(10000000),piecesPerCode:z.number().int().positive().max(1000000),weightGrams:z.number().nonnegative().max(1000000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()});
-async function audit(client:any,request:any,action:string,type:string,id:string,beforeData?:unknown,afterData?:unknown){
+async function audit(client:any,request:any,action:string,type:string,id:string|null,beforeData?:unknown,afterData?:unknown){
  await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action,module:"reverse_coding",entityType:type,entityId:id,beforeData,afterData,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
 }
 export async function reverseCodingRoutes(app:FastifyInstance){
@@ -25,7 +25,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الشركة غير صحيحة",422);
   const saved=await withTransaction(async c=>{
    const r=await c.query("INSERT INTO reverse_code_settings(setting_key,setting_value,updated_by) VALUES('company',$1::jsonb,$2) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING setting_value",[JSON.stringify(p.data),request.user!.userId]);
-   await audit(c,request,"update_company_label_settings","reverse_code_settings","company",undefined,r.rows[0].setting_value);return r.rows[0].setting_value;
+   await audit(c,request,"update_company_label_settings","reverse_code_settings",null,undefined,r.rows[0].setting_value);return r.rows[0].setting_value;
   });return {data:saved};
  });
  app.get("/api/reverse-coding/groups",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async request=>{
@@ -62,13 +62,13 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   const id=String((request.params as any).id),p=z.object({notes:z.string().trim().max(1000).nullable().optional(),weightGrams:z.number().nonnegative().max(1000000).nullable().optional(),employeeIds:z.array(z.string().uuid()).max(50).optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الوزن أو العمال أو الملاحظات غير صحيحة",422);
   return withTransaction(async c=>{
-   const current=await c.query("SELECT c.* FROM reverse_codes c WHERE c.id=$1 FOR UPDATE", [id]);
+   const current=await c.query("SELECT c.* FROM reverse_codes c WHERE c.id=$1 FOR UPDATE", [id]);\n   const previousWorkers=await c.query("SELECT employee_id FROM reverse_code_workers WHERE code_id=$1 ORDER BY employee_id",[id]);
    if(!current.rowCount)throw new AppError("CODE_NOT_FOUND","الكود غير موجود",404);
    if(p.data.weightGrams!==undefined){if(current.rows[0].first_printed_at)throw new AppError("PRINTED_CODE_LOCKED","لا يمكن تعديل وزن الكود بعد طباعته",409);await c.query("UPDATE reverse_codes SET weight_grams=$1,updated_at=now() WHERE id=$2",[p.data.weightGrams,id]);}
    if(p.data.employeeIds){const ids=[...new Set(p.data.employeeIds)],valid=await c.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE",[ids]);if(valid.rowCount!==ids.length)throw new AppError("EMPLOYEE_NOT_FOUND","يوجد عامل غير موجود أو غير نشط",422);await c.query("DELETE FROM reverse_code_workers WHERE code_id=$1",[id]);for(const eid of ids)await c.query("INSERT INTO reverse_code_workers(code_id,employee_id) VALUES($1,$2)",[id,eid]);}
    if(p.data.notes!==undefined)await c.query("UPDATE reverse_codes SET notes=$1,updated_at=now() WHERE id=$2",[p.data.notes,id]);
    const workers=await c.query("SELECT e.id,e.full_name name,e.code FROM reverse_code_workers w JOIN employees e ON e.id=w.employee_id WHERE w.code_id=$1",[id]);
-   await audit(c,request,"update_metadata","reverse_code",id,{notes:current.rows[0].notes,weightGrams:current.rows[0].weight_grams},{notes:p.data.notes!==undefined?p.data.notes:current.rows[0].notes,weightGrams:p.data.weightGrams!==undefined?p.data.weightGrams:current.rows[0].weight_grams,employees:workers.rows});
+   await audit(c,request,"update_metadata","reverse_code",id,{notes:current.rows[0].notes,weightGrams:current.rows[0].weight_grams,employeeIds:previousWorkers.rows.map((x:any)=>x.employee_id)},{notes:p.data.notes!==undefined?p.data.notes:current.rows[0].notes,weightGrams:p.data.weightGrams!==undefined?p.data.weightGrams:current.rows[0].weight_grams,employees:workers.rows});
    return {data:{id,notes:p.data.notes!==undefined?p.data.notes:current.rows[0].notes,weightGrams:p.data.weightGrams!==undefined?p.data.weightGrams:current.rows[0].weight_grams,employees:workers.rows}};
   });
  });
@@ -90,7 +90,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){let result="UNKNOWN";const duplicate=seen.has(value);seen.add(value);
    const f=await c.query(`SELECT c.id,c.code,c.quantity,c.weight_grams,c.status,c.first_printed_at,c.created_at,g.id group_id,g.name,g.packaging_type,g.product_id,g.order_id,g.notes,p.name product_name,p.code product_code,o.code order_code,o.order_name
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id WHERE c.code=$1 LIMIT 1`,[value]),row=f.rows[0]??null;
-   if(duplicate)result="DUPLICATE";else if(row?.status==="VOIDED")result="VOIDED";else if(row){result="FOUND";if(p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 AND result='FOUND' LIMIT 1",[p.data.sessionId,value])).rowCount)result="DUPLICATE";}
+   if(duplicate)result="DUPLICATE";else if(row?.status==="VOIDED")result="VOIDED";else if(row){result="FOUND";if(p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount)result="DUPLICATE";}
    await c.query("INSERT INTO reverse_code_scan_logs(code_id,scanned_value,session_id,result,scanned_by) VALUES($1,$2,$3,$4,$5)",[row?.id??null,value,p.data.sessionId??null,result,request.user!.userId]);out.push({value,result,code:row});}return {data:out};});
  });
  app.get("/api/reverse-coding/scans",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async()=>{const r=await pool.query("SELECT l.*,c.code,g.name group_name,u.username FROM reverse_code_scan_logs l LEFT JOIN reverse_codes c ON c.id=l.code_id LEFT JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN users u ON u.id=l.scanned_by ORDER BY l.scanned_at DESC LIMIT 500");return {data:r.rows};});

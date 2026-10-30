@@ -49,3 +49,15 @@ SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='manager'
 AND p.code IN('reverse_coding.view','reverse_coding.manage','reverse_coding.scan','reverse_coding.print') ON CONFLICT DO NOTHING;
 
 ALTER TABLE reverse_codes ADD COLUMN IF NOT EXISTS notes TEXT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='reverse_code_groups_product_fk') THEN
+    ALTER TABLE reverse_code_groups ADD CONSTRAINT reverse_code_groups_product_fk
+      FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='reverse_code_groups_order_fk') THEN
+    ALTER TABLE reverse_code_groups ADD CONSTRAINT reverse_code_groups_order_fk
+      FOREIGN KEY(order_id) REFERENCES production_orders(id) ON DELETE SET NULL;
+  END IF;
+END $$;
