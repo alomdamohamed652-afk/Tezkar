@@ -25,11 +25,15 @@ export default function ReverseCodingPage(){
  const [scanSession,setScanSession]=useState(createScanSession),[recentScans,setRecentScans]=useState<ScanLog[]>([]);
  const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState("");
  const [printRows,setPrintRows]=useState<any[]>([]);
+ const [labelSize,setLabelSize]=useState({width:80,height:50,margin:2});
+ const [labelPreset,setLabelPreset]=useState("80x50");
+ const [labelSaved,setLabelSaved]=useState(false);
  const videoRef=useRef<HTMLVideoElement|null>(null),streamRef=useRef<MediaStream|null>(null),frameRef=useRef<number>(0),detectorRef=useRef<any>(null),scanBusyRef=useRef(false),lastDetectedRef=useRef("");
  async function load(){
   try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];orders:OrderItem[];employees:Item[];company:Company}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
    setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setOrders(b.data.orders);setEmployees(b.data.employees);setCompany(b.data.company??{});
    setCompanyName(b.data.company?.companyName??"");setAddress(b.data.company?.address??"");setPhone(b.data.company?.phone??"");setLogoUrl(b.data.company?.logoUrl??"");
+   const layout=b.data.labelSettings??{width:80,height:50,margin:2};setLabelSize(layout);setLabelPreset(["80x50","100x150","100x100","60x40","50x30","40x30"].includes(`${layout.width}x${layout.height}`)?`${layout.width}x${layout.height}`:"custom");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد العكسي");}
  }
  useEffect(()=>{if(has("reverse_coding.view"))void load();},[has]);
@@ -54,6 +58,11 @@ export default function ReverseCodingPage(){
  async function saveCompany(){
   setBusy(true);try{const r=await api<{data:Company}>("/api/reverse-coding/company-settings",{method:"PUT",body:JSON.stringify({companyName,address:address||null,phone:phone||null,logoUrl:logoUrl||null})});setCompany(r.data);setError("");}
   catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بيانات الشركة");}finally{setBusy(false);}
+ }
+ async function saveLabelLayout(){
+  setBusy(true);setLabelSaved(false);setError("");
+  try{const r=await api<{data:{width:number;height:number;margin:number}}>("/api/reverse-coding/label-settings",{method:"PUT",body:JSON.stringify(labelSize)});setLabelSize(r.data);setLabelSaved(true);}
+  catch(e){setError(e instanceof Error?e.message:"تعذر حفظ مقاس الملصق");}finally{setBusy(false);}
  }
  async function submitScan(value:string){
   const clean=value.trim();if(!clean)return;
@@ -145,6 +154,22 @@ export default function ReverseCodingPage(){
    </section>
    <section style={panel}><h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>سجل المسح الأخير</h2><div style={{display:"grid",gap:7}}>{recentScans.slice(0,12).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:9,borderRadius:8,background:"var(--surface,#f8fafc)",fontSize:12}}><div><strong style={{fontFamily:"monospace"}}>{log.scanned_value}</strong><div style={{color:"var(--muted,#64748b)"}}>{log.group_name??"غير معروف"} · {log.username??"—"} · {new Date(log.scanned_at).toLocaleString("ar-EG")}</div></div><strong>{resultLabels[log.result]??log.result}</strong></div>)}{!recentScans.length&&<p style={{color:"var(--muted,#64748b)"}}>لا توجد عمليات مسح مسجلة.</p>}</div></section>
    {has("reverse_coding.manage")&&<section style={panel}>
+    <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>مقاس الملصق والطباعة</h2>
+    <p style={{fontSize:12,color:"var(--muted,#64748b)",margin:"-4px 0 14px"}}>اختار مقاس جاهز أو خصص العرض والارتفاع والهامش. الإعدادات محفوظة على مستوى النظام.</p>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12}}>
+     <label style={field}>المقاسات الجاهزة<select style={input} value={labelPreset} onChange={e=>{const v=e.target.value;setLabelPreset(v);if(v!=="custom"){const [w,h]=v.split("x").map(Number);setLabelSize(x=>({...x,width:w,height:h}));}}}><option value="80x50">80 × 50 مم</option><option value="100x150">100 × 150 مم</option><option value="100x100">100 × 100 مم</option><option value="60x40">60 × 40 مم</option><option value="50x30">50 × 30 مم</option><option value="40x30">40 × 30 مم</option><option value="custom">مقاس مخصص</option></select></label>
+     <label style={field}>العرض (مم)<input style={input} type="number" min="20" max="300" value={labelSize.width} onChange={e=>{setLabelPreset("custom");setLabelSize(x=>({...x,width:Number(e.target.value)}));}}/></label>
+     <label style={field}>الارتفاع (مم)<input style={input} type="number" min="15" max="300" value={labelSize.height} onChange={e=>{setLabelPreset("custom");setLabelSize(x=>({...x,height:Number(e.target.value)}));}}/></label>
+     <label style={field}>هامش الطباعة (مم)<input style={input} type="number" min="0" max="10" step=".5" value={labelSize.margin} onChange={e=>setLabelSize(x=>({...x,margin:Number(e.target.value)}))}/></label>
+    </div>
+    <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",marginTop:14}}>
+     <div style={{width:Math.min(220,labelSize.width*1.5),height:Math.min(150,labelSize.height*1.5),minWidth:45,minHeight:30,maxWidth:"100%",border:"1px dashed var(--muted,#94a3b8)",borderRadius:5,background:"var(--surface,#f8fafc)",display:"grid",placeItems:"center",padding:6,boxSizing:"border-box",fontSize:11,overflow:"hidden"}}><div style={{textAlign:"center"}}><strong style={{display:"block"}}>TEZKAR</strong><span>RVC-YY-00000001</span><div style={{borderTop:"3px solid #334155",margin:"5px 0"}}/><span>{labelSize.width} × {labelSize.height} مم</span></div></div>
+     <span style={{fontSize:12,color:"var(--muted,#64748b)"}}>معاينة تقريبية للتناسب؛ النتيجة النهائية تتأثر بإعدادات الطابعة.</span>
+     <button type="button" style={btn} disabled={busy||labelSize.width<20||labelSize.height<15||labelSize.width>300||labelSize.height>300||labelSize.margin<0||labelSize.margin>10} onClick={()=>void saveLabelLayout()}>{busy?"جارٍ الحفظ...":"حفظ مقاس الملصق"}</button>
+     {labelSaved&&<span style={{fontSize:12,color:"#15803d",fontWeight:700}}>تم حفظ المقاس</span>}
+    </div>
+   </section>}
+   {has("reverse_coding.manage")&&<section style={panel}>
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>بيانات الشركة على الملصق</h2>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12}}>
      <label style={field}>اسم الشركة<input style={input} value={companyName} onChange={e=>setCompanyName(e.target.value)} placeholder="اسم الشركة"/></label>
@@ -165,19 +190,20 @@ export default function ReverseCodingPage(){
  <style jsx global>{`
  .reverse-print-area{display:none}
  @media print{
-  @page{margin:3mm}
+  @page{size:${labelSize.width}mm ${labelSize.height}mm;margin:${labelSize.margin}mm}
   body *{visibility:hidden!important}
   .reverse-print-area,.reverse-print-area *{visibility:visible!important}
-  .reverse-print-area{display:flex!important;flex-wrap:wrap;gap:3mm;position:absolute;inset:0;width:100%}
-  .reverse-label{width:80mm;min-height:50mm;border:1px solid #222;padding:3mm;box-sizing:border-box;page-break-inside:avoid;color:#111;font-family:Arial,sans-serif}
-  .reverse-label header{display:flex;align-items:center;gap:7px;border-bottom:1px solid #aaa;padding-bottom:2mm}
-  .reverse-label header div{display:grid;gap:1px}.reverse-label header strong{font-size:12px}.reverse-label header small{font-size:7px}
-  .reverse-logo{width:15mm;height:10mm;object-fit:contain}
-  .reverse-label-title{text-align:center;font-size:9px;font-weight:bold;margin-top:2mm}
-  .reverse-label-code{text-align:center;font-family:monospace;font-weight:bold;font-size:12px;margin-top:1mm}
-  .reverse-barcode{height:14mm;overflow:hidden}.reverse-barcode svg{height:14mm!important}
-  .reverse-label-meta{display:flex;justify-content:space-between;font-size:8px;margin-top:1mm;gap:4px}
-  .reverse-label footer{text-align:center;font-size:7px;border-top:1px solid #aaa;margin-top:2mm;padding-top:1mm}
+  .reverse-print-area{display:block!important;position:absolute;inset:0;width:${labelSize.width}mm}
+  .reverse-label{display:flex;flex-direction:column;justify-content:space-between;width:${labelSize.width}mm;height:${labelSize.height}mm;min-height:${labelSize.height}mm;max-height:${labelSize.height}mm;overflow:hidden;border:0;padding:2mm;box-sizing:border-box;page-break-after:always;break-after:page;page-break-inside:avoid;color:#111;background:#fff;font-family:Arial,sans-serif}
+  .reverse-label:last-child{page-break-after:auto;break-after:auto}
+  .reverse-label header{display:flex;align-items:center;gap:1.5mm;border-bottom:.2mm solid #aaa;padding-bottom:1mm;min-height:7mm;overflow:hidden}
+  .reverse-label header div{display:grid;gap:.3mm;min-width:0}.reverse-label header strong{font-size:clamp(8px,2.8mm,12px)}.reverse-label header small{font-size:clamp(6px,1.7mm,8px);overflow-wrap:anywhere}
+  .reverse-logo{width:12mm;height:8mm;object-fit:contain;flex:0 0 auto}
+  .reverse-label-title{text-align:center;font-size:clamp(7px,2.2mm,10px);font-weight:bold;margin-top:1mm;overflow:hidden}
+  .reverse-label-code{text-align:center;font-family:monospace;font-weight:bold;font-size:clamp(9px,3mm,13px);margin-top:.5mm;overflow-wrap:anywhere}
+  .reverse-barcode{height:${Math.max(7,Math.min(18,labelSize.height*.25))}mm;overflow:hidden;text-align:center}.reverse-barcode svg{height:100%!important;max-width:100%}
+  .reverse-label-meta{display:flex;justify-content:space-between;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:1mm;overflow:hidden}
+  .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:1mm;padding-top:.6mm}
  }
  `}</style>
  </>;
