@@ -19,7 +19,7 @@ export default function ReverseCodingPage(){
  const {has}=usePermissions();
  const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[orders,setOrders]=useState<OrderItem[]>([]),[employees,setEmployees]=useState<Item[]>([]);
  const [company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
- const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState("");
+ const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState(""),[codeCount,setCodeCount]=useState("1"),[weightMinKg,setWeightMinKg]=useState(""),[weightMaxKg,setWeightMaxKg]=useState(""),[displayProductName,setDisplayProductName]=useState("");
  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
  const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editWeight,setEditWeight]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
  const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState("");
@@ -107,21 +107,18 @@ export default function ReverseCodingPage(){
     {[["مجموعات الأكواد",groups.length],["إجمالي الأكواد",groups.reduce((s,g)=>s+Number(g.generated_codes??g.code_count),0)],["أكواد مطبوعة",groups.reduce((s,g)=>s+Number(g.printed_codes??0),0)],["إجمالي القطع",groups.reduce((s,g)=>s+Number(g.total_quantity),0)]].map(([label,value])=><div key={String(label)} style={{...panel,margin:0}}><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{label}</div><div style={{fontSize:26,fontWeight:850,marginTop:7}}>{number(Number(value))}</div></div>)}
    </div>
    {has("reverse_coding.manage")&&<form onSubmit={createGroup} style={panel}>
-    <h2 style={{fontSize:17,fontWeight:800,margin:"0 0 14px"}}>إنشاء مجموعة أكواد جديدة</h2>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12}}>
-     <label style={field}>اسم المجموعة<input style={input} value={name} onChange={e=>setName(e.target.value)} placeholder="مثال: دفعة أكياس الطلبية" required minLength={2}/></label>
-     <label style={field}>نوع العبوة<input style={input} value={packaging} onChange={e=>setPackaging(e.target.value)} placeholder="كرتونة / كيس / شيكارة" required/></label>
-     <label style={field}>المنتج (اختياري)<select style={input} value={productId} onChange={e=>setProductId(e.target.value)}><option value="">بدون ربط</option>{products.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
-     <label style={field}>الطلبية (اختياري)<select style={input} value={orderId} onChange={e=>setOrderId(e.target.value)}><option value="">بدون ربط</option>{orders.map(x=><option key={x.id} value={x.id}>{x.code} — {x.order_name}</option>)}</select></label>
-     <label style={field}>إجمالي القطع<input style={input} type="number" min="1" step="1" value={total} onChange={e=>setTotal(e.target.value)} required placeholder="مثال: 600"/></label>
-     <label style={field}>عدد القطع في كل كود<input style={input} type="number" min="1" step="1" value={perCode} onChange={e=>setPerCode(e.target.value)} required placeholder="مثال: 50"/></label>
-     <label style={field}>وزن العبوة بالجرام<input style={input} type="number" min="0" step="0.001" value={weight} onChange={e=>setWeight(e.target.value)} placeholder="اختياري"/></label>
-     <label style={field}>ملاحظات<textarea style={{...input,minHeight:42}} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="ملاحظات المجموعة"/></label>
+    <h2 style={{fontSize:20,fontWeight:900,margin:"0 0 14px"}}>تجهيز أكواد الكراتين</h2>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:14}}>
+     <label style={field}>نوع العبوة<input style={input} value={packaging} onChange={e=>setPackaging(e.target.value)} required/></label>
+     <label style={field}>المنتج الرئيسي<select style={input} value={productId} onChange={e=>{setProductId(e.target.value);setDisplayProductName("");}} required><option value="">اختر المنتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
+     <label style={field}>اسم المنتج الظاهر على الملصق<input style={input} value={displayProductName} onChange={e=>setDisplayProductName(e.target.value)} placeholder={products.find(x=>x.id===productId)?.name??"يظهر الاسم الأصلي تلقائيًا"} disabled={!has("reverse_coding.rename_product_label")}/><span style={{fontSize:11,color:"var(--muted,#64748b)"}}>تغيير الاسم لا يغيّر المنتج الرئيسي المرتبط.</span></label>
+     <label style={field}>عدد الأكواد المطلوب تجهيزها<input style={input} type="number" min="1" max="5000" value={codeCount} onChange={e=>setCodeCount(e.target.value)} required/></label>
+     <label style={field}>عدد القطع في كل كود<input style={input} type="number" min="1" value={perCode} onChange={e=>setPerCode(e.target.value)} required/></label>
+     <label style={field}>أقل وزن بالكيلو<input style={input} type="number" min="0" step="0.001" value={weightMinKg} onChange={e=>setWeightMinKg(e.target.value)} placeholder="اختياري"/></label>
+     <label style={field}>أعلى وزن بالكيلو<input style={input} type="number" min="0" step="0.001" value={weightMaxKg} onChange={e=>setWeightMaxKg(e.target.value)} placeholder="اختياري"/></label>
     </div>
-    {total&&perCode&&Number(total)>0&&Number(perCode)>0&&<p style={{fontSize:13,color:"var(--muted,#64748b)",marginTop:12}}>سيتم إنشاء {number(Math.ceil(Number(total)/Number(perCode)))} كود، وآخر كود سيحمل الكمية المتبقية ({number(Number(total)%Number(perCode)||Number(perCode))} قطعة).</p>}
-    <div style={{display:"flex",justifyContent:"flex-end",marginTop:12}}><button style={btn} disabled={busy}>{busy?"جارٍ الحفظ...":"إنشاء الأكواد"}</button></div>
-   </form>}
-   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,390px),1fr))",gap:16,alignItems:"start"}}>
+    <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><button style={btn} disabled={busy||!productId||Number(codeCount)<1||Number(perCode)<1||(weightMinKg!==""&&weightMaxKg!==""&&Number(weightMinKg)>Number(weightMaxKg))}>{busy?"جارٍ التجهيز...":"إنشاء الأكواد"}</button></div>
+   </form>}   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,390px),1fr))",gap:16,alignItems:"start"}}>
     <section style={panel}>
      <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",marginBottom:12}}><h2 style={{fontSize:16,fontWeight:800,margin:0}}>مجموعات الأكواد</h2><input style={{...input,maxWidth:190}} value={search} onChange={e=>setSearch(e.target.value)} placeholder="بحث..."/></div>
      <div style={{display:"grid",gap:8}}>{filtered.map(g=><button key={g.id} onClick={()=>void openGroup(g)} style={{textAlign:"right",padding:12,borderRadius:10,border:selected?.id===g.id?"2px solid #2563eb":"1px solid var(--border,#e5e7eb)",background:"transparent",color:"inherit",cursor:"pointer"}}>
