@@ -5,24 +5,23 @@ import { Sidebar,usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
 
 type Item={id:string;code:string;name:string};
-type OrderItem={id:string;code:string;order_name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
 type LabelLayout={width:number;height:number;margin:number};
-type ScanResult={value:string;result:string;code:Code&{name?:string;packaging_type?:string;product_name?:string;order_code?:string}|null};
+type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;display_product_name?:string|null;order_code?:string;weight_min_kg?:string|null;weight_max_kg?:string|null})|null;carton?:any};
 type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
 const createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?crypto.randomUUID():"session-"+Date.now()+"-"+Math.random().toString(36).slice(2);
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
 export default function ReverseCodingPage(){
  const {has}=usePermissions();
- const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[orders,setOrders]=useState<OrderItem[]>([]),[employees,setEmployees]=useState<Item[]>([]);
+ const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]);
  const [company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
- const [name,setName]=useState(""),[packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[orderId,setOrderId]=useState(""),[total,setTotal]=useState(""),[perCode,setPerCode]=useState(""),[weight,setWeight]=useState(""),[notes,setNotes]=useState("");
+ const [packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[perCode,setPerCode]=useState("600"),[codeCount,setCodeCount]=useState("1"),[weightMinKg,setWeightMinKg]=useState(""),[weightMaxKg,setWeightMaxKg]=useState(""),[displayProductName,setDisplayProductName]=useState("");
  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
  const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editWeight,setEditWeight]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
- const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState("");
+ const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState(""),[scannedCode,setScannedCode]=useState<ScanResult|null>(null),[cartonProductId,setCartonProductId]=useState(""),[cartonDisplayProductName,setCartonDisplayProductName]=useState(""),[productionPartnerId,setProductionPartnerId]=useState(""),[packerId,setPackerId]=useState(""),[packerPartnerId,setPackerPartnerId]=useState(""),[actualWeightKg,setActualWeightKg]=useState(""),[cartonNotes,setCartonNotes]=useState("");
  const [scanSession,setScanSession]=useState(createScanSession),[recentScans,setRecentScans]=useState<ScanLog[]>([]);
  const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState("");
  const [printRows,setPrintRows]=useState<any[]>([]);
@@ -31,8 +30,8 @@ export default function ReverseCodingPage(){
  const [labelSaved,setLabelSaved]=useState(false);
  const videoRef=useRef<HTMLVideoElement|null>(null),streamRef=useRef<MediaStream|null>(null),frameRef=useRef<number>(0),detectorRef=useRef<any>(null),scanBusyRef=useRef(false),lastDetectedRef=useRef("");
  async function load(){
-  try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];orders:OrderItem[];employees:Item[];company:Company;labelSettings:LabelLayout}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
-   setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setOrders(b.data.orders);setEmployees(b.data.employees);setCompany(b.data.company??{});
+  try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];employees:Item[];company:Company;labelSettings:LabelLayout}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
+   setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setEmployees(b.data.employees);setCompany(b.data.company??{});
    setCompanyName(b.data.company?.companyName??"");setAddress(b.data.company?.address??"");setPhone(b.data.company?.phone??"");setLogoUrl(b.data.company?.logoUrl??"");
    const layout=b.data.labelSettings??{width:80,height:50,margin:2};setLabelSize(layout);setLabelPreset(["80x50","100x150","100x100","60x40","50x30","40x30"].includes(`${layout.width}x${layout.height}`)?`${layout.width}x${layout.height}`:"custom");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد العكسي");}
@@ -41,8 +40,8 @@ export default function ReverseCodingPage(){
  const filtered=useMemo(()=>groups.filter(g=>(g.name+" "+g.packaging_type+" "+(g.order_code??"")).toLowerCase().includes(search.toLowerCase())),[groups,search]);
  async function createGroup(e:FormEvent){
   e.preventDefault();setBusy(true);setError("");
-  try{const r=await api<{data:Group}>("/api/reverse-coding/groups",{method:"POST",body:JSON.stringify({name,packagingType:packaging,productId:productId||null,orderId:orderId||null,totalQuantity:Number(total),piecesPerCode:Number(perCode),weightGrams:weight===""?null:Number(weight),notes:notes||null})});
-   setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setName("");setTotal("");setPerCode("");setWeight("");setNotes("");
+  try{const r=await api<{data:Group}>("/api/reverse-coding/groups",{method:"POST",body:JSON.stringify({packagingType:packaging,productId,displayProductName:displayProductName.trim()||null,codeCount:Number(codeCount),piecesPerCode:Number(perCode),weightMinKg:weightMinKg===""?null:Number(weightMinKg),weightMaxKg:weightMaxKg===""?null:Number(weightMaxKg)})});
+   setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setCodeCount("1");setWeightMinKg("");setWeightMaxKg("");setDisplayProductName("");
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الأكواد");}finally{setBusy(false);}
  }
  async function openGroup(g:Group){try{const r=await api<{data:Group}>("/api/reverse-coding/groups/"+g.id);setSelected(r.data);setSelectedCodes([]);}catch(e){setError(e instanceof Error?e.message:"تعذر فتح المجموعة");}}
@@ -67,7 +66,7 @@ export default function ReverseCodingPage(){
  }
  async function submitScan(value:string){
   const clean=value.trim();if(!clean)return;
-  try{const r=await api<{data:ScanResult[]}>("/api/reverse-coding/scan",{method:"POST",body:JSON.stringify({values:[clean],sessionId:scanSession})});setScanResults(x=>[...r.data,...x]);setScanValue("");const logs=await api<{data:ScanLog[]}>("/api/reverse-coding/scans");setRecentScans(logs.data);}
+  try{const r=await api<{data:ScanResult[]}>("/api/reverse-coding/scan",{method:"POST",body:JSON.stringify({values:[clean],sessionId:scanSession})});const hit=r.data[0];setScanResults(x=>[...r.data,...x]);setScanValue("");if((hit?.result==="FOUND"||hit?.result==="DUPLICATE")&&hit.code){setScannedCode(hit);setCartonProductId(hit.code.product_id??"");setCartonDisplayProductName(hit.carton?.display_product_name??hit.code.display_product_name??hit.code.product_name??"");setProductionPartnerId(hit.carton?.production_partner_employee_id??"");setPackerId(hit.carton?.packer_employee_id??"");setPackerPartnerId(hit.carton?.packer_partner_employee_id??"");setActualWeightKg(hit.carton?.actual_weight_kg==null?"":String(hit.carton.actual_weight_kg));setCartonNotes(hit.carton?.notes??"");}const logs=await api<{data:ScanLog[]}>("/api/reverse-coding/scans");setRecentScans(logs.data);}
   catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل المسح");}
  }
  
@@ -104,42 +103,39 @@ export default function ReverseCodingPage(){
   <section className="content">
    {error&&<div role="alert" style={{...panel,color:"#b91c1c",borderColor:"#fecaca"}}>{error}</div>}
    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:12,marginBottom:16}}>
-    {[["مجموعات الأكواد",groups.length],["إجمالي الأكواد",groups.reduce((s,g)=>s+Number(g.generated_codes??g.code_count),0)],["أكواد مطبوعة",groups.reduce((s,g)=>s+Number(g.printed_codes??0),0)],["إجمالي القطع",groups.reduce((s,g)=>s+Number(g.total_quantity),0)]].map(([label,value])=><div key={String(label)} style={{...panel,margin:0}}><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{label}</div><div style={{fontSize:26,fontWeight:850,marginTop:7}}>{number(Number(value))}</div></div>)}
+    {[["عدد الأكواد المجهزة",groups.reduce((s,g)=>s+Number(g.generated_codes??g.code_count),0)],["أكواد مطبوعة",groups.reduce((s,g)=>s+Number(g.printed_codes??0),0)]].map(([label,value])=><div key={String(label)} style={{...panel,margin:0}}><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{label}</div><div style={{fontSize:26,fontWeight:850,marginTop:7}}>{number(Number(value))}</div></div>)}
    </div>
    {has("reverse_coding.manage")&&<form onSubmit={createGroup} style={panel}>
-    <h2 style={{fontSize:17,fontWeight:800,margin:"0 0 14px"}}>إنشاء مجموعة أكواد جديدة</h2>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12}}>
-     <label style={field}>اسم المجموعة<input style={input} value={name} onChange={e=>setName(e.target.value)} placeholder="مثال: دفعة أكياس الطلبية" required minLength={2}/></label>
-     <label style={field}>نوع العبوة<input style={input} value={packaging} onChange={e=>setPackaging(e.target.value)} placeholder="كرتونة / كيس / شيكارة" required/></label>
-     <label style={field}>المنتج (اختياري)<select style={input} value={productId} onChange={e=>setProductId(e.target.value)}><option value="">بدون ربط</option>{products.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
-     <label style={field}>الطلبية (اختياري)<select style={input} value={orderId} onChange={e=>setOrderId(e.target.value)}><option value="">بدون ربط</option>{orders.map(x=><option key={x.id} value={x.id}>{x.code} — {x.order_name}</option>)}</select></label>
-     <label style={field}>إجمالي القطع<input style={input} type="number" min="1" step="1" value={total} onChange={e=>setTotal(e.target.value)} required placeholder="مثال: 600"/></label>
-     <label style={field}>عدد القطع في كل كود<input style={input} type="number" min="1" step="1" value={perCode} onChange={e=>setPerCode(e.target.value)} required placeholder="مثال: 50"/></label>
-     <label style={field}>وزن العبوة بالجرام<input style={input} type="number" min="0" step="0.001" value={weight} onChange={e=>setWeight(e.target.value)} placeholder="اختياري"/></label>
-     <label style={field}>ملاحظات<textarea style={{...input,minHeight:42}} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="ملاحظات المجموعة"/></label>
+    <h2 style={{fontSize:20,fontWeight:900,margin:"0 0 14px"}}>تجهيز أكواد الكراتين</h2>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:14}}>
+     <label style={field}>نوع العبوة<input style={input} value={packaging} onChange={e=>setPackaging(e.target.value)} required/></label>
+     <label style={field}>المنتج الرئيسي<select style={input} value={productId} onChange={e=>{setProductId(e.target.value);setDisplayProductName("");}} required><option value="">اختر المنتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
+     <label style={field}>اسم المنتج الظاهر على الملصق<input style={input} value={displayProductName} onChange={e=>setDisplayProductName(e.target.value)} placeholder={products.find(x=>x.id===productId)?.name??"يظهر الاسم الأصلي تلقائيًا"} disabled={!has("reverse_coding.rename_product_label")}/><span style={{fontSize:11,color:"var(--muted,#64748b)"}}>تغيير الاسم لا يغيّر المنتج الرئيسي المرتبط.</span></label>
+     <label style={field}>عدد الأكواد المطلوب تجهيزها<input style={input} type="number" min="1" max="5000" value={codeCount} onChange={e=>setCodeCount(e.target.value)} required/></label>
+     <label style={field}>عدد القطع في كل كود<input style={input} type="number" min="1" value={perCode} onChange={e=>setPerCode(e.target.value)} required/></label>
+     <label style={field}>أقل وزن بالكيلو<input style={input} type="number" min="0" step="0.001" value={weightMinKg} onChange={e=>setWeightMinKg(e.target.value)} placeholder="اختياري"/></label>
+     <label style={field}>أعلى وزن بالكيلو<input style={input} type="number" min="0" step="0.001" value={weightMaxKg} onChange={e=>setWeightMaxKg(e.target.value)} placeholder="اختياري"/></label>
     </div>
-    {total&&perCode&&Number(total)>0&&Number(perCode)>0&&<p style={{fontSize:13,color:"var(--muted,#64748b)",marginTop:12}}>سيتم إنشاء {number(Math.ceil(Number(total)/Number(perCode)))} كود، وآخر كود سيحمل الكمية المتبقية ({number(Number(total)%Number(perCode)||Number(perCode))} قطعة).</p>}
-    <div style={{display:"flex",justifyContent:"flex-end",marginTop:12}}><button style={btn} disabled={busy}>{busy?"جارٍ الحفظ...":"إنشاء الأكواد"}</button></div>
-   </form>}
-   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,390px),1fr))",gap:16,alignItems:"start"}}>
+    <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><button style={btn} disabled={busy||!productId||Number(codeCount)<1||Number(perCode)<1||(weightMinKg!==""&&weightMaxKg!==""&&Number(weightMinKg)>Number(weightMaxKg))}>{busy?"جارٍ التجهيز...":"إنشاء الأكواد"}</button></div>
+   </form>}   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,390px),1fr))",gap:16,alignItems:"start"}}>
     <section style={panel}>
-     <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",marginBottom:12}}><h2 style={{fontSize:16,fontWeight:800,margin:0}}>مجموعات الأكواد</h2><input style={{...input,maxWidth:190}} value={search} onChange={e=>setSearch(e.target.value)} placeholder="بحث..."/></div>
+     <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",marginBottom:12}}><h2 style={{fontSize:16,fontWeight:800,margin:0}}>الأكواد المجهزة</h2><input style={{...input,maxWidth:190}} value={search} onChange={e=>setSearch(e.target.value)} placeholder="بحث..."/></div>
      <div style={{display:"grid",gap:8}}>{filtered.map(g=><button key={g.id} onClick={()=>void openGroup(g)} style={{textAlign:"right",padding:12,borderRadius:10,border:selected?.id===g.id?"2px solid #2563eb":"1px solid var(--border,#e5e7eb)",background:"transparent",color:"inherit",cursor:"pointer"}}>
-      <div style={{fontWeight:800}}>{g.name}</div><div style={{fontSize:12,color:"var(--muted,#64748b)",marginTop:4}}>{g.packaging_type} · {g.order_code??"بدون طلبية"} · {new Date(g.created_at).toLocaleDateString("ar-EG")}</div>
-      <div style={{display:"flex",gap:12,fontSize:12,marginTop:8}}><span>{number(g.total_quantity)} قطعة</span><span>{number(g.generated_codes??g.code_count)} كود</span><span>{number(g.printed_codes??0)} مطبوع</span></div>
+      <div style={{fontWeight:800}}>{g.product_name??"أكواد كراتين"}</div><div style={{fontSize:12,color:"var(--muted,#64748b)",marginTop:4}}>{g.packaging_type} · {new Date(g.created_at).toLocaleDateString("ar-EG")}</div>
+      <div style={{display:"flex",gap:12,fontSize:12,marginTop:8}}><span>{number(g.generated_codes??g.code_count)} كود</span><span>{number(g.printed_codes??0)} مطبوع</span></div>
      </button>)}{!filtered.length&&<p style={{color:"var(--muted,#64748b)"}}>لا توجد مجموعات حتى الآن.</p>}</div>
     </section>
     <section style={panel}>
-     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>تفاصيل المجموعة</h2>
+     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>تفاصيل الأكواد</h2>
      {!selected?<p style={{color:"var(--muted,#64748b)"}}>اختر مجموعة لعرض أكوادها وإدارة الطباعة.</p>:<>
-      <div style={{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}><div><strong>{selected.name}</strong><div style={{fontSize:12,color:"var(--muted,#64748b)",marginTop:4}}>{selected.packaging_type} · {selected.product_name??"بدون منتج"} · {selected.order_code??"بدون طلبية"}</div></div>
-       <button style={{...btn,opacity:busy?.6:1}} disabled={busy||!has("reverse_coding.print")} onClick={()=>void printCodes(selected.codes?.map(c=>c.id)??[])}>طباعة المجموعة</button>
+      <div style={{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}><div><strong>{selected.product_name??"تفاصيل الأكواد"}</strong><div style={{fontSize:12,color:"var(--muted,#64748b)",marginTop:4}}>{selected.packaging_type} · {selected.product_name??"—"}</div></div>
+       <button style={{...btn,opacity:busy?.6:1}} disabled={busy||!has("reverse_coding.print")} onClick={()=>void printCodes(selected.codes?.map(c=>c.id)??[])}>طباعة الأكواد</button>
       </div>
       <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",margin:"14px 0"}}><button style={{...btn,background:"#334155"}} onClick={()=>setSelectedCodes(selected.codes?.map(c=>c.id)??[])}>تحديد الكل</button><button style={{...btn,background:"#334155"}} onClick={()=>setSelectedCodes([])}>إلغاء التحديد</button><button style={btn} disabled={!selectedCodes.length||busy||!has("reverse_coding.print")} onClick={()=>void printCodes(selectedCodes)}>طباعة المحدد ({selectedCodes.length})</button></div>
       <div style={{display:"grid",gap:8,maxHeight:450,overflow:"auto"}}>{selected.codes?.map(c=><div key={c.id} style={{display:"flex",alignItems:"center",gap:10,border:"1px solid var(--border,#e5e7eb)",borderRadius:9,padding:10}}>
        <input type="checkbox" checked={selectedCodes.includes(c.id)} onChange={()=>toggleCode(c.id)}/>
-       <div style={{minWidth:0,flex:1}}><div style={{fontWeight:800,fontFamily:"monospace"}}>{c.code}</div><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{number(c.quantity)} قطعة · {c.weight_grams??"—"} جم · {c.first_printed_at?"تمت الطباعة":"لم يطبع بعد"}</div></div>
-       <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:11,color:c.status==="ACTIVE"?"#15803d":"#b91c1c"}}>{c.status==="ACTIVE"?"نشط":"غير نشط"}</span><button type="button" style={{...btn,background:"#475569",padding:"6px 9px",fontSize:11}} onClick={()=>{setEditingCode(c);setEditNotes(c.notes??"");setEditWeight(c.weight_grams==null?"":String(c.weight_grams));setEditEmployees((c.employees??[]).map(e=>e.id));}}>بيانات العمال</button></div>
+       <div style={{minWidth:0,flex:1}}><div style={{fontWeight:800,fontFamily:"monospace"}}>{c.code}</div><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{number(c.quantity)} قطعة · {c.first_printed_at?"تمت الطباعة":"لم يطبع بعد"}</div></div>
+       <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:11,color:c.status==="ACTIVE"?"#15803d":"#b91c1c"}}>{c.status==="ACTIVE"?"نشط":"غير نشط"}</span></div>
       </div>)}</div>
       {editingCode&&<div style={{marginTop:14,padding:12,border:"1px solid var(--border,#e5e7eb)",borderRadius:10}}><strong>تعديل بيانات {editingCode.code}</strong><label style={{...field,marginTop:10}}>ملاحظات الكود<textarea style={{...input,minHeight:65}} value={editNotes} onChange={e=>setEditNotes(e.target.value)}/></label><label style={{...field,marginTop:10}}>وزن العبوة بالجرام<input style={input} type="number" min="0" step="0.001" value={editWeight} disabled={Boolean(editingCode.first_printed_at)} onChange={e=>setEditWeight(e.target.value)}/>{editingCode.first_printed_at&&<span style={{fontSize:11,color:"#b45309"}}>الوزن مقفول لأن الكود تمت طباعته</span>}</label><div style={{fontSize:12,fontWeight:700,margin:"12px 0 7px"}}>العمال المشاركون</div><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6,maxHeight:160,overflow:"auto"}}>{employees.map(emp=><label key={emp.id} style={{display:"flex",alignItems:"center",gap:7,fontSize:12}}><input type="checkbox" checked={editEmployees.includes(emp.id)} onChange={e=>setEditEmployees(x=>e.target.checked?[...x,emp.id]:x.filter(id=>id!==emp.id))}/>{emp.name}</label>)}</div><div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}}><button type="button" style={{...btn,background:"#475569"}} onClick={()=>setEditingCode(null)}>إلغاء</button><button type="button" style={btn} disabled={busy} onClick={()=>void saveCodeMetadata()}>حفظ التعديلات</button></div></div>}
      </>}
@@ -149,11 +145,22 @@ export default function ReverseCodingPage(){
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>مسح الأكواد</h2>
     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input style={{...input,flex:1,minWidth:180}} value={scanValue} onChange={e=>setScanValue(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();void submitScan(scanValue);}}} placeholder="امسح الباركود هنا أو اكتب الكود"/>
      <button style={btn} onClick={()=>void submitScan(scanValue)} disabled={!scanValue.trim()||!has("reverse_coding.scan")}>تسجيل المسح</button><button style={{...btn,background:scanning?"#b91c1c":"#0f766e"}} onClick={()=>scanning?stopCamera():void startCamera()} disabled={!has("reverse_coding.scan")}>{scanning?"إيقاف الكاميرا":"فتح الكاميرا"}</button><button style={{...btn,background:"#475569"}} onClick={()=>{setScanSession(createScanSession());setScanResults([]);lastDetectedRef.current="";}}>جلسة مسح جديدة</button></div>
+    {scannedCode?.code&&<form onSubmit={async e=>{e.preventDefault();setBusy(true);try{await api("/api/reverse-coding/codes/"+scannedCode.code!.id+"/carton",{method:"POST",body:JSON.stringify({productId:cartonProductId,displayProductName:has("reverse_coding.rename_product_label")?(cartonDisplayProductName.trim()||null):null,productionPartnerEmployeeId:productionPartnerId||null,packerEmployeeId:packerId||null,packerPartnerEmployeeId:packerPartnerId||null,actualWeightKg:actualWeightKg===""?null:Number(actualWeightKg),notes:cartonNotes||null})});setScannedCode(null);setError("");}catch(err){setError(err instanceof Error?err.message:"تعذر حفظ بيانات الكرتونة");}finally{setBusy(false);}}} style={{marginTop:16,padding:14,border:"2px solid #2563eb",borderRadius:12,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12}}>
+     <div style={{gridColumn:"1/-1"}}><strong style={{fontSize:23,fontWeight:950}}>{scannedCode.code.code}</strong><div>{number(scannedCode.code.quantity)} قطعة · الوزن المتوقع {scannedCode.code.weight_min_kg??"—"} إلى {scannedCode.code.weight_max_kg??"—"} كجم</div></div>
+     <label style={field}>المنتج الرئيسي<select style={input} value={cartonProductId} disabled required>{products.map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select></label>
+     <label style={field}>اسم المنتج الظاهر على الملصق<input style={input} value={cartonDisplayProductName} onChange={e=>setCartonDisplayProductName(e.target.value)} disabled={!has("reverse_coding.rename_product_label")} placeholder="اسم المنتج على الملصق"/></label>
+     <label style={field}>شريك الإنتاج (اختياري)<select style={input} value={productionPartnerId} onChange={e=>setProductionPartnerId(e.target.value)}><option value="">بدون شريك</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
+     <label style={field}>القائم بالتقفيل<select style={input} value={packerId} onChange={e=>setPackerId(e.target.value)} required><option value="">اختر المسؤول</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
+     <label style={field}>شريك التقفيل (اختياري)<select style={input} value={packerPartnerId} onChange={e=>setPackerPartnerId(e.target.value)}><option value="">بدون شريك</option>{employees.map(x=><option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}</select></label>
+     <label style={field}>الوزن الفعلي (كجم)<input style={input} type="number" min="0" step="0.001" value={actualWeightKg} onChange={e=>setActualWeightKg(e.target.value)} placeholder="وزن الكرتونة بعد التقفيل"/></label>
+     <label style={{...field,gridColumn:"1/-1"}}>ملاحظات<textarea style={{...input,minHeight:65}} value={cartonNotes} onChange={e=>setCartonNotes(e.target.value)}/></label>
+     <div style={{gridColumn:"1/-1",display:"flex",justifyContent:"flex-end",gap:8}}><button type="button" style={{...btn,background:"#64748b"}} onClick={()=>setScannedCode(null)}>إلغاء</button><button style={btn} disabled={busy||!cartonProductId||!packerId}>{busy?"جارٍ الحفظ...":"حفظ بيانات الكرتونة"}</button></div>
+    </form>}
     {cameraError&&<p style={{fontSize:12,color:"#b91c1c"}}>{cameraError}</p>}
     {scanning&&<div style={{marginTop:12}}><video ref={videoRef} playsInline muted style={{width:"100%",maxHeight:330,background:"#111",borderRadius:12,objectFit:"cover"}}/><p style={{fontSize:12,color:"var(--muted,#64748b)"}}>وجّه الكاميرا نحو الباركود أو QR. المسح يسجل النتيجة فقط ولا يغيّر حالة الكود أو المخزون.</p></div>}
-    {!!scanResults.length&&<div style={{display:"grid",gap:7,marginTop:12}}>{scanResults.slice(0,20).map((r,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",gap:8,padding:10,borderRadius:9,background:"var(--surface,#f8fafc)"}}><div><strong style={{fontFamily:"monospace"}}>{r.value}</strong><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{r.code?.name??"—"} · {r.code?.packaging_type??""} · {r.code?.quantity?number(r.code.quantity)+" قطعة":""} · {r.code?.weight_grams??"—"} جم · {r.code?.order_code??"بدون طلبية"} · {r.code?.product_name??"بدون منتج"}</div></div><strong style={{fontSize:12,color:r.result==="FOUND"?"#15803d":r.result==="UNKNOWN"?"#b91c1c":"#b45309"}}>{resultLabels[r.result]??r.result}</strong></div>)}</div>}
+    {!!scanResults.length&&<div style={{display:"grid",gap:7,marginTop:12}}>{scanResults.slice(0,20).map((r,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",gap:8,padding:10,borderRadius:9,background:"var(--surface,#f8fafc)"}}><div><strong style={{fontFamily:"monospace"}}>{r.value}</strong><div style={{fontSize:12,color:"var(--muted,#64748b)"}}>{r.code?.product_name??"—"} · {r.code?.packaging_type??""} · {r.code?.quantity?number(r.code.quantity)+" قطعة":""} · الوزن {r.code?.weight_min_kg??"—"} – {r.code?.weight_max_kg??"—"} كجم</div></div><strong style={{fontSize:12,color:r.result==="FOUND"?"#15803d":r.result==="UNKNOWN"?"#b91c1c":"#b45309"}}>{resultLabels[r.result]??r.result}</strong></div>)}</div>}
    </section>
-   <section style={panel}><h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>سجل المسح الأخير</h2><div style={{display:"grid",gap:7}}>{recentScans.slice(0,12).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:9,borderRadius:8,background:"var(--surface,#f8fafc)",fontSize:12}}><div><strong style={{fontFamily:"monospace"}}>{log.scanned_value}</strong><div style={{color:"var(--muted,#64748b)"}}>{log.group_name??"غير معروف"} · {log.username??"—"} · {new Date(log.scanned_at).toLocaleString("ar-EG")}</div></div><strong>{resultLabels[log.result]??log.result}</strong></div>)}{!recentScans.length&&<p style={{color:"var(--muted,#64748b)"}}>لا توجد عمليات مسح مسجلة.</p>}</div></section>
+   <section style={panel}><h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>سجل المسح الأخير</h2><div style={{display:"grid",gap:7}}>{recentScans.slice(0,12).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:9,borderRadius:8,background:"var(--surface,#f8fafc)",fontSize:12}}><div><strong style={{fontFamily:"monospace"}}>{log.scanned_value}</strong><div style={{color:"var(--muted,#64748b)"}}>{log.username??"—"} · {new Date(log.scanned_at).toLocaleString("ar-EG")}</div></div><strong>{resultLabels[log.result]??log.result}</strong></div>)}{!recentScans.length&&<p style={{color:"var(--muted,#64748b)"}}>لا توجد عمليات مسح مسجلة.</p>}</div></section>
    {has("reverse_coding.manage")&&<section style={panel}>
     <h2 style={{fontSize:16,fontWeight:800,margin:"0 0 12px"}}>مقاس الملصق والطباعة</h2>
     <p style={{fontSize:12,color:"var(--muted,#64748b)",margin:"-4px 0 14px"}}>اختار مقاس جاهز أو خصص العرض والارتفاع والهامش. الإعدادات محفوظة على مستوى النظام.</p>
@@ -183,9 +190,8 @@ export default function ReverseCodingPage(){
  </main></div>
  <div className="reverse-print-area">{printRows.map((r,i)=>{const s=r.snapshot;return <article className="reverse-label" key={r.id??i}>
   <header>{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo"/>}<div><strong>{s.company?.companyName||"TEZKAR"}</strong><small>{s.company?.address||""}</small><small>{s.company?.phone||""}</small></div></header>
-  <div className="reverse-label-title">{s.packagingType} · {s.name}</div><div className="reverse-label-code">{s.code}</div><div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div>
-  <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: <b>{s.weightGrams??"—"} جم</b></span></div>
-  <div className="reverse-label-meta"><span>الطلبية: <b>{s.orderCode||"—"}</b></span><span>المنتج: <b>{s.productName||"—"}</b></span></div>
+  <div className="reverse-label-title">{s.productName||""}</div><div className="reverse-label-code">{s.code}</div><div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div>
+  <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: <b>{s.weightMinKg??"—"} – {s.weightMaxKg??"—"} كجم</b></span></div>
   <footer>TEZKAR · {s.createdAt?new Date(s.createdAt).toLocaleDateString("en-GB"):""}</footer>
  </article>})}</div>
  <style jsx global>{`
@@ -202,7 +208,7 @@ export default function ReverseCodingPage(){
   .reverse-label header div{display:grid;gap:.3mm;min-width:0}.reverse-label header strong{font-size:clamp(8px,2.8mm,12px)}.reverse-label header small{font-size:clamp(6px,1.7mm,8px);overflow-wrap:anywhere}
   .reverse-logo{width:12mm;height:8mm;object-fit:contain;flex:0 0 auto}
   .reverse-label-title{text-align:center;font-size:clamp(7px,2.2mm,10px);font-weight:bold;margin-top:1mm;overflow:hidden}
-  .reverse-label-code{text-align:center;font-family:monospace;font-weight:bold;font-size:clamp(9px,3mm,13px);margin-top:.5mm;overflow-wrap:anywhere}
+  .reverse-label-code{text-align:center;font-family:Arial,sans-serif;font-weight:900;font-size:clamp(12px,4mm,18px);margin-top:.5mm;overflow-wrap:anywhere}
   .reverse-barcode{height:${Math.max(7,Math.min(18,labelSize.height*.25))}mm;overflow:hidden;text-align:center}.reverse-barcode svg{height:100%!important;max-width:100%}
   .reverse-label-meta{display:flex;justify-content:space-between;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:1mm;overflow:hidden}
   .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:1mm;padding-top:.6mm}
