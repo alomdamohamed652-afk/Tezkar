@@ -195,7 +195,7 @@ export default function ReverseCodingPage(){
   html,body{margin:0!important;padding:0!important}
   body *{visibility:hidden!important}
   .reverse-print-area,.reverse-print-area *{visibility:visible!important}
-  .reverse-print-area{display:block!important;position:static!important;width:${labelSize.width}mm;margin:0!important;padding:0!important}
+  .reverse-print-area{display:block!important;position:absolute!important;top:0!important;left:0!important;width:${labelSize.width}mm;margin:0!important;padding:0!important}
   .reverse-label{display:flex;flex-direction:column;justify-content:space-between;width:${labelSize.width}mm;height:${labelSize.height}mm;min-height:${labelSize.height}mm;max-height:${labelSize.height}mm;margin:0;padding:${labelSize.margin}mm;overflow:hidden;border:0;box-sizing:border-box;page-break-after:always;break-after:page;page-break-inside:avoid;break-inside:avoid;color:#111;background:#fff;font-family:Arial,sans-serif}
   .reverse-label:last-child{page-break-after:auto;break-after:auto}
   .reverse-label header{display:flex;align-items:center;gap:1.5mm;border-bottom:.2mm solid #aaa;padding-bottom:1mm;min-height:7mm;overflow:hidden}
