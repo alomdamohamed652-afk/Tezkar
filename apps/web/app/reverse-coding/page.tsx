@@ -41,8 +41,8 @@ export default function ReverseCodingPage(){
  const filtered=useMemo(()=>groups.filter(g=>(g.name+" "+g.packaging_type+" "+(g.order_code??"")).toLowerCase().includes(search.toLowerCase())),[groups,search]);
  async function createGroup(e:FormEvent){
   e.preventDefault();setBusy(true);setError("");
-  try{const r=await api<{data:Group}>("/api/reverse-coding/groups",{method:"POST",body:JSON.stringify({name,packagingType:packaging,productId:productId||null,orderId:orderId||null,totalQuantity:Number(total),piecesPerCode:Number(perCode),weightGrams:weight===""?null:Number(weight),notes:notes||null})});
-   setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setName("");setTotal("");setPerCode("");setWeight("");setNotes("");
+  try{const r=await api<{data:Group}>("/api/reverse-coding/groups",{method:"POST",body:JSON.stringify({packagingType:packaging,productId,displayProductName:displayProductName.trim()||null,codeCount:Number(codeCount),piecesPerCode:Number(perCode),weightMinKg:weightMinKg===""?null:Number(weightMinKg),weightMaxKg:weightMaxKg===""?null:Number(weightMaxKg)})});
+   setGroups(x=>[r.data,...x]);setSelected(r.data);setSelectedCodes([]);setName("");setTotal("");setPerCode("");setWeight("");setNotes("");setCodeCount("1");setWeightMinKg("");setWeightMaxKg("");setDisplayProductName("");
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الأكواد");}finally{setBusy(false);}
  }
  async function openGroup(g:Group){try{const r=await api<{data:Group}>("/api/reverse-coding/groups/"+g.id);setSelected(r.data);setSelectedCodes([]);}catch(e){setError(e instanceof Error?e.message:"تعذر فتح المجموعة");}}
@@ -180,8 +180,8 @@ export default function ReverseCodingPage(){
  </main></div>
  <div className="reverse-print-area">{printRows.map((r,i)=>{const s=r.snapshot;return <article className="reverse-label" key={r.id??i}>
   <header>{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo"/>}<div><strong>{s.company?.companyName||"TEZKAR"}</strong><small>{s.company?.address||""}</small><small>{s.company?.phone||""}</small></div></header>
-  <div className="reverse-label-title">{s.packagingType} · {s.name}</div><div className="reverse-label-code">{s.code}</div><div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div>
-  <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: <b>{s.weightGrams??"—"} جم</b></span></div>
+  <div className="reverse-label-title">{s.productName||""}</div><div className="reverse-label-code">{s.code}</div><div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div>
+  <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: <b>{s.weightMinKg??"—"} – {s.weightMaxKg??"—"} كجم</b></span></div>
   <div className="reverse-label-meta"><span>الطلبية: <b>{s.orderCode||"—"}</b></span><span>المنتج: <b>{s.productName||"—"}</b></span></div>
   <footer>TEZKAR · {s.createdAt?new Date(s.createdAt).toLocaleDateString("en-GB"):""}</footer>
  </article>})}</div>
@@ -199,7 +199,7 @@ export default function ReverseCodingPage(){
   .reverse-label header div{display:grid;gap:.3mm;min-width:0}.reverse-label header strong{font-size:clamp(8px,2.8mm,12px)}.reverse-label header small{font-size:clamp(6px,1.7mm,8px);overflow-wrap:anywhere}
   .reverse-logo{width:12mm;height:8mm;object-fit:contain;flex:0 0 auto}
   .reverse-label-title{text-align:center;font-size:clamp(7px,2.2mm,10px);font-weight:bold;margin-top:1mm;overflow:hidden}
-  .reverse-label-code{text-align:center;font-family:monospace;font-weight:bold;font-size:clamp(9px,3mm,13px);margin-top:.5mm;overflow-wrap:anywhere}
+  .reverse-label-code{text-align:center;font-family:Arial,sans-serif;font-weight:900;font-size:clamp(12px,4mm,18px);margin-top:.5mm;overflow-wrap:anywhere}
   .reverse-barcode{height:${Math.max(7,Math.min(18,labelSize.height*.25))}mm;overflow:hidden;text-align:center}.reverse-barcode svg{height:100%!important;max-width:100%}
   .reverse-label-meta{display:flex;justify-content:space-between;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:1mm;overflow:hidden}
   .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:1mm;padding-top:.6mm}
