@@ -103,6 +103,26 @@ export async function reverseCodingRoutes(app:FastifyInstance){
    await audit(c,request,"print","reverse_codes",ids[0]??null,undefined,{count:result.length});return {data:result};
   });
  });
+ app.get("/api/reverse-coding/cartons",{preHandler:[authenticateRequest,requirePermission("reverse_coding.view")]},async request=>{
+  const q=String((request.query as any)?.search??"").trim();
+  if(q.length<2)throw new AppError("SEARCH_REQUIRED","اكتب حرفين على الأقل للبحث عن كود الكرتونة",422);
+  const r=await pool.query(`SELECT c.id code_id,c.code,c.quantity,c.status code_status,g.packaging_type,g.weight_min_kg,g.weight_max_kg,
+    p.name product_name,cr.id carton_record_id,cr.display_product_name,cr.actual_weight_kg,cr.notes,cr.updated_at,
+    pe.full_name production_owner_name,pp.full_name production_partner_name,
+    pa.full_name packer_name,pap.full_name packer_partner_name
+   FROM reverse_codes c
+   JOIN reverse_code_groups g ON g.id=c.group_id
+   LEFT JOIN reverse_code_carton_records cr ON cr.code_id=c.id
+   LEFT JOIN products p ON p.id=COALESCE(cr.product_id,g.product_id)
+   LEFT JOIN employees pe ON pe.id=cr.production_employee_id
+   LEFT JOIN employees pp ON pp.id=cr.production_partner_employee_id
+   LEFT JOIN employees pa ON pa.id=cr.packer_employee_id
+   LEFT JOIN employees pap ON pap.id=cr.packer_partner_employee_id
+   WHERE c.code ILIKE '%'||$1||'%'
+   ORDER BY CASE WHEN c.code=$1 THEN 0 WHEN c.code ILIKE $1||'%' THEN 1 ELSE 2 END,c.created_at DESC
+   LIMIT 50`,[q]);
+  return {data:r.rows};
+ });
  app.post("/api/reverse-coding/scan",{preHandler:[authenticateRequest,requirePermission("reverse_coding.scan")]},async request=>{
   const p=z.object({values:z.array(z.string().trim().min(1).max(200)).min(1).max(200),sessionId:z.string().uuid().nullable().optional()}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المسح غير صحيحة",422);
   return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){const duplicate=seen.has(value);seen.add(value);
