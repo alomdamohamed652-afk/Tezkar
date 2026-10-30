@@ -921,6 +921,49 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledOrderSummary.json().data.orderAccount.remaining),0,
         "fully settled order production must have no remaining balance");
 
+      // Previous-custody settlement is bounded by the selected order, not the worker's
+      // global available balance. A standalone ledger deduction can make the global
+      // balance lower while the selected order still has its own payable production.
+      const orderScopedSettlementWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Order Scoped Settlement Worker') RETURNING id"
+      )).rows[0];
+      const orderScopedProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,10,$6,$7,10,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [orderScopedSettlementWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(orderScopedProduction.total_earning_amount),100);
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',40,$2,'order-scoped settlement regression deduction')",
+        [orderScopedSettlementWorker.id,manager.id]
+      );
+      const orderScopedSummary=await app.inject({
+        method:"GET",
+        url:`/api/worker-payments/settlement-summary?employeeId=${orderScopedSettlementWorker.id}&orderId=${multiOrderId}&orderStageId=${reconcileOrderStage.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(orderScopedSummary.statusCode,200,orderScopedSummary.body);
+      assert.equal(Number(orderScopedSummary.json().data.availableForSettlement),100,
+        "selected order due must remain independent from the lower global balance");
+      const orderScopedPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:orderScopedSettlementWorker.id,settlementSource:"PREVIOUS_CUSTODY",
+          orderId:multiOrderId,orderStageId:reconcileOrderStage.id,amount:100,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(orderScopedPayout.statusCode,201,orderScopedPayout.body,
+        "previous-custody payout must validate and execute against selected order balance, not global available balance");
+      assert.equal(Number(orderScopedPayout.json().data.grossAmount),100);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [orderScopedPayout.json().data.payment.id]
+      )).rows[0].count),0,"order-scoped previous-custody settlement must not debit current custody");
+
       const employeeStatementAfterReconcile=await app.inject({
         method:"GET",url:`/api/worker-payments/employee-statement?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
