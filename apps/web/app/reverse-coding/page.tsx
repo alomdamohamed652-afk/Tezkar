@@ -4,7 +4,8 @@ import { api } from "../../lib/api";
 import { Sidebar,usePermissions } from "../../components/sidebar";
 import { Code128Barcode } from "../../components/code128-barcode";
 
-type Item={id:string;code:string;name:string};\ntype OrderItem={id:string;code:string;order_name:string};
+type Item={id:string;code:string;name:string};
+type OrderItem={id:string;code:string;order_name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
