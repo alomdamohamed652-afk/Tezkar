@@ -101,7 +101,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const integrityCounts=integrityOverview.json().data.counts;
       for(const key of [
         "missingPayrollExpenses","missingAdjustmentLedgerEntries","cashPaymentsMissingCustodyOut",
-        "payrollPaymentMismatches","expensesMissingCustodyLink"
+        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink"
       ]){
         assert.equal(typeof integrityCounts[key],"number",`financial integrity overview must return numeric count for ${key}`);
       }
