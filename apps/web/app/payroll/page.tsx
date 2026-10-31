@@ -113,7 +113,7 @@ export default function PayrollPage(){
  }
  async function previewAttendance(){
   if(!payroll.period)return;
-  if(payroll.period.attendance_calculated_at&&!window.confirm("إعادة الاحتساب ستحدّث بنود الوقت والإضافي وتُسجل النسخة السابقة في سجل الإلغاء. هل تريد المتابعة؟"))return;
+  if(payroll.period.attendance_calculated_at&&!window.confirm("إعادة الاحتساب ستحدّث بنود الوقت والإضافي وتحفظ النسخ السابقة كسجل ملغي، وقد تعيد إنشاء بند وقت سبق إلغاؤه. هل تريد المتابعة؟"))return;
   setBusy(true);setError("");setNotice("");
   try{
    const [year,monthNumber]=month.split("-").map(Number);const lastDay=new Date(year,monthNumber,0).getDate();
