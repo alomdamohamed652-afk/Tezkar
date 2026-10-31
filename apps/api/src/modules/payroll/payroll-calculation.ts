@@ -98,7 +98,7 @@ export function calculateAttendancePayroll(input: {
     scheduledMinutes += scheduled;
 
     const overtime = Math.max(0, Math.floor(Number(day.overtimeMinutes ?? 0)));
-    if (!day.needsReview && day.status !== "MISSING_PUNCH" && day.status !== "NO_SCHEDULE_WITH_PUNCH") {
+    if (day.salaryActive !== false && !day.needsReview && day.status !== "MISSING_PUNCH" && day.status !== "NO_SCHEDULE_WITH_PUNCH") {
       overtimeMinutes += overtime;
     }
 
