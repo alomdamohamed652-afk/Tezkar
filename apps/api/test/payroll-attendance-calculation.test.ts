@@ -50,6 +50,18 @@ test("overnight schedules use their actual cross-midnight duration", () => {
   assert.equal(result.timeDeduction, 2400);
 });
 
+test("salary-inactive calendar days do not dilute the hourly rate", () => {
+  const result = calculateAttendancePayroll({
+    baseSalary: 3000, overtimeMultiplier: 1.5,
+    days: [
+      { scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", salaryActive: false },
+      { scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", salaryActive: true, workedMinutes: 480 }
+    ]
+  });
+  assert.equal(result.scheduledMinutes, 480);
+  assert.equal(result.hourlyRate, 375);
+});
+
 test("attendance payroll validates the overtime multiplier", () => {
   assert.throws(() => calculateAttendancePayroll({baseSalary:1000,overtimeMultiplier:0.5,days:[]}), RangeError);
 });
