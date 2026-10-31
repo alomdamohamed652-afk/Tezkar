@@ -13,7 +13,7 @@ type PayrollItem = {
 };
 type PayrollData = { period: { id: string; period_month: string; status: string } | null; items: PayrollItem[] };
 type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null; status?:"ACTIVE"|"VOIDED" };
-type AttendanceSnapshotDay = { workedMinutes?:number; overtimeMinutes?:number; lateMinutes?:number; earlyMinutes?:number; status?:string; needsReview?:boolean; scheduledStart?:string|null; scheduledEnd?:string|null };
+type AttendanceSnapshotDay = { workedMinutes?:number; overtimeMinutes?:number; lateMinutes?:number; earlyMinutes?:number; status?:string; needsReview?:boolean; isDayOff?:boolean; scheduledStart?:string|null; scheduledEnd?:string|null };
 type AdvanceDeduction = { id:string; advance_id:string; amount:string|number; repayment_type:string; advance_code:string|null; advance_reason:string|null; advance_amount:string|number; repayment_status:string; repayment_id:string|null; repaid_amount:string|number|null; repayment_date:string|null };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
