@@ -464,6 +464,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(timePreview.statusCode,200,timePreview.body);
       assert.equal(timePreview.json().data.totals.timeDeduction,34.95);
       assert.equal(timePreview.json().data.totals.overtimeBonus,6.05);
+      const repeatedTimePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${timePeriod.id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(repeatedTimePreview.statusCode,200,repeatedTimePreview.body);
+      const timeLineHistory=await apiPool.query("SELECT status,source_type,void_reason FROM payroll_adjustment_lines WHERE payroll_item_id=$1 ORDER BY created_at,id",[timeItem.id]);
+      assert.equal(timeLineHistory.rowCount,4,"recalculation must preserve prior generated time lines as voided history");
+      assert.equal(timeLineHistory.rows.filter((line:any)=>line.status==="VOIDED").length,2);
+      assert.ok(timeLineHistory.rows.filter((line:any)=>line.status==="VOIDED").every((line:any)=>line.void_reason));
       const draftTimeLines=await apiPool.query("SELECT source_type,line_type,amount FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",[timeItem.id]);
       assert.equal(draftTimeLines.rowCount,2,"time adjustments must be visible and reviewable while the period is still a draft");
       const timeApproval=await app.inject({
