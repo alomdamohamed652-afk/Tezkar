@@ -158,3 +158,23 @@ This section supersedes older sequencing notes above where the repository has si
 - CI success is necessary but not equivalent to browser acceptance or business-flow verification.
 - Keep test databases disposable and isolated; do not use production data for destructive tests.
 - Do not merge, close, rebase, or deploy a PR solely because its CI is green. Review current-base compatibility and preserve the existing financial source of truth first.
+
+
+### CI and Railway snapshot — 2026-10-31 05:03 UTC
+
+- PR #226: CI `success` on `72bce4c`.
+- PR #227: CI `success` on corrected head `8acd9e7`.
+- PR #230: CI `success` on `6e923aa`.
+- PR #231: CI `success` on `4da8cdd`.
+- PR #196 audit-document update: CI `success` on `17094d1`.
+- PRs #226–#231 remain unmerged; the new test/feature PRs remain Draft pending review and release sequencing.
+
+**Railway production read-only check**
+- Only one Railway environment is configured: `production`; there is no separate staging environment.
+- Tezkar Web, Tezkar API, and Postgres are all online, each with one running replica and zero Railway warnings/critical issues.
+- No staged Railway changes are pending.
+- Web and API are both deployed from `fix/release-migration-order-ci` at commit `c7377bf`.
+- Over the last 24 hours, Railway reported zero 5xx responses across 7,360 API requests and 9,886 Web requests. Observed p95 latency was approximately 244 ms for the API and 296 ms for Web.
+- This verifies service health and deployment provenance only. It does not verify database backup restoration, schema migration state inside production, or browser acceptance of every workflow.
+
+**Frontend checklist count:** 40 routes plus 12 shared checks remain unchecked (52 total). Do not mark them complete from CI alone.
