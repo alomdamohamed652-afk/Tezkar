@@ -567,12 +567,24 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "approving payroll must not repay an advance before the salary is paid");
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[salaryPercentageAdvance.rows[0].id])).rows[0].count,0);
 
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',1000,CURRENT_DATE,'Payroll cash custody test',$2)",
+        [employeeA.rows[0].id,userId]
+      );
       const februaryPayment=await app.inject({
         method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
-        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"TEST"}
+        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"CASH",fromCustody:true,custodyEmployeeId:employeeA.rows[0].id}
       });
       assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
       assert.equal(februaryPayment.json().data.status,"PAID");
+      const payrollCashMovements=await apiPool.query(
+        "SELECT direction,amount,source_type FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') ORDER BY direction",
+        [februaryPayment.json().data.payment.id]
+      );
+      assert.equal(payrollCashMovements.rowCount,1,"cash payroll with advance deductions must create one physical cash movement");
+      assert.equal(payrollCashMovements.rows[0].direction,"OUT");
+      assert.equal(payrollCashMovements.rows[0].source_type,"PAYROLL_PAYMENT");
+      assert.equal(Number(payrollCashMovements.rows[0].amount),600,"custody OUT must equal net cash paid, not gross salary before advance offsets");
       const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000,"the base salary must be credited independently");
