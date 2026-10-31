@@ -356,7 +356,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         });
         const sources=[
           {sourceType:"ATTENDANCE_OVERTIME",lineType:"BONUS" as const,amount:time.overtimeBonus,description:"أجر ساعات إضافية ("+(time.overtimeMinutes/60).toFixed(2)+" ساعة × "+overtimeMultiplier+")",notes:"ساعات الإضافي المؤهلة من البصمة: "+time.overtimeMinutes+" دقيقة. أجر الساعة محسوب من الأساسي ÷ دقائق الجدول الساري."},
-          {sourceType:"ATTENDANCE_TIME_DEDUCTION",lineType:"DEDUCTION" as const,amount:time.timeDeduction,description:"خصم غياب/تأخير/انصراف مبكر ("+(time.missingMinutes/60).toFixed(2)+" ساعة)",notes:"وقت غير مستحق بعد تطبيق سماح التأخير والانصراف: "+time.missingMinutes+" دقيقة. أيام تحتاج مراجعة مستثناة: "+time.reviewDays+"."}
+          {sourceType:"ATTENDANCE_TIME_DEDUCTION",lineType:"DEDUCTION" as const,amount:time.timeDeduction,description:"خصم غياب/تأخير/انصراف مبكر ("+(time.missingMinutes/60).toFixed(2)+" ساعة)",notes:"غياب: "+time.absenceMinutes+" دقيقة؛ تأخير بعد السماح: "+time.lateMinutes+" دقيقة؛ انصراف مبكر بعد السماح: "+time.earlyMinutes+" دقيقة. أيام تحتاج مراجعة مستثناة: "+time.reviewDays+"."}
         ];
         for(const source of sources){
           if(source.amount<=0)continue;
@@ -368,7 +368,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         if(Number(item.base_salary)+bonus<deduction+Number(item.advance_repayment_amount??0))
           throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الوقت والخصومات اليدوية وأقساط السلف أكبر من الراتب والمكافآت؛ راجع البنود قبل الاعتماد",409);
         await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,item.id]);
-        employees.push({employeeId:item.employee_id,employeeName:item.full_name,scheduledHours:Number((time.scheduledMinutes/60).toFixed(2)),regularWorkedHours:Number((time.workedMinutes/60).toFixed(2)),missingHours:Number((time.missingMinutes/60).toFixed(2)),overtimeHours:Number((time.overtimeMinutes/60).toFixed(2)),hourlyRate:time.hourlyRate,timeDeduction:time.timeDeduction,overtimeBonus:time.overtimeBonus,reviewDays:time.reviewDays});
+        employees.push({employeeId:item.employee_id,employeeName:item.full_name,scheduledHours:Number((time.scheduledMinutes/60).toFixed(2)),regularWorkedHours:Number((time.workedMinutes/60).toFixed(2)),missingHours:Number((time.missingMinutes/60).toFixed(2)),absenceMinutes:time.absenceMinutes,lateMinutes:time.lateMinutes,earlyMinutes:time.earlyMinutes,overtimeHours:Number((time.overtimeMinutes/60).toFixed(2)),hourlyRate:time.hourlyRate,timeDeduction:time.timeDeduction,overtimeBonus:time.overtimeBonus,reviewDays:time.reviewDays});
         totalTimeDeduction+=time.timeDeduction;totalOvertimeBonus+=time.overtimeBonus;totalOvertimeMinutes+=time.overtimeMinutes;totalMissingMinutes+=time.missingMinutes;totalReviewDays+=time.reviewDays;
       }
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"preview_attendance",module:"payroll",entityType:"payroll_period",entityId:id,metadata:{overtimeMultiplier,employeeCount:employees.length,totalTimeDeduction,totalOvertimeBonus,totalOvertimeMinutes,totalMissingMinutes,totalReviewDays},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
