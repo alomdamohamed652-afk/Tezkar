@@ -92,8 +92,8 @@ export default function SettingsPage(){
   for(const p of visiblePermissions){
    const allowed=preset==="none"?false:
     preset==="own"?((p.action==="view_own"||p.action==="view")&&p.scope==="own"):
-    preset==="read"?["view","view_own","lookup"].includes(p.action):
-    ["view","view_own","lookup","create","edit"].includes(p.action);
+    preset==="read"?["view","view_own","lookup","dashboard"].includes(p.action):
+    ["view","view_own","lookup","dashboard","create","edit"].includes(p.action);
    if(allowed)selected.add(p.id);else selected.delete(p.id);
   }
   setRolePermissionIds(Array.from(selected));
