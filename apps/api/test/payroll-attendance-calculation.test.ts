@@ -54,12 +54,13 @@ test("salary-inactive calendar days do not dilute the hourly rate", () => {
   const result = calculateAttendancePayroll({
     baseSalary: 3000, overtimeMultiplier: 1.5,
     days: [
-      { scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", salaryActive: false },
+      { scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", salaryActive: false, overtimeMinutes: 60 },
       { scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", salaryActive: true, workedMinutes: 480 }
     ]
   });
   assert.equal(result.scheduledMinutes, 480);
   assert.equal(result.hourlyRate, 375);
+  assert.equal(result.overtimeMinutes, 0);
 });
 
 test("attendance payroll validates the overtime multiplier", () => {
