@@ -6,7 +6,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { belongsToAttendanceShift, calculateWorkedMinutes, selectAttendanceDayEvents } from "./attendance-calculation.js";
+import { belongsToAttendanceShift, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents } from "./attendance-calculation.js";
 import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
@@ -215,7 +215,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    const date=addDateKey(dates.data.from,dayIndex);const weekday=new Date(date+"T00:00:00Z").getUTCDay();
    for(const employee of employees){
     const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
-    const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:schedules.find(s=>s.employee_id===employee.id&&s.weekday===weekday&&s.effective_from<=date&&(!s.effective_to||s.effective_to>=date));
+    const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:findEffectiveAttendanceSchedule(schedules,employee.id,weekday,date);
     const noSchedule=!schedule;const dayOff=Boolean(schedule?.is_day_off);const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
     const assigned=punches.filter(p=>{
      if(p.employee_id!==employee.id||used.has(p.id))return false;
