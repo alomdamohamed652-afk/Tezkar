@@ -36,6 +36,7 @@ export type PayrollAttendanceDay = {
   scheduledStart?: string | null;
   scheduledEnd?: string | null;
   isDayOff?: boolean;
+  salaryActive?: boolean;
   status?: string;
   needsReview?: boolean;
   workedMinutes?: number;
@@ -93,7 +94,7 @@ export function calculateAttendancePayroll(input: {
   let reviewDays = 0;
 
   for (const day of input.days) {
-    const scheduled = day.isDayOff ? 0 : minutesForShift(day.scheduledStart, day.scheduledEnd);
+    const scheduled = day.isDayOff || day.salaryActive === false ? 0 : minutesForShift(day.scheduledStart, day.scheduledEnd);
     scheduledMinutes += scheduled;
 
     const overtime = Math.max(0, Math.floor(Number(day.overtimeMinutes ?? 0)));
