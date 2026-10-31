@@ -549,15 +549,12 @@ export async function payrollRoutes(app: FastifyInstance) {
       if(parsed.data.paymentMethod==="CASH" && !fromCustody)throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة",422);
       const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
         [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
-      let custodyIn=null;
-      if(fromCustody && committedAdvanceRepayment>0)custodyIn=await client.query(
-        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3::date,$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
-        [custodyEmployeeId,committedAdvanceRepayment,paymentDate,"استرداد سلف من مستحقات الراتب",`خصم سلف إجمالي ${committedAdvanceRepayment.toFixed(2)} ج.م`,payment.rows[0].id,request.user!.userId]
-      );
+      // Cash custody records physical cash only: advance offsets reduce the employee's
+      // net entitlement, but no cash is received back by the custodian.
       let custodyOut=null;
       if(fromCustody)custodyOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3::date,$4,$5,'PAYROLL_PAYMENT',$6,$7) RETURNING id",
-        [custodyEmployeeId,parsed.data.amount+committedAdvanceRepayment,paymentDate,"صرف راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,payment.rows[0].id,request.user!.userId]
+        [custodyEmployeeId,parsed.data.amount,paymentDate,"صرف صافي راتب الموظف "+item.rows[0].employee_id,parsed.data.notes??(committedAdvanceRepayment>0?`صافي النقد المدفوع ${parsed.data.amount.toFixed(2)} ج.م بعد خصم سلف ${committedAdvanceRepayment.toFixed(2)} ج.م`:null),payment.rows[0].id,request.user!.userId]
       );
 
       await client.query(
@@ -575,7 +572,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         [item.rows[0].employee_id,status==="PAID"?"تم صرف راتبك بالكامل":"تم تسجيل دفعة من راتبك",
           status==="PAID"?"تم تسجيل صرف مستحقات راتبك بالكامل.":"تم تسجيل دفعة راتب جديدة بمبلغ "+parsed.data.amount.toFixed(2)+" ج.م.",id]
       );
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,fromCustody,custodyEmployeeId,cashCustodyOutId:custodyOut?.rows[0]?.id??null,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,fromCustody,custodyEmployeeId,cashCustodyOutId:custodyOut?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status, replayed:false };
     });
     const {replayed,...responseData}=result;
