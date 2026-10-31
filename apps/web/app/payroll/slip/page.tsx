@@ -12,7 +12,8 @@ type PayrollItem = {
   status: string; notes: string | null;
 };
 type PayrollData = { period: { id: string; period_month: string; status: string } | null; items: PayrollItem[] };
-type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null };
+type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null; status?:"ACTIVE"|"VOIDED" };
+type AttendanceSnapshotDay = { workedMinutes?:number; overtimeMinutes?:number; lateMinutes?:number; earlyMinutes?:number; status?:string; needsReview?:boolean; scheduledStart?:string|null; scheduledEnd?:string|null };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
 const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل" };
@@ -21,6 +22,7 @@ export default function PayrollSlipPage() {
   const [item, setItem] = useState<PayrollItem | null>(null);
   const [periodStatus, setPeriodStatus] = useState("");
   const [adjustments, setAdjustments] = useState<AdjustmentLine[]>([]);
+  const [attendanceDays, setAttendanceDays] = useState<AttendanceSnapshotDay[]>([]);
   const [month, setMonth] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -40,10 +42,16 @@ export default function PayrollSlipPage() {
         setItem(found);
         setPeriodStatus(result.data.period?.status || "");
         try {
-          const lines = await api<{data:AdjustmentLine[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/adjustments");
-          if (active) setAdjustments(lines.data);
+          const [lines,attendance] = await Promise.all([
+            api<{data:AdjustmentLine[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/adjustments"),
+            api<{data:Array<{snapshotData:AttendanceSnapshotDay}>}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/attendance-snapshot")
+          ]);
+          if (active) {
+            setAdjustments(lines.data.filter(line=>line.status!=="VOIDED"));
+            setAttendanceDays(attendance.data.map(row=>row.snapshotData));
+          }
         } catch {
-          if (active) setError("تعذر تحميل تفاصيل المكافآت والخصومات. أعد تحميل الصفحة.");
+          if (active) setError("تعذر تحميل تفاصيل المكافآت والخصومات والحضور. أعد تحميل الصفحة.");
         }
       })
       .catch(e => { if (active) setError(e instanceof Error ? e.message : "تعذر تحميل مفردات المرتب."); })
@@ -59,6 +67,12 @@ export default function PayrollSlipPage() {
   const deductionLines = adjustments.filter(line => line.line_type === "DEDUCTION");
   const totalEarnings = Number(item.base_salary) + bonusLines.reduce((sum,line)=>sum+Number(line.amount),0);
   const totalDeductions = deductionLines.reduce((sum,line)=>sum+Number(line.amount),0) + Number(item.advance_repayment_amount || 0);
+  const totalWorkedMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.workedMinutes??0),0);
+  const totalOvertimeMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.overtimeMinutes??0),0);
+  const totalLateMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.lateMinutes??0),0);
+  const totalEarlyMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.earlyMinutes??0),0);
+  const absentDays = attendanceDays.filter(day=>day.status==="ABSENT").length;
+  const reviewDays = attendanceDays.filter(day=>day.needsReview||day.status==="MISSING_PUNCH").length;
   const documentNo = "SAL-" + month.replace("-", "") + "-" + item.id.slice(0, 8).toUpperCase();
 
   return (
@@ -110,7 +124,19 @@ export default function PayrollSlipPage() {
         </section>
 
         <section className="slip-section">
-          <h3>ثالثًا: التسويات السابقة</h3>
+          <h3>ثالثًا: الوقت والحضور</h3>
+          <table><thead><tr><th>البيان</th><th>الإجمالي</th></tr></thead><tbody>
+            <tr><td>إجمالي ساعات العمل المسجلة</td><td>{(totalWorkedMinutes/60).toFixed(2)} ساعة</td></tr>
+            <tr><td>ساعات العمل الإضافي</td><td>{(totalOvertimeMinutes/60).toFixed(2)} ساعة</td></tr>
+            <tr><td>أيام الغياب</td><td>{absentDays} يوم</td></tr>
+            <tr><td>دقائق التأخير بعد السماح</td><td>{totalLateMinutes} دقيقة</td></tr>
+            <tr><td>دقائق الانصراف المبكر بعد السماح</td><td>{totalEarlyMinutes} دقيقة</td></tr>
+            <tr><td>أيام تحتاج مراجعة ولا يطبق عليها خصم تلقائي</td><td>{reviewDays} يوم</td></tr>
+          </tbody></table>
+        </section>
+
+        <section className="slip-section">
+          <h3>رابعًا: التسويات السابقة</h3>
           <div className="settlement-box">
             <div><span>تسويات أو دفعات تخص فترات سابقة</span><strong>تُعرض منفصلة عن صافي الشهر</strong></div>
             <p>لا يوجد في بيانات هذا المسير مبلغ تسوية سابق مستقل مرتبط ببند المرتب. لا تُخصم أي دفعة قديمة مرة أخرى؛ يجب ربطها بسجلها الأصلي أو تسجيلها كتسوية معتمدة مستقلة قبل إظهار مبلغ هنا.</p>
