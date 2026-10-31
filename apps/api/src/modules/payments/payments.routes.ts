@@ -1434,8 +1434,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
       }
-      if (value.settlementMode === "SELECTED_PRODUCTION" && (!value.productionEntryIds?.length || value.settlementSource !== "CURRENT_CUSTODY")) {
-        ctx.addIssue({ code: "custom", path: ["productionEntryIds"], message: "اختيار سجلات إنتاج محددة يتطلب عهدة حالية وسجل إنتاج واحدًا على الأقل" });
+      if (value.settlementMode === "SELECTED_PRODUCTION" && !value.productionEntryIds?.length) {
+        ctx.addIssue({ code: "custom", path: ["productionEntryIds"], message: "اختيار سجلات إنتاج محددة يتطلب سجل إنتاج واحدًا على الأقل" });
       }
       if (value.productionEntryIds && new Set(value.productionEntryIds).size !== value.productionEntryIds.length) {
         ctx.addIssue({ code: "custom", path: ["productionEntryIds"], message: "لا يمكن تكرار سجل الإنتاج في التسوية نفسها" });
@@ -1654,9 +1654,9 @@ export async function paymentsRoutes(app:FastifyInstance){
         }
       }
 
-      if(parsed.data.settlementSource==="CURRENT_CUSTODY" && parsed.data.productionEntryIds !== undefined){
+      if(parsed.data.productionEntryIds !== undefined && (parsed.data.settlementSource==="CURRENT_CUSTODY" || parsed.data.settlementMode==="SELECTED_PRODUCTION")){
         const selected=await client.query(`
-          SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+          SELECT p.id,os.order_id,p.order_stage_id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
             -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
             -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
@@ -1671,12 +1671,13 @@ export async function paymentsRoutes(app:FastifyInstance){
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wp.id)
                 AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0) AS remaining
-          FROM production_entries p
+          FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
           WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.id=ANY($2::uuid[])
           ORDER BY p.work_date,p.created_at,p.id
-          FOR UPDATE
+          FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
         if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
+        if(parsed.data.settlementSource==="PREVIOUS_CUSTODY" && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
         if(parsed.data.settlementMode==="SELECTED_PRODUCTION"){
           const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
           if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المختارة تمت تسويتها بالفعل",409);
@@ -1726,9 +1727,10 @@ export async function paymentsRoutes(app:FastifyInstance){
             FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+             AND ($4::uuid[] IS NULL OR p.id=ANY($4::uuid[]))
            ORDER BY p.work_date,p.created_at,p.id
            FOR UPDATE OF p
-        `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
+        `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null,parsed.data.settlementMode==="SELECTED_PRODUCTION"?parsed.data.productionEntryIds??null:null]);
         for(const row of productionRows.rows){
           const rowRemaining=Number(row.remaining);
           // Unallocated historical payments are counted against the order-level balance,
