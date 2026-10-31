@@ -17,6 +17,8 @@ export default function AdvancesPage(){
  const {has,permissions}=usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[method,setMethod]=useState("CUSTOM"),[installment,setInstallment]=useState(""),[salaryPercentage,setSalaryPercentage]=useState(""),[percentage,setPercentage]=useState(""),[productionPeriodDays,setProductionPeriodDays]=useState("15"),[productionMinimumEarning,setProductionMinimumEarning]=useState(""),[productionInstallmentAmount,setProductionInstallmentAmount]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleNotes,setSettleNotes]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null),[myAccount,setMyAccount]=useState<MyAccount|null>(null);
+ const [repayingId,setRepayingId]=useState<string|null>(null);
+ const [repaymentRetries,setRepaymentRetries]=useState<Record<string,{amount:number;idempotencyKey:string;paymentDate:string}>>({});
  async function load(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
@@ -66,7 +68,20 @@ export default function AdvancesPage(){
  async function repay(id:string,remaining:number){
   const raw=window.prompt("مبلغ السداد — المتبقي "+remaining);if(raw===null)return;
   const amountValue=Number(normalizeNumber(raw));if(!Number.isFinite(amountValue)||amountValue<=0){setError("مبلغ السداد غير صحيح");return}
-  try{await api("/api/advances/"+id+"/repayments",{method:"POST",body:JSON.stringify({amount:amountValue,repaymentType:"CUSTOM"})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل السداد")}
+  const pending=repaymentRetries[id];
+  const repaymentRequest=pending&&pending.amount===amountValue
+   ?pending
+   :{amount:amountValue,idempotencyKey:crypto.randomUUID(),paymentDate:new Date().toISOString().slice(0,10)};
+  setRepaymentRetries(current=>({...current,[id]:repaymentRequest}));
+  setRepayingId(id);setError("");
+  try{
+   await api("/api/advances/"+id+"/repayments",{method:"POST",body:JSON.stringify({
+    amount:repaymentRequest.amount,repaymentType:"CUSTOM",idempotencyKey:repaymentRequest.idempotencyKey,paymentDate:repaymentRequest.paymentDate
+   })});
+   setRepaymentRetries(current=>{const next={...current};delete next[id];return next});
+   await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل السداد")}
+  finally{setRepayingId(null)}
  }
  async function settleProduction(e:FormEvent){
   e.preventDefault();setSettling(true);setError("");setSettlementResult(null);
@@ -132,7 +147,7 @@ export default function AdvancesPage(){
   {items.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td className="strong">{x.employee_name}</td><td className="money">{formatMoney(x.amount)}</td><td className="money">{formatMoney(x.repaid_amount||0)}</td><td className="money">{formatMoney(x.remaining_amount||0)}</td><td className="money" style={{color:Number(x.account_balance??0)<0?"#dc2626":undefined}}>{formatMoney(x.account_balance??0)}</td><td>{repaymentLabels[x.repayment_method]||x.repayment_method}{x.repayment_method==="FIXED_INSTALLMENT"&&x.installment_amount? <div className="form-hint">{formatMoney(x.installment_amount)} ج.م شهريًا</div>:null}{x.repayment_method==="SALARY_PERCENTAGE"&&x.salary_percentage? <div className="form-hint">{formatQuantity(x.salary_percentage,2)}% من الراتب الأساسي</div>:null}{x.repayment_method==="PRODUCTION_PERCENTAGE"? <div className="form-hint">{x.production_installment_amount?formatMoney(x.production_installment_amount)+" ج.م":formatQuantity(x.production_percentage??0,2)+"%"} كل {x.production_period_days??15} يومًا{x.production_minimum_earning? " عند بلوغ "+formatMoney(x.production_minimum_earning)+" ج.م إنتاج":""}</div>:null}{["FIXED_INSTALLMENT","SALARY_PERCENTAGE","PRODUCTION_PERCENTAGE"].includes(x.repayment_method)?<div className="form-hint">السداد يُسجل آليًا</div>:null}</td><td>{new Date(x.created_at).toLocaleString("ar-EG")}</td><td><span className={"status "+x.status.toLowerCase()}>{labels[x.status]||x.status}{x.repayment_status==="SETTLED"?" · مسددة":""}</span></td><td>
    {x.status==="PENDING"&&<div className="row-actions">{has("advances.approve")&&<button className="approve-button" onClick={()=>action(x.id,"approve")}>اعتماد</button>}{has("advances.reject")&&<button className="reject-button" onClick={()=>action(x.id,"reject")}>رفض</button>}</div>}
    {x.status==="APPROVED"&&has("advances.pay")&&<button className="approve-button" onClick={()=>action(x.id,"pay")}>صرف السلفة</button>}
-   {x.status==="PAID"&&x.repayment_status==="OPEN"&&has("advances.repay")&&<button className="secondary-btn" onClick={()=>repay(x.id,Number(x.remaining_amount))}>تسجيل سداد</button>}
+   {x.status==="PAID"&&x.repayment_status==="OPEN"&&has("advances.repay")&&<button className="secondary-btn" disabled={repayingId===x.id} onClick={()=>repay(x.id,Number(x.remaining_amount))}>{repayingId===x.id?"جارٍ تسجيل السداد...":"تسجيل سداد"}</button>}
   </td></tr>)}
   {!items.length&&<tr><td colSpan={10}>لا توجد سلف.</td></tr>}</tbody></table></div>
  </section>
