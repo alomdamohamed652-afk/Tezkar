@@ -623,6 +623,43 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(Number(rowB.paid), 700);
       assert.equal(Number(rowB.paid) <= Number(rowB.net_amount), true);
 
+      // The read-only financial integrity overview must detect deliberately corrupted links.
+      const diagnosticAdvance = await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,installment_amount,repayment_status)
+         VALUES($1,100,'Integrity diagnostic advance','PAID',$2,$2,'2099-01-15T12:00:00Z','FIXED_INSTALLMENT',10,'OPEN')
+         RETURNING id`,
+        [employeeA.rows[0].id,userId]
+      );
+      await apiPool.query(
+        "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,10,'FIXED_INSTALLMENT')",
+        [februaryItem.id,diagnosticAdvance.rows[0].id]
+      );
+      await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=410 WHERE id=$1",[februaryItem.id]);
+      await apiPool.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[itemB.rows[0].id]);
+      const diagnosticExpense = await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id)
+         VALUES('OTHER','Integrity diagnostic expense',50,'2099-02-15',$1,'DIRECT',$2) RETURNING id`,
+        [userId,employeeA.rows[0].id]
+      );
+      await apiPool.query(
+        `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
+         VALUES($1,'OUT',40,'2099-02-15','Mismatched diagnostic custody movement',$2,'ACCOUNTING_EXPENSE',$3)`,
+        [employeeB.rows[0].id,userId,diagnosticExpense.rows[0].id]
+      );
+      const integrityFindings = await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}
+      });
+      assert.equal(integrityFindings.statusCode,200,integrityFindings.body);
+      const findingData=integrityFindings.json().data;
+      assert.ok(findingData.counts.payrollPaymentMismatches>=1,
+        "integrity overview must detect a PAID payroll item whose recorded payments do not match net pay");
+      assert.ok(findingData.counts.advanceDeductionMismatches>=1,
+        "integrity overview must detect a mismatch between payroll advance deduction total and its detail rows");
+      assert.ok(findingData.counts.paidPayrollMissingAdvanceRepayments>=1,
+        "integrity overview must detect a paid payroll deduction without its advance repayment ledger row");
+      assert.ok(findingData.counts.expensesMissingCustodyLink>=1,
+        "integrity overview must detect an expense whose linked custody movement has a different employee and amount");
+
       const payments = await app.inject({
         method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
         headers: { cookie: cookieHeader }
