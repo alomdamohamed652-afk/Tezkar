@@ -634,7 +634,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,10,'FIXED_INSTALLMENT')",
         [februaryItem.id,diagnosticAdvance.rows[0].id]
       );
-      await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=410 WHERE id=$1",[februaryItem.id]);
+      await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=411 WHERE id=$1",[februaryItem.id]);
       await apiPool.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[itemB.rows[0].id]);
       const diagnosticExpense = await apiPool.query(
         `INSERT INTO accounting_expenses(category,description,amount,expense_date,created_by,expense_type,paid_from_employee_id)
