@@ -1966,7 +1966,7 @@ textarea:hover:not(:disabled) {
 
 /* Restore the original full-width mobile navigation layout.
    The compact/collapsed sidebar is a desktop-only presentation. */
-@media (max-width:760px){
+@media (max-width:820px){
   .app-shell{display:block}
   .sidebar,
   .sidebar.sidebar-collapsed{
