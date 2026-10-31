@@ -100,11 +100,11 @@ export function calculateAttendancePayroll(input: {
   let reviewDays = 0;
 
   for (const day of input.days) {
-    const scheduled = day.isDayOff || day.salaryActive === false ? 0 : minutesForShift(day.scheduledStart, day.scheduledEnd);
+    const scheduled = day.isDayOff || day.status === "DAY_OFF" || day.salaryActive === false ? 0 : minutesForShift(day.scheduledStart, day.scheduledEnd);
     scheduledMinutes += scheduled;
 
     const overtime = Math.max(0, Math.floor(Number(day.overtimeMinutes ?? 0)));
-    if (day.salaryActive !== false && !day.needsReview && day.status !== "MISSING_PUNCH" && day.status !== "NO_SCHEDULE_WITH_PUNCH") {
+    if (day.salaryActive !== false && !day.needsReview && day.status !== "ABSENT" && day.status !== "DAY_OFF" && day.status !== "MISSING_PUNCH" && day.status !== "NO_SCHEDULE_WITH_PUNCH") {
       overtimeMinutes += overtime;
     }
 
@@ -119,7 +119,7 @@ export function calculateAttendancePayroll(input: {
       continue;
     }
 
-    if (day.status === "PRESENT" && scheduled > 0) {
+    if ((day.status === "PRESENT" || day.status === "MANUAL") && scheduled > 0) {
       const late = Math.min(scheduled, Math.max(0, Math.floor(Number(day.lateMinutes ?? 0))));
       const early = Math.min(Math.max(0, scheduled - late), Math.max(0, Math.floor(Number(day.earlyMinutes ?? 0))));
       const missed = late + early;
