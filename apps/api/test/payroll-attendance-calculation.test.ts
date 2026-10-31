@@ -12,6 +12,9 @@ test("attendance payroll deducts absence and late/early time using scheduled mon
   });
   assert.equal(result.scheduledMinutes, 960);
   assert.equal(result.missingMinutes, 495);
+  assert.equal(result.absenceMinutes, 480);
+  assert.equal(result.lateMinutes, 10);
+  assert.equal(result.earlyMinutes, 5);
   assert.equal(result.timeDeduction, 3093.75);
   assert.equal(result.reviewDays, 0);
 });
