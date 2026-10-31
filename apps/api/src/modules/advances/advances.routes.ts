@@ -245,5 +245,5 @@ export async function advanceRoutes(app:FastifyInstance){
     });
     const {replayed,...data}=result;
     return reply.code(replayed?200:201).send({data});
-  });;
+  });
 }
