@@ -994,6 +994,79 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(crossLedgerOrderRow.remaining_amount),10);
       assert.equal(crossLedgerOrderRow.payment_status,"PARTIAL");
 
+      // A partially allocated settlement owns only its canonical allocation rows.
+      // The unallocated remainder still counts at order level, while stale order/legacy
+      // rows for the same payment must not be counted a second time.
+      const partialLedgerWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Partial Settlement Precedence Worker') RETURNING id"
+      )).rows[0];
+      const partialLedgerProductionA=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [partialLedgerWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const partialLedgerProductionB=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [partialLedgerWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const partialLedgerPaymentKey=randomUUID();
+      const partialLedgerPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'partial settlement precedence test',$3,'partial-settlement-precedence-test') RETURNING id`,
+        [partialLedgerWorker.id,manager.id,partialLedgerPaymentKey]
+      )).rows[0];
+      const partialLedgerSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'partial settlement precedence test',$2,$3) RETURNING id`,
+        [partialLedgerWorker.id,manager.id,partialLedgerPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,5)",
+        [partialLedgerSettlement.id,partialLedgerProductionA.id]
+      );
+      await apiPool.query(
+        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,5)",
+        [partialLedgerPayment.id,partialLedgerProductionB.id]
+      );
+      await apiPool.query(
+        "INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,5)",
+        [partialLedgerPayment.id,partialLedgerProductionB.id]
+      );
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(
+           order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash
+         )
+         VALUES($1,$2,'WORKER_PAYMENT','Partial settlement precedence test',10,CURRENT_DATE,'CASH',$3,'DIRECT',NULL,$4,'partial-settlement-precedence-hash')`,
+        [multiOrderId,reconcileOrderStage.id,manager.id,partialLedgerPaymentKey]
+      );
+      const partialLedgerOrderSummary=await app.inject({
+        method:"GET",
+        url:`/api/production/earnings/order-summary?orderId=${multiOrderId}&employeeId=${partialLedgerWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(partialLedgerOrderSummary.statusCode,200,partialLedgerOrderSummary.body);
+      const partialLedgerOrderRow=partialLedgerOrderSummary.json().data.find((row:any)=>row.employee_id===partialLedgerWorker.id);
+      assert.ok(partialLedgerOrderRow,"order summary should include the partially allocated employee production");
+      assert.equal(Number(partialLedgerOrderRow.total_earned),20);
+      assert.equal(Number(partialLedgerOrderRow.paid_amount),10,
+        "order summary must count canonical allocation plus only the unallocated remainder, ignoring stale duplicate rows");
+      assert.equal(Number(partialLedgerOrderRow.remaining_amount),10);
+      assert.equal(partialLedgerOrderRow.payment_status,"PARTIAL");
+
       // Previous-custody settlement is bounded by the selected order, not the worker's
       // global available balance. A standalone ledger deduction can make the global
       // balance lower while the selected order still has its own payable production.
