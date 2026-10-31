@@ -140,6 +140,12 @@ export async function payrollRoutes(app: FastifyInstance) {
       const periodResult = await client.query("INSERT INTO payroll_periods(period_month,generated_by) VALUES($1::date,$2) ON CONFLICT(period_month) DO UPDATE SET period_month=EXCLUDED.period_month RETURNING *", [month,request.user!.userId]);
       const period = periodResult.rows[0];
       if (period.status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة معتمدة أو مغلقة ولا يمكن إعادة توليدها", 409);
+      // Regeneration invalidates any prior draft attendance preview but preserves its audit trail.
+      const invalidatedTimeLines=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason='تم إلغاء معاينة الوقت بسبب إعادة تجهيز مسير الرواتب',voided_by=$1,voided_at=now() WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$2) AND source_type IN ('ATTENDANCE_TIME_DEDUCTION','ATTENDANCE_OVERTIME') AND status='ACTIVE' RETURNING *",[request.user!.userId,period.id]);
+      for(const line of invalidatedTimeLines.rows)await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"invalidate_attendance_preview",module:"payroll",entityType:"payroll_adjustment_line",entityId:line.id,afterData:line,metadata:{reason:line.void_reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await client.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$1)",[period.id]);
+      await client.query("UPDATE payroll_periods SET attendance_calculated_at=NULL WHERE id=$1",[period.id]);
+      await client.query("UPDATE payroll_items i SET bonus_amount=(SELECT COALESCE(SUM(l.amount),0) FROM payroll_adjustment_lines l WHERE l.payroll_item_id=i.id AND l.line_type='BONUS' AND l.status='ACTIVE'),deduction_amount=(SELECT COALESCE(SUM(l.amount),0) FROM payroll_adjustment_lines l WHERE l.payroll_item_id=i.id AND l.line_type='DEDUCTION' AND l.status='ACTIVE') WHERE i.period_id=$1",[period.id]);
       // A draft period may be regenerated; remove its uncommitted fixed-installment allocations first.
       await client.query("DELETE FROM payroll_advance_deductions WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$1)",[period.id]);
       await client.query("UPDATE payroll_items SET advance_repayment_amount=0 WHERE period_id=$1",[period.id]);
