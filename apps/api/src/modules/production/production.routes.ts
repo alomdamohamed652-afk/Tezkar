@@ -1392,16 +1392,23 @@ export async function productionRoutes(app: FastifyInstance) {
          WHERE p.status='APPROVED'
       ),
       unallocated_order_payments AS (
-        SELECT wp.employee_id,ae.order_id,SUM(wp.gross_amount)::numeric(14,2) AS amount
+        SELECT wp.employee_id,ae.order_id,
+               SUM(GREATEST(wp.gross_amount-COALESCE((
+                 SELECT SUM(esa.amount)
+                   FROM employee_earnings_settlements es
+                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                  WHERE es.worker_payment_id=wp.id
+               ),0),0))::numeric(14,2) AS amount
           FROM worker_payments wp
           JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-         WHERE NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
-                           JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-                          WHERE es.worker_payment_id=wp.id)
-           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
+         WHERE EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                       WHERE es.worker_payment_id=wp.id)
+            OR (
+              NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
                           WHERE order_alloc.worker_payment_id=wp.id)
-           AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy
-                          WHERE legacy.worker_payment_id=wp.id)
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy
+                              WHERE legacy.worker_payment_id=wp.id)
+            )
          GROUP BY wp.employee_id,ae.order_id
       )
       SELECT production_due.employee_id,employee_code,employee_name,production_due.order_id,
