@@ -56,10 +56,10 @@ export async function accountingRoutes(app:FastifyInstance){
   return {data:result.rows};
  });
 
- app.get("/api/accounting/reconciliation/payroll",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>{
-  // Read-only integrity checks. Findings are warnings for a manager to investigate;
-  // this endpoint never changes a balance or repairs financial history.
-  const missingExpenses=await pool.query(`
+ const reconciliationHandler = async () => {
+  // Read-only checks: findings are never repaired automatically and no balance is changed.
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,expenseCustodyMismatch] = await Promise.all([
+   pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.accounting_expense_id,e.amount AS expense_amount,e.category
       FROM payroll_items i
@@ -69,8 +69,8 @@ export async function accountingRoutes(app:FastifyInstance){
      WHERE p.status IN ('APPROVED','CLOSED') AND i.net_amount>0
        AND (e.id IS NULL OR e.category IS DISTINCT FROM 'SALARIES'
             OR ROUND(e.amount::numeric,2)<>ROUND(i.net_amount::numeric,2))
-     ORDER BY p.period_month,emp.full_name`);
-  const missingAdjustmentEntries=await pool.query(`
+     ORDER BY p.period_month,emp.full_name`),
+   pool.query(`
     SELECT l.id AS adjustment_line_id,l.payroll_item_id,i.employee_id,emp.full_name,
            p.period_month::text AS period_month,l.line_type,l.description,l.amount
       FROM payroll_adjustment_lines l
@@ -78,15 +78,11 @@ export async function accountingRoutes(app:FastifyInstance){
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
      WHERE p.status IN ('APPROVED','CLOSED')
-       AND NOT EXISTS (
-         SELECT 1 FROM employee_earnings_ledger el
-          WHERE el.payroll_adjustment_line_id=l.id
-       )
-     ORDER BY p.period_month,emp.full_name,l.created_at,l.id`);
-  const missingCashMovements=await pool.query(`
+       AND NOT EXISTS (SELECT 1 FROM employee_earnings_ledger el WHERE el.payroll_adjustment_line_id=l.id)
+     ORDER BY p.period_month,emp.full_name,l.created_at,l.id`),
+   pool.query(`
     SELECT pp.id AS payment_id,pp.payroll_item_id,i.employee_id,emp.full_name,
-           p.period_month::text AS period_month,pp.payment_date::text AS payment_date,
-           pp.amount,pp.reference
+           p.period_month::text AS period_month,pp.payment_date::text AS payment_date,pp.amount,pp.reference
       FROM payroll_payments pp
       JOIN payroll_items i ON i.id=pp.payroll_item_id
       JOIN payroll_periods p ON p.id=i.period_id
@@ -96,21 +92,55 @@ export async function accountingRoutes(app:FastifyInstance){
          SELECT 1 FROM cash_custody_transactions c
           WHERE c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
        )
-     ORDER BY pp.payment_date,emp.full_name`);
-  return {data:{
-    checkedAt:new Date().toISOString(),
-    counts:{
-      missingPayrollExpenses:missingExpenses.rows.length,
-      missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows.length,
-      cashPaymentsMissingCustodyOut:missingCashMovements.rows.length
-    },
-    issues:{
-      missingPayrollExpenses:missingExpenses.rows,
-      missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows,
-      cashPaymentsMissingCustodyOut:missingCashMovements.rows
-    }
-  }};
- });
+     ORDER BY pp.payment_date,emp.full_name`),
+   pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           i.status,i.net_amount,COALESCE(SUM(pp.amount),0) AS paid_amount
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN payroll_payments pp ON pp.payroll_item_id=i.id
+     WHERE p.status IN ('APPROVED','CLOSED')
+     GROUP BY i.id,emp.full_name,p.period_month
+    HAVING COALESCE(SUM(pp.amount),0)>i.net_amount+0.01
+        OR (i.status='PAID' AND COALESCE(SUM(pp.amount),0)<i.net_amount-0.01)
+        OR (i.status='PARTIAL' AND (COALESCE(SUM(pp.amount),0)<=0.01 OR COALESCE(SUM(pp.amount),0)>=i.net_amount-0.01))
+     ORDER BY p.period_month,emp.full_name`),
+   pool.query(`
+    SELECT e.id AS expense_id,e.description,e.amount,e.expense_date::text AS expense_date,
+           e.paid_from_employee_id,emp.full_name AS employee_name,
+           e.cash_custody_transaction_id,c.id AS matched_custody_id,
+           c.amount AS custody_amount,c.employee_id AS custody_employee_id
+      FROM accounting_expenses e
+      LEFT JOIN employees emp ON emp.id=e.paid_from_employee_id
+      LEFT JOIN cash_custody_transactions c
+        ON c.id=e.cash_custody_transaction_id
+       AND c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=e.id AND c.direction='OUT'
+     WHERE e.paid_from_employee_id IS NOT NULL
+       AND (c.id IS NULL OR c.employee_id IS DISTINCT FROM e.paid_from_employee_id
+            OR ROUND(c.amount::numeric,2)<>ROUND(e.amount::numeric,2))
+     ORDER BY e.expense_date DESC,e.created_at DESC`)
+  ]);
+  return {
+   checkedAt:new Date().toISOString(),
+   counts:{
+    missingPayrollExpenses:missingExpenses.rows.length,
+    missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows.length,
+    cashPaymentsMissingCustodyOut:missingCashMovements.rows.length,
+    payrollPaymentMismatches:paymentIntegrity.rows.length,
+    expensesMissingCustodyLink:expenseCustodyMismatch.rows.length
+   },
+   issues:{
+    missingPayrollExpenses:missingExpenses.rows,
+    missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows,
+    cashPaymentsMissingCustodyOut:missingCashMovements.rows,
+    payrollPaymentMismatches:paymentIntegrity.rows,
+    expensesMissingCustodyLink:expenseCustodyMismatch.rows
+   }
+  };
+ };
+ app.get("/api/accounting/reconciliation/payroll",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconciliationHandler()}));
+ app.get("/api/accounting/reconciliation/overview",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconciliationHandler()}));
 
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
