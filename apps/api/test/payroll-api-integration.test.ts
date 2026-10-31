@@ -672,7 +672,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
               AND ci.source_id=pp.id AND ci.direction='IN'
          ),0) AS expected_amount,
          COALESCE((
-           SELECT MIN(ci.employee_id) FROM cash_custody_transactions ci
+           SELECT (array_agg(ci.employee_id ORDER BY ci.employee_id::text))[1] FROM cash_custody_transactions ci
             WHERE ci.source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET'
               AND ci.source_id=pp.id AND ci.direction='IN'
          ),$2::uuid) AS holder_id
