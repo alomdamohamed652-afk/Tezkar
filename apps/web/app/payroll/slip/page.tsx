@@ -67,8 +67,15 @@ export default function PayrollSlipPage() {
   const deductionLines = adjustments.filter(line => line.line_type === "DEDUCTION");
   const totalEarnings = Number(item.base_salary) + bonusLines.reduce((sum,line)=>sum+Number(line.amount),0);
   const totalDeductions = deductionLines.reduce((sum,line)=>sum+Number(line.amount),0) + Number(item.advance_repayment_amount || 0);
-  const totalWorkedMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.workedMinutes??0),0);
   const totalOvertimeMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.overtimeMinutes??0),0);
+  const totalRegularMinutes = attendanceDays.reduce((sum,day)=>sum+Math.max(0,Number(day.workedMinutes??0)-Number(day.overtimeMinutes??0)),0);
+  const scheduledMinutes = attendanceDays.reduce((sum,day)=>{
+    if(day.isDayOff||!day.scheduledStart||!day.scheduledEnd)return sum;
+    const toMinutes=(value:string)=>{const [h,m]=value.slice(0,5).split(":").map(Number);return h*60+m;};
+    const duration=(toMinutes(day.scheduledEnd)-toMinutes(day.scheduledStart)+1440)%1440;
+    return sum+(duration>0?duration:0);
+  },0);
+  const hourlyRate = scheduledMinutes>0?Number(item.base_salary)*60/scheduledMinutes:0;
   const totalLateMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.lateMinutes??0),0);
   const totalEarlyMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.earlyMinutes??0),0);
   const absentDays = attendanceDays.filter(day=>day.status==="ABSENT").length;
@@ -126,7 +133,8 @@ export default function PayrollSlipPage() {
         <section className="slip-section">
           <h3>ثالثًا: الوقت والحضور</h3>
           <table><thead><tr><th>البيان</th><th>الإجمالي</th></tr></thead><tbody>
-            <tr><td>إجمالي ساعات العمل المسجلة</td><td>{(totalWorkedMinutes/60).toFixed(2)} ساعة</td></tr>
+            <tr><td>ساعات العمل العادية المسجلة</td><td>{(totalRegularMinutes/60).toFixed(2)} ساعة</td></tr>
+            <tr><td>أجر الساعة الأساسي حسب جدول الشهر</td><td>{money(hourlyRate)} ج.م / ساعة</td></tr>
             <tr><td>ساعات العمل الإضافي</td><td>{(totalOvertimeMinutes/60).toFixed(2)} ساعة</td></tr>
             <tr><td>أيام الغياب</td><td>{absentDays} يوم</td></tr>
             <tr><td>دقائق التأخير بعد السماح</td><td>{totalLateMinutes} دقيقة</td></tr>
