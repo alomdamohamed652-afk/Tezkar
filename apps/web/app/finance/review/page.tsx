@@ -119,12 +119,12 @@ export default function FinanceExceptionsPage() {
     const issues = integrity.issues;
     return [
       { title: "مسيرات بلا قيد مصروف مطابق", items: issues.missingPayrollExpenses.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · صافي ${money(Number(x.net_amount))} ج.م`) },
-      { title: "تعديلات رواتب بلا قيد في دفتر المستحقات", items: issues.missingAdjustmentLedgerEntries.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · ${x.description} · ${money(Number(x.amount))} ج.م`) },
-      { title: "مدفوعات نقدية بلا حركة عهدة مقابلة", items: issues.cashPaymentsMissingCustodyOut.map(x => `${x.full_name} · ${x.payment_date.slice(0, 10)} · ${money(Number(x.amount))} ج.م`) },
+      { title: "قيود تعديلات الرواتب غير المطابقة", items: issues.missingAdjustmentLedgerEntries.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · ${x.description} · ${money(Number(x.amount))} ج.م`) },
+      { title: "مدفوعات نقدية وحركات عهدة غير متطابقة", items: issues.cashPaymentsMissingCustodyOut.map(x => `${x.full_name} · ${x.payment_date.slice(0, 10)} · ${money(Number(x.amount))} ج.م`) },
       { title: "عدم تطابق حالة الراتب مع المدفوع", items: issues.payrollPaymentMismatches.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · الحالة ${x.status} · المدفوع ${money(Number(x.paid_amount))} من ${money(Number(x.net_amount))} ج.م`) },
       { title: "إجمالي خصومات السلف لا يطابق المسير", items: issues.advanceDeductionMismatches.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · المسجل ${money(Number(x.advance_repayment_amount))} · تفاصيل الأقساط ${money(Number(x.allocated_amount))} ج.م`) },
       { title: "رواتب مدفوعة دون تسجيل سداد السلفة", items: issues.paidPayrollMissingAdvanceRepayments.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · ${x.advance_code} · ${money(Number(x.amount))} ج.م`) },
-      { title: "مصروفات مرتبطة بعهدة دون حركة مطابقة", items: issues.expensesMissingCustodyLink.map(x => `${x.employee_name || "موظف غير محدد"} · ${x.expense_date.slice(0, 10)} · ${x.description} · ${money(Number(x.amount))} ج.م`) }
+      { title: "مصروفات وحركات عهدة غير متطابقة", items: issues.expensesMissingCustodyLink.map(x => `${x.employee_name || "موظف غير محدد"} · ${x.expense_date.slice(0, 10)} · ${x.description} · ${money(Number(x.amount))} ج.م`) }
     ];
   }, [integrity]);
 
