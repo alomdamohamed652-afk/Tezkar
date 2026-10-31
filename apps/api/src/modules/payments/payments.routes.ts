@@ -50,10 +50,16 @@ async function lockEmployee(client: import("pg").PoolClient, employeeId:string) 
 }
 
 async function getBalance(client: import("pg").PoolClient, employeeId:string) {
+  // The ledger-only fallback is for imported/legacy worker earnings, not payroll.
+  // Keep advance repayments and worker settlements in this balance, but exclude
+  // source-linked salary accruals, payroll adjustments, and payroll payouts.
   const r=await client.query(
     `SELECT COALESCE(SUM(credit_amount - debit_amount),0) AS balance
        FROM employee_earnings_ledger
-      WHERE employee_id=$1`,
+      WHERE employee_id=$1
+        AND payroll_item_id IS NULL
+        AND payroll_adjustment_line_id IS NULL
+        AND payroll_payment_id IS NULL`,
     [employeeId]
   );
   return Number(r.rows[0]?.balance ?? 0);
