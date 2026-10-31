@@ -313,6 +313,12 @@ export async function payrollRoutes(app: FastifyInstance) {
         }
         if(suppliedKeys.size!==expectedKeys.size)
           throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور المرفق غير مكتمل؛ لازم يحتوي على سجل لكل موظف ولكل يوم في الشهر قبل اعتماد المسير.",422);
+        const salaryProfiles=await client.query("SELECT employee_id,effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=ANY($1::uuid[]) AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[salaryItems.rows.map(item=>item.employee_id),monthEnd,monthStart]);
+        for(const row of snapshot){
+          row.salaryActive=salaryProfiles.rows.some(profile=>profile.employee_id===row.employeeId
+            &&String(profile.effective_from).slice(0,10)<=row.date
+            &&(!profile.effective_to||String(profile.effective_to).slice(0,10)>=row.date));
+        }
         for(const row of snapshot){
           const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
           await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
@@ -330,6 +336,7 @@ export async function payrollRoutes(app: FastifyInstance) {
             scheduledStart:typeof row.scheduledStart==="string"?row.scheduledStart:null,
             scheduledEnd:typeof row.scheduledEnd==="string"?row.scheduledEnd:null,
             isDayOff:row.isDayOff===true,
+            salaryActive:row.salaryActive!==false,
             ...(typeof row.status==="string"?{status:row.status}:{}),
             needsReview:row.needsReview===true,
             workedMinutes:Number(row.workedMinutes??0),
