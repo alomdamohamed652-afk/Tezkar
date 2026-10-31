@@ -115,7 +115,7 @@ export default function PayrollPage(){
    if(attendanceSnapshot.length!==expectedCount)throw new Error("سجل الحضور غير مكتمل لكل موظفي المسير وأيام الشهر؛ راجع بيانات الحضور قبل الاعتماد.");
    if(!Number.isFinite(Number(overtimeMultiplier))||Number(overtimeMultiplier)<1||Number(overtimeMultiplier)>5)throw new Error("مضاعف الإضافي يجب أن يكون من 1 إلى 5.");
    const absentDays=attendanceSnapshot.filter(row=>row.status==="ABSENT").length;
-   const overtimeMinutes=attendanceSnapshot.reduce((sum,row)=>sum+Number(row.overtimeMinutes??0),0);
+   const overtimeMinutes=attendanceSnapshot.reduce((sum,row)=>sum+(!row.needsReview&&row.status!=="MISSING_PUNCH"&&row.status!=="NO_SCHEDULE_WITH_PUNCH"?Number(row.overtimeMinutes??0):0),0);
    const reviewDays=attendanceSnapshot.filter(row=>row.needsReview||row.status==="MISSING_PUNCH").length;
    const confirmed=window.confirm("مراجعة احتساب الوقت قبل الاعتماد:\n\nأيام الغياب المسجلة: "+absentDays+"\nساعات الإضافي المسجلة: "+(overtimeMinutes/60).toFixed(2)+"\nأيام تحتاج مراجعة ولن يطبق عليها خصم تلقائي: "+reviewDays+"\nمضاعف أجر الإضافي: "+overtimeMultiplier+"\n\nسيُحسب خصم الغياب والتأخير والانصراف المبكر من جدول كل موظف، ويُضاف أجر الإضافي كبند مستقل. هل تريد المتابعة؟");
    if(!confirmed)return;
