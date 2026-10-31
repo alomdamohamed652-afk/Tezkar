@@ -97,3 +97,15 @@ test("manually marked days off do not dilute scheduled minutes or earn stale ove
   assert.equal(result.timeDeduction, 0);
   assert.equal(result.overtimeBonus, 0);
 });
+
+test("manual attendance days never inherit or receive fingerprint overtime", () => {
+  const result = calculateAttendancePayroll({
+    baseSalary: 3000, overtimeMultiplier: 1.5,
+    days: [{
+      scheduledStart: "08:00", scheduledEnd: "16:00", status: "MANUAL",
+      workedMinutes: 480, overtimeMinutes: 120
+    }]
+  });
+  assert.equal(result.overtimeMinutes, 0);
+  assert.equal(result.overtimeBonus, 0);
+});
