@@ -382,6 +382,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         missingAdjustmentLedgerEntries:0,
         cashPaymentsMissingCustodyOut:0,
         payrollPaymentMismatches:0,
+        advanceDeductionMismatches:0,
+        paidPayrollMissingAdvanceRepayments:0,
         expensesMissingCustodyLink:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
