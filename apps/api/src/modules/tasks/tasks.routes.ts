@@ -71,12 +71,98 @@ export async function taskRoutes(app: FastifyInstance) {
         [parsed.data.title, parsed.data.description ?? null, parsed.data.priority, parsed.data.dueDate ?? null, request.user!.userId]);
       const task = inserted.rows[0];
       for (const employeeId of [...new Set(parsed.data.assigneeEmployeeIds)]) {
+        await client.query(
+          `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+           SELECT u.id,'TASK_ASSIGNED','مهمة جديدة مسندة إليك','تم إسناد المهمة "' || $2 || '" إليك. راجع التفاصيل والموعد المحدد.','task',$3
+           FROM users u WHERE u.employee_id=$1 AND u.is_active=TRUE AND u.id<>$4`,
+          [employeeId, task.title, task.id, request.user!.userId]
+        );
         await client.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)", [task.id, employeeId, request.user!.userId]);
       }
       await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "create", module: "tasks", entityType: "task", entityId: task.id, afterData: task, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
       return task;
     });
     return reply.code(201).send({ data: result });
+  });
+
+  app.post("/api/tasks/:id/transfer", { preHandler: [authenticateRequest, requirePermission("tasks.transfer")] }, async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const parsed = z.object({
+      toEmployeeId: z.string().uuid(),
+      reason: z.string().trim().min(3).max(1000)
+    }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "حدد الموظف الجديد واكتب سبب النقل", 422);
+
+    const result = await withTransaction(async client => {
+      const locked = await client.query("SELECT * FROM tasks WHERE id=$1 FOR UPDATE", [id]);
+      if (!locked.rowCount) throw new AppError("TASK_NOT_FOUND", "المهمة غير موجودة", 404);
+      const task = locked.rows[0];
+      if (["COMPLETED", "CANCELLED"].includes(task.status)) {
+        throw new AppError("TASK_NOT_TRANSFERABLE", "لا يمكن نقل مهمة مكتملة أو ملغاة", 409);
+      }
+      const target = await client.query("SELECT id,full_name,code FROM employees WHERE id=$1 AND is_active=TRUE", [parsed.data.toEmployeeId]);
+      if (!target.rowCount) throw new AppError("ASSIGNEE_NOT_FOUND", "الموظف الجديد غير موجود أو غير نشط", 422);
+      const previous = await client.query(
+        "SELECT e.id,e.full_name,e.code FROM task_assignees ta JOIN employees e ON e.id=ta.employee_id WHERE ta.task_id=$1 ORDER BY e.full_name",
+        [id]
+      );
+      if (previous.rows.some((assignee: {id:string}) => assignee.id === parsed.data.toEmployeeId)) {
+        throw new AppError("TASK_ALREADY_ASSIGNED", "المهمة مسندة بالفعل إلى هذا الموظف", 409);
+      }
+      await client.query("DELETE FROM task_assignees WHERE task_id=$1", [id]);
+      await client.query(
+        "INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)",
+        [id, parsed.data.toEmployeeId, request.user!.userId]
+      );
+      const transfer = await client.query(
+        "INSERT INTO task_transfer_history(task_id,from_assignees,to_employee_id,reason,transferred_by) VALUES($1,$2::jsonb,$3,$4,$5) RETURNING id,task_id,from_assignees,to_employee_id,reason,transferred_by,created_at",
+        [id, JSON.stringify(previous.rows.map((e: {id:string;full_name:string;code:string}) => ({employee_id:e.id,employee_name:e.full_name,employee_code:e.code}))), parsed.data.toEmployeeId, parsed.data.reason, request.user!.userId]
+      );
+      await writeAudit(client, {
+        actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId,
+        action: "transfer", module: "tasks", entityType: "task", entityId: id,
+        beforeData: { task, assignees: previous.rows },
+        afterData: { task, assignees: target.rows, transfer: transfer.rows[0] },
+        ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null
+      });
+      const recipientEmployeeIds = [...new Set([
+        ...previous.rows.map((assignee: {id:string}) => assignee.id),
+        target.rows[0].id
+      ])];
+      await client.query(
+        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+         SELECT u.id,'TASK_TRANSFER',
+           CASE WHEN u.employee_id=$3 THEN 'تم إسناد مهمة إليك' ELSE 'تم نقل مهمة من مسؤوليتك' END,
+           CASE WHEN u.employee_id=$3
+             THEN 'تم إسناد المهمة "' || $4 || '" إليك. السبب: ' || $6
+             ELSE 'تم نقل المهمة "' || $4 || '" إلى موظف آخر. السبب: ' || $6
+           END,
+           'task',$5
+         FROM users u
+         WHERE u.employee_id=ANY($1::uuid[]) AND u.id<>$2 AND u.is_active=TRUE`,
+        [recipientEmployeeIds, request.user!.userId, target.rows[0].id, task.title, id, parsed.data.reason]
+      );
+      return { data: { ...transfer.rows[0], to_employee_name: target.rows[0].full_name, to_employee_code: target.rows[0].code } };
+    });
+    return reply.code(201).send(result);
+  });
+
+  app.get("/api/tasks/:id/transfers", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.view","all"],["tasks.view_own","own"])] }, async request => {
+    const id = (request.params as { id: string }).id;
+    const client = await pool.connect();
+    try {
+      const all = await hasPermission(client, request.user!.userId, "tasks.view", "all");
+      if (!all) {
+        if (!request.user!.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED", "الحساب غير مرتبط بموظف", 403);
+        const assigned = await client.query("SELECT 1 FROM task_assignees WHERE task_id=$1 AND employee_id=$2", [id, request.user!.employeeId]);
+        if (!assigned.rowCount) throw new AppError("TASK_FORBIDDEN", "سجل النقل متاح للمكلفين بالمهمة فقط", 403);
+      }
+      const history = await client.query(
+        "SELECT h.id,h.task_id,h.from_assignees,h.to_employee_id,e.full_name AS to_employee_name,e.code AS to_employee_code,h.reason,h.created_at,u.username AS transferred_by_username FROM task_transfer_history h JOIN employees e ON e.id=h.to_employee_id JOIN users u ON u.id=h.transferred_by WHERE h.task_id=$1 ORDER BY h.created_at DESC",
+        [id]
+      );
+      return { data: history.rows };
+    } finally { client.release(); }
   });
 
   app.patch("/api/tasks/:id", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.edit","all"],["tasks.update_own","own"])] }, async (request) => {

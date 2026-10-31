@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -8,6 +9,7 @@ import { authenticateRequest } from "./auth.middleware.js";
 import { isFirstRunSetupRequired } from "./auth.repository.js";
 import { createSession, revokeSession } from "./session.service.js";
 import { env } from "../../config.js";
+import { assertPersistentLoginAllowed, recordPersistentLoginFailure, clearPersistentLoginFailures } from "./login-throttle.service.js";
 
 const loginSchema = z.object({
   username: z.string().trim().min(1).max(100),
@@ -17,20 +19,35 @@ const loginSchema = z.object({
 const loginAttempts = new Map<string, { count: number; firstAt: number; blockedUntil: number }>();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
+const LOGIN_MAX_TRACKED_KEYS = 10_000;
 
 function loginKey(request: { ip: string }, username: string) {
   return request.ip + ":" + username.toLowerCase();
 }
 
+function pruneLoginAttempts(now: number) {
+  for (const [key, entry] of loginAttempts) {
+    if (now - entry.firstAt >= LOGIN_WINDOW_MS && entry.blockedUntil <= now) {
+      loginAttempts.delete(key);
+    }
+  }
+
+}
+
 function assertLoginAllowed(request: { ip: string }, username: string) {
+  const now = Date.now();
+  pruneLoginAttempts(now);
   const key = loginKey(request, username);
   const current = loginAttempts.get(key);
-  if (!current) return;
-  const now = Date.now();
-  if (current.blockedUntil > now) {
+  if (current && current.blockedUntil > now) {
     throw new AppError("LOGIN_RATE_LIMITED", "محاولات تسجيل الدخول كثيرة. حاول مرة أخرى بعد قليل.", 429);
   }
-  if (now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
+  // Fail closed when the bounded in-memory tracker is saturated. Otherwise
+  // attackers could bypass throttling by continuously submitting new usernames.
+  if (!current && loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) {
+    throw new AppError("LOGIN_RATE_LIMITED", "تعذر بدء تسجيل الدخول حاليًا. حاول مرة أخرى بعد قليل.", 429);
+  }
+  if (current && now - current.firstAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
 }
 
 function recordLoginFailure(request: { ip: string }, username: string) {
@@ -38,6 +55,10 @@ function recordLoginFailure(request: { ip: string }, username: string) {
   const now = Date.now();
   const current = loginAttempts.get(key);
   if (!current || now - current.firstAt >= LOGIN_WINDOW_MS) {
+    pruneLoginAttempts(now);
+    // Never evict a still-active key just to make room: doing so could erase
+    // another user's active lockout during a burst of unique login attempts.
+    if (loginAttempts.size >= LOGIN_MAX_TRACKED_KEYS) return;
     loginAttempts.set(key, { count: 1, firstAt: now, blockedUntil: 0 });
     return;
   }
@@ -77,12 +98,19 @@ export async function authRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات تسجيل الدخول غير صحيحة", 422);
 
     assertLoginAllowed(request, parsed.data.username);
+    await assertPersistentLoginAllowed(request.ip, parsed.data.username);
 
     let result;
     try {
       result = await withTransaction(async (client) => {
         const user = await authenticate(client, parsed.data.username, parsed.data.password);
-        const session = await createSession(client, user);
+        const rawAgent = request.headers["user-agent"];
+        const userAgent = Array.isArray(rawAgent) ? rawAgent[0] : rawAgent ?? null;
+        const rawDeviceId = request.headers["x-tezkar-device-id"];
+        const deviceId = (Array.isArray(rawDeviceId) ? rawDeviceId[0] : rawDeviceId)?.slice(0, 128) ?? null;
+        const knownDevice = deviceId ? await client.query("SELECT 1 FROM user_sessions WHERE user_id=$1 AND device_id=$2 LIMIT 1", [user.userId, deviceId]) : { rowCount: 1 };
+        const isNewDevice = Boolean(deviceId) && !knownDevice.rowCount;
+        const session = await createSession(client, user, { deviceId, ipAddress: request.ip, userAgent });
         await writeAudit(client, {
           actorUserId: user.userId,
           actorEmployeeId: user.employeeId,
@@ -91,14 +119,24 @@ export async function authRoutes(app: FastifyInstance) {
           entityType: "user",
           entityId: user.userId,
           ipAddress: request.ip,
-          userAgent: request.headers["user-agent"] ?? null
+          userAgent: request.headers["user-agent"] ?? null,
+          metadata: { deviceId, newDevice: isNewDevice }
         });
         await client.query("DELETE FROM user_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL");
-        return { user, session };
+        return { user, session, isNewDevice };
       });
       clearLoginFailures(request, parsed.data.username);
+      await clearPersistentLoginFailures(request.ip, parsed.data.username).catch(() => {});
     } catch (error) {
-      recordLoginFailure(request, parsed.data.username);
+      // Only invalid credentials should count toward the login lockout.
+      // Database, session, and audit failures must not lock out a legitimate user.
+      if (error instanceof AppError && error.code === "INVALID_CREDENTIALS") {
+        recordLoginFailure(request, parsed.data.username);
+        await recordPersistentLoginFailure(request.ip, parsed.data.username).catch(() => {});
+        try {
+          await pool.query("INSERT INTO audit_log (actor_user_id, actor_employee_id, action, module, entity_type, ip_address, user_agent, metadata) VALUES (NULL, NULL, $1, $2, $3, $4, $5, $6)", ["login_failed", "auth", "user", request.ip, request.headers["user-agent"] ?? null, { username: parsed.data.username.toLowerCase() }]);
+        } catch { /* keep the same credential response even if audit storage is temporarily unavailable */ }
+      }
       throw error;
     }
 
@@ -112,7 +150,8 @@ export async function authRoutes(app: FastifyInstance) {
 
     return {
       data: result.user,
-      requiresSetup: result.user.mustCompleteSetup
+      requiresSetup: result.user.mustCompleteSetup,
+      newDevice: result.isNewDevice
     };
   });
 
@@ -220,4 +259,52 @@ export async function authRoutes(app: FastifyInstance) {
       client.release();
     }
   });
+  app.get("/api/auth/sessions", { preHandler: authenticateRequest }, async (request) => {
+    const token = request.cookies.tezkar_session;
+    const tokenHash = token ? createHash("sha256").update(token).digest("hex") : "";
+    const result = await pool.query(
+      "SELECT id, device_id, device_name, device_type, browser_name, os_name, host(ip_address) AS ip_address, last_seen_at, expires_at, (token_hash = $2) AS is_current FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY last_seen_at DESC NULLS LAST",
+      [request.user!.userId, tokenHash]
+    );
+    return { data: result.rows };
+  });
+
+  app.post("/api/auth/logout-all", { preHandler: authenticateRequest }, async (request, reply) => {
+    const revoked = await withTransaction(async (client) => {
+      const result = await client.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()", [request.user!.userId]);
+      await writeAudit(client, { actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "logout_all_devices", module: "auth", entityType: "user", entityId: request.user!.userId, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null, metadata: { revokedSessions: result.rowCount ?? 0 } });
+      return result.rowCount ?? 0;
+    });
+    reply.clearCookie("tezkar_session", { path: "/" });
+    return { data: { success: true, revokedSessions: revoked, message: "تم تسجيل الخروج من جميع الأجهزة" } };
+  });
+
+  app.get("/api/admin/security/accounts", { preHandler: authenticateRequest }, async (request) => {
+    const roles = request.user?.roleCodes ?? [];
+    if (!roles.some((role) => ["admin", "manager", "owner"].includes(role.toLowerCase()))) {
+      throw new AppError("FORBIDDEN", "هذه الصفحة متاحة للإدارة فقط", 403);
+    }
+    const result = await pool.query(
+      "SELECT u.id, u.username, e.full_name, u.is_active, u.last_login_at, COUNT(DISTINCT COALESCE(s.device_id, s.id::text)) FILTER (WHERE s.revoked_at IS NULL AND s.expires_at > now())::int AS active_devices, COALESCE((SELECT COUNT(*)::int FROM audit_log al WHERE al.actor_user_id = u.id AND al.occurred_at >= now() - interval '30 days'), 0) AS actions_30d, COALESCE(json_agg(DISTINCT jsonb_build_object('deviceName',s.device_name,'deviceType',s.device_type,'browser',s.browser_name,'os',s.os_name,'ip',host(s.ip_address),'lastSeenAt',s.last_seen_at)) FILTER (WHERE s.id IS NOT NULL AND s.revoked_at IS NULL AND s.expires_at > now()), '[]'::json) AS devices FROM users u LEFT JOIN employees e ON e.id = u.employee_id LEFT JOIN user_sessions s ON s.user_id = u.id GROUP BY u.id, e.full_name ORDER BY actions_30d DESC, active_devices DESC, u.username ASC LIMIT 500"
+    );
+    return { data: result.rows };
+  });
+
+  app.get("/api/admin/security/audit", { preHandler: authenticateRequest }, async (request) => {
+    const roles = request.user?.roleCodes ?? [];
+    if (!roles.some((role) => ["admin", "manager", "owner"].includes(role.toLowerCase()))) {
+      throw new AppError("FORBIDDEN", "هذه الصفحة متاحة للإدارة فقط", 403);
+    }
+    const query = z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+      username: z.string().trim().max(100).optional()
+    }).parse(request.query);
+    const result = await pool.query(
+      "SELECT al.id, al.occurred_at AS created_at, al.action, al.module, al.entity_type, al.entity_id, al.ip_address, al.user_agent, al.metadata, u.username, e.full_name FROM audit_log al LEFT JOIN users u ON u.id = al.actor_user_id LEFT JOIN employees e ON e.id = al.actor_employee_id WHERE ($1::text IS NULL OR u.username ILIKE '%' || $1 || '%') ORDER BY al.occurred_at DESC LIMIT $2 OFFSET $3",
+      [query.username ?? null, query.limit, (query.page - 1) * query.limit]
+    );
+    return { data: result.rows, page: query.page, limit: query.limit };
+  });
+
 }

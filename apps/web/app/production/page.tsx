@@ -1,115 +1,241 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
+import {formatInteger,formatMoney,formatQuantity} from "../../lib/format";
 import { SearchableSelect } from "../../components/searchable-select";
 
 type Item={id:string;code:string;name:string};
-type Employee={id:string;code:string;full_name:string};
+type Employee={id:string;code:string;full_name:string;is_active?:boolean};
 type Shift=Item & {rate_group_name:string};
-type Destination={id:string;code:string;name:string;warehouse_id:string;warehouse_code:string;warehouse_name:string};
+type ShiftLeader={id:string;shift_id:string;shift_name:string;employee_id:string;employee_name:string;assignment_type:string};
 type Order={id:string;code:string;order_name:string};
-type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null};
+type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null;production_type_id:string|null};
 type ProductionType=Item & {calculation_method:string};
-type Entry={id:string;code:string;work_date:string;quantity:number;rate_snapshot:number;earning_amount:number;bonus_amount:number;deduction_amount:number;total_earning_amount:number;status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
+type Entry={id:string;code:string;work_date:string;employee_id:string;shift_id:string;shift_leader_employee_id:string|null;order_stage_id:string|null;product_id:string;stage_id:string;production_type_id:string|null;base_amount:number|null;hours_worked:number|null;shift_leader_name:string|null;quantity:number;rate_snapshot:number;rate_method?:string;earning_amount:number;bonus_amount:number;deduction_amount:number;bonus_reason:string|null;deduction_reason:string|null;total_earning_amount:number;paid_amount:number;remaining_amount:number;payment_status:"PAID"|"PARTIAL"|"UNPAID"|"UNALLOCATED";status:string;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;shift_name:string|null;production_code:string|null};
+
+const localDateKey=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
+const shiftDateKey=(key:string,days:number)=>{const d=new Date(key+"T12:00:00");d.setDate(d.getDate()+days);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
+const weekStartKey=(key:string)=>{const d=new Date(key+"T12:00:00");d.setDate(d.getDate()-((d.getDay()+6)%7));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
 
 const statusLabel:Record<string,string>={PENDING:"معلق",APPROVED:"معتمد",REJECTED:"مرفوض",CANCELLED:"ملغي"};
 
 export default function ProductionPage(){
- const {has}=usePermissions();
- const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[destinations,setDestinations]=useState<Destination[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
- const [employeeId,setEmployeeId]=useState(""),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(new Date().toISOString().slice(0,10)),[quantity,setQuantity]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[status,setStatus]=useState("");
+ const {has,session}=usePermissions();
+ const canViewProductionFinancials=has("worker_payments.pay");
+ const canSettleWorkers=has("worker_payments.pay");
+ const canAddLegacyExpense=has("finance.expenses.create");
+ const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[allOrders,setAllOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
+ const [employeeId,setEmployeeId]=useState(""),[shiftLeaderEmployeeId,setShiftLeaderEmployeeId]=useState(""),[shiftLeaderTouched,setShiftLeaderTouched]=useState(false),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(localDateKey()),[quantity,setQuantity]=useState(""),[scrapQuantity,setScrapQuantity]=useState("0"),[scrapType,setScrapType]=useState<"WORKER_SCRAP"|"MANUFACTURING_DEFECT">("WORKER_SCRAP"),[scrapNotes,setScrapNotes]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState(""),[recordEmployeeFilter,setRecordEmployeeFilter]=useState(""),[recordOrderFilter,setRecordOrderFilter]=useState(""),[recordStageFilter,setRecordStageFilter]=useState(""),[recordShiftFilter,setRecordShiftFilter]=useState(""),[recordProductFilter,setRecordProductFilter]=useState(""),[recordTypeFilter,setRecordTypeFilter]=useState(""),[recordSearch,setRecordSearch]=useState(""),[recordPaymentFilter,setRecordPaymentFilter]=useState(""),[recordEntries,setRecordEntries]=useState<Entry[]>([]),[recordLoading,setRecordLoading]=useState(false),[reviewSavingId,setReviewSavingId]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
- const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editQuantity,setEditQuantity]=useState(""),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
+ const employeeOrderIds=useMemo(()=>new Set(entries.filter(x=>!recordEmployeeFilter||x.employee_id===recordEmployeeFilter).map(x=>x.order_stage_id?orderStages.find(os=>os.id===x.order_stage_id)?.order_id:"").filter(Boolean)),[entries,recordEmployeeFilter,orderStages]);
+ const recordOrderOptions=useMemo(()=>allOrders.filter(o=>!recordEmployeeFilter||employeeOrderIds.has(o.id)),[allOrders,recordEmployeeFilter,employeeOrderIds]);
+ const recordStageOptions=useMemo(()=>stages.filter(st=>!recordOrderFilter||orderStages.some(os=>os.order_id===recordOrderFilter&&os.stage_id===st.id)),[stages,recordOrderFilter,orderStages]);
+ const recordProductOptions=useMemo(()=>products.filter(p=>!recordOrderFilter||orderStages.some(os=>os.order_id===recordOrderFilter&&os.output_product_id===p.id)),[products,recordOrderFilter,orderStages]);
+ const visibleRecordEntries=useMemo(()=>recordEntries.filter(x=>!recordPaymentFilter||(recordPaymentFilter==="PAID"?x.payment_status==="PAID":recordPaymentFilter==="PARTIAL"?x.payment_status==="PARTIAL":recordPaymentFilter==="UNALLOCATED"?x.payment_status==="UNALLOCATED":x.payment_status==="UNPAID")),[recordEntries,recordPaymentFilter]);
+ const visiblePaymentTotals=useMemo(()=>visibleRecordEntries.reduce((a,x)=>({earned:a.earned+Number(x.total_earning_amount??x.earning_amount??0),paid:a.paid+Number(x.paid_amount??0),remaining:a.remaining+Number(x.remaining_amount??0),quantity:a.quantity+Number(x.quantity??0)}),{earned:0,paid:0,remaining:0,quantity:0}),[visibleRecordEntries]);
+ const [recordWeekStart,setRecordWeekStart]=useState(()=>weekStartKey(localDateKey())),[recordRangeMode,setRecordRangeMode]=useState<"ALL"|"TODAY"|"WEEK"|"MONTH"|"YEAR"|"RANGE">("ALL"),[recordMonth,setRecordMonth]=useState(()=>localDateKey().slice(0,7)),[recordYear,setRecordYear]=useState(()=>localDateKey().slice(0,4)),[recordFrom,setRecordFrom]=useState(localDateKey()),[recordTo,setRecordTo]=useState(localDateKey()),[recordPage,setRecordPage]=useState(1),[recordTotal,setRecordTotal]=useState(0),[recordTotalPages,setRecordTotalPages]=useState(1),[recordTotalWeeks,setRecordTotalWeeks]=useState(0),[recordReportTotals,setRecordReportTotals]=useState({quantity:0,earned:0,paid:0,remaining:0}),[legacyReconcileLoading,setLegacyReconcileLoading]=useState(false),[legacyReconcileMessage,setLegacyReconcileMessage]=useState("");
+ const recordWeekEnd=useMemo(()=>shiftDateKey(recordWeekStart,6),[recordWeekStart]);
+ const [lastProductionSignature,setLastProductionSignature]=useState(""),[duplicateProductionPending,setDuplicateProductionPending]=useState(false),[duplicateProductionMessage,setDuplicateProductionMessage]=useState("");
+ const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(""),[resolvedMethod,setResolvedMethod]=useState(""),[resolvedRate,setResolvedRate]=useState<number|null>(null),[rateOverride,setRateOverride]=useState(""),[editTarget,setEditTarget]=useState<Entry|null>(null),[editValues,setEditValues]=useState({employeeId:"",orderStageId:"",productId:"",stageId:"",productionTypeId:"",shiftId:"",shiftLeaderEmployeeId:"",workDate:"",quantity:"",baseAmount:"",hoursWorked:"",rateOverride:"",bonusAmount:"",bonusReason:"",deductionAmount:"",deductionReason:""}),[editSaving,setEditSaving]=useState(false),[reviewTarget,setReviewTarget]=useState(""),[reviewReason,setReviewReason]=useState("");
  const [adjustments,setAdjustments]=useState<Adjustment[]>([]),[adjustmentEmployee,setAdjustmentEmployee]=useState(""),[adjustmentShift,setAdjustmentShift]=useState(""),[adjustmentType,setAdjustmentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[adjustmentAmount,setAdjustmentAmount]=useState(""),[adjustmentReason,setAdjustmentReason]=useState(""),[adjustmentSaving,setAdjustmentSaving]=useState(false);
  const [bonusAmount,setBonusAmount]=useState(""),[bonusReason,setBonusReason]=useState(""),[deductionAmount,setDeductionAmount]=useState(""),[deductionReason,setDeductionReason]=useState("");
+ const [payoutEmployeeId,setPayoutEmployeeId]=useState(""),[payoutOrderId,setPayoutOrderId]=useState(""),[payoutAmount,setPayoutAmount]=useState(""),[payoutNotes,setPayoutNotes]=useState(""),[allowOverpayment,setAllowOverpayment]=useState(false),[payoutSaving,setPayoutSaving]=useState(false);
+ const [legacyOrderId,setLegacyOrderId]=useState(""),[legacyExpenseCategory,setLegacyExpenseCategory]=useState("فرق أجور العمالة"),[legacyExpenseDescription,setLegacyExpenseDescription]=useState(""),[legacyExpenseAmount,setLegacyExpenseAmount]=useState(""),[legacyExpenseDate,setLegacyExpenseDate]=useState(localDateKey()),[legacyExpenseSaving,setLegacyExpenseSaving]=useState(false);
+ const [detailsTarget,setDetailsTarget]=useState<Entry|null>(null),[deleteTarget,setDeleteTarget]=useState<Entry|null>(null),[deletePassword,setDeletePassword]=useState(""),[deleting,setDeleting]=useState(false),[reverseTarget,setReverseTarget]=useState<Entry|null>(null),[reversePassword,setReversePassword]=useState(""),[reverseReason,setReverseReason]=useState(""),[reversing,setReversing]=useState(false);
+ useEffect(()=>{if(!error)return;const timer=window.setTimeout(()=>setError(""),6500);return()=>window.clearTimeout(timer)},[error]);
 
  async function load(){
   setLoading(true);setError("");
   try{
-   const [e,o,p,s,h,d,os,pt,r]=await Promise.all([
-    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),
-    api<{data:Destination[]}>("/api/production/destinations"),api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
-    api<{data:Entry[]}>(status?"/api/production?status="+status:"/api/production")
+   const [e,o,p,s,h,leaders,os,pt,r]=await Promise.all([
+    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),api<{data:ShiftLeader[]}>("/api/shift-leaders"),
+    api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
+    api<{data:Entry[]}>("/api/production")
    ]);
-   setEmployees(e.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setDestinations(d.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
-   if(!warehouseId){const first=d.data[0]?.warehouse_id;if(first)setWarehouseId(first)}
+   setEmployees(e.data);setStages(s.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
-   setEmployeeId((pref.data as any).employeeId||"");setShiftId((pref.data as any).shiftId||"");setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
+   setEmployeeId((pref.data as any).employeeId||"");
+   const preferredShiftId=(pref.data as any).shiftId||"";
+   setShiftId(preferredShiftId);
+   const assignedLeaders=leaders.data.filter(x=>x.shift_id===preferredShiftId);
+   const accountEmployeeId=session?.employeeId ?? undefined;
+   setShiftLeaderEmployeeId(accountEmployeeId&&assignedLeaders.some(x=>x.employee_id===accountEmployeeId)?accountEmployeeId:(assignedLeaders[0]?.employee_id||""));
+   setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
  }
- useEffect(()=>{void load()},[status]);
+ useEffect(()=>{void load()},[]);
+ useEffect(()=>{
+  if(shiftLeaderTouched)return;
+  const accountEmployeeId=session?.employeeId ?? undefined;
+  if(!accountEmployeeId)return;
+  const assigned=shiftLeaders.filter(x=>!shiftId||x.shift_id===shiftId);
+  if(assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
+ },[session,shiftLeaders,shiftId,shiftLeaderTouched]);
+
+ // Fetch the production summary and filtered history without resetting forms or page state.
+ const refreshProductionData=useCallback(async(showLoading=true)=>{
+  const invalidPeriod=(recordRangeMode==="RANGE"&&(!recordFrom||!recordTo||recordFrom>recordTo))||(recordRangeMode==="MONTH"&&!/^\d{4}-\d{2}$/.test(recordMonth))||(recordRangeMode==="YEAR"&&!/^\d{4}$/.test(recordYear));
+  if(invalidPeriod){setRecordEntries([]);setRecordTotal(0);setRecordTotalPages(1);setRecordReportTotals({quantity:0,earned:0,paid:0,remaining:0});if(showLoading)setRecordLoading(false);return}
+  const params=new URLSearchParams({limit:"100",page:String(recordPage)});
+  if(recordRangeMode==="TODAY"){params.set("from",localDateKey());params.set("to",localDateKey())}
+  if(recordRangeMode==="WEEK"){params.set("from",recordWeekStart);params.set("to",recordWeekEnd)}
+  if(recordRangeMode==="MONTH"&&/^\d{4}-\d{2}$/.test(recordMonth)){const [y,m]=recordMonth.split("-").map(Number);params.set("from",`${recordMonth}-01`);params.set("to",`${recordMonth}-${String(new Date(y,m,0).getDate()).padStart(2,"0")}`)}
+  if(recordRangeMode==="YEAR"&&/^\d{4}$/.test(recordYear)){params.set("from",`${recordYear}-01-01`);params.set("to",`${recordYear}-12-31`)}
+  if(recordRangeMode==="RANGE"&&recordFrom&&recordTo&&recordFrom<=recordTo){params.set("from",recordFrom);params.set("to",recordTo)}
+  if(recordPaymentFilter)params.set("paymentStatus",recordPaymentFilter);
+  if(status)params.set("status",status);
+  if(recordEmployeeFilter)params.set("employeeId",recordEmployeeFilter);
+  if(recordOrderFilter)params.set("orderId",recordOrderFilter);
+  if(recordStageFilter)params.set("stageId",recordStageFilter);
+  if(recordShiftFilter)params.set("shiftId",recordShiftFilter);
+  if(recordProductFilter)params.set("productId",recordProductFilter);
+  if(recordTypeFilter)params.set("productionTypeId",recordTypeFilter);
+  if(recordSearch.trim())params.set("search",recordSearch.trim());
+  if(showLoading)setRecordLoading(true);
+  try{
+   const [summary,history]=await Promise.all([
+    api<{data:Entry[]}>("/api/production"),
+    api<{data:Entry[];total?:number;totalPages?:number;totalWeeks?:number;summary?:{quantity:number;earned?:number;paid?:number;remaining?:number}}>("/api/production?"+params.toString())
+   ]);
+   setEntries(summary.data);
+   setRecordEntries(history.data);
+   setRecordTotal(history.total??history.data.length);
+   setRecordTotalPages(history.totalPages??1);
+    setRecordTotalWeeks(history.totalWeeks??0);
+   setRecordReportTotals({quantity:Number(history.summary?.quantity??0),earned:Number(history.summary?.earned??0),paid:Number(history.summary?.paid??0),remaining:Number(history.summary?.remaining??0)});
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحديث سجل الإنتاج")}
+  finally{if(showLoading)setRecordLoading(false)}
+ },[status,recordEmployeeFilter,recordOrderFilter,recordStageFilter,recordShiftFilter,recordProductFilter,recordTypeFilter,recordSearch,recordPaymentFilter,recordPage,recordRangeMode,recordWeekStart,recordWeekEnd,recordMonth,recordYear,recordFrom,recordTo]);
+ useEffect(()=>{void refreshProductionData()},[refreshProductionData]);
+
+ async function reconcileHistoricalPayments(){
+  setLegacyReconcileLoading(true);setLegacyReconcileMessage("");
+  try{
+   const result=await api<{data:{reconciledCount:number;skippedCount:number;unresolvedCount:number;unresolvedAmount:number;skipped:Array<{paymentId:string;employeeName:string;amount:number;reason:string}>}}>(
+    "/api/worker-payments/reconcile-historical-allocations",{method:"POST",body:JSON.stringify({})}
+   );
+   const x=result.data;
+   setLegacyReconcileMessage(`تمت مراجعة الدفعات القديمة: تم ربط ${formatInteger(x.reconciledCount)} دفعة بأمان. تعذر التوزيع التلقائي لـ ${formatInteger(x.skippedCount)} دفعة. المتبقي للمراجعة اليدوية: ${formatInteger(x.unresolvedCount)} دفعة بإجمالي ${formatMoney(x.unresolvedAmount)}. ${x.skipped[0]?.reason??"الدفعات التي لا يمكن ربطها بأمان لم يتم تغييرها."}`);
+   await refreshProductionData(false);
+  }catch(e){setLegacyReconcileMessage(e instanceof Error?e.message:"تعذرت مراجعة الدفعات القديمة")}
+  finally{setLegacyReconcileLoading(false)}
+ }
 
  useEffect(()=>{
   if(selectedOrderStage?.stage_rate!=null){
     setResolvedMethod(selectedOrderStage.stage_rate_method||"PER_PIECE");
     setResolvedRate(Number(selectedOrderStage.stage_rate));
-    setRateOverride(String(selectedOrderStage.stage_rate));
+    setRateOverride(Number(selectedOrderStage.stage_rate).toString());
     return;
   }
   if(!productId||!stageId||!shiftId||!workDate){setResolvedMethod("");setResolvedRate(null);setRateOverride("");return}
   const q=new URLSearchParams({productId,stageId,shiftId,workDate});
   if(productionTypeId)q.set("productionTypeId",productionTypeId);
-  api<{data:{method:string;rate:number}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setResolvedRate(Number(r.data.rate));setRateOverride(String(r.data.rate))}).catch(()=>{setResolvedMethod("");setResolvedRate(null);setRateOverride("")});
+  api<{data:{method:string;rate:number}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setResolvedRate(Number(r.data.rate));setRateOverride(Number(r.data.rate).toString())}).catch(()=>{setResolvedMethod("");setResolvedRate(null);setRateOverride("")});
  },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId]);
 
  const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
  const isShiftWage=resolvedMethod==="PER_DAY";
 
- const employeeOptions=useMemo(()=>employees.filter(x=>x.full_name).map(x=>({value:x.id,label:x.full_name,meta:x.code})),[employees]);
+ const activeEmployees=useMemo(()=>employees.filter(x=>x.is_active!==false),[employees]);
+ const employeeOptions=useMemo(()=>activeEmployees.filter(x=>x.full_name).map(x=>({value:x.id,label:x.full_name,meta:x.code})),[activeEmployees]);
  const productOptions=useMemo(()=>products.map(x=>({value:x.id,label:x.name})),[products]);
  const stageOptions=useMemo(()=>stages.map(x=>({value:x.id,label:x.name})),[stages]);
  const shiftOptions=useMemo(()=>shifts.map(x=>({value:x.id,label:x.name})),[shifts]);
+ const responsibleOptions=useMemo(()=>Array.from(new Map(shiftLeaders.filter(x=>!shiftId||x.shift_id===shiftId).map(x=>[x.employee_id,{value:x.employee_id,label:x.employee_name,meta:x.shift_name}])).values()),[shiftLeaders,shiftId]);
+ function selectShift(value:string){
+  setShiftLeaderTouched(false);
+  setShiftId(value);
+  const assigned=shiftLeaders.filter(x=>x.shift_id===value);
+  const accountEmployeeId=session?.employeeId ?? undefined;
+  if(accountEmployeeId&&assigned.some(x=>x.employee_id===accountEmployeeId))setShiftLeaderEmployeeId(accountEmployeeId);
+  else if(!assigned.some(x=>x.employee_id===shiftLeaderEmployeeId))setShiftLeaderEmployeeId(assigned[0]?.employee_id||"");
+ }
+ function selectResponsible(value:string){setShiftLeaderTouched(true);setShiftLeaderEmployeeId(value)}
  const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
- const filteredOrderStages=useMemo(()=>orderStages.filter(x=>!orderId||x.order_id===orderId),[orderStages,orderId]);
- const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+Number(x.stage_rate).toLocaleString("ar-EG")):"بدون سعر"})),[filteredOrderStages]);
+ const filteredOrderStages=useMemo(()=>orderId?orderStages.filter(x=>x.order_id===orderId):[],[orderStages,orderId]);
+ const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+formatMoney(x.stage_rate)):"بدون سعر"})),[filteredOrderStages]);
  const typeOptions=useMemo(()=>productionTypes.map(x=>({value:x.id,label:x.name})),[productionTypes]);
- const warehouseOptions=useMemo(()=>Array.from(new Map(destinations.map(x=>[x.warehouse_id,{value:x.warehouse_id,label:x.warehouse_name}])).values()),[destinations]);
- const productionToday=useMemo(()=>entries.filter(x=>x.work_date===new Date().toISOString().slice(0,10)),[entries]);
+ const productionToday=useMemo(()=>entries.filter(x=>x.work_date===localDateKey()),[entries]);
  const approvedCount=useMemo(()=>entries.filter(x=>x.status==="APPROVED").length,[entries]);
  const calculatedBase=useMemo(()=>{
-  const rate=Number(normalizeNumber(rateOverride||"0")),q=Number(normalizeNumber(quantity||"0")),hours=Number(normalizeNumber(hoursWorked||"0")),base=Number(normalizeNumber(baseAmount||"0"));
+  const rate=Number(normalizeNumber(rateOverride||"0")),gross=Number(normalizeNumber(quantity||"0")),scrap=Math.max(0,Number(normalizeNumber(scrapQuantity||"0"))),q=Math.max(0,gross-scrap),hours=Number(normalizeNumber(hoursWorked||"0")),base=Number(normalizeNumber(baseAmount||"0"));
   if(resolvedMethod==="PER_PIECE") return q*rate;
   if(resolvedMethod==="PER_1000") return q/1000*rate;
   if(resolvedMethod==="PER_DAY") return rate;
   if(resolvedMethod==="PER_HOUR") return hours*rate;
   if(resolvedMethod==="PERCENTAGE") return base*rate/100;
   return 0;
- },[resolvedMethod,rateOverride,quantity,hoursWorked,baseAmount]);
+ },[resolvedMethod,rateOverride,quantity,scrapQuantity,hoursWorked,baseAmount]);
  const pendingCount=useMemo(()=>entries.filter(x=>x.status==="PENDING").length,[entries]);
  async function loadAdjustments(){if(!has("production.adjustments.view"))return;try{const x=await api<{data:Adjustment[]}>("/api/production/adjustments");setAdjustments(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البونص والخصومات")}}
  useEffect(()=>{void loadAdjustments()},[has]);
 
  function selectOrder(value:string){setOrderId(value);setOrderStageId("");setStageId("");setProductId("");}
- function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);if(x.output_product_id)setProductId(x.output_product_id)}}
+ function selectOrderStage(value:string){setOrderStageId(value);const x=filteredOrderStages.find(s=>s.id===value);if(x){setStageId(x.stage_id);setProductId(x.output_product_id||"");if(x.production_type_id)setProductionTypeId(x.production_type_id)}}
 
- async function submit(e:FormEvent){
-  e.preventDefault();setError("");
+ async function submit(e:FormEvent,allowDuplicate=false){
+  e.preventDefault();if(saving)return;setError("");
   const q=isShiftWage?1:Number(normalizeNumber(quantity||"0"));
   const bonus=Number(normalizeNumber(bonusAmount||"0"));
   const deduction=Number(normalizeNumber(deductionAmount||"0"));
   if(!employeeId) return setError("اختر الموظف.");
   if(!orderId) return setError("اختر الطلبية.");
   if(!orderStageId) return setError("اختر المرحلة من مراحل الطلبية.");
+  if(!productId) return setError("اختر المنتج أو اربط منتجًا ناتجًا بالمرحلة.");
   if(!productionTypeId) return setError("اختر نوع الإنتاج.");
   if(!shiftId) return setError("اختر الوردية.");
   if(!resolvedMethod||resolvedRate===null) return setError("لم يتم العثور على سعر إنتاج مطابق للطلب والمرحلة والوردية.");
-  if(!isShiftWage && (!Number.isFinite(q)||q<=0)) return setError("أدخل كمية إنتاج صحيحة.");
+  if(!isShiftWage && (!Number.isFinite(q)||q<=0)) return setError("الكمية السليمة لازم تكون أكبر من صفر.");
+  const grossQuantity=isShiftWage?q:Number(normalizeNumber(quantity||"0")),scrap=Number(normalizeNumber(scrapQuantity||"0"));
+  if(!Number.isFinite(scrap)||scrap<0||scrap>=grossQuantity) return setError("كمية الهالك لازم تكون صفر أو أقل من إجمالي الإنتاج.");
   if(resolvedMethod==="PERCENTAGE" && (!baseAmount || Number(normalizeNumber(baseAmount))<0)) return setError("أدخل قيمة أساس صحيحة.");
   if(resolvedMethod==="PER_HOUR" && (!hoursWorked || Number(normalizeNumber(hoursWorked))<=0)) return setError("أدخل عدد ساعات صحيح.");
   if(bonus>0&&!bonusReason.trim()) return setError("اكتب بيان البونص.");
   if(deduction>0&&!deductionReason.trim()) return setError("اكتب بيان الخصم.");
   if(bonus<0||deduction<0) return setError("البونص والخصم لا يمكن أن يكونا سالبين.");
+  const signature=JSON.stringify({employeeId,shiftLeaderEmployeeId,orderStageId,productionTypeId,productId,stageId,shiftId,workDate,quantity:q,rate:rateOverride,baseAmount,hoursWorked,bonus,deduction,scrap,scrapType,scrapNotes:scrapNotes.trim()});
+  if(!allowDuplicate&&signature===lastProductionSignature){setDuplicateProductionMessage("نفس بيانات الإنتاج اتسجلت قبل كده من نفس الصفحة. راجع العامل والطلبية والمرحلة والكمية.");setDuplicateProductionPending(true);return;}
   setSaving(true);
+  let createdProductionId:string|null=null;
   try{
-   await api("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,orderStageId,productionTypeId,productId,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,warehouseId,locationId,
-     bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null
+   const created=await api<{data:{id:string}}>("/api/production",{method:"POST",body:JSON.stringify({employeeId:employeeId||undefined,shiftLeaderEmployeeId:shiftLeaderEmployeeId||null,orderStageId,productionTypeId,productId:productId||undefined,stageId,shiftId,workDate,quantity:q,rateOverride:resolvedRate!==null&&rateOverride!==""?Number(normalizeNumber(rateOverride)):undefined,baseAmount:resolvedMethod==="PERCENTAGE"?Number(normalizeNumber(baseAmount)):undefined,hoursWorked:resolvedMethod==="PER_HOUR"?Number(normalizeNumber(hoursWorked)):undefined,
+     bonusAmount:bonus,bonusReason:bonus>0?bonusReason.trim():null,deductionAmount:deduction,deductionReason:deduction>0?deductionReason.trim():null,allowDuplicate
     })});
+   createdProductionId=created.data.id;setLastProductionSignature(signature);setDuplicateProductionPending(false);
+   if(scrap>0){await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:created.data.id,scrapType,quantity:scrap,notes:scrapNotes.trim()||null,idempotencyKey:crypto.randomUUID()})});}
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
-   setQuantity("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الإنتاج")}finally{setSaving(false)}
+   setQuantity("");setScrapQuantity("0");setScrapType("WORKER_SCRAP");setScrapNotes("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
+  }catch(e){
+   const message=e instanceof Error?e.message:"تعذر تسجيل الإنتاج";
+   if(message.startsWith("POSSIBLE_DUPLICATE_PRODUCTION::")){
+    setDuplicateProductionMessage(message.slice("POSSIBLE_DUPLICATE_PRODUCTION::".length));
+    setDuplicateProductionPending(true);
+    return;
+   }
+   setError(createdProductionId&&scrap>0
+    ? `تم إنشاء سجل الإنتاج بالفعل (رقم داخلي: ${createdProductionId}) لكن تسجيل الهالك لم يكتمل. لا تعِد تسجيل الإنتاج؛ راجع صفحة الهالك وسجّل الكمية الناقصة. السبب: ${message}`
+    : message);
+  }finally{setSaving(false)}
+ }
+ async function confirmReverseProduction(){
+  if(!reverseTarget||!reversePassword||reverseReason.trim().length<3)return;
+  setReversing(true);setError("");
+  try{
+   await api("/api/production/"+reverseTarget.id+"/reverse",{method:"POST",body:JSON.stringify({password:reversePassword,reason:reverseReason.trim()})});
+   setReverseTarget(null);setReversePassword("");setReverseReason("");await load();await loadAdjustments();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر التراجع عن عملية الإنتاج")}
+  finally{setReversing(false)}
+ }
+ async function confirmDeleteProduction(){
+  if(!deleteTarget||!deletePassword)return;
+  setDeleting(true);setError("");
+  try{await api("/api/production/"+deleteTarget.id,{method:"DELETE",body:JSON.stringify({password:deletePassword})});setDeleteTarget(null);setDeletePassword("");await load()}
+  catch(e){setError(e instanceof Error?e.message:"تعذر حذف سجل الإنتاج")}
+  finally{setDeleting(false)}
  }
  async function addAdjustment(){
   setAdjustmentSaving(true);setError("");
@@ -120,32 +246,63 @@ export default function ProductionPage(){
     setAdjustmentAmount("");setAdjustmentReason("");await loadAdjustments();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل البونص أو الخصم")}finally{setAdjustmentSaving(false)}
  }
- async function editEntry(x:Entry){setEditTarget(x);setEditQuantity(String(x.quantity));}
- async function review(id:string,action:"approve"|"reject"){if(action==="reject"){setReviewTarget(id);setReviewReason("");return}try{await api("/api/production/"+id+"/approve",{method:"POST"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ المراجعة")}}
+ async function editEntry(x:Entry){
+  setEditTarget(x);
+  setEditValues({employeeId:x.employee_id,orderStageId:x.order_stage_id||"",productId:x.product_id,stageId:x.stage_id,productionTypeId:x.production_type_id||"",shiftId:x.shift_id,shiftLeaderEmployeeId:x.shift_leader_employee_id||"",workDate:String(x.work_date).slice(0,10),quantity:String(x.quantity),baseAmount:x.base_amount==null?"":String(x.base_amount),hoursWorked:x.hours_worked==null?"":String(x.hours_worked),rateOverride:String(x.rate_snapshot),bonusAmount:String(x.bonus_amount||0),bonusReason:x.bonus_reason||"",deductionAmount:String(x.deduction_amount||0),deductionReason:x.deduction_reason||""});
+ }
+ async function saveProductionEdit(){
+  if(!editTarget)return;
+  const v=editValues,quantity=Number(normalizeNumber(v.quantity)),bonusAmount=Number(normalizeNumber(v.bonusAmount||"0")),deductionAmount=Number(normalizeNumber(v.deductionAmount||"0"));
+  if(!v.employeeId||!v.shiftId||!v.workDate||!Number.isFinite(quantity)||quantity<=0){setError("راجع الموظف والوردية والتاريخ والكمية.");return}
+  if(bonusAmount>0&&!v.bonusReason.trim()){setError("بيان البونص مطلوب.");return}
+  if(deductionAmount>0&&!v.deductionReason.trim()){setError("بيان الخصم مطلوب.");return}
+  setEditSaving(true);setError("");
+  try{
+    await api("/api/production/"+editTarget.id,{method:"PATCH",body:JSON.stringify({employeeId:v.employeeId,orderStageId:v.orderStageId||null,productId:v.productId,stageId:v.stageId,productionTypeId:v.productionTypeId||null,shiftId:v.shiftId,shiftLeaderEmployeeId:v.shiftLeaderEmployeeId||null,workDate:v.workDate,quantity,hoursWorked:v.hoursWorked===""?null:Number(normalizeNumber(v.hoursWorked)),...(canViewProductionFinancials?{baseAmount:v.baseAmount===""?null:Number(normalizeNumber(v.baseAmount)),rateOverride:has("production.rate_override")&&v.rateOverride!==""?Number(normalizeNumber(v.rateOverride)):null,bonusAmount,bonusReason:bonusAmount?v.bonusReason.trim():null,deductionAmount,deductionReason:deductionAmount?v.deductionReason.trim():null}:{})})});
+    setEditTarget(null);await load();await loadAdjustments();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تعديل سجل الإنتاج")}
+  finally{setEditSaving(false)}
+ }
+ async function review(id:string,action:"approve"|"reject"){
+  if(action==="reject"){setReviewTarget(id);setReviewReason("");return}
+  setReviewSavingId(id);setError("");
+  try{
+   await api("/api/production/"+id+"/approve",{method:"POST"});
+   await refreshProductionData(false);
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ المراجعة")}
+  finally{setReviewSavingId("")}
+ }
 
- return <div className="app-shell"><Sidebar active="/production"/><main className="main"><header className="topbar"><div><h1 className="page-title">إنتاج العمال</h1><p className="page-subtitle">اختار الطلبية ونوع الإنتاج فقط؛ المنتج والمرحلة والسعر بيتحددوا تلقائيًا من بيانات الطلب.</p></div></header><section className="content">
-  {error&&<div className="alert error">{error}</div>}
-  <div className="stats">
-   <article className="card stat"><div className="stat-label">إنتاج اليوم</div><div className="stat-value">{productionToday.reduce((s,x)=>s+Number(x.quantity||0),0).toLocaleString("ar-EG")}</div><div className="stat-note">{productionToday.length} سجل</div></article>
-   <article className="card stat accent"><div className="stat-label">إنتاج معتمد</div><div className="stat-value">{approvedCount.toLocaleString("ar-EG")}</div><div className="stat-note">إجمالي السجلات المعتمدة</div></article>
-   <article className="card stat warning"><div className="stat-label">بانتظار المراجعة</div><div className="stat-value">{pendingCount.toLocaleString("ar-EG")}</div><div className="stat-note">يحتاج اعتماد أو رفض</div></article>
-   <article className="card stat neutral"><div className="stat-label">صافي التعديلات</div><div className="stat-value">{adjustments.reduce((s,x)=>s+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</div><div className="stat-note">بونص ناقص خصومات</div></article>
-  </div>
+
+ return <div className="app-shell"><Sidebar active="/production"/><main className="main"><header className="topbar"><div><h1 className="page-title">إنتاج العمال</h1><p className="page-subtitle">اختار الطلبية ونوع الإنتاج فقط؛ المنتج والمرحلة والسعر بيتحددوا تلقائيًا من بيانات الطلب.</p></div><a className="secondary-btn" href="/production/scrap">♻ الهالك والتقارير</a></header><section className="content">
+  {error&&<div role="alert" aria-live="assertive" className="alert error" style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:1000,width:"min(92vw,520px)",boxShadow:"0 8px 28px rgba(0,0,0,.22)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}><span>{error}</span><button type="button" aria-label="إغلاق التنبيه" onClick={()=>setError("")} style={{border:0,background:"transparent",color:"inherit",fontSize:20,cursor:"pointer"}}>×</button></div>}
+  {canViewProductionFinancials&&(  <div className="stats">
+   <article className="card stat"><div className="stat-label">إنتاج اليوم</div><div className="stat-value">{formatQuantity(productionToday.reduce((s,x)=>s+Number(x.quantity||0),0),0)}</div><div className="stat-note">{productionToday.length} سجل</div></article>
+   <article className="card stat accent"><div className="stat-label">إنتاج معتمد</div><div className="stat-value">{formatInteger(approvedCount)}</div><div className="stat-note">إجمالي السجلات المعتمدة</div></article>
+   <article className="card stat warning"><div className="stat-label">بانتظار المراجعة</div><div className="stat-value">{formatInteger(pendingCount)}</div><div className="stat-note">يحتاج اعتماد أو رفض</div></article>
+   <article className="card stat neutral"><div className="stat-label">صافي التعديلات</div><div className="stat-value">{formatMoney(adjustments.reduce((s,x)=>s+(x.adjustment_type==="BONUS"?Number(x.amount):-Number(x.amount)),0))}</div><div className="stat-note">بونص ناقص خصومات</div></article>
+  </div>)}
+  {(canSettleWorkers||canAddLegacyExpense)&&<section className="card"><div className="card-header"><div><h2 className="card-title">التسويات المالية</h2><p className="form-hint">تسويات العهد السابقة ومصروفاتها موجودة في القسم المالي حتى تظل صفحة الإنتاج مخصصة للتشغيل.</p></div><a className="primary-button" href="/finance/worker-settlements">فتح التسويات المالية</a></div></section>}
   {has("production.create")&&<form className="card production-form" onSubmit={submit}><div className="card-header"><div><h2 className="card-title">تسجيل إنتاج عامل</h2><span className="form-hint">الاسم فقط يظهر للمستخدم؛ الأكواد تستخدم داخليًا.</span></div></div>
    <div className="production-grid">
     <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employeeOptions} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
     <label>الطلبية<SearchableSelect value={orderId} onChange={selectOrder} options={orderOptions} placeholder="اختر الطلبية" searchPlaceholder="ابحث باسم الطلبية"/></label>
-    <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} placeholder={orderId?"اختر مرحلة من الطلبية":"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
-    {orderStageId&&<div className="form-hint" style={{alignSelf:"end"}}>المنتج والمرحلة بيتحددوا تلقائيًا من الطلبية: {products.find(x=>x.id===productId)?.name||"—"} — {stages.find(x=>x.id===stageId)?.name||"—"}</div>}
+    <label>المرحلة<SearchableSelect value={orderStageId} onChange={selectOrderStage} options={orderStageOptions} disabled={!orderId} placeholder={orderId?(orderStageOptions.length?"اختر مرحلة من الطلبية":"لا توجد مراحل مرتبطة بالطلبية"):"اختر الطلبية أولًا"} searchPlaceholder="ابحث في مراحل الطلبية" /></label>
+    <label>المنتج<SearchableSelect value={productId} onChange={setProductId} options={productOptions} placeholder="اختيار المنتج" searchPlaceholder="ابحث عن المنتج"/></label>
+    
     <label>نوع الإنتاج<SearchableSelect value={productionTypeId} onChange={setProductionTypeId} options={typeOptions} placeholder="اختر نوع الإنتاج"/></label>
-    <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
+    <label>الوردية<SearchableSelect value={shiftId} onChange={selectShift} options={shiftOptions} placeholder="اختر الوردية"/></label>
+    <label>رئيس الوردية <span className="optional">(افتراضي من حسابك إذا كان مكلفًا بالوردية، ويمكن تغييره)</span><SearchableSelect value={shiftLeaderEmployeeId} onChange={selectResponsible} options={responsibleOptions} placeholder="اختر رئيس وردية" searchPlaceholder="ابحث عن المسؤول"/></label>
     <label>تاريخ الإنتاج<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)} required/></label>
-    {!isShiftWage&&<label>الكمية<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
-    {resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":"السعر الحالي من تسعير المرحلة العام."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
-    <div className="form-hint" style={{alignSelf:"end"}}>المخزن يتحدد تلقائيًا: مراحل التشغيل إلى «تحت التشغيل»، والمرحلة النهائية إلى «المنتجات الجاهزة».</div>
+    {!isShiftWage&&<label>إجمالي الإنتاج (شامل الهالك)<input inputMode="decimal" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>}
+    {!isShiftWage&&<><label>كمية الهالك الإضافي<input inputMode="decimal" value={scrapQuantity} onChange={e=>setScrapQuantity(e.target.value)} placeholder="٠"/></label>
+    {Number(normalizeNumber(scrapQuantity||"0"))>0&&<><label>نوع الهالك<SearchableSelect value={scrapType} onChange={v=>setScrapType(v as typeof scrapType)} options={[{value:"WORKER_SCRAP",label:"هالك من العامل"},{value:"MANUFACTURING_DEFECT",label:"هالك عيب صناعة"}]}/></label><label>سبب / ملاحظات الهالك<input value={scrapNotes} onChange={e=>setScrapNotes(e.target.value)} maxLength={1000} placeholder="اختياري"/></label></>}
+    <div className="form-hint" style={{gridColumn:"1/-1"}}>الإجمالي: {formatQuantity(Number(normalizeNumber(quantity||"0")),3)} · الهالك: {formatQuantity(Number(normalizeNumber(scrapQuantity||"0")),3)} · المتاح للتسليم: {formatQuantity(Math.max(0,Number(normalizeNumber(quantity||"0"))-Number(normalizeNumber(scrapQuantity||"0"))),3)}. أجر القطعة يُحسب على السليم فقط.</div></>}
+    {canViewProductionFinancials&&resolvedRate!==null ? <label>سعر المرحلة<input inputMode="decimal" value={rateOverride} readOnly={!has("production.rate_override") || Boolean(selectedOrderStage?.stage_rate!=null)} onChange={e=>setRateOverride(e.target.value)} required/><span className="form-hint">{selectedOrderStage?.stage_rate!=null?"السعر محدد داخل الطلبية ومرحلتها، ولا يمكن تغييره من تسجيل الإنتاج.":has("production.rate_override")?"السعر الحالي من التسعير العام ويمكن تعديله بصلاحيتك.":"السعر الحالي من تسعير المرحلة العام؛ تعديل السعر يحتاج صلاحية منفصلة."}</span></label> : null}{isShiftWage ? <div className="form-hint" style={{alignSelf:"end"}}>نوع الحساب: وردية — يتم تسجيل وردية واحدة ولا تحتاج قيمة أساس أو أجر نسبة.</div> : null}
+    <div className="form-hint" style={{gridColumn:"1/-1"}}>وجهة التخزين تُحدد تلقائيًا حسب مرحلة الطلب؛ لا يتم اختيار مخزن يدويًا عند تسجيل الإنتاج.</div>
     {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
     {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
-    <div className="production-adjustment-box">
+    {has("production.adjustments.create")&&<div className="production-adjustment-box">
       <div className="production-adjustment-title">تعديل مستحق الإنتاج <span>اختياري</span></div>
       <div className="production-adjustment-grid">
         <label>بونص<input inputMode="decimal" value={bonusAmount} onChange={e=>setBonusAmount(e.target.value)} placeholder="٠"/></label>
@@ -153,18 +310,24 @@ export default function ProductionPage(){
         <label>خصم<input inputMode="decimal" value={deductionAmount} onChange={e=>setDeductionAmount(e.target.value)} placeholder="٠"/></label>
         <label>بيان الخصم<input value={deductionReason} onChange={e=>setDeductionReason(e.target.value)} placeholder="مثال: هالك زائد"/></label>
       </div>
-      <div className="production-total-preview">
+      {canViewProductionFinancials&&<div className="production-total-preview">
         <span>إجمالي مستحق العامل</span>
-        <strong>{(calculatedBase + Number(normalizeNumber(bonusAmount||"0")) - Number(normalizeNumber(deductionAmount||"0"))).toLocaleString("ar-EG",{maximumFractionDigits:2})}</strong>
-      </div>
-    </div>
+        <strong>{formatMoney(calculatedBase + Number(normalizeNumber(bonusAmount||"0")) - Number(normalizeNumber(deductionAmount||"0")))}</strong>
+      </div>}
+    </div>}
    </div>
    <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ التسجيل...":"تسجيل الإنتاج"}</button></div>
   </form>}
-  {editTarget&&<div className="modal-backdrop" onClick={()=>setEditTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">تعديل الإنتاج</h2><button type="button" className="secondary-btn" onClick={()=>setEditTarget(null)}>إغلاق</button></div><label>الكمية<input inputMode="decimal" value={editQuantity} onChange={e=>setEditQuantity(e.target.value)}/></label><div className="form-actions"><button type="button" className="primary-button" onClick={async()=>{const next=Number(normalizeNumber(editQuantity));if(!Number.isFinite(next)||next<=0){setError("الكمية غير صحيحة");return}try{await api("/api/production/"+editTarget.id,{method:"PATCH",body:JSON.stringify({quantity:next})});setEditTarget(null);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعديل الإنتاج")}}}>حفظ التعديل</button></div></div></div>}
-  {reviewTarget&&<div className="modal-backdrop" onClick={()=>setReviewTarget("")}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">رفض الإنتاج</h2><button type="button" className="secondary-btn" onClick={()=>setReviewTarget("")}>إغلاق</button></div><label>سبب الرفض<textarea rows={4} value={reviewReason} onChange={e=>setReviewReason(e.target.value)}/></label><div className="form-actions"><button type="button" className="danger-button" disabled={!reviewReason.trim()} onClick={async()=>{try{await api("/api/production/"+reviewTarget+"/reject",{method:"POST",body:JSON.stringify({reason:reviewReason.trim()})});setReviewTarget("");setReviewReason("");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر رفض الإنتاج")}}}>تأكيد الرفض</button></div></div></div>}
-  <section className="card"><div className="card-header"><h2 className="card-title">سجل الإنتاج</h2><select className="filter-select" value={status} onChange={e=>setStatus(e.target.value)}><option value="">كل الحالات</option><option value="PENDING">معلق</option><option value="APPROVED">معتمد</option><option value="REJECTED">مرفوض</option></select></div>
-   {loading?<div className="empty">جارٍ تحميل السجل...</div>:!entries.length?<div className="empty">لا يوجد إنتاج مسجل.</div>:<div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الموظف</th><th>المنتج</th><th>المرحلة</th><th>نوع الإنتاج</th><th>الوردية</th><th>الكمية</th><th>السعر الأساسي</th><th>البونص</th><th>الخصم</th><th>إجمالي المستحق</th><th>الحالة</th><th></th></tr></thead><tbody>{entries.map(x=><tr key={x.id}><td>{x.work_date}</td><td className="strong">{x.employee_name}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.production_type_name||"—"}</td><td>{x.shift_name}</td><td>{x.quantity} {x.unit_name}</td><td>{Number(x.earning_amount).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{Number(x.bonus_amount||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td>{Number(x.deduction_amount||0).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td className="money strong">{Number(x.total_earning_amount??x.earning_amount).toLocaleString("ar-EG",{maximumFractionDigits:2})}</td><td><span className={"status "+x.status.toLowerCase()}>{statusLabel[x.status]||x.status}</span></td><td>{x.status==="PENDING"&&<div className="row-actions">{has("production.edit")&&<button className="secondary-btn" onClick={()=>editEntry(x)}>تعديل</button>}{has("production.approve")&&<button className="approve-button" onClick={()=>review(x.id,"approve")}>اعتماد</button>}{has("production.reject")&&<button className="reject-button" onClick={()=>review(x.id,"reject")}>رفض</button>}</div>}</td></tr>)}</tbody></table></div>}
+  {deleteTarget&&<div className="modal-backdrop" onClick={()=>{if(!deleting)setDeleteTarget(null)}}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="delete-production-title" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 id="delete-production-title" className="card-title">تأكيد حذف سجل الإنتاج</h2><div className="form-hint">يمكن حذف الإنتاج المعلّق فقط. الإنتاج المعتمد لا يُحذف تلقائيًا لأنه أثّر في المخزن ومستحقات العامل.</div></div><button type="button" className="secondary-btn" onClick={()=>setDeleteTarget(null)} disabled={deleting}>إغلاق</button></div><p className="strong">{deleteTarget.employee_name} · {deleteTarget.product_name} · {formatQuantity(deleteTarget.quantity)}</p><label>كلمة المرور<input type="password" autoComplete="current-password" value={deletePassword} onChange={e=>setDeletePassword(e.target.value)} required/></label><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>setDeleteTarget(null)} disabled={deleting}>إلغاء</button><button type="button" className="danger-button" disabled={deleting||!deletePassword} onClick={()=>void confirmDeleteProduction()}>{deleting?"جارٍ الحذف...":"تأكيد الحذف"}</button></div></section></div>}
+  {editTarget&&<div className="modal-backdrop" onClick={()=>{if(!editSaving)setEditTarget(null)}}><div className="modal-card" style={{maxWidth:820,maxHeight:"90vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">تعديل بيانات عملية الإنتاج بالكامل</h2><button type="button" className="secondary-btn" onClick={()=>setEditTarget(null)} disabled={editSaving}>إغلاق</button></div><p className="form-hint">التعديل متاح للسجلات المعلقة. عند ربط العملية بمرحلة طلبية، يحدد النظام المنتج والمرحلة والمخزن من بيانات الطلبية.</p><div className="production-grid"><label>الموظف<SearchableSelect value={editValues.employeeId} onChange={employeeId=>setEditValues(v=>({...v,employeeId}))} options={employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))}/></label><label>الطلبية / المرحلة<SearchableSelect value={editValues.orderStageId} onChange={id=>{const os=orderStages.find(x=>x.id===id);setEditValues(v=>({...v,orderStageId:id,productId:os?.output_product_id||v.productId,stageId:os?.stage_id||v.stageId,productionTypeId:os?.production_type_id||v.productionTypeId}))}} placeholder="بدون ربط بمرحلة طلبية" options={[{value:"",label:"بدون ربط بمرحلة طلبية"},...orderStages.map(x=>({value:x.id,label:`${x.order_name} · ${x.stage_name}`}))]}/></label><label>المنتج<SearchableSelect disabled={Boolean(editValues.orderStageId)} value={editValues.productId} onChange={productId=>setEditValues(v=>({...v,productId}))} options={products.map(x=>({value:x.id,label:x.name,meta:x.code}))}/></label><label>المرحلة<SearchableSelect disabled={Boolean(editValues.orderStageId)} value={editValues.stageId} onChange={stageId=>setEditValues(v=>({...v,stageId}))} options={stages.map(x=>({value:x.id,label:x.name}))}/></label><label>نوع الإنتاج<SearchableSelect value={editValues.productionTypeId} onChange={productionTypeId=>setEditValues(v=>({...v,productionTypeId}))} placeholder="بدون تحديد" options={[{value:"",label:"بدون تحديد"},...productionTypes.map(x=>({value:x.id,label:x.name}))]}/></label><label>الوردية<SearchableSelect value={editValues.shiftId} onChange={shiftId=>setEditValues(v=>({...v,shiftId}))} options={shifts.map(x=>({value:x.id,label:x.name}))}/></label><label>مسؤول الوردية<SearchableSelect value={editValues.shiftLeaderEmployeeId} onChange={shiftLeaderEmployeeId=>setEditValues(v=>({...v,shiftLeaderEmployeeId}))} placeholder="بدون" options={[{value:"",label:"بدون"},...employees.map(x=>({value:x.id,label:x.full_name,meta:x.code}))]}/></label><label>تاريخ الإنتاج<input type="date" value={editValues.workDate} onChange={e=>setEditValues(v=>({...v,workDate:e.target.value}))}/></label><label>الكمية<input inputMode="decimal" value={editValues.quantity} onChange={e=>setEditValues(v=>({...v,quantity:e.target.value}))}/></label>{canViewProductionFinancials&&<label>سعر الوحدة / المرحلة<input inputMode="decimal" value={editValues.rateOverride} readOnly={!has("production.rate_override")||Boolean(orderStages.find(s=>s.id===editValues.orderStageId)?.stage_rate!=null)} onChange={e=>setEditValues(v=>({...v,rateOverride:e.target.value}))}/><span className="form-hint">تغيير السعر يحتاج صلاحية تعديل سعر الإنتاج، ولا يمكن تجاوز سعر محدد داخل الطلبية.</span></label>}{canViewProductionFinancials&&<label>قيمة الأساس (لأجر النسبة)<input inputMode="decimal" value={editValues.baseAmount} onChange={e=>setEditValues(v=>({...v,baseAmount:e.target.value}))}/></label>}<label>ساعات العمل (لأجر الساعة)<input inputMode="decimal" value={editValues.hoursWorked} onChange={e=>setEditValues(v=>({...v,hoursWorked:e.target.value}))}/></label>{canViewProductionFinancials&&<label>البونص<input inputMode="decimal" value={editValues.bonusAmount} onChange={e=>setEditValues(v=>({...v,bonusAmount:e.target.value}))}/></label>}{canViewProductionFinancials&&<label>بيان البونص<input value={editValues.bonusReason} onChange={e=>setEditValues(v=>({...v,bonusReason:e.target.value}))}/></label>}{canViewProductionFinancials&&<label>الخصم<input inputMode="decimal" value={editValues.deductionAmount} onChange={e=>setEditValues(v=>({...v,deductionAmount:e.target.value}))}/></label>}{canViewProductionFinancials&&<label>بيان الخصم<input value={editValues.deductionReason} onChange={e=>setEditValues(v=>({...v,deductionReason:e.target.value}))}/></label>}</div><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>setEditTarget(null)} disabled={editSaving}>إلغاء</button><button type="button" className="primary-button" onClick={()=>void saveProductionEdit()} disabled={editSaving}>{editSaving?"جارٍ الحفظ...":"حفظ كل التعديلات"}</button></div></div></div>}
+  {detailsTarget&&<div className="modal-backdrop" onClick={()=>setDetailsTarget(null)}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="production-details-title" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 id="production-details-title" className="card-title">تفاصيل سجل الإنتاج</h2><p className="form-hint">مراجعة بيانات العملية قبل اتخاذ أي إجراء.</p></div><button type="button" className="secondary-btn" onClick={()=>setDetailsTarget(null)}>إغلاق</button></div><div className="report-summary-grid"><div><span>رقم الإنتاج</span><strong>{detailsTarget.code}</strong></div><div><span>الموظف</span><strong>{detailsTarget.employee_name}</strong></div><div><span>التاريخ</span><strong>{String(detailsTarget.work_date).slice(0,10)}</strong></div><div><span>مسؤول الوردية</span><strong>{detailsTarget.shift_leader_name||"—"}</strong></div><div><span>الوردية</span><strong>{detailsTarget.shift_name||"—"}</strong></div><div><span>الطلبية</span><strong>{orderStages.find(os=>os.id===detailsTarget.order_stage_id)?.order_name||"غير محددة"}</strong></div><div><span>المرحلة</span><strong>{detailsTarget.stage_name||"—"}</strong></div><div><span>المنتج</span><strong>{detailsTarget.product_name||"—"}</strong></div><div><span>نوع الإنتاج</span><strong>{detailsTarget.production_type_name||"—"}</strong></div><div><span>الكمية</span><strong>{formatQuantity(detailsTarget.quantity)} {detailsTarget.unit_name}</strong></div><div><span>حالة الإنتاج</span><strong>{statusLabel[detailsTarget.status]||detailsTarget.status}</strong></div>{canViewProductionFinancials&&<><div><span>سعر الوحدة / طريقة الحساب</span><strong>{formatMoney(detailsTarget.rate_snapshot)} · {({PER_PIECE:"بالقطعة",PER_1000:"لكل ألف",PER_HOUR:"بالساعة",PER_DAY:"باليومية",PERCENTAGE:"نسبة"} as Record<string,string>)[detailsTarget.rate_method||""]||"حسب إعداد المرحلة"}</strong></div><div><span>الأساس / الساعات</span><strong>{detailsTarget.base_amount!=null?formatMoney(detailsTarget.base_amount):"—"}{detailsTarget.hours_worked!=null?` · ${formatQuantity(detailsTarget.hours_worked)} ساعة`:""}</strong></div><div><span>أجر الإنتاج</span><strong>{formatMoney(detailsTarget.earning_amount)}</strong></div><div><span>البونص</span><strong>{formatMoney(detailsTarget.bonus_amount||0)}</strong><small>{detailsTarget.bonus_reason?.trim()||"لا يوجد بيان للبونص"}</small></div><div><span>الخصم</span><strong>{formatMoney(detailsTarget.deduction_amount||0)}</strong><small>{detailsTarget.deduction_reason?.trim()||"لا يوجد بيان للخصم"}</small></div><div><span>صافي المستحق</span><strong>{formatMoney(detailsTarget.total_earning_amount??(Number(detailsTarget.earning_amount)+Number(detailsTarget.bonus_amount||0)-Number(detailsTarget.deduction_amount||0)))}</strong></div><div><span>المدفوع</span><strong>{formatMoney(detailsTarget.paid_amount||0)}</strong></div><div><span>المتبقي / الرصيد</span><strong>{formatMoney(detailsTarget.remaining_amount??detailsTarget.earning_amount)}</strong></div></>}</div><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>setDetailsTarget(null)}>إغلاق التفاصيل</button>{detailsTarget.status==="PENDING"&&has("production.edit")&&<button type="button" className="primary-button" onClick={()=>{const target=detailsTarget;setDetailsTarget(null);editEntry(target)}}>تعديل السجل</button>}</div></section></div>}
+  {reverseTarget&&<div className="modal-backdrop" onClick={()=>{if(!reversing)setReverseTarget(null)}}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="reverse-production-title" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 id="reverse-production-title" className="card-title">التراجع عن عملية إنتاج معتمدة</h2><p className="form-hint">سيتم تسجيل حركة مخزنية عكسية وعكس أثر المستحقات. لا يمكن التنفيذ إذا تم صرف الإنتاج من المخزن أو تخصيص دفعة مالية له.</p></div><button type="button" className="secondary-btn" onClick={()=>setReverseTarget(null)} disabled={reversing}>إغلاق</button></div><p className="strong">{reverseTarget.code} · {reverseTarget.employee_name} · {formatQuantity(reverseTarget.quantity)}</p><label>سبب التراجع<textarea rows={3} value={reverseReason} onChange={e=>setReverseReason(e.target.value)} placeholder="اكتب سبب التراجع بوضوح"/></label><label>كلمة مرور حسابك<input type="password" autoComplete="current-password" value={reversePassword} onChange={e=>setReversePassword(e.target.value)} /></label><div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>setReverseTarget(null)} disabled={reversing}>إلغاء</button><button type="button" className="danger-button" disabled={reversing||!reversePassword||reverseReason.trim().length<3} onClick={()=>void confirmReverseProduction()}>{reversing?"جارٍ تنفيذ العكس...":"تأكيد التراجع"}</button></div></section></div>}
+  {reviewTarget&&<div className="modal-backdrop" onClick={()=>setReviewTarget("")}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">رفض الإنتاج</h2><button type="button" className="secondary-btn" onClick={()=>setReviewTarget("")}>إغلاق</button></div><label>سبب الرفض<textarea rows={4} value={reviewReason} onChange={e=>setReviewReason(e.target.value)}/></label><div className="form-actions"><button type="button" className="danger-button" disabled={!reviewReason.trim()} onClick={async()=>{try{await api("/api/production/"+reviewTarget+"/reject",{method:"POST",body:JSON.stringify({reason:reviewReason.trim()})});setReviewTarget("");setReviewReason("");await refreshProductionData(false)}catch(e){setError(e instanceof Error?e.message:"تعذر رفض الإنتاج")}}}>تأكيد الرفض</button></div></div></div>}
+  <section className="card"><div className="card-header"><h2 className="card-title">سجل الإنتاج</h2><div className="production-history-filters"><label style={{minWidth:0}}>بحث في السجلات<input className="filter-select" type="search" value={recordSearch} onChange={e=>{setRecordSearch(e.target.value);setRecordPage(1)}} placeholder="كود الإنتاج أو العامل أو المنتج أو الطلبية"/></label><label style={{minWidth:220}}>فلترة حسب العامل<SearchableSelect value={recordEmployeeFilter} onChange={v=>{setRecordEmployeeFilter(v);setRecordOrderFilter("");setRecordStageFilter("");setRecordProductFilter("");setRecordPage(1)}} options={[{value:"",label:"كل العمال"},...employees.map(e=>({value:e.id,label:e.full_name,meta:e.code||""}))]} placeholder="كل العمال" searchPlaceholder="ابحث باسم العامل أو الكود"/></label><label style={{minWidth:220}}>فلترة حسب الطلبية<SearchableSelect value={recordOrderFilter} onChange={v=>{setRecordOrderFilter(v);setRecordStageFilter("");setRecordProductFilter("");setRecordPage(1)}} options={[{value:"",label:"كل الطلبيات"},...recordOrderOptions.map(o=>({value:o.id,label:o.order_name,meta:o.code||""}))]} placeholder="كل الطلبيات" searchPlaceholder="ابحث باسم الطلبية أو الكود"/></label><label style={{minWidth:200}}>فلترة حسب المرحلة<SearchableSelect value={recordStageFilter} onChange={v=>{setRecordStageFilter(v);setRecordPage(1)}} options={[{value:"",label:"كل المراحل"},...recordStageOptions.map(s=>({value:s.id,label:s.name}))]} placeholder="كل المراحل" searchPlaceholder="ابحث باسم المرحلة"/></label><label style={{minWidth:180}}>فلترة حسب الوردية<SearchableSelect value={recordShiftFilter} onChange={v=>{setRecordShiftFilter(v);setRecordPage(1)}} options={[{value:"",label:"كل الورديات"},...shifts.map(s=>({value:s.id,label:s.name}))]} placeholder="كل الورديات" searchPlaceholder="ابحث باسم الوردية"/></label><label style={{minWidth:180}}>فلترة حسب المنتج<SearchableSelect value={recordProductFilter} onChange={v=>{setRecordProductFilter(v);setRecordPage(1)}} options={[{value:"",label:"كل المنتجات"},...recordProductOptions.map(p=>({value:p.id,label:p.name,meta:p.code||""}))]} placeholder="كل المنتجات" searchPlaceholder="ابحث باسم المنتج أو الكود"/></label><label style={{minWidth:180}}>نوع الإنتاج<SearchableSelect value={recordTypeFilter} onChange={v=>{setRecordTypeFilter(v);setRecordPage(1)}} options={[{value:"",label:"كل أنواع الإنتاج"},...productionTypes.map(t=>({value:t.id,label:t.name}))]} placeholder="كل أنواع الإنتاج" searchPlaceholder="ابحث عن نوع الإنتاج"/></label><label>حالة الدفع<SearchableSelect value={recordPaymentFilter} onChange={v=>{setRecordPaymentFilter(v);setRecordPage(1)}} placeholder="كل حالات الدفع" options={[{value:"",label:"كل حالات الدفع"},{value:"PAID",label:"مدفوع بالكامل"},{value:"PARTIAL",label:"مدفوع جزئيًا"},{value:"UNPAID",label:"غير مدفوع"},{value:"UNALLOCATED",label:"دفعة تاريخية تحتاج توزيع"}]}/><span className="form-hint">تظهر عندما توجد دفعة قديمة مسجلة لكن لم تُربط بتوزيع موثق على سجلات الإنتاج؛ لا تعني وحدها وجود مديونية على العامل.</span></label><label>حالة السجل<SearchableSelect value={status} onChange={v=>{setStatus(v);setRecordPage(1)}} placeholder="كل الحالات" options={[{value:"",label:"كل الحالات"},{value:"PENDING",label:"معلق"},{value:"APPROVED",label:"معتمد"},{value:"REJECTED",label:"مرفوض"},{value:"CANCELLED",label:"ملغي"}]}/></label></div></div><div className="production-week-nav"><div><strong>فترة تقرير الإنتاج</strong><span>{recordRangeMode==="TODAY"?`إنتاج اليوم · ${localDateKey()}`:recordRangeMode==="WEEK"?`أسبوع ${recordWeekStart} — ${recordWeekEnd}`:recordRangeMode==="MONTH"?`شهر ${recordMonth}`:recordRangeMode==="YEAR"?`سنة ${recordYear}`:recordRangeMode==="RANGE"?`${recordFrom} — ${recordTo}`:`كل الإنتاج · ${formatInteger(recordTotalWeeks)} أسبوع إجماليًا`}</span><span>{formatInteger(recordTotal)} سجل مطابق للفلاتر</span></div><div className="form-actions"><label>نوع الفترة<SearchableSelect value={recordRangeMode} onChange={v=>{setRecordRangeMode(v as typeof recordRangeMode);setRecordPage(1)}} options={[{value:"ALL",label:"إجمالي كل الإنتاج"},{value:"TODAY",label:"اليوم"},{value:"WEEK",label:"الأسبوع"},{value:"MONTH",label:"الشهر"},{value:"YEAR",label:"السنة"},{value:"RANGE",label:"فترة مخصصة"}]}/></label>{recordRangeMode==="WEEK"&&<><button type="button" className="secondary-btn" onClick={()=>{setRecordWeekStart(shiftDateKey(recordWeekStart,-7));setRecordPage(1)}}>الأسبوع السابق</button><input aria-label="اختيار أسبوع الإنتاج" type="date" value={recordWeekStart} onChange={e=>{if(e.target.value){setRecordWeekStart(weekStartKey(e.target.value));setRecordPage(1)}}}/><button type="button" className="secondary-btn" onClick={()=>{setRecordWeekStart(shiftDateKey(recordWeekStart,7));setRecordPage(1)}}>الأسبوع التالي</button><button type="button" className="secondary-btn" onClick={()=>{setRecordWeekStart(weekStartKey(localDateKey()));setRecordPage(1)}}>الأسبوع الحالي</button></>}{recordRangeMode==="MONTH"&&<input aria-label="شهر الإنتاج" type="month" value={recordMonth} onChange={e=>{setRecordMonth(e.target.value);setRecordPage(1)}}/>}{recordRangeMode==="YEAR"&&<input aria-label="سنة الإنتاج" type="number" min="2000" max="2100" value={recordYear} onChange={e=>{setRecordYear(e.target.value);setRecordPage(1)}}/>}{recordRangeMode==="RANGE"&&<><label>من <input type="date" max={recordTo||undefined} value={recordFrom} onChange={e=>{setRecordFrom(e.target.value);setRecordPage(1)}}/></label><label>إلى <input type="date" min={recordFrom||undefined} value={recordTo} onChange={e=>{setRecordTo(e.target.value);setRecordPage(1)}}/></label></>}<button type="button" className="primary-button" disabled={recordLoading||(recordRangeMode==="RANGE"&&(!recordFrom||!recordTo||recordFrom>recordTo))} onClick={()=>{setRecordPage(1);void refreshProductionData()}}>عرض التقرير</button><button type="button" className="secondary-btn" onClick={()=>{setRecordRangeMode("ALL");setRecordEmployeeFilter("");setRecordOrderFilter("");setRecordStageFilter("");setRecordShiftFilter("");setRecordProductFilter("");setRecordTypeFilter("");setRecordSearch("");setRecordPaymentFilter("");setStatus("");setRecordMonth(localDateKey().slice(0,7));setRecordYear(localDateKey().slice(0,4));setRecordFrom(localDateKey());setRecordTo(localDateKey());setRecordWeekStart(weekStartKey(localDateKey()));setRecordPage(1)}}>إعادة ضبط الفلاتر</button></div></div>{canViewProductionFinancials&&<div className="report-summary-grid"><div><span>إجمالي الكمية</span><strong>{formatQuantity(recordReportTotals.quantity)}</strong></div><div><span>إجمالي المستحق</span><strong>{formatMoney(recordReportTotals.earned)}</strong></div><div><span>المدفوع</span><strong>{formatMoney(recordReportTotals.paid)}</strong></div><div><span>المتبقي</span><strong>{formatMoney(recordReportTotals.remaining)}</strong></div></div>}{canViewProductionFinancials&&<div className="row-actions" style={{marginTop:12}}><button type="button" className="secondary-btn" disabled={legacyReconcileLoading} onClick={()=>void reconcileHistoricalPayments()}>{legacyReconcileLoading?"جارٍ مراجعة الدفعات القديمة...":"مراجعة وتوزيع الدفعات القديمة الآمنة"}</button></div>}{legacyReconcileMessage&&<p className="form-hint" role="status">{legacyReconcileMessage}</p>}
+   {recordLoading?<div className="empty">جارٍ تحميل سجل الإنتاج...</div>:!visibleRecordEntries.length?<div className="empty">{recordEmployeeFilter?"لا توجد سجلات إنتاج للعامل المحدد في هذه الحالة.":recordStageFilter?"لا توجد سجلات إنتاج للمرحلة المحددة في هذه الفترة.":"لا توجد سجلات تطابق الفلاتر المحددة."}</div>:<div className="table-wrap"><table><thead><tr><th>رقم الإنتاج</th><th>التاريخ</th><th>الموظف</th><th>مسؤول الوردية</th><th>المنتج</th><th>المرحلة</th><th>نوع الإنتاج</th><th>الوردية</th><th>الكمية</th>{canViewProductionFinancials&&<><th>السعر الأساسي</th><th>البونص</th><th>الخصم</th><th>إجمالي المستحق</th><th>المدفوع</th><th>المتبقي</th><th>حالة الدفع</th></>}<th>حالة الإنتاج</th><th></th></tr></thead><tbody>{visibleRecordEntries.map(x=><tr className={canViewProductionFinancials?(x.payment_status==="PAID"?"payment-row-paid":x.payment_status==="PARTIAL"?"payment-row-partial":x.payment_status==="UNALLOCATED"?"payment-row-unallocated":"payment-row-unpaid"):""} key={x.id}><td className="strong">{x.code}</td><td>{String(x.work_date).slice(0,10)}</td><td className="strong">{x.employee_name}</td><td>{x.shift_leader_name||"—"}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.production_type_name||"—"}</td><td>{x.shift_name}</td><td>{formatQuantity(x.quantity)} {x.unit_name}</td>{canViewProductionFinancials&&<><td>{formatMoney(x.earning_amount)}</td><td>{formatMoney(x.bonus_amount||0)}</td><td>{formatMoney(x.deduction_amount||0)}</td><td className="money strong">{formatMoney(x.total_earning_amount??x.earning_amount)}</td><td>{formatMoney(x.paid_amount||0)}</td><td>{formatMoney(x.remaining_amount??(x.total_earning_amount??x.earning_amount))}</td><td><span className={"status "+(x.payment_status==="PAID"?"success":x.payment_status==="PARTIAL"?"warning":x.payment_status==="UNALLOCATED"?"muted":"danger")}>{x.payment_status==="PAID"?"مدفوع":x.payment_status==="PARTIAL"?"مدفوع جزئيًا":x.payment_status==="UNALLOCATED"?"دفعة تاريخية تحتاج توزيع":"غير مدفوع"}</span></td></>}<td><span className={"status "+x.status.toLowerCase()}>{statusLabel[x.status]||x.status}</span></td><td>{x.status==="PENDING"&&<div className="row-actions">{has("production.edit")&&<button className="secondary-btn" onClick={()=>editEntry(x)}>تعديل</button>}{has("production.approve")&&<button className="approve-button" disabled={reviewSavingId===x.id} onClick={()=>void review(x.id,"approve")}>{reviewSavingId===x.id?"جارٍ الاعتماد...":"اعتماد"}</button>}{has("production.reject")&&<button className="reject-button" onClick={()=>review(x.id,"reject")}>رفض</button>}{has("production.edit")&&<button className="danger-button" onClick={()=>{setDeleteTarget(x);setDeletePassword("")}}>حذف</button>}</div>}<div className="row-actions" style={{display:"flex",gap:6,flexWrap:"wrap"}}><button type="button" className="secondary-btn" onClick={()=>setDetailsTarget(x)}>عرض التفاصيل</button>{x.status==="APPROVED"&&has("production.cancel")&&<button type="button" className="danger-button" onClick={()=>{setReverseTarget(x);setReversePassword("");setReverseReason("")}}>التراجع عن العملية</button>}</div></td></tr>)}</tbody></table></div>}
+  <div className="production-pagination"><span>عدد السجلات في {recordRangeMode==="TODAY"?"اليوم":recordRangeMode==="WEEK"?"الأسبوع المحدد":recordRangeMode==="MONTH"?"الشهر المحدد":recordRangeMode==="YEAR"?"السنة المحددة":recordRangeMode==="RANGE"?"الفترة المحددة":"كل الإنتاج"}: {formatInteger(recordTotal)}</span><div className="form-actions"><button type="button" className="secondary-btn" disabled={recordPage<=1||recordLoading} onClick={()=>setRecordPage(p=>Math.max(1,p-1))}>السجلات السابقة</button><span>صفحة {recordPage} من {Math.max(1,recordTotalPages)}</span><button type="button" className="secondary-btn" disabled={recordPage>=recordTotalPages||recordLoading} onClick={()=>setRecordPage(p=>Math.min(recordTotalPages,p+1))}>السجلات التالية</button></div></div>
   </section>
+
+  {duplicateProductionPending&&<div className="modal-backdrop" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="duplicate-worker-production-title"><h2 id="duplicate-worker-production-title" className="card-title">تأكيد تكرار تسجيل الإنتاج</h2><p style={{whiteSpace:"pre-wrap"}}>{duplicateProductionMessage} لو دي عملية جديدة فعلًا اضغط «استمرار»، ولو احتمال تكرار اضغط «إلغاء» وراجع السجل.</p><div className="form-actions"><button type="button" className="secondary-btn" disabled={saving} onClick={()=>{setDuplicateProductionPending(false);setDuplicateProductionMessage("")}}>إلغاء العملية</button><button type="button" className="danger-button" disabled={saving} onClick={()=>void submit({preventDefault:()=>{}} as unknown as FormEvent,true)}>{saving?"جارٍ التسجيل...":"استمرار وتسجيل رغم التحذير"}</button></div></section></div>}
  </section></main></div>;
 }

@@ -5,7 +5,8 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { hashPassword } from "../auth/auth.service.js";
 
 const createEmployeeSchema = z.object({
@@ -18,22 +19,36 @@ const createEmployeeSchema = z.object({
 });
 
 export async function employeeRoutes(app: FastifyInstance) {
-  app.get("/api/employees", { preHandler: [authenticateRequest, requirePermission("employees.view")] }, async () => {
-    const result = await pool.query(
-      `SELECT e.id, e.code, e.full_name, e.phone,
-              d.code AS department_code, d.name AS department_name,
-              j.code AS job_title_code, j.name AS job_title_name,
-              r.code AS role_code,
-              e.is_active, e.hired_at
-       FROM employees e
-       LEFT JOIN departments d ON d.id = e.department_id
-       LEFT JOIN job_titles j ON j.id = e.job_title_id
-       LEFT JOIN users u ON u.employee_id = e.id
-       LEFT JOIN user_roles ur ON ur.user_id = u.id
-       LEFT JOIN roles r ON r.id = ur.role_id
-       ORDER BY e.code`
-    );
-    return { data: result.rows };
+  app.get("/api/employees", {
+    preHandler: [authenticateRequest, requireAnyPermission(["employees.view", "all"], ["employees.lookup", "all"])]
+  }, async (request) => {
+    const client = await pool.connect();
+    try {
+      const canViewDirectory = await hasPermission(client, request.user!.userId, "employees.view", "all");
+      if (!canViewDirectory) {
+        const result = await client.query(
+          "SELECT id,code,full_name,is_active FROM employees WHERE is_active=TRUE ORDER BY code"
+        );
+        return { data: result.rows };
+      }
+      const result = await client.query(
+        `SELECT e.id, e.code, e.full_name, e.phone,
+                d.code AS department_code, d.name AS department_name,
+                j.code AS job_title_code, j.name AS job_title_name,
+                r.code AS role_code,
+                e.is_active, e.hired_at
+         FROM employees e
+         LEFT JOIN departments d ON d.id = e.department_id
+         LEFT JOIN job_titles j ON j.id = e.job_title_id
+         LEFT JOIN users u ON u.employee_id = e.id
+         LEFT JOIN user_roles ur ON ur.user_id = u.id
+         LEFT JOIN roles r ON r.id = ur.role_id
+         ORDER BY e.code`
+      );
+      return { data: result.rows };
+    } finally {
+      client.release();
+    }
   });
 
   app.post("/api/employees", { preHandler: [authenticateRequest, requirePermission("employees.create")] }, async (request, reply) => {
@@ -145,12 +160,28 @@ export async function employeeRoutes(app: FastifyInstance) {
     return { data: updated };
   });
 
+  app.post("/api/employees/:id/activate",{preHandler:[authenticateRequest,requirePermission("employees.edit")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const r=await withTransaction(async client=>{
+      const before=await client.query("SELECT id,code,full_name,is_active FROM employees WHERE id=$1 FOR UPDATE",[id]);
+      if(!before.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+      const user=await client.query("SELECT id FROM users WHERE employee_id=$1 FOR UPDATE",[id]);
+      if(!user.rowCount)throw new AppError("EMPLOYEE_ACCOUNT_NOT_FOUND","لا يوجد حساب دخول مرتبط بالموظف؛ راجع بيانات الحساب قبل التفعيل",409);
+      const employee=await client.query("UPDATE employees SET is_active=TRUE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
+      await client.query("UPDATE users SET is_active=TRUE,updated_at=now() WHERE employee_id=$1",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"activate",module:"employees",entityType:"employee",entityId:id,beforeData:before.rows[0],afterData:employee.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return employee.rows[0];
+    });
+    return {data:r};
+  });
+
   app.delete("/api/employees/:id",{preHandler:[authenticateRequest,requirePermission("employees.delete")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const r=await withTransaction(async client=>{
       const e=await client.query("UPDATE employees SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
       if(!e.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
       await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE employee_id=$1",[id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"employees",entityType:"employee",entityId:id,afterData:e.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return e.rows[0];
     });
     return {data:r};
