@@ -71,11 +71,8 @@ export function Sidebar({active}:{active:string}){
  const [unreadNotificationCount,setUnreadNotificationCount]=useState(0);
  const [sidebarPreferences,setSidebarPreferences]=useState<SidebarPreferences>(defaultSidebarPreferences);
  const [preferencesReady,setPreferencesReady]=useState(false);
- const preferenceKey=session?.username
-  ? `tezkar_sidebar_state_${session.username.trim().toLowerCase()}`
-  : session?.employeeId
-   ? `tezkar_sidebar_state_${session.employeeId}`
-   : null;
+ const preferenceIdentity=session?.username?.trim().toLowerCase()||session?.employeeId||"account";
+ const preferenceKey=session? `tezkar_sidebar_state_${preferenceIdentity}`:null;
  useEffect(()=>{
   if(!preferenceKey){setPreferencesReady(false);return}
   setPreferencesReady(false);
