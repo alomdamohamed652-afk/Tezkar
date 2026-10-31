@@ -49,6 +49,9 @@ export type AttendancePayrollResult = {
   scheduledMinutes: number;
   workedMinutes: number;
   missingMinutes: number;
+  absenceMinutes: number;
+  lateMinutes: number;
+  earlyMinutes: number;
   overtimeMinutes: number;
   hourlyRate: number;
   timeDeduction: number;
@@ -89,6 +92,9 @@ export function calculateAttendancePayroll(input: {
 
   let scheduledMinutes = 0;
   let missingMinutes = 0;
+  let absenceMinutes = 0;
+  let lateMinutes = 0;
+  let earlyMinutes = 0;
   let overtimeMinutes = 0;
   let workedMinutes = 0;
   let reviewDays = 0;
@@ -108,6 +114,7 @@ export function calculateAttendancePayroll(input: {
     }
 
     if (day.status === "ABSENT" && scheduled > 0) {
+      absenceMinutes += scheduled;
       missingMinutes += scheduled;
       continue;
     }
@@ -116,6 +123,8 @@ export function calculateAttendancePayroll(input: {
       const late = Math.max(0, Math.floor(Number(day.lateMinutes ?? 0)));
       const early = Math.max(0, Math.floor(Number(day.earlyMinutes ?? 0)));
       const missed = Math.min(scheduled, late + early);
+      lateMinutes += late;
+      earlyMinutes += early;
       missingMinutes += missed;
       workedMinutes += Math.min(scheduled, Math.max(0, Math.floor(Number(day.workedMinutes ?? (scheduled - missed))) - Math.floor(Number(day.overtimeMinutes ?? 0))));
     }
@@ -129,6 +138,6 @@ export function calculateAttendancePayroll(input: {
     ? roundMoney(input.baseSalary * overtimeMinutes / scheduledMinutes * input.overtimeMultiplier)
     : 0;
 
-  return { scheduledMinutes, workedMinutes, missingMinutes, overtimeMinutes,
+  return { scheduledMinutes, workedMinutes, missingMinutes, absenceMinutes, lateMinutes, earlyMinutes, overtimeMinutes,
     hourlyRate: roundMoney(hourlyRate), timeDeduction, overtimeBonus, reviewDays };
 }
