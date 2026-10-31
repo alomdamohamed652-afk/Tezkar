@@ -69,3 +69,31 @@ test("salary-inactive calendar days do not dilute the hourly rate", () => {
 test("attendance payroll validates the overtime multiplier", () => {
   assert.throws(() => calculateAttendancePayroll({baseSalary:1000,overtimeMultiplier:0.5,days:[]}), RangeError);
 });
+
+test("manual attendance overrides are included in time deductions", () => {
+  const result = calculateAttendancePayroll({
+    baseSalary: 3000, overtimeMultiplier: 1.5,
+    days: [{
+      scheduledStart: "08:00", scheduledEnd: "16:00", status: "MANUAL",
+      workedMinutes: 450, lateMinutes: 10, earlyMinutes: 20
+    }]
+  });
+  assert.equal(result.scheduledMinutes, 480);
+  assert.equal(result.workedMinutes, 450);
+  assert.equal(result.missingMinutes, 30);
+  assert.equal(result.timeDeduction, 187.5);
+});
+
+test("manually marked days off do not dilute scheduled minutes or earn stale overtime", () => {
+  const result = calculateAttendancePayroll({
+    baseSalary: 3000, overtimeMultiplier: 1.5,
+    days: [
+      { scheduledStart: "08:00", scheduledEnd: "16:00", status: "DAY_OFF", overtimeMinutes: 60 },
+      { scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", workedMinutes: 480 }
+    ]
+  });
+  assert.equal(result.scheduledMinutes, 480);
+  assert.equal(result.overtimeMinutes, 0);
+  assert.equal(result.timeDeduction, 0);
+  assert.equal(result.overtimeBonus, 0);
+});
