@@ -519,6 +519,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(februaryItem, "employee with a salary profile should be included in the February payroll");
       assert.equal(Number(februaryItem.advance_repayment_amount), 400);
       assert.equal(Number(februaryItem.net_amount), 600, "fixed and salary-percentage installments reduce take-home pay without exceeding salary");
+      const februaryAdvanceLines=await app.inject({
+        method:"GET",url:`/api/payroll/items/${februaryItem.id}/advance-deductions`,headers:{cookie:cookieHeader}
+      });
+      assert.equal(februaryAdvanceLines.statusCode,200,februaryAdvanceLines.body);
+      assert.equal(februaryAdvanceLines.json().data.length,2,"each salary advance must appear as its own payroll deduction line");
+      assert.equal(februaryAdvanceLines.json().data.reduce((sum:any,line:any)=>sum+Number(line.amount),0),400);
       const februaryAttendanceSnapshot = Array.from({length:28},(_,index)=>{
         const date = `2099-02-${String(index+1).padStart(2,"0")}`;
         return [
