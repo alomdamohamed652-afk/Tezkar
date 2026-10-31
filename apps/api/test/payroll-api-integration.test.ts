@@ -436,6 +436,57 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(salaryExpenseCount.rows[0].count, 2, "re-approval must not duplicate salary expenses");
 
+      // Attendance-based salary deductions and overtime are posted as named payroll lines.
+      const timePeriod=(await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,generated_by) VALUES('2099-03-01',$1) RETURNING id",
+        [userId]
+      )).rows[0];
+      const timeItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary) VALUES($1,$2,1000) RETURNING id",
+        [timePeriod.id,employeeB.rows[0].id]
+      )).rows[0];
+      const timeSnapshot=Array.from({length:31},(_,index)=>{
+        const date=`2099-03-${String(index+1).padStart(2,"0")}`;
+        const day={date,employeeId:employeeB.rows[0].id,scheduledStart:"08:00",scheduledEnd:"16:00",isDayOff:false,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:480,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,needsReview:false};
+        if(index===0){day.status="ABSENT";day.workedMinutes=0;}
+        if(index===1){day.overtimeMinutes=60;day.workedMinutes=540;}
+        if(index===2){day.status="MISSING_PUNCH";day.needsReview=true;day.lateMinutes=120;day.overtimeMinutes=60;}
+        if(index===3){day.lateMinutes=30;day.earlyMinutes=10;day.workedMinutes=440;}
+        return day;
+      });
+      const timeApproval=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${timePeriod.id}/approve`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(timeApproval.statusCode,200,timeApproval.body);
+      const timeLines=await apiPool.query(
+        "SELECT source_type,line_type,amount,status FROM payroll_adjustment_lines WHERE payroll_item_id=$1 ORDER BY source_type",
+        [timeItem.id]
+      );
+      assert.equal(timeLines.rowCount,2);
+      const overtimeLine=timeLines.rows.find((line:any)=>line.source_type==="ATTENDANCE_OVERTIME");
+      const deductionLine=timeLines.rows.find((line:any)=>line.source_type==="ATTENDANCE_TIME_DEDUCTION");
+      assert.equal(Number(overtimeLine.amount),6.05);
+      assert.equal(Number(deductionLine.amount),34.95);
+      assert.equal(overtimeLine.line_type,"BONUS");
+      assert.equal(deductionLine.line_type,"DEDUCTION");
+      assert.ok(timeLines.rows.every((line:any)=>line.status==="ACTIVE"));
+      const timeItemTotals=(await apiPool.query(
+        "SELECT bonus_amount,deduction_amount,net_amount FROM payroll_items WHERE id=$1",[timeItem.id]
+      )).rows[0];
+      assert.equal(Number(timeItemTotals.bonus_amount),6.05);
+      assert.equal(Number(timeItemTotals.deduction_amount),34.95);
+      assert.equal(Number(timeItemTotals.net_amount),971.10);
+      const reviewedTimeLedger=await apiPool.query(
+        "SELECT l.source_type,e.credit_amount,e.debit_amount FROM payroll_adjustment_lines l LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id WHERE l.payroll_item_id=$1",
+        [timeItem.id]
+      );
+      assert.equal(reviewedTimeLedger.rowCount,2);
+      assert.ok(reviewedTimeLedger.rows.every((row:any)=>row.source_type==="ATTENDANCE_OVERTIME"
+        ? Number(row.credit_amount)===6.05 && Number(row.debit_amount??0)===0
+        : Number(row.debit_amount)===34.95 && Number(row.credit_amount??0)===0));
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM payroll_attendance_snapshots WHERE payroll_item_id=$1",[timeItem.id])).rows[0].count,31);
+
       // Fixed monthly and salary-percentage installments reduce net pay in the approved
       // payroll, but the advance balance is not reduced until the employee is actually paid.
       const fixedAdvance = await apiPool.query(
