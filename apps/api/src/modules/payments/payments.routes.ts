@@ -193,7 +193,7 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
               END)
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date)
+            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
         ) AS amount
          FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.work_date>$2::date AND pe.work_date<=$3::date`,
       [employeeId,startDate,paymentDate]
