@@ -137,3 +137,29 @@ export function calculateWorkedMinutes(events: readonly { status: string; punch_
   }
   return total;
 }
+
+
+export type EffectiveAttendanceSchedule = {
+  employee_id: string;
+  weekday: number | string;
+  effective_from: string;
+  effective_to: string | null;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_day_off: boolean;
+};
+
+/** Resolve the single weekly schedule version that applies on a Cairo calendar date. */
+export function findEffectiveAttendanceSchedule(
+  schedules: readonly EffectiveAttendanceSchedule[],
+  employeeId: string,
+  weekday: number,
+  date: string,
+): EffectiveAttendanceSchedule | null {
+  return schedules.find((schedule) =>
+    schedule.employee_id === employeeId
+    && Number(schedule.weekday) === weekday
+    && schedule.effective_from <= date
+    && (schedule.effective_to === null || schedule.effective_to >= date)
+  ) ?? null;
+}
