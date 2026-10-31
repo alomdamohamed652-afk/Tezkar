@@ -265,12 +265,27 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(advanceCustodyOut.rowCount,1);
       assert.equal(advanceCustodyOut.rows[0].direction,"OUT");
       assert.equal(Number(advanceCustodyOut.rows[0].amount),250);
+      const earlyRepaymentPayload={amount:50,repaymentType:"CUSTOM",notes:"early repayment integration test",idempotencyKey:randomUUID()};
       const earlyRepayment=await app.inject({
         method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
-        payload:{amount:50,repaymentType:"CUSTOM",notes:"early repayment integration test"}
+        payload:earlyRepaymentPayload
       });
       assert.equal(earlyRepayment.statusCode,201,earlyRepayment.body);
       assert.equal(Number(earlyRepayment.json().data.remaining),200);
+      const earlyRepaymentRetry=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:earlyRepaymentPayload
+      });
+      assert.equal(earlyRepaymentRetry.statusCode,200,earlyRepaymentRetry.body,"retrying the same manual repayment must return the original receipt");
+      assert.equal(earlyRepaymentRetry.json().data.repayment.id,earlyRepayment.json().data.repayment.id);
+      assert.equal(Number(earlyRepaymentRetry.json().data.remaining),200);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE idempotency_key=$1",[earlyRepaymentPayload.idempotencyKey])).rows[0].count,1);
+      const reusedRepaymentKey=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:{...earlyRepaymentPayload,amount:51}
+      });
+      assert.equal(reusedRepaymentKey.statusCode,409);
+      assert.equal(reusedRepaymentKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
       const advanceCustodyIn=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[earlyRepayment.json().data.repayment.id]);
       assert.equal(advanceCustodyIn.rowCount,1);
       assert.equal(advanceCustodyIn.rows[0].direction,"IN");
