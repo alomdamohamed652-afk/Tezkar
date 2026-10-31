@@ -771,6 +771,35 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
+      // Payroll ledger postings are a separate entitlement and must never inflate production dues.
+      const payrollPeriod=(await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,generated_by) VALUES(date_trunc('month',CURRENT_DATE)::date,$1) RETURNING id",
+        [manager.id]
+      )).rows[0];
+      const payrollItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,bonus_amount,deduction_amount) VALUES($1,$2,1000,200,0) RETURNING id",
+        [payrollPeriod.id,bonusWorkerEmployee.id]
+      )).rows[0];
+      const payrollBonusLine=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'BONUS','Test payroll bonus',200,$2) RETURNING id",
+        [payrollItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id) VALUES($1,'ADJUSTMENT',1000,$2,'test payroll base salary',$3)",
+        [bonusWorkerEmployee.id,manager.id,payrollItem.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',200,$2,'test payroll bonus',$3)",
+        [bonusWorkerEmployee.id,manager.id,payrollBonusLine.id]
+      );
+      const payrollPayment=(await apiPool.query(
+        "INSERT INTO payroll_payments(payroll_item_id,amount,paid_by) VALUES($1,300,$2) RETURNING id",
+        [payrollItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',300,$2,'test partial payroll payment',$3)",
+        [bonusWorkerEmployee.id,manager.id,payrollPayment.id]
+      );
       const bonusSettlementSummary=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
