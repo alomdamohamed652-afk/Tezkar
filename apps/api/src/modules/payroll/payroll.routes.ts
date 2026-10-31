@@ -556,6 +556,14 @@ export async function payrollRoutes(app: FastifyInstance) {
     return reply.code(replayed?200:201).send({ data: responseData });
   });
 
+  app.get("/api/payroll/items/:id/advance-deductions", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
+    const id=(request.params as {id:string}).id;
+    const item=await pool.query("SELECT id FROM payroll_items WHERE id=$1",[id]);
+    if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
+    const result=await pool.query("SELECT d.id,d.advance_id,d.amount,d.repayment_type,a.code AS advance_code,a.reason AS advance_reason,a.amount AS advance_amount,a.repayment_status,ar.id AS repayment_id,ar.amount AS repaid_amount,ar.payment_date AS repayment_date FROM payroll_advance_deductions d JOIN advance_requests a ON a.id=d.advance_id LEFT JOIN advance_repayments ar ON ar.advance_id=d.advance_id AND ar.source_payroll_item_id=d.payroll_item_id WHERE d.payroll_item_id=$1 ORDER BY a.code,a.id",[id]);
+    return {data:result.rows};
+  });
+
   app.get("/api/payroll/items/:id/adjustments", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
     const id = (request.params as {id:string}).id;
     const result = await pool.query("SELECT l.*,u.username AS created_by_username,v.username AS voided_by_username FROM payroll_adjustment_lines l LEFT JOIN users u ON u.id=l.created_by LEFT JOIN users v ON v.id=l.voided_by WHERE l.payroll_item_id=$1 ORDER BY l.created_at,l.id",[id]);
