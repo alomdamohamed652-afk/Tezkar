@@ -300,7 +300,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
       const daysInMonth=monthEndDate.getUTCDate();
-      const salaryItems = await client.query("SELECT id,employee_id,base_salary FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
+      const salaryItems = await client.query("SELECT id,employee_id,base_salary,advance_repayment_amount FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
       if(snapshot && snapshot.length){
@@ -352,8 +352,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         }
         const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus, COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[salaryItem.id]);
         const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
-        if(Number(salaryItem.base_salary)+bonus<deduction)
-          throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الوقت والخصومات اليدوية أكبر من الراتب والمكافآت؛ راجع المسير قبل الاعتماد",409);
+        if(Number(salaryItem.base_salary)+bonus<deduction+Number(salaryItem.advance_repayment_amount??0))
+          throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الوقت والخصومات اليدوية وأقساط السلف أكبر من الراتب والمكافآت؛ راجع المسير قبل الاعتماد",409);
         await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,salaryItem.id]);
       }
       const salaryItemsForPosting = await client.query("SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,(i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i", [id]);
