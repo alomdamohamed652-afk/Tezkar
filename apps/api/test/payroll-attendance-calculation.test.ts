@@ -22,7 +22,7 @@ test("attendance payroll pays approved overtime at the configured multiplier", (
     days: [{ scheduledStart: "08:00", scheduledEnd: "16:00", status: "PRESENT", overtimeMinutes: 120 }]
   });
   assert.equal(result.hourlyRate, 750);
-  assert.equal(result.overtimeBonus, 1500);
+  assert.equal(result.overtimeBonus, 2250);
 });
 
 test("incomplete or suspicious attendance is not automatically deducted or paid as overtime", () => {
