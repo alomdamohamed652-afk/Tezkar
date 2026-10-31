@@ -94,6 +94,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
       const accountantCookie=await login(accountantUsername,accountantPassword);
+      const integrityOverview=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(integrityOverview.statusCode,200,integrityOverview.body);
+      const integrityCounts=integrityOverview.json().data.counts;
+      for(const key of [
+        "missingPayrollExpenses","missingAdjustmentLedgerEntries","cashPaymentsMissingCustodyOut",
+        "payrollPaymentMismatches","expensesMissingCustodyLink"
+      ]){
+        assert.equal(typeof integrityCounts[key],"number",`financial integrity overview must return numeric count for ${key}`);
+      }
 
       async function closePeriodWithApproval(periodId:string){
         const submitted=await app.inject({method:"POST",url:"/api/accounting/periods/"+periodId+"/submit-review",headers:{cookie:accountantCookie},payload:{}});
