@@ -58,7 +58,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  const reconciliationHandler = async () => {
   // Read-only checks: findings are never repaired automatically and no balance is changed.
-  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,expenseCustodyMismatch] = await Promise.all([
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.accounting_expense_id,e.amount AS expense_amount,e.category
@@ -107,6 +107,29 @@ export async function accountingRoutes(app:FastifyInstance){
         OR (i.status='PARTIAL' AND (COALESCE(SUM(pp.amount),0)<=0.01 OR COALESCE(SUM(pp.amount),0)>=i.net_amount-0.01))
      ORDER BY p.period_month,emp.full_name`),
    pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           i.advance_repayment_amount,COALESCE(SUM(d.amount),0) AS allocated_amount
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN payroll_advance_deductions d ON d.payroll_item_id=i.id
+     WHERE p.status IN ('APPROVED','CLOSED')
+     GROUP BY i.id,emp.full_name,p.period_month
+    HAVING ROUND(COALESCE(SUM(d.amount),0)::numeric,2)<>ROUND(i.advance_repayment_amount::numeric,2)
+     ORDER BY p.period_month,emp.full_name`),
+   pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           a.id AS advance_id,a.code AS advance_code,d.amount
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      JOIN payroll_advance_deductions d ON d.payroll_item_id=i.id
+      JOIN advance_requests a ON a.id=d.advance_id
+      LEFT JOIN advance_repayments ar
+        ON ar.advance_id=d.advance_id AND ar.source_payroll_item_id=i.id
+     WHERE p.status IN ('APPROVED','CLOSED') AND i.status='PAID' AND ar.id IS NULL
+     ORDER BY p.period_month,emp.full_name,a.code`),
+   pool.query(`
     SELECT e.id AS expense_id,e.description,e.amount,e.expense_date::text AS expense_date,
            e.paid_from_employee_id,emp.full_name AS employee_name,
            e.cash_custody_transaction_id,c.id AS matched_custody_id,
@@ -128,6 +151,8 @@ export async function accountingRoutes(app:FastifyInstance){
     missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows.length,
     cashPaymentsMissingCustodyOut:missingCashMovements.rows.length,
     payrollPaymentMismatches:paymentIntegrity.rows.length,
+    advanceDeductionMismatches:advanceDeductionMismatch.rows.length,
+    paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows.length,
     expensesMissingCustodyLink:expenseCustodyMismatch.rows.length
    },
    issues:{
@@ -135,6 +160,8 @@ export async function accountingRoutes(app:FastifyInstance){
     missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows,
     cashPaymentsMissingCustodyOut:missingCashMovements.rows,
     payrollPaymentMismatches:paymentIntegrity.rows,
+    advanceDeductionMismatches:advanceDeductionMismatch.rows,
+    paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows,
     expensesMissingCustodyLink:expenseCustodyMismatch.rows
    }
   };
