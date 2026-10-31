@@ -6,7 +6,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
-import { calculatePayrollDeduction } from "./payroll-calculation.js";
+import { calculateAttendancePayroll, calculatePayrollDeduction } from "./payroll-calculation.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -140,6 +140,12 @@ export async function payrollRoutes(app: FastifyInstance) {
       const periodResult = await client.query("INSERT INTO payroll_periods(period_month,generated_by) VALUES($1::date,$2) ON CONFLICT(period_month) DO UPDATE SET period_month=EXCLUDED.period_month RETURNING *", [month,request.user!.userId]);
       const period = periodResult.rows[0];
       if (period.status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة معتمدة أو مغلقة ولا يمكن إعادة توليدها", 409);
+      // Regeneration invalidates any prior draft attendance preview but preserves its audit trail.
+      const invalidatedTimeLines=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason='تم إلغاء معاينة الوقت بسبب إعادة تجهيز مسير الرواتب',voided_by=$1,voided_at=now() WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$2) AND source_type IN ('ATTENDANCE_TIME_DEDUCTION','ATTENDANCE_OVERTIME') AND status='ACTIVE' RETURNING *",[request.user!.userId,period.id]);
+      for(const line of invalidatedTimeLines.rows)await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"invalidate_attendance_preview",module:"payroll",entityType:"payroll_adjustment_line",entityId:line.id,afterData:line,metadata:{reason:line.void_reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await client.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$1)",[period.id]);
+      await client.query("UPDATE payroll_periods SET attendance_calculated_at=NULL WHERE id=$1",[period.id]);
+      await client.query("UPDATE payroll_items i SET bonus_amount=(SELECT COALESCE(SUM(l.amount),0) FROM payroll_adjustment_lines l WHERE l.payroll_item_id=i.id AND l.line_type='BONUS' AND l.status='ACTIVE'),deduction_amount=(SELECT COALESCE(SUM(l.amount),0) FROM payroll_adjustment_lines l WHERE l.payroll_item_id=i.id AND l.line_type='DEDUCTION' AND l.status='ACTIVE') WHERE i.period_id=$1",[period.id]);
       // A draft period may be regenerated; remove its uncommitted fixed-installment allocations first.
       await client.query("DELETE FROM payroll_advance_deductions WHERE payroll_item_id IN (SELECT id FROM payroll_items WHERE period_id=$1)",[period.id]);
       await client.query("UPDATE payroll_items SET advance_repayment_amount=0 WHERE period_id=$1",[period.id]);
@@ -275,23 +281,19 @@ export async function payrollRoutes(app: FastifyInstance) {
     return {data:rows.rows, frozen:rows.rows.length>0, periodStatus:item.rows[0].period_status};
   });
 
-  app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
-    const id = (request.params as {id:string}).id;
-    const body=z.object({
-      attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid()}).passthrough()).max(10000).optional()
+  app.post("/api/payroll/periods/:id/attendance-preview", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
+    const id=(request.params as {id:string}).id;
+    const parsed=z.object({
+      attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid()}).passthrough()).max(10000),
+      overtimeMultiplier:z.number().min(1).max(5).default(1.5)
     }).safeParse(request.body??{});
-    const result = await withTransaction(async client => {
-      const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
-      if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
-      if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
-      if(!body.success)throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","بيانات سجل الحضور المرسلة غير صحيحة",422);
-      const snapshot=body.data.attendanceSnapshot;
-      if(!snapshot || snapshot.length===0)
-        throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لا يمكن اعتماد مسير المرتبات قبل إرفاق سجل الحضور الكامل للشهر",422);
+    if(!parsed.success)throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","بيانات معاينة الحضور أو مضاعف الإضافي غير صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const period=await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE",[id]);
+      if(!period.rowCount)throw new AppError("PAYROLL_PERIOD_NOT_FOUND","فترة الرواتب غير موجودة",404);
+      if(period.rows[0].status!=="DRAFT")throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن إعادة احتساب الوقت بعد اعتماد المسير",409);
       const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,accountingDate);
-      const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
-      if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
       const periodMonthValue=period.rows[0].period_month;
       const parsedPeriodMonth=periodMonthValue instanceof Date?periodMonthValue:new Date(String(periodMonthValue));
       const monthLabel=Number.isNaN(parsedPeriodMonth.getTime())?String(periodMonthValue).slice(0,7):parsedPeriodMonth.toISOString().slice(0,7);
@@ -299,85 +301,146 @@ export async function payrollRoutes(app: FastifyInstance) {
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
       const daysInMonth=monthEndDate.getUTCDate();
-      const salaryItems = await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
+      const items=await client.query("SELECT i.id,i.employee_id,i.base_salary,i.advance_repayment_amount,e.full_name FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 ORDER BY e.full_name FOR UPDATE OF i",[id]);
+      if(!items.rowCount)throw new AppError("PAYROLL_EMPTY","لا يوجد موظفون برواتب محددة في هذه الفترة",409);
+      const expectedKeys=new Set<string>();
+      for(const item of items.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
+      const suppliedKeys=new Set<string>();
+      for(const row of parsed.data.attendanceSnapshot){
+        const key=row.employeeId+"|"+row.date;
+        if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
+          throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","سجل الحضور يحتوي تاريخًا خارج الشهر أو موظفًا غير موجود أو يومًا مكررًا",422);
+        suppliedKeys.add(key);
+      }
+      if(suppliedKeys.size!==expectedKeys.size)
+        throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور غير مكتمل؛ لازم يحتوي على يوم لكل موظف في الشهر قبل احتساب الوقت",422);
+
+      const salaryProfiles=await client.query("SELECT employee_id,effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=ANY($1::uuid[]) AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[items.rows.map(item=>item.employee_id),monthEnd,monthStart]);
+      const snapshot:Array<Record<string,unknown>&{date:string;employeeId:string;salaryActive:boolean}>=parsed.data.attendanceSnapshot.map(rawRow=>{
+        const row=rawRow as Record<string,unknown>&{date:string;employeeId:string};
+        return {
+          ...row,
+          salaryActive:salaryProfiles.rows.some(profile=>profile.employee_id===row.employeeId
+            &&String(profile.effective_from).slice(0,10)<=row.date
+            &&(!profile.effective_to||String(profile.effective_to).slice(0,10)>=row.date))
+        };
+      });
+      await client.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id=ANY($1::uuid[])",[items.rows.map(item=>item.id)]);
+      for(const row of snapshot){
+        const item=items.rows.find(x=>x.employee_id===row.employeeId);
+        await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4)",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
+      }
+      const overtimeMultiplier=parsed.data.overtimeMultiplier;
+      const replacedLines=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason='تم استبدال البند بعد إعادة احتساب الحضور',voided_by=$1,voided_at=now() WHERE payroll_item_id=ANY($2::uuid[]) AND source_type IN ('ATTENDANCE_TIME_DEDUCTION','ATTENDANCE_OVERTIME') AND status='ACTIVE' RETURNING *",[request.user!.userId,items.rows.map(item=>item.id)]);
+      for(const line of replacedLines.rows)await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"replace_attendance_preview_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:line.id,afterData:line,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await client.query("UPDATE payroll_periods SET overtime_multiplier=$1,attendance_calculated_at=now() WHERE id=$2",[overtimeMultiplier,id]);
+      const employees=[];
+      let totalTimeDeduction=0,totalOvertimeBonus=0,totalOvertimeMinutes=0,totalMissingMinutes=0,totalReviewDays=0;
+      for(const item of items.rows){
+        const employeeDays=snapshot.filter(row=>row.employeeId===item.employee_id);
+        const time=calculateAttendancePayroll({
+          baseSalary:Number(item.base_salary),
+          overtimeMultiplier,
+          days:employeeDays.map(row=>({
+            scheduledStart:typeof row.scheduledStart==="string"?row.scheduledStart:null,
+            scheduledEnd:typeof row.scheduledEnd==="string"?row.scheduledEnd:null,
+            isDayOff:row.isDayOff===true,
+            salaryActive:row.salaryActive,
+            ...(typeof row.status==="string"?{status:row.status}:{}),
+            needsReview:row.needsReview===true,
+            workedMinutes:Number(row.workedMinutes??0),
+            overtimeMinutes:Number(row.overtimeMinutes??0),
+            lateMinutes:Number(row.lateMinutes??0),
+            earlyMinutes:Number(row.earlyMinutes??0)
+          }))
+        });
+        const sources=[
+          {sourceType:"ATTENDANCE_OVERTIME",lineType:"BONUS" as const,amount:time.overtimeBonus,description:"أجر ساعات إضافية ("+(time.overtimeMinutes/60).toFixed(2)+" ساعة × "+overtimeMultiplier+")",notes:"ساعات الإضافي المؤهلة من البصمة: "+time.overtimeMinutes+" دقيقة. أجر الساعة محسوب من الأساسي ÷ دقائق الجدول الساري."},
+          {sourceType:"ATTENDANCE_TIME_DEDUCTION",lineType:"DEDUCTION" as const,amount:time.timeDeduction,description:"خصم غياب/تأخير/انصراف مبكر ("+(time.missingMinutes/60).toFixed(2)+" ساعة)",notes:"غياب: "+time.absenceMinutes+" دقيقة؛ تأخير بعد السماح: "+time.lateMinutes+" دقيقة؛ انصراف مبكر بعد السماح: "+time.earlyMinutes+" دقيقة. أيام تحتاج مراجعة مستثناة: "+time.reviewDays+"."}
+        ];
+        for(const source of sources){
+          if(source.amount<=0)continue;
+          const saved=(await client.query("INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_type) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",[item.id,source.lineType,source.description,source.amount,source.notes,request.user!.userId,source.sourceType])).rows[0];
+          await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create_attendance_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:saved.id,afterData:saved,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+        }
+        const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[item.id]);
+        const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
+        if(Number(item.base_salary)+bonus<deduction+Number(item.advance_repayment_amount??0))
+          throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الوقت والخصومات اليدوية وأقساط السلف أكبر من الراتب والمكافآت؛ راجع البنود قبل الاعتماد",409);
+        await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,item.id]);
+        employees.push({employeeId:item.employee_id,employeeName:item.full_name,scheduledHours:Number((time.scheduledMinutes/60).toFixed(2)),regularWorkedHours:Number((time.workedMinutes/60).toFixed(2)),missingHours:Number((time.missingMinutes/60).toFixed(2)),absenceMinutes:time.absenceMinutes,lateMinutes:time.lateMinutes,earlyMinutes:time.earlyMinutes,overtimeHours:Number((time.overtimeMinutes/60).toFixed(2)),hourlyRate:time.hourlyRate,timeDeduction:time.timeDeduction,overtimeBonus:time.overtimeBonus,reviewDays:time.reviewDays});
+        totalTimeDeduction+=time.timeDeduction;totalOvertimeBonus+=time.overtimeBonus;totalOvertimeMinutes+=time.overtimeMinutes;totalMissingMinutes+=time.missingMinutes;totalReviewDays+=time.reviewDays;
+      }
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"preview_attendance",module:"payroll",entityType:"payroll_period",entityId:id,metadata:{overtimeMultiplier,employeeCount:employees.length,totalTimeDeduction,totalOvertimeBonus,totalOvertimeMinutes,totalMissingMinutes,totalReviewDays},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {periodId:id,overtimeMultiplier,employees,totals:{timeDeduction:Number(totalTimeDeduction.toFixed(2)),overtimeBonus:Number(totalOvertimeBonus.toFixed(2)),overtimeHours:Number((totalOvertimeMinutes/60).toFixed(2)),missingHours:Number((totalMissingMinutes/60).toFixed(2)),reviewDays:totalReviewDays}};
+    });
+    return {data:result};
+  });
+
+  app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
+    const id=(request.params as {id:string}).id;
+    const result=await withTransaction(async client=>{
+      const period=await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE",[id]);
+      if(!period.rowCount)throw new AppError("PAYROLL_PERIOD_NOT_FOUND","فترة الرواتب غير موجودة",404);
+      if(period.rows[0].status!=="DRAFT")throw new AppError("PAYROLL_PERIOD_LOCKED","الفترة ليست مسودة",409);
+      if(!period.rows[0].attendance_calculated_at)throw new AppError("ATTENDANCE_PREVIEW_REQUIRED","يجب احتساب ومراجعة الوقت والإضافي قبل اعتماد المسير",409);
+      const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
+      await assertAccountingMonthOpen(client,accountingDate);
+      const periodMonthValue=period.rows[0].period_month;
+      const parsedPeriodMonth=periodMonthValue instanceof Date?periodMonthValue:new Date(String(periodMonthValue));
+      const monthLabel=Number.isNaN(parsedPeriodMonth.getTime())?String(periodMonthValue).slice(0,7):parsedPeriodMonth.toISOString().slice(0,7);
+      const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
+      const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
+      const daysInMonth=monthEndDate.getUTCDate();
+      const salaryItems=await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
-      if(snapshot && snapshot.length){
-        const suppliedKeys=new Set<string>();
-        for(const row of snapshot){
-          const key=row.employeeId+"|"+row.date;
-          if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
-            throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","سجل الحضور يحتوي تاريخًا خارج الشهر أو موظفًا غير موجود أو يومًا مكررًا",422);
-          suppliedKeys.add(key);
-        }
-        if(suppliedKeys.size!==expectedKeys.size)
-          throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور المرفق غير مكتمل؛ لازم يحتوي على سجل لكل موظف ولكل يوم في الشهر قبل اعتماد المسير.",422);
-        for(const row of snapshot){
-          const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
-          await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
-        }
+      const savedSnapshots=await client.query("SELECT i.employee_id,s.attendance_date::text AS date FROM payroll_attendance_snapshots s JOIN payroll_items i ON i.id=s.payroll_item_id WHERE i.period_id=$1",[id]);
+      const savedKeys=new Set<string>();
+      for(const row of savedSnapshots.rows){
+        const key=row.employee_id+"|"+row.date;
+        if(!expectedKeys.has(key)||savedKeys.has(key))throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","نسخة الحضور المحفوظة تحتوي بيانات غير صحيحة أو مكررة",409);
+        savedKeys.add(key);
       }
-      const salaryItemsForPosting = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
-          (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
-        FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
+      if(savedKeys.size!==expectedKeys.size)throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","نسخة الحضور غير مكتملة؛ أعد احتساب الحضور قبل الاعتماد",409);
+      const salaryItemsForValidation=await client.query("SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,i.advance_repayment_amount,i.accounting_expense_id,e.full_name FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i",[id]);
+      for(const item of salaryItemsForValidation.rows){
+        const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[item.id]);
+        const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
+        if(Number(item.base_salary)+bonus<deduction+Number(item.advance_repayment_amount??0))
+          throw new AppError("PAYROLL_NET_NEGATIVE","إجمالي الاستحقاقات والخصومات وأقساط السلف غير متوازن؛ راجع المسير قبل الاعتماد",409);
+        await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,item.id]);
+      }
+      const salaryItemsForPosting = await client.query("SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,(i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i", [id]);
       for (const item of salaryItemsForPosting.rows) {
         const grossSalary=Number(item.salary_expense_amount);
         if(grossSalary< -0.0001)throw new AppError("PAYROLL_NET_NEGATIVE","إجمالي الراتب بعد البونص والخصومات لا يمكن أن يكون بالسالب",409);
         if(grossSalary>0&&!item.accounting_expense_id){
-          const expense = await client.query(`INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by)
-            VALUES(NULL,'SALARIES',$1,$2,$3::date,'PAYROLL',$4) RETURNING id`,
-            [`راتب شهر ${monthLabel} - ${item.full_name}`,grossSalary,period.rows[0].period_month,request.user!.userId]);
-          await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2", [expense.rows[0].id,item.id]);
+          const expense = await client.query("INSERT INTO accounting_expenses(order_id,category,description,amount,expense_date,payment_method,created_by) VALUES(NULL,'SALARIES',$1,$2,$3::date,'PAYROLL',$4) RETURNING id",
+            ["راتب شهر "+monthLabel+" - "+item.full_name,grossSalary,period.rows[0].period_month,request.user!.userId]);
+          await client.query("UPDATE payroll_items SET accounting_expense_id=$1 WHERE id=$2",[expense.rows[0].id,item.id]);
         }
-        // Base salary is posted once per payroll item. Each named bonus/deduction
-        // gets its own source-linked ledger entry so employee balances can be audited
-        // back to the exact line printed on the payslip.
         if(Number(item.base_salary)>0){
-          await client.query(
-            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id)
-             VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
-             ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING`,
-            [item.employee_id,Number(item.base_salary),request.user!.userId,`الراتب الأساسي لشهر ${monthLabel}`,item.id]
-          );
+          await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5) ON CONFLICT (payroll_item_id) WHERE payroll_item_id IS NOT NULL DO NOTHING",
+            [item.employee_id,Number(item.base_salary),request.user!.userId,"الراتب الأساسي لشهر "+monthLabel,item.id]);
         }
-        const adjustmentLines=await client.query(
-          `SELECT id,line_type,description,amount FROM payroll_adjustment_lines
-            WHERE payroll_item_id=$1 ORDER BY created_at,id`,[item.id]
-        );
+        const adjustmentLines=await client.query("SELECT id,line_type,description,amount FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY created_at,id",[item.id]);
         for(const line of adjustmentLines.rows){
           if(line.line_type==="BONUS"){
-            await client.query(
-              `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id)
-               VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
-               ON CONFLICT (payroll_adjustment_line_id) WHERE payroll_adjustment_line_id IS NOT NULL DO NOTHING`,
-              [item.employee_id,Number(line.amount),request.user!.userId,`مكافأة راتب شهر ${monthLabel}: ${line.description}`,line.id]
-            );
+            await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5) ON CONFLICT (payroll_adjustment_line_id) WHERE payroll_adjustment_line_id IS NOT NULL DO NOTHING",
+              [item.employee_id,Number(line.amount),request.user!.userId,"مكافأة راتب شهر "+monthLabel+": "+line.description,line.id]);
           }else{
-            await client.query(
-              `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_adjustment_line_id)
-               VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
-               ON CONFLICT (payroll_adjustment_line_id) WHERE payroll_adjustment_line_id IS NOT NULL DO NOTHING`,
-              [item.employee_id,Number(line.amount),request.user!.userId,`خصم راتب شهر ${monthLabel}: ${line.description}`,line.id]
-            );
+            await client.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5) ON CONFLICT (payroll_adjustment_line_id) WHERE payroll_adjustment_line_id IS NOT NULL DO NOTHING",
+              [item.employee_id,Number(line.amount),request.user!.userId,"خصم راتب شهر "+monthLabel+": "+line.description,line.id]);
           }
         }
       }
-      // Advance deductions remain reserved on the approved payroll item until the
-      // salary is actually paid. The payment endpoint commits them exactly once.
-      const updated = await client.query("UPDATE payroll_periods SET status='APPROVED',approved_by=$1,approved_at=now() WHERE id=$2 RETURNING *", [request.user!.userId,id]);
-      await client.query(
-        `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
-         SELECT DISTINCT u.id,'PAYROLL_APPROVED','تم اعتماد مسير المرتبات',
-           'تم اعتماد مسير المرتبات لشهر ' || $2::text || '. راجع حسابك لمتابعة مستحقاتك.',
-           'payroll_period',$1::uuid
-         FROM payroll_items i JOIN users u ON u.employee_id=i.employee_id
-         WHERE i.period_id=$1 AND u.is_active=TRUE`,
-        [id,monthLabel]
-      );
+      const updated=await client.query("UPDATE payroll_periods SET status='APPROVED',approved_by=$1,approved_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,id]);
+      await client.query("INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id) SELECT DISTINCT u.id,'PAYROLL_APPROVED','تم اعتماد مسير المرتبات','تم اعتماد مسير المرتبات لشهر ' || $2::text || '. راجع حسابك لمتابعة مستحقاتك.','payroll_period',$1::uuid FROM payroll_items i JOIN users u ON u.employee_id=i.employee_id WHERE i.period_id=$1 AND u.is_active=TRUE",[id,monthLabel]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"approve",module:"payroll",entityType:"payroll_period",entityId:id,beforeData:period.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
-    return { data: result };
+    return {data:result};
   });
 
   app.get("/api/payroll/custody-holders", { preHandler: [authenticateRequest, requirePermission("payroll.pay")] }, async request => {
@@ -486,15 +549,12 @@ export async function payrollRoutes(app: FastifyInstance) {
       if(parsed.data.paymentMethod==="CASH" && !fromCustody)throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة",422);
       const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
         [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
-      let custodyIn=null;
-      if(fromCustody && committedAdvanceRepayment>0)custodyIn=await client.query(
-        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3::date,$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
-        [custodyEmployeeId,committedAdvanceRepayment,paymentDate,"استرداد سلف من مستحقات الراتب",`خصم سلف إجمالي ${committedAdvanceRepayment.toFixed(2)} ج.م`,payment.rows[0].id,request.user!.userId]
-      );
+      // Cash custody records physical cash only: advance offsets reduce the employee's
+      // net entitlement, but no cash is received back by the custodian.
       let custodyOut=null;
       if(fromCustody)custodyOut=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'OUT',$2,$3::date,$4,$5,'PAYROLL_PAYMENT',$6,$7) RETURNING id",
-        [custodyEmployeeId,parsed.data.amount+committedAdvanceRepayment,paymentDate,"صرف راتب الموظف "+item.rows[0].employee_id,committedAdvanceRepayment>0?`إجمالي التسوية النقدية ${(parsed.data.amount+committedAdvanceRepayment).toFixed(2)}؛ صافي النقد المدفوع ${parsed.data.amount.toFixed(2)}`:parsed.data.notes??null,payment.rows[0].id,request.user!.userId]
+        [custodyEmployeeId,parsed.data.amount,paymentDate,"صرف صافي راتب الموظف "+item.rows[0].employee_id,parsed.data.notes??(committedAdvanceRepayment>0?`صافي النقد المدفوع ${parsed.data.amount.toFixed(2)} ج.م بعد خصم سلف ${committedAdvanceRepayment.toFixed(2)} ج.م`:null),payment.rows[0].id,request.user!.userId]
       );
 
       await client.query(
@@ -512,47 +572,41 @@ export async function payrollRoutes(app: FastifyInstance) {
         [item.rows[0].employee_id,status==="PAID"?"تم صرف راتبك بالكامل":"تم تسجيل دفعة من راتبك",
           status==="PAID"?"تم تسجيل صرف مستحقات راتبك بالكامل.":"تم تسجيل دفعة راتب جديدة بمبلغ "+parsed.data.amount.toFixed(2)+" ج.م.",id]
       );
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,fromCustody,custodyEmployeeId,cashCustodyOutId:custodyOut?.rows[0]?.id??null,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,fromCustody,custodyEmployeeId,cashCustodyOutId:custodyOut?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status, replayed:false };
     });
     const {replayed,...responseData}=result;
     return reply.code(replayed?200:201).send({ data: responseData });
   });
 
+  app.get("/api/payroll/items/:id/advance-deductions", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
+    const id=(request.params as {id:string}).id;
+    const item=await pool.query("SELECT id FROM payroll_items WHERE id=$1",[id]);
+    if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
+    const result=await pool.query("SELECT d.id,d.advance_id,d.amount,d.repayment_type,a.code AS advance_code,a.reason AS advance_reason,a.amount AS advance_amount,a.repayment_status,ar.id AS repayment_id,ar.amount AS repaid_amount,ar.payment_date AS repayment_date FROM payroll_advance_deductions d JOIN advance_requests a ON a.id=d.advance_id LEFT JOIN advance_repayments ar ON ar.advance_id=d.advance_id AND ar.source_payroll_item_id=d.payroll_item_id WHERE d.payroll_item_id=$1 ORDER BY a.code,a.id",[id]);
+    return {data:result.rows};
+  });
+
   app.get("/api/payroll/items/:id/adjustments", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
     const id = (request.params as {id:string}).id;
-    const result = await pool.query(`SELECT l.*,u.username AS created_by_username
-      FROM payroll_adjustment_lines l LEFT JOIN users u ON u.id=l.created_by
-      WHERE l.payroll_item_id=$1 ORDER BY l.created_at,l.id`,[id]);
+    const result = await pool.query("SELECT l.*,u.username AS created_by_username,v.username AS voided_by_username FROM payroll_adjustment_lines l LEFT JOIN users u ON u.id=l.created_by LEFT JOIN users v ON v.id=l.voided_by WHERE l.payroll_item_id=$1 ORDER BY l.created_at,l.id",[id]);
     return {data:result.rows};
   });
 
   app.post("/api/payroll/items/:id/adjustments", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async (request,reply) => {
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({
-      lineType:z.enum(["BONUS","DEDUCTION"]),
-      description:z.string().trim().min(2).max(240),
-      amount:z.number().positive().max(100000000),
-      notes:z.string().trim().max(1000).nullable().optional()
-    }).safeParse(request.body);
+    const parsed=z.object({lineType:z.enum(["BONUS","DEDUCTION"]),description:z.string().trim().min(2).max(240),amount:z.number().positive().max(100000000),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","أدخل نوع البند والبيان والمبلغ بصورة صحيحة",422);
     const result=await withTransaction(async client=>{
-      const item=await client.query(`SELECT i.*,p.status AS period_status,p.period_month
-        FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
-        WHERE i.id=$1 FOR UPDATE OF i,p`,[id]);
+      const item=await client.query("SELECT i.*,p.status AS period_status,p.period_month FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p",[id]);
       if(!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
       if(item.rows[0].period_status!=="DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن تعديل بنود مسير معتمد",409);
       const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,month);
-      const line=await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by)
-        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[id,parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,request.user!.userId]);
-      const totals=await client.query(`SELECT
-        COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
-        COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[id]);
-      const bonus=Number(totals.rows[0].bonus), deduction=Number(totals.rows[0].deduction);
-      if(Number(item.rows[0].base_salary)+bonus < deduction+Number(item.rows[0].advance_repayment_amount??0))
-        throw new AppError("PAYROLL_NET_NEGATIVE","إجمالي الخصومات والسلف أكبر من الراتب والمكافآت",422);
+      const line=await client.query("INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[id,parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,request.user!.userId]);
+      const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[id]);
+      const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
+      if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0)) throw new AppError("PAYROLL_NET_NEGATIVE","إجمالي الخصومات والسلف أكبر من الراتب والمكافآت",422);
       await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"add_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:line.rows[0].id,afterData:line.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return line.rows[0];
@@ -562,32 +616,20 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   app.patch("/api/payroll/items/:id/adjustments/:lineId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const params=request.params as {id:string;lineId:string};
-    const parsed=z.object({
-      lineType:z.enum(["BONUS","DEDUCTION"]),
-      description:z.string().trim().min(2).max(240),
-      amount:z.number().positive().max(100000000),
-      notes:z.string().trim().max(1000).nullable().optional()
-    }).safeParse(request.body);
+    const parsed=z.object({lineType:z.enum(["BONUS","DEDUCTION"]),description:z.string().trim().min(2).max(240),amount:z.number().positive().max(100000000),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل بند المرتب غير صحيحة",422);
     return withTransaction(async client=>{
-      const item=await client.query(`SELECT i.*,p.status AS period_status,p.period_month
-        FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
-        WHERE i.id=$1 FOR UPDATE OF i,p`,[params.id]);
+      const item=await client.query("SELECT i.*,p.status AS period_status,p.period_month FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p",[params.id]);
       if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
       if(item.rows[0].period_status!=="DRAFT")throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن تعديل بنود مسير معتمد",409);
       const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,month);
-      const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 FOR UPDATE",[params.lineId,params.id]);
-      if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
-      const updated=await client.query(`UPDATE payroll_adjustment_lines SET line_type=$1,description=$2,amount=$3,notes=$4
-        WHERE id=$5 AND payroll_item_id=$6 RETURNING *`,[parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,params.lineId,params.id]);
-      const totals=await client.query(`SELECT
-        COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
-        COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[params.id]);
+      const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 AND status='ACTIVE' FOR UPDATE",[params.lineId,params.id]);
+      if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود أو تم إلغاؤه",404);
+      const updated=await client.query("UPDATE payroll_adjustment_lines SET line_type=$1,description=$2,amount=$3,notes=$4 WHERE id=$5 AND payroll_item_id=$6 AND status='ACTIVE' RETURNING *",[parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,params.lineId,params.id]);
+      const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[params.id]);
       const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
-      if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0))
-        throw new AppError("PAYROLL_NET_NEGATIVE","تعديل البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
+      if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0))throw new AppError("PAYROLL_NET_NEGATIVE","تعديل البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
       await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,params.id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {data:updated.rows[0]};
@@ -596,27 +638,24 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   app.delete("/api/payroll/items/:id/adjustments/:lineId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const params=request.params as {id:string;lineId:string};
+    const parsed=z.object({reason:z.string().trim().min(2).max(1000)}).safeParse(request.body);
+    if(!parsed.success)throw new AppError("VOID_REASON_REQUIRED","اكتب سبب إلغاء البند",422);
     return withTransaction(async client=>{
-      const item=await client.query(`SELECT i.*,p.status AS period_status,p.period_month
-        FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
-        WHERE i.id=$1 FOR UPDATE OF i,p`,[params.id]);
-      if(!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
-      if(item.rows[0].period_status!=="DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن حذف بنود مسير معتمد",409);
+      const item=await client.query("SELECT i.*,p.status AS period_status,p.period_month FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p",[params.id]);
+      if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
+      if(item.rows[0].period_status!=="DRAFT")throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن إلغاء بند بعد اعتماد المسير؛ يلزم إجراء تسوية عكسية معتمدة",409);
       const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,month);
-      const removed=await client.query("DELETE FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 RETURNING *",[params.lineId,params.id]);
-      if(!removed.rowCount) throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
-      const totals=await client.query(`SELECT
-        COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
-        COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[params.id]);
-      const bonus=Number(totals.rows[0].bonus), deduction=Number(totals.rows[0].deduction);
-      const current=await client.query("SELECT base_salary,advance_repayment_amount FROM payroll_items WHERE id=$1",[params.id]);
-      if(Number(current.rows[0].base_salary)+bonus < deduction+Number(current.rows[0].advance_repayment_amount??0))
-        throw new AppError("PAYROLL_NET_NEGATIVE","حذف البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
+      const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 AND status='ACTIVE' FOR UPDATE",[params.lineId,params.id]);
+      if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","البند غير موجود أو تم إلغاؤه بالفعل",404);
+      const voided=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason=$1,voided_by=$2,voided_at=now() WHERE id=$3 AND payroll_item_id=$4 AND status='ACTIVE' RETURNING *",[parsed.data.reason,request.user!.userId,params.lineId,params.id]);
+      const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[params.id]);
+      const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
+      if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0))throw new AppError("PAYROLL_NET_NEGATIVE","إلغاء البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
       await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,params.id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"remove_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:removed.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return {data:{deleted:true,bonusAmount:bonus,deductionAmount:deduction}};
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"void_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:before.rows[0],afterData:voided.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      const detailed=await client.query("SELECT l.*,u.username AS voided_by_username FROM payroll_adjustment_lines l LEFT JOIN users u ON u.id=l.voided_by WHERE l.id=$1",[params.lineId]);
+      return {data:detailed.rows[0]};
     });
   });
 

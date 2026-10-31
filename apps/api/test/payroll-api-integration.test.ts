@@ -337,6 +337,20 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [itemA.rows[0].id,itemB.rows[0].id,userId]
       );
       assert.equal(adjustmentLines.rowCount,4);
+      const voidCandidate=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'DEDUCTION','Void candidate',25,$2) RETURNING id",
+        [itemA.rows[0].id,userId]
+      )).rows[0];
+      const voidAdjustment=await app.inject({
+        method:"DELETE",url:`/api/payroll/items/${itemA.rows[0].id}/adjustments/${voidCandidate.id}`,
+        headers:{cookie:cookieHeader},payload:{reason:"تم إدخال الخصم بالخطأ"}
+      });
+      assert.equal(voidAdjustment.statusCode,200,voidAdjustment.body);
+      assert.equal(voidAdjustment.json().data.status,"VOIDED");
+      assert.equal(voidAdjustment.json().data.void_reason,"تم إدخال الخصم بالخطأ");
+      assert.equal(voidAdjustment.json().data.voided_by,userId);
+      const voidedLedger=await apiPool.query("SELECT id FROM employee_earnings_ledger WHERE payroll_adjustment_line_id=$1",[voidCandidate.id]);
+      assert.equal(voidedLedger.rowCount,0,"a voided draft deduction must not be posted to the employee ledger");
 
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
@@ -354,22 +368,25 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       }).flat();
       const missingSnapshotApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: {}
+        headers: { cookie: cookieHeader },payload:{}
       });
-      assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
-      assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
-      const incompleteSnapshotApproval = await app.inject({
-        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: { attendanceSnapshot: attendanceSnapshot.slice(0, 1) }
+      assert.equal(missingSnapshotApproval.statusCode,409,missingSnapshotApproval.body);
+      assert.equal(missingSnapshotApproval.json().error.code,"ATTENDANCE_PREVIEW_REQUIRED");
+      const incompleteAttendancePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:attendanceSnapshot.slice(0,1),overtimeMultiplier:1.5}
       });
-      assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
-      assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      assert.equal(incompleteAttendancePreview.statusCode,422,incompleteAttendancePreview.body);
+      assert.equal(incompleteAttendancePreview.json().error.code,"ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      const attendancePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(attendancePreview.statusCode,200,attendancePreview.body);
+      assert.equal(attendancePreview.json().data.employees.length,2);
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: { attendanceSnapshot }
+        headers: { cookie: cookieHeader },payload:{}
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
@@ -403,7 +420,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         `SELECT l.id,l.line_type,l.amount,e.credit_amount,e.debit_amount
            FROM payroll_adjustment_lines l
            LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id
-          WHERE l.payroll_item_id IN ($1,$2)`,
+          WHERE l.payroll_item_id IN ($1,$2) AND l.status='ACTIVE'`,
         [itemA.rows[0].id,itemB.rows[0].id]
       );
       assert.equal(linkedAdjustments.rowCount,4);
@@ -421,6 +438,75 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE category='SALARIES' AND payment_method='PAYROLL' AND expense_date='2099-01-01'"
       );
       assert.equal(salaryExpenseCount.rows[0].count, 2, "re-approval must not duplicate salary expenses");
+
+      // Attendance-based salary deductions and overtime are posted as named payroll lines.
+      const timePeriod=(await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,generated_by) VALUES('2099-03-01',$1) RETURNING id",
+        [userId]
+      )).rows[0];
+      const timeItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary) VALUES($1,$2,1000) RETURNING id",
+        [timePeriod.id,employeeB.rows[0].id]
+      )).rows[0];
+      const timeSnapshot=Array.from({length:31},(_,index)=>{
+        const date=`2099-03-${String(index+1).padStart(2,"0")}`;
+        const day={date,employeeId:employeeB.rows[0].id,scheduledStart:"08:00",scheduledEnd:"16:00",isDayOff:false,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:480,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,needsReview:false};
+        if(index===0){day.status="ABSENT";day.workedMinutes=0;}
+        if(index===1){day.overtimeMinutes=60;day.workedMinutes=540;}
+        if(index===2){day.status="MISSING_PUNCH";day.needsReview=true;day.lateMinutes=120;day.overtimeMinutes=60;}
+        if(index===3){day.lateMinutes=30;day.earlyMinutes=10;day.workedMinutes=440;}
+        return day;
+      });
+      const timePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${timePeriod.id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(timePreview.statusCode,200,timePreview.body);
+      assert.equal(timePreview.json().data.totals.timeDeduction,34.95);
+      assert.equal(timePreview.json().data.totals.overtimeBonus,6.05);
+      const repeatedTimePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${timePeriod.id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(repeatedTimePreview.statusCode,200,repeatedTimePreview.body);
+      const timeLineHistory=await apiPool.query("SELECT status,source_type,void_reason FROM payroll_adjustment_lines WHERE payroll_item_id=$1 ORDER BY created_at,id",[timeItem.id]);
+      assert.equal(timeLineHistory.rowCount,4,"recalculation must preserve prior generated time lines as voided history");
+      assert.equal(timeLineHistory.rows.filter((line:any)=>line.status==="VOIDED").length,2);
+      assert.ok(timeLineHistory.rows.filter((line:any)=>line.status==="VOIDED").every((line:any)=>line.void_reason));
+      const draftTimeLines=await apiPool.query("SELECT source_type,line_type,amount FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",[timeItem.id]);
+      assert.equal(draftTimeLines.rowCount,2,"time adjustments must be visible and reviewable while the period is still a draft");
+      const timeApproval=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${timePeriod.id}/approve`,
+        headers:{cookie:cookieHeader},payload:{}
+      });
+      assert.equal(timeApproval.statusCode,200,timeApproval.body);
+      const timeLines=await apiPool.query(
+        "SELECT source_type,line_type,amount,status FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",
+        [timeItem.id]
+      );
+      assert.equal(timeLines.rowCount,2);
+      const overtimeLine=timeLines.rows.find((line:any)=>line.source_type==="ATTENDANCE_OVERTIME");
+      const deductionLine=timeLines.rows.find((line:any)=>line.source_type==="ATTENDANCE_TIME_DEDUCTION");
+      assert.equal(Number(overtimeLine.amount),6.05);
+      assert.equal(Number(deductionLine.amount),34.95);
+      assert.equal(overtimeLine.line_type,"BONUS");
+      assert.equal(deductionLine.line_type,"DEDUCTION");
+      assert.ok(timeLines.rows.every((line:any)=>line.status==="ACTIVE"));
+      const timeItemTotals=(await apiPool.query(
+        "SELECT bonus_amount,deduction_amount,net_amount FROM payroll_items WHERE id=$1",[timeItem.id]
+      )).rows[0];
+      assert.equal(Number(timeItemTotals.bonus_amount),6.05);
+      assert.equal(Number(timeItemTotals.deduction_amount),34.95);
+      assert.equal(Number(timeItemTotals.net_amount),971.10);
+      const reviewedTimeLedger=await apiPool.query(
+        "SELECT l.source_type,e.credit_amount,e.debit_amount FROM payroll_adjustment_lines l LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id WHERE l.payroll_item_id=$1 AND l.status='ACTIVE'",
+        [timeItem.id]
+      );
+      assert.equal(reviewedTimeLedger.rowCount,2);
+      assert.ok(reviewedTimeLedger.rows.every((row:any)=>row.source_type==="ATTENDANCE_OVERTIME"
+        ? Number(row.credit_amount)===6.05 && Number(row.debit_amount??0)===0
+        : Number(row.debit_amount)===34.95 && Number(row.credit_amount??0)===0));
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM payroll_attendance_snapshots WHERE payroll_item_id=$1",[timeItem.id])).rows[0].count,31);
 
       // Fixed monthly and salary-percentage installments reduce net pay in the approved
       // payroll, but the advance balance is not reduced until the employee is actually paid.
@@ -454,6 +540,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(februaryItem, "employee with a salary profile should be included in the February payroll");
       assert.equal(Number(februaryItem.advance_repayment_amount), 400);
       assert.equal(Number(februaryItem.net_amount), 600, "fixed and salary-percentage installments reduce take-home pay without exceeding salary");
+      const februaryAdvanceLines=await app.inject({
+        method:"GET",url:`/api/payroll/items/${februaryItem.id}/advance-deductions`,headers:{cookie:cookieHeader}
+      });
+      assert.equal(februaryAdvanceLines.statusCode,200,februaryAdvanceLines.body);
+      assert.equal(februaryAdvanceLines.json().data.length,2,"each salary advance must appear as its own payroll deduction line");
+      assert.equal(februaryAdvanceLines.json().data.reduce((sum:any,line:any)=>sum+Number(line.amount),0),400);
       const februaryAttendanceSnapshot = Array.from({length:28},(_,index)=>{
         const date = `2099-02-${String(index+1).padStart(2,"0")}`;
         return [
@@ -461,22 +553,38 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
           {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
         ];
       }).flat();
+      const februaryPreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${februaryData.json().data.period.id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:februaryAttendanceSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(februaryPreview.statusCode,200,februaryPreview.body);
       const februaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: {attendanceSnapshot:februaryAttendanceSnapshot}
+        headers: { cookie: cookieHeader },payload:{}
       });
       assert.equal(februaryApproval.statusCode, 200, februaryApproval.body);
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,0,
         "approving payroll must not repay an advance before the salary is paid");
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[salaryPercentageAdvance.rows[0].id])).rows[0].count,0);
 
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',1000,CURRENT_DATE,'Payroll cash custody test',$2)",
+        [employeeA.rows[0].id,userId]
+      );
       const februaryPayment=await app.inject({
         method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
-        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"TEST"}
+        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"CASH",fromCustody:true,custodyEmployeeId:employeeA.rows[0].id}
       });
       assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
       assert.equal(februaryPayment.json().data.status,"PAID");
+      const payrollCashMovements=await apiPool.query(
+        "SELECT direction,amount,source_type FROM cash_custody_transactions WHERE source_id=$1 AND source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') ORDER BY direction",
+        [februaryPayment.json().data.payment.id]
+      );
+      assert.equal(payrollCashMovements.rowCount,1,"cash payroll with advance deductions must create one physical cash movement");
+      assert.equal(payrollCashMovements.rows[0].direction,"OUT");
+      assert.equal(payrollCashMovements.rows[0].source_type,"PAYROLL_PAYMENT");
+      assert.equal(Number(payrollCashMovements.rows[0].amount),600,"custody OUT must equal net cash paid, not gross salary before advance offsets");
       const salaryAccrual=await apiPool.query("SELECT credit_amount FROM employee_earnings_ledger WHERE payroll_item_id=$1",[februaryItem.id]);
       assert.equal(salaryAccrual.rowCount,1,"approved gross salary must be visible in the employee account before payout");
       assert.equal(Number(salaryAccrual.rows[0].credit_amount),1000,"the base salary must be credited independently");
@@ -551,7 +659,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
         [februaryPayment.json().data.payment.id]
       );
-      assert.equal(custodySummary.rowCount,0,"non-cash payroll payments must not create cash-custody movements");
+      assert.equal(custodySummary.rowCount,1,"cash payroll must create only the actual cash movement");
+      assert.equal(custodySummary.rows[0].direction,"OUT");
+      assert.equal(Number(custodySummary.rows[0].amount),600);
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
