@@ -1390,6 +1390,49 @@ test("approving a worker payout atomically marks it paid and debits the availabl
 
       // Production-based advance percentages must use the production allocation,
       // not the gross worker payout when that payout also includes a separate adjustment.
+      const productionAdvanceWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Production Advance Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const priorProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE-1,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',130,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(priorProduction.total_earning_amount),130);
+      const priorWorkerPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,created_at)
+         VALUES($1,155,155,0,'CASH',$2,CURRENT_DATE-1+TIME '12:00') RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
+      const priorSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(
+           employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id
+         ) VALUES($1,155,155,0,CURRENT_DATE-1,'Prior payout includes a 25 adjustment',$2,$3) RETURNING id`,
+        [productionAdvanceWorker.id,manager.id,priorWorkerPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,130)",
+        [priorSettlement.id,priorProduction.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,settlement_id,created_by,notes) VALUES($1,'WORKER_PAYMENT',155,$2,$3,$4,'Prior gross payout')",
+        [productionAdvanceWorker.id,priorWorkerPayment.id,priorSettlement.id,manager.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',25,$2,'Separate adjustment included in prior gross payout')",
+        [productionAdvanceWorker.id,manager.id]
+      );
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id) VALUES($1,'OUT',155,CURRENT_DATE-1,'Prior worker payment',$2,'WORKER_PAYMENT',$3)",
+        [managerEmployee.id,manager.id,priorWorkerPayment.id]
+      );
       const advanceProduction=(await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
@@ -1398,7 +1441,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$8,$8,now())
          RETURNING id,total_earning_amount`,
-        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(advanceProduction.total_earning_amount),100);
@@ -1410,7 +1453,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          VALUES($1,200,'Production percentage repayment regression','PAID',$2,$2,CURRENT_DATE-INTERVAL '30 days',
                 'PRODUCTION_PERCENTAGE',10,15,'OPEN')
          RETURNING id`,
-        [bonusWorkerEmployee.id,manager.id]
+        [productionAdvanceWorker.id,manager.id]
       )).rows[0];
       await apiPool.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',1000,CURRENT_DATE,'Production advance repayment test float',$2)",
@@ -1418,7 +1461,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       const productionAdvancePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",
+        payload:{employeeId:productionAdvanceWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",
           settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[advanceProduction.id],idempotencyKey:randomUUID()}
       });
       assert.equal(productionAdvancePayout.statusCode,201,productionAdvancePayout.body);
