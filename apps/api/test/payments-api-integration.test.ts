@@ -800,6 +800,43 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',300,$2,'test partial payroll payment',$3)",
         [bonusWorkerEmployee.id,manager.id,payrollPayment.id]
       );
+      // The legacy ledger-only fallback must not expose salary accruals as production dues
+      // for an employee who has no approved production rows.
+      const payrollOnlyEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Payroll Only Employee "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const payrollOnlyItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,bonus_amount,deduction_amount) VALUES($1,$2,1000,200,0) RETURNING id",
+        [payrollPeriod.id,payrollOnlyEmployee.id]
+      )).rows[0];
+      const payrollOnlyBonus=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'BONUS','Payroll-only test bonus',200,$2) RETURNING id",
+        [payrollOnlyItem.id,manager.id]
+      )).rows[0];
+      const payrollOnlyPayment=(await apiPool.query(
+        "INSERT INTO payroll_payments(payroll_item_id,amount,paid_by) VALUES($1,300,$2) RETURNING id",
+        [payrollOnlyItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id) VALUES($1,'ADJUSTMENT',1000,$2,'payroll-only base',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyItem.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',200,$2,'payroll-only bonus',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyBonus.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',300,$2,'payroll-only payment',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyPayment.id]
+      );
+      const payrollOnlyPreview=await app.inject({
+        method:"GET",url:`/api/worker-payments/preview?employeeId=${payrollOnlyEmployee.id}&cashCustodyEmployeeId=${managerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(payrollOnlyPreview.statusCode,200,payrollOnlyPreview.body);
+      assert.equal(Number(payrollOnlyPreview.json().data.availableEarnings),0,
+        "payroll-only ledger credits and debits must never be offered as production dues when no approved production rows exist");
+
       const bonusSettlementSummary=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
