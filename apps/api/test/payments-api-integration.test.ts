@@ -1388,6 +1388,52 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(Number(directPayments.rows[0].count)>=2);
       assert.ok(Number(directPayments.rows[0].total)>=150);
 
+      // Production-based advance percentages must use the production allocation,
+      // not the gross worker payout when that payout also includes a separate adjustment.
+      const advanceProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [bonusWorkerEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(advanceProduction.total_earning_amount),100);
+      const productionAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(
+           employee_id,amount,reason,status,requested_by,paid_by,paid_at,
+           repayment_method,production_percentage,production_period_days,repayment_status
+         )
+         VALUES($1,200,'Production percentage repayment regression','PAID',$2,$2,CURRENT_DATE-INTERVAL '30 days',
+                'PRODUCTION_PERCENTAGE',10,15,'OPEN')
+         RETURNING id`,
+        [bonusWorkerEmployee.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',1000,CURRENT_DATE,'Production advance repayment test float',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const productionAdvancePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",
+          settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[advanceProduction.id],idempotencyKey:randomUUID()}
+      });
+      assert.equal(productionAdvancePayout.statusCode,201,productionAdvancePayout.body);
+      assert.equal(Number(productionAdvancePayout.json().data.payment.gross_amount),100);
+      assert.equal(Number(productionAdvancePayout.json().data.payment.advance_repayment_amount),10,
+        "10% production repayment must be calculated from the 100 production allocation, not gross prior settlements including a 25 adjustment");
+      assert.equal(Number(productionAdvancePayout.json().data.payment.amount),90);
+      const productionAdvanceRepayment=await apiPool.query(
+        "SELECT amount,source_worker_payment_id FROM advance_repayments WHERE advance_id=$1",
+        [productionAdvance.id]
+      );
+      assert.equal(productionAdvanceRepayment.rowCount,1);
+      assert.equal(Number(productionAdvanceRepayment.rows[0].amount),10);
+      assert.equal(productionAdvanceRepayment.rows[0].source_worker_payment_id,productionAdvancePayout.json().data.payment.id);
+
       // A retry of a committed payout remains safe after the accounting period closes,
       // while a new payout must be blocked by that same period lock.
       const directCountBeforePeriodLock=await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id]);
