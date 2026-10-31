@@ -72,25 +72,52 @@ export async function accountingRoutes(app:FastifyInstance){
      ORDER BY p.period_month,emp.full_name`),
    pool.query(`
     SELECT l.id AS adjustment_line_id,l.payroll_item_id,i.employee_id,emp.full_name,
-           p.period_month::text AS period_month,l.line_type,l.description,l.amount
+           p.period_month::text AS period_month,l.line_type,l.description,l.amount,
+           el.id AS ledger_entry_id,el.employee_id AS ledger_employee_id,
+           el.credit_amount,el.debit_amount
       FROM payroll_adjustment_lines l
       JOIN payroll_items i ON i.id=l.payroll_item_id
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN employee_earnings_ledger el ON el.payroll_adjustment_line_id=l.id
      WHERE p.status IN ('APPROVED','CLOSED')
-       AND NOT EXISTS (SELECT 1 FROM employee_earnings_ledger el WHERE el.payroll_adjustment_line_id=l.id)
+       AND (
+         el.id IS NULL
+         OR el.employee_id IS DISTINCT FROM i.employee_id
+         OR (l.line_type='BONUS' AND (
+              ROUND(el.credit_amount::numeric,2)<>ROUND(l.amount::numeric,2)
+              OR el.debit_amount<>0
+            ))
+         OR (l.line_type='DEDUCTION' AND (
+              ROUND(el.debit_amount::numeric,2)<>ROUND(l.amount::numeric,2)
+              OR el.credit_amount<>0
+            ))
+       )
      ORDER BY p.period_month,emp.full_name,l.created_at,l.id`),
    pool.query(`
     SELECT pp.id AS payment_id,pp.payroll_item_id,i.employee_id,emp.full_name,
-           p.period_month::text AS period_month,pp.payment_date::text AS payment_date,pp.amount,pp.reference
+           p.period_month::text AS period_month,pp.payment_date::text AS payment_date,
+           pp.amount,pp.reference,c.id AS custody_out_id,c.amount AS custody_out_amount,
+           COALESCE(offsets.offset_amount,0) AS custody_offset_amount
       FROM payroll_payments pp
       JOIN payroll_items i ON i.id=pp.payroll_item_id
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN cash_custody_transactions c
+        ON c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(ci.amount),0) AS offset_amount,
+               BOOL_AND(ci.employee_id=c.employee_id) AS same_holder
+          FROM cash_custody_transactions ci
+         WHERE ci.source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET'
+           AND ci.source_id=pp.id AND ci.direction='IN'
+      ) offsets ON TRUE
      WHERE UPPER(COALESCE(pp.payment_method,''))='CASH'
-       AND NOT EXISTS (
-         SELECT 1 FROM cash_custody_transactions c
-          WHERE c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
+       AND (
+         c.id IS NULL
+         OR ROUND(c.amount::numeric,2) <>
+            ROUND((pp.amount+COALESCE(offsets.offset_amount,0))::numeric,2)
+         OR (COALESCE(offsets.offset_amount,0)>0 AND offsets.same_holder IS NOT TRUE)
        )
      ORDER BY pp.payment_date,emp.full_name`),
    pool.query(`
