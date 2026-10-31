@@ -654,7 +654,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0))throw new AppError("PAYROLL_NET_NEGATIVE","إلغاء البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
       await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,params.id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"void_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:before.rows[0],afterData:voided.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return {data:voided.rows[0]};
+      const detailed=await client.query("SELECT l.*,u.username AS voided_by_username FROM payroll_adjustment_lines l LEFT JOIN users u ON u.id=l.voided_by WHERE l.id=$1",[params.lineId]);
+      return {data:detailed.rows[0]};
     });
   });
 
