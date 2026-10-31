@@ -71,7 +71,7 @@ export default function PayrollSlipPage() {
   const deductionLines = adjustments.filter(line => line.line_type === "DEDUCTION");
   const totalEarnings = Number(item.base_salary) + bonusLines.reduce((sum,line)=>sum+Number(line.amount),0);
   const totalDeductions = deductionLines.reduce((sum,line)=>sum+Number(line.amount),0) + Number(item.advance_repayment_amount || 0);
-  const totalOvertimeMinutes = attendanceDays.reduce((sum,day)=>sum+Number(day.overtimeMinutes??0),0);
+  const totalOvertimeMinutes = attendanceDays.reduce((sum,day)=>sum+(!day.needsReview&&day.status!=="MISSING_PUNCH"&&day.status!=="NO_SCHEDULE_WITH_PUNCH"?Number(day.overtimeMinutes??0):0),0);
   const totalRegularMinutes = attendanceDays.reduce((sum,day)=>sum+Math.max(0,Number(day.workedMinutes??0)-Number(day.overtimeMinutes??0)),0);
   const scheduledMinutes = attendanceDays.reduce((sum,day)=>{
     if(day.isDayOff||!day.scheduledStart||!day.scheduledEnd)return sum;
