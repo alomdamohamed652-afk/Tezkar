@@ -330,7 +330,7 @@ export async function payrollRoutes(app: FastifyInstance) {
             scheduledStart:typeof row.scheduledStart==="string"?row.scheduledStart:null,
             scheduledEnd:typeof row.scheduledEnd==="string"?row.scheduledEnd:null,
             isDayOff:row.isDayOff===true,
-            status:typeof row.status==="string"?row.status:undefined,
+            ...(typeof row.status==="string"?{status:row.status}:{}),
             needsReview:row.needsReview===true,
             workedMinutes:Number(row.workedMinutes??0),
             overtimeMinutes:Number(row.overtimeMinutes??0),
