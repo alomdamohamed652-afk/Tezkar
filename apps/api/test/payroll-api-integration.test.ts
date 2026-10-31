@@ -641,11 +641,36 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
          VALUES('OTHER','Integrity diagnostic expense',50,'2099-02-15',$1,'DIRECT',$2) RETURNING id`,
         [userId,employeeA.rows[0].id]
       );
-      await apiPool.query(
+      const diagnosticCustody = await apiPool.query(
         `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
-         VALUES($1,'OUT',40,'2099-02-15','Mismatched diagnostic custody movement',$2,'ACCOUNTING_EXPENSE',$3)`,
+         VALUES($1,'OUT',40,'2099-02-15','Mismatched diagnostic custody movement',$2,'ACCOUNTING_EXPENSE',$3)
+         RETURNING id`,
         [employeeB.rows[0].id,userId,diagnosticExpense.rows[0].id]
       );
+      await apiPool.query(
+        "UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2",
+        [diagnosticCustody.rows[0].id,diagnosticExpense.rows[0].id]
+      );
+
+      // Deliberately corrupt a source-linked adjustment posting: wrong employee and amount.
+      await apiPool.query(
+        "UPDATE employee_earnings_ledger SET employee_id=$1,credit_amount=99 WHERE payroll_adjustment_line_id=$2",
+        [employeeB.rows[0].id,januaryBonusLineId]
+      );
+
+      // A cash payment must be reconciled against the exact custody OUT amount.
+      const itemBPayment = await apiPool.query(
+        "SELECT id FROM payroll_payments WHERE payroll_item_id=$1 ORDER BY created_at DESC LIMIT 1",
+        [itemB.rows[0].id]
+      );
+      assert.equal(itemBPayment.rowCount,1,"diagnostic cash payment must exist");
+      await apiPool.query("UPDATE payroll_payments SET payment_method='CASH' WHERE id=$1",[itemBPayment.rows[0].id]);
+      await apiPool.query(
+        `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
+         VALUES($1,'OUT',699,'2099-02-15','Mismatched payroll cash movement',$2,'PAYROLL_PAYMENT',$3)`,
+        [employeeA.rows[0].id,userId,itemBPayment.rows[0].id]
+      );
+
       const integrityFindings = await app.inject({
         method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}
       });
@@ -658,7 +683,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(findingData.counts.paidPayrollMissingAdvanceRepayments>=1,
         "integrity overview must detect a paid payroll deduction without its advance repayment ledger row");
       assert.ok(findingData.counts.expensesMissingCustodyLink>=1,
-        "integrity overview must detect an expense whose linked custody movement has a different employee and amount");
+        "integrity overview must detect an explicitly linked custody movement with a different employee and amount");
+      assert.ok(findingData.counts.missingAdjustmentLedgerEntries>=1,
+        "integrity overview must detect a source-linked adjustment with the wrong employee and amount");
+      assert.ok(findingData.counts.cashPaymentsMissingCustodyOut>=1,
+        "integrity overview must detect a cash payroll payment whose custody OUT amount is incorrect");
 
       const payments = await app.inject({
         method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
