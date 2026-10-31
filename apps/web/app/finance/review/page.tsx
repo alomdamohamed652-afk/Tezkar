@@ -25,6 +25,23 @@ type Payment = {
 };
 type Order = { id: string; code: string; order_name: string; status: string };
 type Stage = { id: string; sequence_no: number; stage_name: string; status: string };
+type FinancialIntegrity = {
+  checkedAt: string;
+  counts: {
+    missingPayrollExpenses: number;
+    missingAdjustmentLedgerEntries: number;
+    cashPaymentsMissingCustodyOut: number;
+    payrollPaymentMismatches: number;
+    expensesMissingCustodyLink: number;
+  };
+  issues: {
+    missingPayrollExpenses: Array<{ payroll_item_id: string; full_name: string; period_month: string; net_amount: number | string; expense_amount: number | string | null; category: string | null }>;
+    missingAdjustmentLedgerEntries: Array<{ adjustment_line_id: string; full_name: string; period_month: string; line_type: string; description: string; amount: number | string }>;
+    cashPaymentsMissingCustodyOut: Array<{ payment_id: string; full_name: string; period_month: string; payment_date: string; amount: number | string; reference: string | null }>;
+    payrollPaymentMismatches: Array<{ payroll_item_id: string; full_name: string; period_month: string; status: string; net_amount: number | string; paid_amount: number | string }>;
+    expensesMissingCustodyLink: Array<{ expense_id: string; description: string; amount: number | string; expense_date: string; employee_name: string | null }>;
+  };
+};
 
 const money = (v: number) => formatMoney(Number(v || 0));
 
@@ -44,6 +61,10 @@ export default function FinanceExceptionsPage() {
   const [reconciliationSkipped, setReconciliationSkipped] = useState<Array<{paymentId:string;employeeName:string;amount:number;reason:string}>>([]);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const canViewIntegrity = has("finance.expenses.view");
+  const [integrity, setIntegrity] = useState<FinancialIntegrity | null>(null);
+  const [integrityLoading, setIntegrityLoading] = useState(false);
+  const [integrityError, setIntegrityError] = useState("");
 
   const selected = useMemo(() => payments.find(p => p.payment_id === selectedId) ?? null, [payments, selectedId]);
   const filtered = useMemo(() => {
@@ -73,6 +94,33 @@ export default function FinanceExceptionsPage() {
   }, []);
 
   useEffect(() => { if (allowed) void load(); else setLoading(false); }, [allowed, load]);
+  const loadIntegrity = useCallback(async () => {
+    if (!canViewIntegrity) return;
+    setIntegrityLoading(true);
+    setIntegrityError("");
+    try {
+      const result = await api<{ data: FinancialIntegrity }>("/api/accounting/reconciliation/overview");
+      setIntegrity(result.data);
+    } catch (e) {
+      setIntegrityError(e instanceof Error ? e.message : "تعذر فحص الترابط المالي");
+    } finally {
+      setIntegrityLoading(false);
+    }
+  }, [canViewIntegrity]);
+
+  useEffect(() => { if (canViewIntegrity) void loadIntegrity(); }, [canViewIntegrity, loadIntegrity]);
+
+  const integrityGroups = useMemo(() => {
+    if (!integrity) return [];
+    const issues = integrity.issues;
+    return [
+      { title: "مسيرات بلا قيد مصروف مطابق", items: issues.missingPayrollExpenses.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · صافي ${money(Number(x.net_amount))} ج.م`) },
+      { title: "تعديلات رواتب بلا قيد في دفتر المستحقات", items: issues.missingAdjustmentLedgerEntries.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · ${x.description} · ${money(Number(x.amount))} ج.م`) },
+      { title: "مدفوعات نقدية بلا حركة عهدة مقابلة", items: issues.cashPaymentsMissingCustodyOut.map(x => `${x.full_name} · ${x.payment_date.slice(0, 10)} · ${money(Number(x.amount))} ج.م`) },
+      { title: "عدم تطابق حالة الراتب مع المدفوع", items: issues.payrollPaymentMismatches.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · الحالة ${x.status} · المدفوع ${money(Number(x.paid_amount))} من ${money(Number(x.net_amount))} ج.م`) },
+      { title: "مصروفات مرتبطة بعهدة دون حركة مطابقة", items: issues.expensesMissingCustodyLink.map(x => `${x.employee_name || "موظف غير محدد"} · ${x.expense_date.slice(0, 10)} · ${x.description} · ${money(Number(x.amount))} ج.م`) }
+    ];
+  }, [integrity]);
 
   async function reconcileHistorical() {
     if (reconciling) return;
@@ -151,6 +199,39 @@ export default function FinanceExceptionsPage() {
       <section className="content">
         {error && <div role="alert" className="alert error">{error}</div>}
         {success && <div role="status" className="success-box">{success}</div>}
+        {canViewIntegrity && <section className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">مركز سلامة الترابط المالي</h2>
+              <p className="form-hint">فحص للقيود والرواتب وحركات العهدة. الفحص للقراءة فقط ولا يعدّل أي رصيد أو سجل تلقائيًا.</p>
+              {integrity && <p className="form-hint">آخر فحص: {new Date(integrity.checkedAt).toLocaleString("ar-EG")}</p>}
+            </div>
+            <button type="button" className="secondary-btn" onClick={() => void loadIntegrity()} disabled={integrityLoading}>
+              {integrityLoading ? "جارٍ الفحص…" : "إعادة فحص الترابط"}
+            </button>
+          </div>
+          <div className="card-body">
+            {integrityError && <div role="alert" className="alert error">{integrityError}</div>}
+            {integrityLoading && !integrity && <p className="form-hint">جارٍ فحص العلاقات المالية بين الأنظمة…</p>}
+            {integrity && <>
+              <div className="stats">
+                <article className="card stat"><div className="stat-label">إجمالي الحالات المكتشفة</div><div className="stat-value">{Object.values(integrity.counts).reduce((sum, count) => sum + count, 0)}</div></article>
+                <article className="card stat"><div className="stat-label">أنواع الفحص</div><div className="stat-value">{integrityGroups.length}</div></article>
+              </div>
+              <div className="grid grid-2">
+                {integrityGroups.map(group => <section className="card" key={group.title}>
+                  <div className="card-header"><h3 className="card-title">{group.title}</h3><span className={group.items.length ? "status warning" : "status success"}>{group.items.length}</span></div>
+                  <div className="card-body">
+                    {!group.items.length ? <p className="form-hint">لا توجد حالات مكتشفة.</p> : <>
+                      <ul>{group.items.slice(0, 8).map((item, index) => <li key={index}>{item}</li>)}</ul>
+                      {group.items.length > 8 && <p className="form-hint">تم عرض أول 8 حالات من أصل {group.items.length}.</p>}
+                    </>}
+                  </div>
+                </section>)}
+              </div>
+            </>}
+          </div>
+        </section>}
         {reconciliationSkipped.length > 0 && <section className="card">
           <div className="card-header"><div><h2 className="card-title">حالات تم تجاوزها وتحتاج مراجعة</h2><p className="form-hint">لم يتم تغيير توزيع هذه الدفعات لأن بياناتها لا تتطابق بشكل آمن.</p></div></div>
           <div className="card-body"><div className="table-wrap"><table><thead><tr><th>العامل</th><th>المبلغ</th><th>سبب المراجعة</th><th>رقم الدفعة</th></tr></thead><tbody>
