@@ -201,23 +201,23 @@ test("worked hours include completed overtime pairs and ignore incomplete pairs"
 
 test("effective-dated weekly schedules switch exactly on their boundary dates", () => {
   const schedules: EffectiveAttendanceSchedule[] = [
-    { employee_id: "employee-1", weekday: 4, effective_from: "1900-01-01", effective_to: "2026-10-19", starts_at: "08:00", ends_at: "16:00", is_day_off: false },
-    { employee_id: "employee-1", weekday: 4, effective_from: "2026-10-20", effective_to: "2026-10-31", starts_at: "09:00", ends_at: "17:00", is_day_off: false },
-    { employee_id: "employee-1", weekday: 4, effective_from: "2026-11-01", effective_to: null, starts_at: "10:00", ends_at: "18:00", is_day_off: false },
+    { employee_id: "employee-1", weekday: 4, effective_from: "1900-01-01", effective_to: "2026-10-21", starts_at: "08:00", ends_at: "16:00", is_day_off: false },
+    { employee_id: "employee-1", weekday: 4, effective_from: "2026-10-22", effective_to: "2026-11-04", starts_at: "09:00", ends_at: "17:00", is_day_off: false },
+    { employee_id: "employee-1", weekday: 4, effective_from: "2026-11-05", effective_to: null, starts_at: "10:00", ends_at: "18:00", is_day_off: false },
   ];
 
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-19")?.starts_at, "08:00");
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-20")?.starts_at, "09:00");
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-31")?.starts_at, "09:00");
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-11-01")?.starts_at, "10:00");
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-15")?.starts_at, "08:00");
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-22")?.starts_at, "09:00");
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-29")?.starts_at, "09:00");
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-11-05")?.starts_at, "10:00");
 });
 
 test("effective-dated schedule lookup does not leak across employees or weekdays", () => {
   const schedules: EffectiveAttendanceSchedule[] = [
-    { employee_id: "employee-1", weekday: 4, effective_from: "2026-10-20", effective_to: null, starts_at: "09:00", ends_at: "17:00", is_day_off: false },
+    { employee_id: "employee-1", weekday: 4, effective_from: "2026-10-22", effective_to: null, starts_at: "09:00", ends_at: "17:00", is_day_off: false },
   ];
 
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-2", 4, "2026-10-21"), null);
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 5, "2026-10-21"), null);
-  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-19"), null);
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-2", 4, "2026-10-22"), null);
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 5, "2026-10-22"), null);
+  assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-15"), null);
 });
