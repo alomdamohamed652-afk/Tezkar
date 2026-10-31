@@ -368,22 +368,25 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       }).flat();
       const missingSnapshotApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: {}
+        headers: { cookie: cookieHeader },payload:{}
       });
-      assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
-      assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
-      const incompleteSnapshotApproval = await app.inject({
-        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: { attendanceSnapshot: attendanceSnapshot.slice(0, 1) }
+      assert.equal(missingSnapshotApproval.statusCode,409,missingSnapshotApproval.body);
+      assert.equal(missingSnapshotApproval.json().error.code,"ATTENDANCE_PREVIEW_REQUIRED");
+      const incompleteAttendancePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:attendanceSnapshot.slice(0,1),overtimeMultiplier:1.5}
       });
-      assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
-      assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      assert.equal(incompleteAttendancePreview.statusCode,422,incompleteAttendancePreview.body);
+      assert.equal(incompleteAttendancePreview.json().error.code,"ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      const attendancePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(attendancePreview.statusCode,200,attendancePreview.body);
+      assert.equal(attendancePreview.json().data.employees.length,2);
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: { attendanceSnapshot }
+        headers: { cookie: cookieHeader },payload:{}
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
@@ -454,9 +457,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         if(index===3){day.lateMinutes=30;day.earlyMinutes=10;day.workedMinutes=440;}
         return day;
       });
+      const timePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${timePeriod.id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(timePreview.statusCode,200,timePreview.body);
+      assert.equal(timePreview.json().data.totals.timeDeduction,34.95);
+      assert.equal(timePreview.json().data.totals.overtimeBonus,6.05);
+      const draftTimeLines=await apiPool.query("SELECT source_type,line_type,amount FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",[timeItem.id]);
+      assert.equal(draftTimeLines.rowCount,2,"time adjustments must be visible and reviewable while the period is still a draft");
       const timeApproval=await app.inject({
         method:"POST",url:`/api/payroll/periods/${timePeriod.id}/approve`,
-        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
+        headers:{cookie:cookieHeader},payload:{}
       });
       assert.equal(timeApproval.statusCode,200,timeApproval.body);
       const timeLines=await apiPool.query(
@@ -532,10 +544,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
           {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
         ];
       }).flat();
+      const februaryPreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${februaryData.json().data.period.id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:februaryAttendanceSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(februaryPreview.statusCode,200,februaryPreview.body);
       const februaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: {attendanceSnapshot:februaryAttendanceSnapshot}
+        headers: { cookie: cookieHeader },payload:{}
       });
       assert.equal(februaryApproval.statusCode, 200, februaryApproval.body);
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,0,
