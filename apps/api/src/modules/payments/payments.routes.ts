@@ -1674,7 +1674,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
           WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.id=ANY($2::uuid[])
           ORDER BY p.work_date,p.created_at,p.id
-          FOR UPDATE
+          FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
         if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
         if(parsed.data.settlementSource==="PREVIOUS_CUSTODY" && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
