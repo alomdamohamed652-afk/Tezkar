@@ -32,6 +32,8 @@ type FinancialIntegrity = {
     missingAdjustmentLedgerEntries: number;
     cashPaymentsMissingCustodyOut: number;
     payrollPaymentMismatches: number;
+    advanceDeductionMismatches: number;
+    paidPayrollMissingAdvanceRepayments: number;
     expensesMissingCustodyLink: number;
   };
   issues: {
@@ -39,6 +41,8 @@ type FinancialIntegrity = {
     missingAdjustmentLedgerEntries: Array<{ adjustment_line_id: string; full_name: string; period_month: string; line_type: string; description: string; amount: number | string }>;
     cashPaymentsMissingCustodyOut: Array<{ payment_id: string; full_name: string; period_month: string; payment_date: string; amount: number | string; reference: string | null }>;
     payrollPaymentMismatches: Array<{ payroll_item_id: string; full_name: string; period_month: string; status: string; net_amount: number | string; paid_amount: number | string }>;
+    advanceDeductionMismatches: Array<{ payroll_item_id: string; full_name: string; period_month: string; advance_repayment_amount: number | string; allocated_amount: number | string }>;
+    paidPayrollMissingAdvanceRepayments: Array<{ payroll_item_id: string; full_name: string; period_month: string; advance_id: string; advance_code: string; amount: number | string }>;
     expensesMissingCustodyLink: Array<{ expense_id: string; description: string; amount: number | string; expense_date: string; employee_name: string | null }>;
   };
 };
@@ -118,6 +122,8 @@ export default function FinanceExceptionsPage() {
       { title: "تعديلات رواتب بلا قيد في دفتر المستحقات", items: issues.missingAdjustmentLedgerEntries.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · ${x.description} · ${money(Number(x.amount))} ج.م`) },
       { title: "مدفوعات نقدية بلا حركة عهدة مقابلة", items: issues.cashPaymentsMissingCustodyOut.map(x => `${x.full_name} · ${x.payment_date.slice(0, 10)} · ${money(Number(x.amount))} ج.م`) },
       { title: "عدم تطابق حالة الراتب مع المدفوع", items: issues.payrollPaymentMismatches.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · الحالة ${x.status} · المدفوع ${money(Number(x.paid_amount))} من ${money(Number(x.net_amount))} ج.م`) },
+      { title: "إجمالي خصومات السلف لا يطابق المسير", items: issues.advanceDeductionMismatches.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · المسجل ${money(Number(x.advance_repayment_amount))} · تفاصيل الأقساط ${money(Number(x.allocated_amount))} ج.م`) },
+      { title: "رواتب مدفوعة دون تسجيل سداد السلفة", items: issues.paidPayrollMissingAdvanceRepayments.map(x => `${x.full_name} · ${x.period_month.slice(0, 7)} · ${x.advance_code} · ${money(Number(x.amount))} ج.م`) },
       { title: "مصروفات مرتبطة بعهدة دون حركة مطابقة", items: issues.expensesMissingCustodyLink.map(x => `${x.employee_name || "موظف غير محدد"} · ${x.expense_date.slice(0, 10)} · ${x.description} · ${money(Number(x.amount))} ج.م`) }
     ];
   }, [integrity]);
