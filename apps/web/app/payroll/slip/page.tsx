@@ -71,10 +71,10 @@ export default function PayrollSlipPage() {
   const deductionLines = adjustments.filter(line => line.line_type === "DEDUCTION");
   const totalEarnings = Number(item.base_salary) + bonusLines.reduce((sum,line)=>sum+Number(line.amount),0);
   const totalDeductions = deductionLines.reduce((sum,line)=>sum+Number(line.amount),0) + Number(item.advance_repayment_amount || 0);
-  const totalOvertimeMinutes = attendanceDays.reduce((sum,day)=>sum+(day.salaryActive!==false&&!day.needsReview&&day.status!=="MISSING_PUNCH"&&day.status!=="NO_SCHEDULE_WITH_PUNCH"?Number(day.overtimeMinutes??0):0),0);
+  const totalOvertimeMinutes = attendanceDays.reduce((sum,day)=>sum+(day.salaryActive!==false&&!day.needsReview&&day.status==="PRESENT"?Number(day.overtimeMinutes??0):0),0);
   const totalRegularMinutes = attendanceDays.reduce((sum,day)=>sum+(day.salaryActive===false?0:Math.max(0,Number(day.workedMinutes??0)-Number(day.overtimeMinutes??0))),0);
   const scheduledMinutes = attendanceDays.reduce((sum,day)=>{
-    if(day.isDayOff||day.salaryActive===false||!day.scheduledStart||!day.scheduledEnd)return sum;
+    if(day.isDayOff||day.status==="DAY_OFF"||day.salaryActive===false||!day.scheduledStart||!day.scheduledEnd)return sum;
     const toMinutes=(value:string)=>{const [h,m]=value.slice(0,5).split(":").map(Number);return h*60+m;};
     const duration=(toMinutes(day.scheduledEnd)-toMinutes(day.scheduledStart)+1440)%1440;
     return sum+(duration>0?duration:0);
