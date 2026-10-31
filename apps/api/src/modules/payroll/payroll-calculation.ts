@@ -116,7 +116,7 @@ export function calculateAttendancePayroll(input: {
       const early = Math.max(0, Math.floor(Number(day.earlyMinutes ?? 0)));
       const missed = Math.min(scheduled, late + early);
       missingMinutes += missed;
-      workedMinutes += Math.max(0, scheduled - missed);
+      workedMinutes += Math.min(scheduled, Math.max(0, Math.floor(Number(day.workedMinutes ?? (scheduled - missed))) - Math.floor(Number(day.overtimeMinutes ?? 0))));
     }
   }
 
