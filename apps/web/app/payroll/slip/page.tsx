@@ -14,6 +14,7 @@ type PayrollItem = {
 type PayrollData = { period: { id: string; period_month: string; status: string } | null; items: PayrollItem[] };
 type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null; status?:"ACTIVE"|"VOIDED" };
 type AttendanceSnapshotDay = { workedMinutes?:number; overtimeMinutes?:number; lateMinutes?:number; earlyMinutes?:number; status?:string; needsReview?:boolean; scheduledStart?:string|null; scheduledEnd?:string|null };
+type AdvanceDeduction = { id:string; advance_id:string; amount:string|number; repayment_type:string; advance_code:string|null; advance_reason:string|null; advance_amount:string|number; repayment_status:string; repayment_id:string|null; repaid_amount:string|number|null; repayment_date:string|null };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
 const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل" };
@@ -23,6 +24,7 @@ export default function PayrollSlipPage() {
   const [periodStatus, setPeriodStatus] = useState("");
   const [adjustments, setAdjustments] = useState<AdjustmentLine[]>([]);
   const [attendanceDays, setAttendanceDays] = useState<AttendanceSnapshotDay[]>([]);
+  const [advanceDeductions, setAdvanceDeductions] = useState<AdvanceDeduction[]>([]);
   const [month, setMonth] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -42,13 +44,15 @@ export default function PayrollSlipPage() {
         setItem(found);
         setPeriodStatus(result.data.period?.status || "");
         try {
-          const [lines,attendance] = await Promise.all([
+          const [lines,attendance,advances] = await Promise.all([
             api<{data:AdjustmentLine[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/adjustments"),
-            api<{data:Array<{snapshotData:AttendanceSnapshotDay}>}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/attendance-snapshot")
+            api<{data:Array<{snapshotData:AttendanceSnapshotDay}>}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/attendance-snapshot"),
+            api<{data:AdvanceDeduction[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/advance-deductions")
           ]);
           if (active) {
             setAdjustments(lines.data.filter(line=>line.status!=="VOIDED"));
             setAttendanceDays(attendance.data.map(row=>row.snapshotData));
+            setAdvanceDeductions(advances.data);
           }
         } catch {
           if (active) setError("تعذر تحميل تفاصيل المكافآت والخصومات والحضور. أعد تحميل الصفحة.");
@@ -124,7 +128,8 @@ export default function PayrollSlipPage() {
             <tbody>
               {deductionLines.map(line=><tr key={line.id}><td>{line.description}{line.notes?<small className="line-note">{line.notes}</small>:null}</td><td>{money(line.amount)}</td></tr>)}
               {!deductionLines.length && <tr><td>لا توجد خصومات مسجلة</td><td>{money(0)}</td></tr>}
-              <tr><td>سداد السلف / أقساط السلف</td><td>{money(item.advance_repayment_amount || 0)}</td></tr>
+              {advanceDeductions.map(line=><tr key={line.id}><td>قسط سلفة {line.advance_code||line.advance_id.slice(0,8)} · {line.advance_reason||"بدون بيان"}<small className="line-note">{line.repayment_id?"تم تسجيل السداد بتاريخ "+String(line.repayment_date).slice(0,10):"قسط مخصص من صافي الراتب؛ يُسجل السداد عند اكتمال صرف الراتب"}</small></td><td>{money(line.amount)}</td></tr>)}
+              {!advanceDeductions.length&&<tr><td>سداد السلف / أقساط السلف</td><td>{money(item.advance_repayment_amount || 0)}</td></tr>}
               <tr className="subtotal"><td>إجمالي الاستقطاعات</td><td>{money(totalDeductions)}</td></tr>
             </tbody>
           </table>
