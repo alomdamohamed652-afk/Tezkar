@@ -120,9 +120,9 @@ export function calculateAttendancePayroll(input: {
     }
 
     if (day.status === "PRESENT" && scheduled > 0) {
-      const late = Math.max(0, Math.floor(Number(day.lateMinutes ?? 0)));
-      const early = Math.max(0, Math.floor(Number(day.earlyMinutes ?? 0)));
-      const missed = Math.min(scheduled, late + early);
+      const late = Math.min(scheduled, Math.max(0, Math.floor(Number(day.lateMinutes ?? 0))));
+      const early = Math.min(Math.max(0, scheduled - late), Math.max(0, Math.floor(Number(day.earlyMinutes ?? 0))));
+      const missed = late + early;
       lateMinutes += late;
       earlyMinutes += early;
       missingMinutes += missed;
