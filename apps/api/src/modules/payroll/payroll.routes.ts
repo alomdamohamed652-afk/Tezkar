@@ -328,6 +328,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4)",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
       }
       const overtimeMultiplier=parsed.data.overtimeMultiplier;
+      const replacedLines=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason='تم استبدال البند بعد إعادة احتساب الحضور',voided_by=$1,voided_at=now() WHERE payroll_item_id=ANY($2::uuid[]) AND source_type IN ('ATTENDANCE_TIME_DEDUCTION','ATTENDANCE_OVERTIME') AND status='ACTIVE' RETURNING *",[request.user!.userId,items.rows.map(item=>item.id)]);
+      for(const line of replacedLines.rows)await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"replace_attendance_preview_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:line.id,afterData:line,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       await client.query("UPDATE payroll_periods SET overtime_multiplier=$1,attendance_calculated_at=now() WHERE id=$2",[overtimeMultiplier,id]);
       const employees=[];
       let totalTimeDeduction=0,totalOvertimeBonus=0,totalOvertimeMinutes=0,totalMissingMinutes=0,totalReviewDays=0;
@@ -354,20 +356,9 @@ export async function payrollRoutes(app: FastifyInstance) {
           {sourceType:"ATTENDANCE_TIME_DEDUCTION",lineType:"DEDUCTION" as const,amount:time.timeDeduction,description:"خصم غياب/تأخير/انصراف مبكر ("+(time.missingMinutes/60).toFixed(2)+" ساعة)",notes:"وقت غير مستحق بعد تطبيق سماح التأخير والانصراف: "+time.missingMinutes+" دقيقة. أيام تحتاج مراجعة مستثناة: "+time.reviewDays+"."}
         ];
         for(const source of sources){
-          const existing=await client.query("SELECT * FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND source_type=$2 AND status='ACTIVE' FOR UPDATE",[item.id,source.sourceType]);
-          if(source.amount>0){
-            let saved;
-            if(existing.rowCount){
-              saved=(await client.query("UPDATE payroll_adjustment_lines SET line_type=$1,description=$2,amount=$3,notes=$4 WHERE id=$5 RETURNING *",[source.lineType,source.description,source.amount,source.notes,existing.rows[0].id])).rows[0];
-              await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"recalculate_attendance_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:saved.id,beforeData:existing.rows[0],afterData:saved,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-            }else{
-              saved=(await client.query("INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_type) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",[item.id,source.lineType,source.description,source.amount,source.notes,request.user!.userId,source.sourceType])).rows[0];
-              await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create_attendance_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:saved.id,afterData:saved,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-            }
-          }else if(existing.rowCount){
-            const voided=(await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason=$1,voided_by=$2,voided_at=now() WHERE id=$3 RETURNING *",["لم يعد مستحقًا بعد إعادة احتساب سجل الحضور",request.user!.userId,existing.rows[0].id])).rows[0];
-            await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"void_recalculated_attendance_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:voided.id,beforeData:existing.rows[0],afterData:voided,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-          }
+          if(source.amount<=0)continue;
+          const saved=(await client.query("INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_type) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",[item.id,source.lineType,source.description,source.amount,source.notes,request.user!.userId,source.sourceType])).rows[0];
+          await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create_attendance_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:saved.id,afterData:saved,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
         }
         const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[item.id]);
         const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
