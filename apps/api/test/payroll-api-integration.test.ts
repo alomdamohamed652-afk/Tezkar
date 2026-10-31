@@ -481,7 +481,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(timeApproval.statusCode,200,timeApproval.body);
       const timeLines=await apiPool.query(
-        "SELECT source_type,line_type,amount,status FROM payroll_adjustment_lines WHERE payroll_item_id=$1 ORDER BY source_type",
+        "SELECT source_type,line_type,amount,status FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",
         [timeItem.id]
       );
       assert.equal(timeLines.rowCount,2);
@@ -499,7 +499,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(Number(timeItemTotals.deduction_amount),34.95);
       assert.equal(Number(timeItemTotals.net_amount),971.10);
       const reviewedTimeLedger=await apiPool.query(
-        "SELECT l.source_type,e.credit_amount,e.debit_amount FROM payroll_adjustment_lines l LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id WHERE l.payroll_item_id=$1",
+        "SELECT l.source_type,e.credit_amount,e.debit_amount FROM payroll_adjustment_lines l LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id WHERE l.payroll_item_id=$1 AND l.status='ACTIVE'",
         [timeItem.id]
       );
       assert.equal(reviewedTimeLedger.rowCount,2);
