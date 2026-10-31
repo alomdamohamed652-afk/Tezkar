@@ -337,6 +337,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(firstEntry.statusCode, 201, firstEntry.body);
     const firstId = firstEntry.json().data.id as string;
+    const pendingFilter = await app.inject({
+      method: "GET", url: "/api/production?status=PENDING&employeeId=" + submitterEmployee,
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(pendingFilter.statusCode, 200, pendingFilter.body);
+    assert.ok(pendingFilter.json().data.some((row: { id: string }) => row.id === firstId),
+      "status and employee filters must return the matching pending production entry");
     const listedProduction = await app.inject({ method: "GET", url: "/api/production", headers: { cookie: submitter.cookie } });
     assert.equal(listedProduction.statusCode, 200, listedProduction.body);
     const listedEntry = listedProduction.json().data.find((entry: { id: string }) => entry.id === firstId);
@@ -408,6 +415,13 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "POST", url: "/api/production/" + firstId + "/approve", headers: { cookie: approver.cookie }
     });
     assert.equal(approveFirst.statusCode, 200, approveFirst.body);
+    const approvedFilter = await app.inject({
+      method: "GET", url: "/api/production?status=APPROVED&employeeId=" + submitterEmployee,
+      headers: { cookie: submitter.cookie }
+    });
+    assert.equal(approvedFilter.statusCode, 200, approvedFilter.body);
+    assert.ok(approvedFilter.json().data.some((row: { id: string }) => row.id === firstId),
+      "approved status filter must return the approved production entry");
     // The first 10 processed units include 1 scrap, so produce one additional
     // good unit to meet the order's planned quantity of 10.
     const replacementGoodEntry = await app.inject({
