@@ -771,6 +771,72 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
+      // Payroll ledger postings are a separate entitlement and must never inflate production dues.
+      const payrollPeriod=(await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,generated_by) VALUES(date_trunc('month',CURRENT_DATE)::date,$1) RETURNING id",
+        [manager.id]
+      )).rows[0];
+      const payrollItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,bonus_amount,deduction_amount) VALUES($1,$2,1000,200,0) RETURNING id",
+        [payrollPeriod.id,bonusWorkerEmployee.id]
+      )).rows[0];
+      const payrollBonusLine=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'BONUS','Test payroll bonus',200,$2) RETURNING id",
+        [payrollItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id) VALUES($1,'ADJUSTMENT',1000,$2,'test payroll base salary',$3)",
+        [bonusWorkerEmployee.id,manager.id,payrollItem.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',200,$2,'test payroll bonus',$3)",
+        [bonusWorkerEmployee.id,manager.id,payrollBonusLine.id]
+      );
+      const payrollPayment=(await apiPool.query(
+        "INSERT INTO payroll_payments(payroll_item_id,amount,paid_by) VALUES($1,300,$2) RETURNING id",
+        [payrollItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',300,$2,'test partial payroll payment',$3)",
+        [bonusWorkerEmployee.id,manager.id,payrollPayment.id]
+      );
+      // The legacy ledger-only fallback must not expose salary accruals as production dues
+      // for an employee who has no approved production rows.
+      const payrollOnlyEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Payroll Only Employee "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const payrollOnlyItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,bonus_amount,deduction_amount) VALUES($1,$2,1000,200,0) RETURNING id",
+        [payrollPeriod.id,payrollOnlyEmployee.id]
+      )).rows[0];
+      const payrollOnlyBonus=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'BONUS','Payroll-only test bonus',200,$2) RETURNING id",
+        [payrollOnlyItem.id,manager.id]
+      )).rows[0];
+      const payrollOnlyPayment=(await apiPool.query(
+        "INSERT INTO payroll_payments(payroll_item_id,amount,paid_by) VALUES($1,300,$2) RETURNING id",
+        [payrollOnlyItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id) VALUES($1,'ADJUSTMENT',1000,$2,'payroll-only base',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyItem.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',200,$2,'payroll-only bonus',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyBonus.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',300,$2,'payroll-only payment',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyPayment.id]
+      );
+      const payrollOnlyPreview=await app.inject({
+        method:"GET",url:`/api/worker-payments/preview?employeeId=${payrollOnlyEmployee.id}&cashCustodyEmployeeId=${managerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(payrollOnlyPreview.statusCode,200,payrollOnlyPreview.body);
+      assert.equal(Number(payrollOnlyPreview.json().data.availableEarnings),0,
+        "payroll-only ledger credits and debits must never be offered as production dues when no approved production rows exist");
+
       const bonusSettlementSummary=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
@@ -1321,6 +1387,95 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.ok(Number(directPayments.rows[0].count)>=2);
       assert.ok(Number(directPayments.rows[0].total)>=150);
+
+      // Production-based advance percentages must use the production allocation,
+      // not the gross worker payout when that payout also includes a separate adjustment.
+      const productionAdvanceWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Production Advance Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const priorProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE-1,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',130,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(priorProduction.total_earning_amount),130);
+      const priorWorkerPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,created_at)
+         VALUES($1,155,155,0,'CASH',$2,CURRENT_DATE-1+TIME '12:00') RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
+      const priorSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(
+           employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id
+         ) VALUES($1,155,155,0,CURRENT_DATE-1,'Prior payout includes a 25 adjustment',$2,$3) RETURNING id`,
+        [productionAdvanceWorker.id,manager.id,priorWorkerPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,130)",
+        [priorSettlement.id,priorProduction.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,settlement_id,created_by,notes) VALUES($1,'WORKER_PAYMENT',155,$2,$3,$4,'Prior gross payout')",
+        [productionAdvanceWorker.id,priorWorkerPayment.id,priorSettlement.id,manager.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',25,$2,'Separate adjustment included in prior gross payout')",
+        [productionAdvanceWorker.id,manager.id]
+      );
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id) VALUES($1,'OUT',155,CURRENT_DATE-1,'Prior worker payment',$2,'WORKER_PAYMENT',$3)",
+        [managerEmployee.id,manager.id,priorWorkerPayment.id]
+      );
+      const advanceProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(advanceProduction.total_earning_amount),100);
+      const productionAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(
+           employee_id,amount,reason,status,requested_by,paid_by,paid_at,
+           repayment_method,production_percentage,production_period_days,repayment_status
+         )
+         VALUES($1,200,'Production percentage repayment regression','PAID',$2,$2,CURRENT_DATE-INTERVAL '30 days',
+                'PRODUCTION_PERCENTAGE',10,15,'OPEN')
+         RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',1000,CURRENT_DATE,'Production advance repayment test float',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const productionAdvancePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:productionAdvanceWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",
+          settlementMode:"SELECTED_PRODUCTION",productionEntryIds:[advanceProduction.id],idempotencyKey:randomUUID()}
+      });
+      assert.equal(productionAdvancePayout.statusCode,201,productionAdvancePayout.body);
+      assert.equal(Number(productionAdvancePayout.json().data.payment.gross_amount),100);
+      assert.equal(Number(productionAdvancePayout.json().data.payment.advance_repayment_amount),10,
+        "10% production repayment must be calculated from the 100 production allocation, not gross prior settlements including a 25 adjustment");
+      assert.equal(Number(productionAdvancePayout.json().data.payment.amount),90);
+      const productionAdvanceRepayment=await apiPool.query(
+        "SELECT amount,source_worker_payment_id FROM advance_repayments WHERE advance_id=$1",
+        [productionAdvance.id]
+      );
+      assert.equal(productionAdvanceRepayment.rowCount,1);
+      assert.equal(Number(productionAdvanceRepayment.rows[0].amount),10);
+      assert.equal(productionAdvanceRepayment.rows[0].source_worker_payment_id,productionAdvancePayout.json().data.payment.id);
 
       // A retry of a committed payout remains safe after the accounting period closes,
       // while a new payout must be blocked by that same period lock.

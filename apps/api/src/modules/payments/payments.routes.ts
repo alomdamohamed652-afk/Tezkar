@@ -50,10 +50,16 @@ async function lockEmployee(client: import("pg").PoolClient, employeeId:string) 
 }
 
 async function getBalance(client: import("pg").PoolClient, employeeId:string) {
+  // The ledger-only fallback is for imported/legacy worker earnings, not payroll.
+  // Keep advance repayments and worker settlements in this balance, but exclude
+  // source-linked salary accruals, payroll adjustments, and payroll payouts.
   const r=await client.query(
     `SELECT COALESCE(SUM(credit_amount - debit_amount),0) AS balance
        FROM employee_earnings_ledger
-      WHERE employee_id=$1`,
+      WHERE employee_id=$1
+        AND payroll_item_id IS NULL
+        AND payroll_adjustment_line_id IS NULL
+        AND payroll_payment_id IS NULL`,
     [employeeId]
   );
   return Number(r.rows[0]?.balance ?? 0);
@@ -71,6 +77,10 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
         FROM employee_earnings_ledger l
         WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
           AND l.advance_repayment_id IS NULL
+          AND l.payroll_item_id IS NULL
+          AND l.payroll_adjustment_line_id IS NULL
+          AND l.payroll_payment_id IS NULL
+          AND l.settlement_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
@@ -161,10 +171,29 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
     const production=await client.query(
       `SELECT GREATEST(0,
           COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0)
-          -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
-          -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-                     WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
+          -COALESCE((SELECT SUM(
+              CASE
+                WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id)
+                  THEN COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id),0)
+                ELSE s.gross_amount
+              END)
+            FROM employee_earnings_settlements s
+            WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+          -COALESCE((SELECT SUM(
+              CASE
+                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id),0)
+                ELSE wp.gross_amount
+              END)
+            FROM worker_payments wp
+            LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
         ) AS amount
          FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.work_date>$2::date AND pe.work_date<=$3::date`,
       [employeeId,startDate,paymentDate]
@@ -1326,6 +1355,10 @@ export async function paymentsRoutes(app:FastifyInstance){
               FROM employee_earnings_ledger l
               WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
                 AND l.advance_repayment_id IS NULL
+          AND l.payroll_item_id IS NULL
+          AND l.payroll_adjustment_line_id IS NULL
+          AND l.payroll_payment_id IS NULL
+          AND l.settlement_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
