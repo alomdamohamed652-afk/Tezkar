@@ -61,11 +61,46 @@ export function usePermissions(){
  return {permissions,session,has};
 }
 
+type SidebarPreferences={collapsed:boolean;groups:Record<string,boolean>};
+const defaultSidebarPreferences:SidebarPreferences={collapsed:false,groups:{}};
+
 export function Sidebar({active}:{active:string}){
  const {permissions,session}=usePermissions();
  const [pendingTaskCount,setPendingTaskCount]=useState(0);
  const [pendingPaymentCount,setPendingPaymentCount]=useState(0);
  const [unreadNotificationCount,setUnreadNotificationCount]=useState(0);
+ const [sidebarPreferences,setSidebarPreferences]=useState<SidebarPreferences>(defaultSidebarPreferences);
+ const [preferencesReady,setPreferencesReady]=useState(false);
+ const preferenceKey=session?.username
+  ? `tezkar_sidebar_state_${session.username.trim().toLowerCase()}`
+  : session?.employeeId
+   ? `tezkar_sidebar_state_${session.employeeId}`
+   : null;
+ useEffect(()=>{
+  if(!preferenceKey){setPreferencesReady(false);return}
+  setPreferencesReady(false);
+  try{
+   const raw=window.localStorage.getItem(preferenceKey);
+   if(raw){
+    const parsed=JSON.parse(raw) as Partial<SidebarPreferences>;
+    setSidebarPreferences({
+     collapsed:parsed.collapsed===true,
+     groups:parsed.groups&&typeof parsed.groups==="object"?parsed.groups:{}
+    });
+   }else setSidebarPreferences(defaultSidebarPreferences);
+  }catch{setSidebarPreferences(defaultSidebarPreferences)}
+  setPreferencesReady(true);
+ },[preferenceKey]);
+ useEffect(()=>{
+  if(!preferencesReady||!preferenceKey)return;
+  try{window.localStorage.setItem(preferenceKey,JSON.stringify(sidebarPreferences))}catch{}
+ },[preferencesReady,preferenceKey,sidebarPreferences]);
+ function toggleGroup(label:string){
+  setSidebarPreferences(current=>({...current,groups:{...current.groups,[label]:!(current.groups[label]??true)}}));
+ }
+ function toggleSidebar(){
+  setSidebarPreferences(current=>({...current,collapsed:!current.collapsed}));
+ }
  useEffect(()=>{let alive=true;if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});if(permissions?.some(p=>p==="payment_requests.view"||p==="worker_payments.view"))api<{data:{status:string}[]}>("/api/payment-requests").then(r=>{if(alive)setPendingPaymentCount(r.data.filter(x=>x.status==="PENDING"||x.status==="APPROVED").length)}).catch(()=>{if(alive)setPendingPaymentCount(0)});if(permissions!==null)api<{unreadCount:number}>("/api/notifications").then(r=>{if(alive)setUnreadNotificationCount(r.unreadCount)}).catch(()=>{if(alive)setUnreadNotificationCount(0)});return()=>{alive=false}},[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null)return false;
@@ -76,10 +111,11 @@ export function Sidebar({active}:{active:string}){
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
- return <aside className="sidebar">
+ return <aside className={"sidebar"+(sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
    <div className="brand">
     <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
+    <button type="button" className="sidebar-collapse-toggle" onClick={toggleSidebar} aria-label={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"} title={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"}>{sidebarPreferences.collapsed?"‹":"›"}</button>
    </div>
    <div className="sidebar-user">
     <div className="sidebar-avatar">{(session?.fullName||session?.username||"م").trim().slice(0,1).toUpperCase()}</div>
@@ -87,10 +123,15 @@ export function Sidebar({active}:{active:string}){
     <span className="sidebar-online" title="متصل"></span>
    </div>
    <div className="sidebar-scroll">
-    {visibleGroups.map(group=><div className="nav-group" key={group.label}>
-      <div className="nav-title">{group.label}</div>
-      <nav className="nav">{group.items.map(item=><Link className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href} prefetch><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</Link>)}</nav>
-    </div>)}
+    {visibleGroups.map(group=>{
+     const expanded=sidebarPreferences.groups[group.label]??true;
+     return <div className={"nav-group"+(!expanded?" nav-group-collapsed":"")} key={group.label}>
+      <button type="button" className="nav-title" onClick={()=>toggleGroup(group.label)} aria-expanded={expanded} title={group.label}>
+       <span>{group.label}</span><span className="nav-group-chevron">{expanded?"−":"+"}</span>
+      </button>
+      {expanded&&<nav className="nav">{group.items.map(item=><Link className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href} prefetch title={item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</Link>)}</nav>}
+     </div>
+    })}
    </div>
    <div className="sidebar-footer">
     <Link className={"nav-item"+(active==="/notifications"?" active":"")} href="/notifications" prefetch><span className="nav-icon">♧</span><span className="nav-label">الإشعارات</span>{unreadNotificationCount>0&&<span className="nav-count-badge" aria-label={`${unreadNotificationCount} إشعارات غير مقروءة`}>{unreadNotificationCount>99?"99+":unreadNotificationCount}</span>}</Link>
