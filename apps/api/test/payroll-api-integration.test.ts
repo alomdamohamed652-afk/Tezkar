@@ -337,6 +337,20 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [itemA.rows[0].id,itemB.rows[0].id,userId]
       );
       assert.equal(adjustmentLines.rowCount,4);
+      const voidCandidate=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'DEDUCTION','Void candidate',25,$2) RETURNING id",
+        [itemA.rows[0].id,userId]
+      )).rows[0];
+      const voidAdjustment=await app.inject({
+        method:"DELETE",url:`/api/payroll/items/${itemA.rows[0].id}/adjustments/${voidCandidate.id}`,
+        headers:{cookie:cookieHeader},payload:{reason:"تم إدخال الخصم بالخطأ"}
+      });
+      assert.equal(voidAdjustment.statusCode,200,voidAdjustment.body);
+      assert.equal(voidAdjustment.json().data.status,"VOIDED");
+      assert.equal(voidAdjustment.json().data.void_reason,"تم إدخال الخصم بالخطأ");
+      assert.equal(voidAdjustment.json().data.voided_by,userId);
+      const voidedLedger=await apiPool.query("SELECT id FROM employee_earnings_ledger WHERE payroll_adjustment_line_id=$1",[voidCandidate.id]);
+      assert.equal(voidedLedger.rowCount,0,"a voided draft deduction must not be posted to the employee ledger");
 
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
@@ -403,7 +417,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         `SELECT l.id,l.line_type,l.amount,e.credit_amount,e.debit_amount
            FROM payroll_adjustment_lines l
            LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id
-          WHERE l.payroll_item_id IN ($1,$2)`,
+          WHERE l.payroll_item_id IN ($1,$2) AND l.status='ACTIVE'`,
         [itemA.rows[0].id,itemB.rows[0].id]
       );
       assert.equal(linkedAdjustments.rowCount,4);
