@@ -97,27 +97,42 @@ export async function accountingRoutes(app:FastifyInstance){
    pool.query(`
     SELECT pp.id AS payment_id,pp.payroll_item_id,i.employee_id,emp.full_name,
            p.period_month::text AS period_month,pp.payment_date::text AS payment_date,
-           pp.amount,pp.reference,c.id AS custody_out_id,c.amount AS custody_out_amount,
-           COALESCE(offsets.offset_amount,0) AS custody_offset_amount
+           pp.amount,pp.reference,custody.out_count AS custody_out_count,
+           custody.out_amount AS custody_out_amount,
+           offsets.offset_count AS custody_offset_count,
+           offsets.offset_amount AS custody_offset_amount
       FROM payroll_payments pp
       JOIN payroll_items i ON i.id=pp.payroll_item_id
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
-      LEFT JOIN cash_custody_transactions c
-        ON c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
       LEFT JOIN LATERAL (
-        SELECT COALESCE(SUM(ci.amount),0) AS offset_amount,
-               BOOL_AND(ci.employee_id=c.employee_id) AS same_holder
+        SELECT COUNT(*)::int AS out_count,
+               COALESCE(SUM(c.amount),0) AS out_amount,
+               COUNT(DISTINCT c.employee_id)::int AS out_holder_count,
+               MIN(c.employee_id::text) AS out_holder_id
+          FROM cash_custody_transactions c
+         WHERE c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
+      ) custody ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS offset_count,
+               COALESCE(SUM(ci.amount),0) AS offset_amount,
+               COUNT(DISTINCT ci.employee_id)::int AS offset_holder_count,
+               MIN(ci.employee_id::text) AS offset_holder_id
           FROM cash_custody_transactions ci
          WHERE ci.source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET'
            AND ci.source_id=pp.id AND ci.direction='IN'
       ) offsets ON TRUE
      WHERE UPPER(COALESCE(pp.payment_method,''))='CASH'
        AND (
-         c.id IS NULL
-         OR ROUND(c.amount::numeric,2) <>
-            ROUND((pp.amount+COALESCE(offsets.offset_amount,0))::numeric,2)
-         OR (COALESCE(offsets.offset_amount,0)>0 AND offsets.same_holder IS NOT TRUE)
+         custody.out_count<>1
+         OR ROUND(custody.out_amount::numeric,2) <>
+            ROUND((pp.amount+offsets.offset_amount)::numeric,2)
+         OR offsets.offset_count <> CASE WHEN offsets.offset_amount>0 THEN 1 ELSE 0 END
+         OR (offsets.offset_amount>0 AND (
+              offsets.offset_holder_count<>1
+              OR custody.out_holder_count<>1
+              OR offsets.offset_holder_id IS DISTINCT FROM custody.out_holder_id
+            ))
        )
      ORDER BY pp.payment_date,emp.full_name`),
    pool.query(`
@@ -159,16 +174,28 @@ export async function accountingRoutes(app:FastifyInstance){
    pool.query(`
     SELECT e.id AS expense_id,e.description,e.amount,e.expense_date::text AS expense_date,
            e.paid_from_employee_id,emp.full_name AS employee_name,
-           e.cash_custody_transaction_id,c.id AS matched_custody_id,
-           c.amount AS custody_amount,c.employee_id AS custody_employee_id
+           e.cash_custody_transaction_id,linked.id AS matched_custody_id,
+           movements.movement_count AS custody_movement_count,
+           movements.movement_amount AS custody_amount,
+           movements.holder_id AS custody_employee_id
       FROM accounting_expenses e
       LEFT JOIN employees emp ON emp.id=e.paid_from_employee_id
-      LEFT JOIN cash_custody_transactions c
-        ON c.id=e.cash_custody_transaction_id
-       AND c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=e.id AND c.direction='OUT'
+      LEFT JOIN cash_custody_transactions linked
+        ON linked.id=e.cash_custody_transaction_id
+       AND linked.source_type='ACCOUNTING_EXPENSE' AND linked.source_id=e.id AND linked.direction='OUT'
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS movement_count,
+               COALESCE(SUM(c.amount),0) AS movement_amount,
+               COUNT(DISTINCT c.employee_id)::int AS holder_count,
+               MIN(c.employee_id::text) AS holder_id
+          FROM cash_custody_transactions c
+         WHERE c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=e.id AND c.direction='OUT'
+      ) movements ON TRUE
      WHERE e.paid_from_employee_id IS NOT NULL
-       AND (c.id IS NULL OR c.employee_id IS DISTINCT FROM e.paid_from_employee_id
-            OR ROUND(c.amount::numeric,2)<>ROUND(e.amount::numeric,2))
+       AND (linked.id IS NULL OR movements.movement_count<>1
+            OR movements.holder_count<>1
+            OR movements.holder_id IS DISTINCT FROM e.paid_from_employee_id::text
+            OR ROUND(movements.movement_amount::numeric,2)<>ROUND(e.amount::numeric,2))
      ORDER BY e.expense_date DESC,e.created_at DESC`)
   ]);
   return {
