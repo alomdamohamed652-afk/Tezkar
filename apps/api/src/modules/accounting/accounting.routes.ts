@@ -56,10 +56,10 @@ export async function accountingRoutes(app:FastifyInstance){
   return {data:result.rows};
  });
 
- app.get("/api/accounting/reconciliation/payroll",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>{
-  // Read-only integrity checks. Findings are warnings for a manager to investigate;
-  // this endpoint never changes a balance or repairs financial history.
-  const missingExpenses=await pool.query(`
+ const reconciliationHandler = async () => {
+  // Read-only checks: findings are never repaired automatically and no balance is changed.
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch] = await Promise.all([
+   pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.accounting_expense_id,e.amount AS expense_amount,e.category
       FROM payroll_items i
@@ -69,48 +69,159 @@ export async function accountingRoutes(app:FastifyInstance){
      WHERE p.status IN ('APPROVED','CLOSED') AND i.net_amount>0
        AND (e.id IS NULL OR e.category IS DISTINCT FROM 'SALARIES'
             OR ROUND(e.amount::numeric,2)<>ROUND(i.net_amount::numeric,2))
-     ORDER BY p.period_month,emp.full_name`);
-  const missingAdjustmentEntries=await pool.query(`
+     ORDER BY p.period_month,emp.full_name`),
+   pool.query(`
     SELECT l.id AS adjustment_line_id,l.payroll_item_id,i.employee_id,emp.full_name,
-           p.period_month::text AS period_month,l.line_type,l.description,l.amount
+           p.period_month::text AS period_month,l.line_type,l.description,l.amount,
+           el.id AS ledger_entry_id,el.employee_id AS ledger_employee_id,
+           el.credit_amount,el.debit_amount
       FROM payroll_adjustment_lines l
       JOIN payroll_items i ON i.id=l.payroll_item_id
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN employee_earnings_ledger el ON el.payroll_adjustment_line_id=l.id
      WHERE p.status IN ('APPROVED','CLOSED')
-       AND NOT EXISTS (
-         SELECT 1 FROM employee_earnings_ledger el
-          WHERE el.payroll_adjustment_line_id=l.id
+       AND (
+         el.id IS NULL
+         OR el.employee_id IS DISTINCT FROM i.employee_id
+         OR (l.line_type='BONUS' AND (
+              ROUND(el.credit_amount::numeric,2)<>ROUND(l.amount::numeric,2)
+              OR el.debit_amount<>0
+            ))
+         OR (l.line_type='DEDUCTION' AND (
+              ROUND(el.debit_amount::numeric,2)<>ROUND(l.amount::numeric,2)
+              OR el.credit_amount<>0
+            ))
        )
-     ORDER BY p.period_month,emp.full_name,l.created_at,l.id`);
-  const missingCashMovements=await pool.query(`
+     ORDER BY p.period_month,emp.full_name,l.created_at,l.id`),
+   pool.query(`
     SELECT pp.id AS payment_id,pp.payroll_item_id,i.employee_id,emp.full_name,
            p.period_month::text AS period_month,pp.payment_date::text AS payment_date,
-           pp.amount,pp.reference
+           pp.amount,pp.reference,custody.out_count AS custody_out_count,
+           custody.out_amount AS custody_out_amount,
+           offsets.offset_count AS custody_offset_count,
+           offsets.offset_amount AS custody_offset_amount
       FROM payroll_payments pp
       JOIN payroll_items i ON i.id=pp.payroll_item_id
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS out_count,
+               COALESCE(SUM(c.amount),0) AS out_amount,
+               COUNT(DISTINCT c.employee_id)::int AS out_holder_count,
+               MIN(c.employee_id::text) AS out_holder_id
+          FROM cash_custody_transactions c
+         WHERE c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
+      ) custody ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS offset_count,
+               COALESCE(SUM(ci.amount),0) AS offset_amount,
+               COUNT(DISTINCT ci.employee_id)::int AS offset_holder_count,
+               MIN(ci.employee_id::text) AS offset_holder_id
+          FROM cash_custody_transactions ci
+         WHERE ci.source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET'
+           AND ci.source_id=pp.id AND ci.direction='IN'
+      ) offsets ON TRUE
      WHERE UPPER(COALESCE(pp.payment_method,''))='CASH'
-       AND NOT EXISTS (
-         SELECT 1 FROM cash_custody_transactions c
-          WHERE c.source_type='PAYROLL_PAYMENT' AND c.source_id=pp.id AND c.direction='OUT'
+       AND (
+         custody.out_count<>1
+         OR ROUND(custody.out_amount::numeric,2) <>
+            ROUND((pp.amount+offsets.offset_amount)::numeric,2)
+         OR offsets.offset_count <> CASE WHEN offsets.offset_amount>0 THEN 1 ELSE 0 END
+         OR (offsets.offset_amount>0 AND (
+              offsets.offset_holder_count<>1
+              OR custody.out_holder_count<>1
+              OR offsets.offset_holder_id IS DISTINCT FROM custody.out_holder_id
+            ))
        )
-     ORDER BY pp.payment_date,emp.full_name`);
-  return {data:{
-    checkedAt:new Date().toISOString(),
-    counts:{
-      missingPayrollExpenses:missingExpenses.rows.length,
-      missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows.length,
-      cashPaymentsMissingCustodyOut:missingCashMovements.rows.length
-    },
-    issues:{
-      missingPayrollExpenses:missingExpenses.rows,
-      missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows,
-      cashPaymentsMissingCustodyOut:missingCashMovements.rows
-    }
-  }};
- });
+     ORDER BY pp.payment_date,emp.full_name`),
+   pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           i.status,i.net_amount,COALESCE(SUM(pp.amount),0) AS paid_amount
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN payroll_payments pp ON pp.payroll_item_id=i.id
+     WHERE p.status IN ('APPROVED','CLOSED')
+     GROUP BY i.id,emp.full_name,p.period_month
+    HAVING COALESCE(SUM(pp.amount),0)>i.net_amount+0.01
+        OR (i.status='PAID' AND COALESCE(SUM(pp.amount),0)<i.net_amount-0.01)
+        OR (i.status='PARTIAL' AND (COALESCE(SUM(pp.amount),0)<=0.01 OR COALESCE(SUM(pp.amount),0)>=i.net_amount-0.01))
+     ORDER BY p.period_month,emp.full_name`),
+   pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           i.advance_repayment_amount,COALESCE(SUM(d.amount),0) AS allocated_amount
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN payroll_advance_deductions d ON d.payroll_item_id=i.id
+     WHERE p.status IN ('APPROVED','CLOSED')
+     GROUP BY i.id,emp.full_name,p.period_month
+    HAVING ROUND(COALESCE(SUM(d.amount),0)::numeric,2)<>ROUND(i.advance_repayment_amount::numeric,2)
+     ORDER BY p.period_month,emp.full_name`),
+   pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           a.id AS advance_id,a.code AS advance_code,d.amount
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      JOIN payroll_advance_deductions d ON d.payroll_item_id=i.id
+      JOIN advance_requests a ON a.id=d.advance_id
+      LEFT JOIN advance_repayments ar
+        ON ar.advance_id=d.advance_id AND ar.source_payroll_item_id=i.id
+     WHERE p.status IN ('APPROVED','CLOSED') AND i.status='PAID' AND ar.id IS NULL
+     ORDER BY p.period_month,emp.full_name,a.code`),
+   pool.query(`
+    SELECT e.id AS expense_id,e.description,e.amount,e.expense_date::text AS expense_date,
+           e.paid_from_employee_id,emp.full_name AS employee_name,
+           e.cash_custody_transaction_id,linked.id AS matched_custody_id,
+           movements.movement_count AS custody_movement_count,
+           movements.movement_amount AS custody_amount,
+           movements.holder_id AS custody_employee_id
+      FROM accounting_expenses e
+      LEFT JOIN employees emp ON emp.id=e.paid_from_employee_id
+      LEFT JOIN cash_custody_transactions linked
+        ON linked.id=e.cash_custody_transaction_id
+       AND linked.source_type='ACCOUNTING_EXPENSE' AND linked.source_id=e.id AND linked.direction='OUT'
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS movement_count,
+               COALESCE(SUM(c.amount),0) AS movement_amount,
+               COUNT(DISTINCT c.employee_id)::int AS holder_count,
+               MIN(c.employee_id::text) AS holder_id
+          FROM cash_custody_transactions c
+         WHERE c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=e.id AND c.direction='OUT'
+      ) movements ON TRUE
+     WHERE e.paid_from_employee_id IS NOT NULL
+       AND (linked.id IS NULL OR movements.movement_count<>1
+            OR movements.holder_count<>1
+            OR movements.holder_id IS DISTINCT FROM e.paid_from_employee_id::text
+            OR ROUND(movements.movement_amount::numeric,2)<>ROUND(e.amount::numeric,2))
+     ORDER BY e.expense_date DESC,e.created_at DESC`)
+  ]);
+  return {
+   checkedAt:new Date().toISOString(),
+   counts:{
+    missingPayrollExpenses:missingExpenses.rows.length,
+    missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows.length,
+    cashPaymentsMissingCustodyOut:missingCashMovements.rows.length,
+    payrollPaymentMismatches:paymentIntegrity.rows.length,
+    advanceDeductionMismatches:advanceDeductionMismatch.rows.length,
+    paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows.length,
+    expensesMissingCustodyLink:expenseCustodyMismatch.rows.length
+   },
+   issues:{
+    missingPayrollExpenses:missingExpenses.rows,
+    missingAdjustmentLedgerEntries:missingAdjustmentEntries.rows,
+    cashPaymentsMissingCustodyOut:missingCashMovements.rows,
+    payrollPaymentMismatches:paymentIntegrity.rows,
+    advanceDeductionMismatches:advanceDeductionMismatch.rows,
+    paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows,
+    expensesMissingCustodyLink:expenseCustodyMismatch.rows
+   }
+  };
+ };
+ app.get("/api/accounting/reconciliation/payroll",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconciliationHandler()}));
+ app.get("/api/accounting/reconciliation/overview",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconciliationHandler()}));
 
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
