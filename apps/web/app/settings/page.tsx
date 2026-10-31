@@ -80,14 +80,14 @@ export default function SettingsPage(){
  useEffect(()=>{api<{data:{enabled:boolean;used:boolean;configured:boolean}}>("/api/system/reset/status").then(r=>{setResetVisible(!r.data.used);setResetEnabled(r.data.enabled);setResetUsed(r.data.used)}).catch(e=>{setResetVisible(false);setResetEnabled(false);setResetUsed(false);toast.error(e instanceof Error?e.message:"تعذر تحميل حالة أداة مسح البيانات")})},[]);
  useEffect(()=>{if(!roleId)return;api<{data:{id:string}[]}>("/api/roles/"+roleId+"/permissions").then(x=>setRolePermissionIds(x.data.map(v=>v.id))).catch(()=>setRolePermissionIds([]))},[roleId]);
 
- const groups=useMemo(()=>{const m=new Map<string,Permission[]>();for(const p of permissions){const arr=m.get(p.module)||[];arr.push(p);m.set(p.module,arr)}return Array.from(m.entries())},[permissions]);
+ const groups=useMemo(()=>{const m=new Map<string,Permission[]>();for(const p of permissions){const key=p.module==="employees"?"hr":p.module;const arr=m.get(key)||[];arr.push(p);m.set(key,arr)}return Array.from(m.entries())},[permissions]);
  const filteredUsers=users.filter(x=>(x.username+" "+(x.full_name??"")+" "+x.role_codes.join(" ")).toLowerCase().includes(query.toLowerCase()));
  const filteredEmployees=employees.filter(x=>(x.full_name+" "+x.code).toLowerCase().includes(query.toLowerCase()));
 
  async function savePermissions(){try{await api("/api/roles/"+roleId+"/permissions",{method:"PUT",body:JSON.stringify({permissionIds:rolePermissionIds})});toast.success("تم حفظ صلاحيات الدور");}catch(e){toast.error(e instanceof Error?e.message:"تعذر حفظ الصلاحيات")}}
 
  function applyModulePreset(module:string,preset:"none"|"read"|"edit"|"own"){
-  const modulePermissions=permissions.filter(p=>p.module===module);
+  const modulePermissions=permissions.filter(p=>(p.module==="employees"?"hr":p.module)===module);
   const selected=new Set(rolePermissionIds);
   for(const p of modulePermissions){
    const allowed=preset==="none"?false:
