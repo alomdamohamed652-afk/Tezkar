@@ -171,10 +171,29 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
     const production=await client.query(
       `SELECT GREATEST(0,
           COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0)
-          -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
-          -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-                     WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
+          -COALESCE((SELECT SUM(
+              CASE
+                WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id)
+                  THEN COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id),0)
+                ELSE s.gross_amount
+              END)
+            FROM employee_earnings_settlements s
+            WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+          -COALESCE((SELECT SUM(
+              CASE
+                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id),0)
+                ELSE wp.gross_amount
+              END)
+            FROM worker_payments wp
+            LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date)
         ) AS amount
          FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.work_date>$2::date AND pe.work_date<=$3::date`,
       [employeeId,startDate,paymentDate]
