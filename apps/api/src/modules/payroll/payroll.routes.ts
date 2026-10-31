@@ -316,8 +316,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور غير مكتمل؛ لازم يحتوي على يوم لكل موظف في الشهر قبل احتساب الوقت",422);
 
       const salaryProfiles=await client.query("SELECT employee_id,effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=ANY($1::uuid[]) AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[items.rows.map(item=>item.employee_id),monthEnd,monthStart]);
-      const snapshot=parsed.data.attendanceSnapshot.map(rawRow=>{
-        const row=rawRow as typeof rawRow & Record<string,unknown>;
+      const snapshot:Array<Record<string,unknown>&{date:string;employeeId:string;salaryActive:boolean}>=parsed.data.attendanceSnapshot.map(rawRow=>{
+        const row=rawRow as Record<string,unknown>&{date:string;employeeId:string};
         return {
           ...row,
           salaryActive:salaryProfiles.rows.some(profile=>profile.employee_id===row.employeeId
