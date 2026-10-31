@@ -316,12 +316,15 @@ export async function payrollRoutes(app: FastifyInstance) {
         throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور غير مكتمل؛ لازم يحتوي على يوم لكل موظف في الشهر قبل احتساب الوقت",422);
 
       const salaryProfiles=await client.query("SELECT employee_id,effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=ANY($1::uuid[]) AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[items.rows.map(item=>item.employee_id),monthEnd,monthStart]);
-      const snapshot=parsed.data.attendanceSnapshot.map(row=>({
-        ...row,
-        salaryActive:salaryProfiles.rows.some(profile=>profile.employee_id===row.employeeId
-          &&String(profile.effective_from).slice(0,10)<=row.date
-          &&(!profile.effective_to||String(profile.effective_to).slice(0,10)>=row.date))
-      }));
+      const snapshot=parsed.data.attendanceSnapshot.map(rawRow=>{
+        const row=rawRow as typeof rawRow & Record<string,unknown>;
+        return {
+          ...row,
+          salaryActive:salaryProfiles.rows.some(profile=>profile.employee_id===row.employeeId
+            &&String(profile.effective_from).slice(0,10)<=row.date
+            &&(!profile.effective_to||String(profile.effective_to).slice(0,10)>=row.date))
+        };
+      });
       await client.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id=ANY($1::uuid[])",[items.rows.map(item=>item.id)]);
       for(const row of snapshot){
         const item=items.rows.find(x=>x.employee_id===row.employeeId);
@@ -400,8 +403,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         savedKeys.add(key);
       }
       if(savedKeys.size!==expectedKeys.size)throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","نسخة الحضور غير مكتملة؛ أعد احتساب الحضور قبل الاعتماد",409);
-      const salaryItemsForPosting=await client.query("SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,i.advance_repayment_amount,i.accounting_expense_id,e.full_name FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i",[id]);
-      for(const item of salaryItemsForPosting.rows){
+      const salaryItemsForValidation=await client.query("SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,i.advance_repayment_amount,i.accounting_expense_id,e.full_name FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i",[id]);
+      for(const item of salaryItemsForValidation.rows){
         const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[item.id]);
         const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
         if(Number(item.base_salary)+bonus<deduction+Number(item.advance_repayment_amount??0))
