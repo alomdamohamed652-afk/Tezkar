@@ -1,7 +1,8 @@
 -- Detailed payroll audit and attendance-based time compensation.
 ALTER TABLE payroll_periods
   ADD COLUMN IF NOT EXISTS overtime_multiplier NUMERIC(6,3) NOT NULL DEFAULT 1.500
-  CHECK (overtime_multiplier >= 1 AND overtime_multiplier <= 5);
+  CHECK (overtime_multiplier >= 1 AND overtime_multiplier <= 5),
+  ADD COLUMN IF NOT EXISTS attendance_calculated_at TIMESTAMPTZ;
 
 ALTER TABLE payroll_adjustment_lines
   ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ACTIVE'
@@ -23,7 +24,7 @@ ALTER TABLE payroll_adjustment_lines
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_adjustment_item_source
   ON payroll_adjustment_lines(payroll_item_id,source_type)
-  WHERE source_type <> 'MANUAL';
+  WHERE source_type <> 'MANUAL' AND status='ACTIVE';
 
 CREATE INDEX IF NOT EXISTS idx_payroll_adjustment_active_item
   ON payroll_adjustment_lines(payroll_item_id,status,line_type);
