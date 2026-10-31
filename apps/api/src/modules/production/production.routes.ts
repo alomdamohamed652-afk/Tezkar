@@ -1532,12 +1532,27 @@ export async function productionRoutes(app: FastifyInstance) {
           - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
                        JOIN production_entries p ON p.id=a.production_entry_id
                        JOIN order_stages os ON os.id=p.order_stage_id
-                      WHERE p.employee_id=$1 AND os.order_id=$2),0)
+                      WHERE p.employee_id=$1 AND os.order_id=$2
+                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                         WHERE es.worker_payment_id=a.worker_payment_id)),0)
+          - COALESCE((SELECT SUM(legacy.amount) FROM worker_payment_allocations legacy
+                       JOIN production_entries p ON p.id=legacy.production_entry_id
+                       JOIN order_stages os ON os.id=p.order_stage_id
+                      WHERE p.employee_id=$1 AND os.order_id=$2
+                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                         WHERE es.worker_payment_id=legacy.worker_payment_id)
+                        AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
+                         WHERE order_alloc.worker_payment_id=legacy.worker_payment_id)),0)
           - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
                        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
                       WHERE wp.employee_id=$1 AND ae.order_id=$2
-                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_guard JOIN employee_earnings_settlement_allocations esa_guard ON esa_guard.settlement_id=es_guard.id WHERE es_guard.worker_payment_id=wp.id)
-          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)),0)
+                        AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+                          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                         WHERE es.worker_payment_id=wp.id)
+                        AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
+                        AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy WHERE legacy.worker_payment_id=wp.id)),0)
         END AS available
       `,[parsed.data.employeeId,parsed.data.orderId??null]);
       const available=Math.round(Number(earnings.rows[0].available)*100)/100;
