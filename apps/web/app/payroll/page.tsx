@@ -182,7 +182,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
         <td>{money(i.remaining_amount)}</td>
         <td><span className={"status " + (i.status === "PAID" ? "success" : i.status === "PARTIAL" ? "warning" : "muted")}>{itemStatus[i.status] || i.status}</span></td>
         <td><div className="row-actions">
-          {payroll.period?.status === "DRAFT" && has("payroll.view") && <button className="secondary-btn" disabled={busy} onClick={() => void openAdjustments(i)}>مراجعة مفردات المرتب</button>}
+          {has("payroll.view") && <button className="secondary-btn" disabled={busy} onClick={() => void openAdjustments(i)}>مراجعة مفردات المرتب</button>}
           {has("attendance.view") && <button className="secondary-btn" onClick={() => void openAttendance(i)}>سجل الحضور والانصراف</button>}
           {(payroll.period?.status === "APPROVED" || payroll.period?.status === "CLOSED") && has("payroll.pay") && Number(i.remaining_amount) > 0 && <button className="primary-button" onClick={() => {setPayTarget(i);setPayAmount(String(i.remaining_amount));setPayDate(today());setPayMethod("CASH");setFromCustody(true);setCustodyEmployeeId("");setPayReference("");setPayNotes("");setPaymentIdempotencyKey(crypto.randomUUID());void refreshCustodyHolders(today());}}>صرف</button>}
           {has("payroll.view") && <button className="secondary-btn" onClick={() => window.open("/payroll/slip?month="+encodeURIComponent(month)+"&item="+encodeURIComponent(i.id), "_blank", "noopener,noreferrer")}>مفردات المرتب</button>}
