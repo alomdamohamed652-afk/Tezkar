@@ -71,6 +71,14 @@ export function Sidebar({active}:{active:string}){
  const [unreadNotificationCount,setUnreadNotificationCount]=useState(0);
  const [sidebarPreferences,setSidebarPreferences]=useState<SidebarPreferences>(defaultSidebarPreferences);
  const [preferencesReady,setPreferencesReady]=useState(false);
+ const [isMobile,setIsMobile]=useState(false);
+ useEffect(()=>{
+  const media=window.matchMedia("(max-width: 820px)");
+  const sync=()=>setIsMobile(media.matches);
+  sync();
+  media.addEventListener("change",sync);
+  return()=>media.removeEventListener("change",sync);
+ },[]);
  const preferenceIdentity=session?.username?.trim().toLowerCase()||session?.employeeId||"account";
  const preferenceKey=session? `tezkar_sidebar_state_${preferenceIdentity}`:null;
  useEffect(()=>{
@@ -108,7 +116,7 @@ export function Sidebar({active}:{active:string}){
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
  async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
- return <aside className={"sidebar"+(sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
+ return <aside className={"sidebar"+(!isMobile&&sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
    <div className="brand">
     <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
@@ -121,7 +129,7 @@ export function Sidebar({active}:{active:string}){
    </div>
    <div className="sidebar-scroll">
     {visibleGroups.map(group=>{
-     const expanded=sidebarPreferences.groups[group.label]??true;
+     const expanded=isMobile?true:(sidebarPreferences.groups[group.label]??true);
      return <div className={"nav-group"+(!expanded?" nav-group-collapsed":"")} key={group.label}>
       <button type="button" className="nav-title" onClick={()=>toggleGroup(group.label)} aria-expanded={expanded} title={group.label}>
        <span>{group.label}</span><span className="nav-group-chevron">{expanded?"−":"+"}</span>
