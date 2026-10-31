@@ -380,7 +380,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.deepEqual(reconciliation.json().data.counts,{
         missingPayrollExpenses:0,
         missingAdjustmentLedgerEntries:0,
-        cashPaymentsMissingCustodyOut:0
+        cashPaymentsMissingCustodyOut:0,
+        payrollPaymentMismatches:0,
+        expensesMissingCustodyLink:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
