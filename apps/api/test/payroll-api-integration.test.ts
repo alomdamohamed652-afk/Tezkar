@@ -679,11 +679,22 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
          FROM payroll_payments pp WHERE pp.id=$1`,
         [itemBPayment.rows[0].id,employeeA.rows[0].id]
       );
+      // The database unique constraint must reject duplicate source movements.
+      // Keep one deliberately mismatched OUT row so reconciliation also proves it catches amount drift.
+      const expectedAmount = Number(expectedPayrollCustody.rows[0].expected_amount);
       await apiPool.query(
         `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
-         VALUES($1,'OUT',$2,'2099-02-15','Duplicate payroll cash movement A',$3,'PAYROLL_PAYMENT',$4),
-               ($1,'OUT',$2,'2099-02-15','Duplicate payroll cash movement B',$3,'PAYROLL_PAYMENT',$4)`,
-        [expectedPayrollCustody.rows[0].holder_id,expectedPayrollCustody.rows[0].expected_amount,userId,itemBPayment.rows[0].id]
+         VALUES($1,'OUT',$2,'2099-02-15','Mismatched payroll cash movement',$3,'PAYROLL_PAYMENT',$4)`,
+        [expectedPayrollCustody.rows[0].holder_id,Math.max(0,expectedAmount-1),userId,itemBPayment.rows[0].id]
+      );
+      await assert.rejects(
+        apiPool.query(
+          `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
+           VALUES($1,'OUT',$2,'2099-02-15','Duplicate payroll cash movement',$3,'PAYROLL_PAYMENT',$4)`,
+          [expectedPayrollCustody.rows[0].holder_id,expectedAmount,userId,itemBPayment.rows[0].id]
+        ),
+        (error: {code?:string}) => error.code === "23505",
+        "database must reject a second custody movement for the same source"
       );
 
       const integrityFindings = await app.inject({
@@ -702,10 +713,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(findingData.counts.missingAdjustmentLedgerEntries>=1,
         "integrity overview must detect a source-linked adjustment with the wrong employee and amount");
       assert.ok(findingData.counts.cashPaymentsMissingCustodyOut>=1,
-        "integrity overview must detect duplicate cash payroll custody OUT movements");
+        "integrity overview must detect a cash payroll custody amount mismatch");
       assert.ok(findingData.issues.cashPaymentsMissingCustodyOut.some((row: {payment_id:string;custody_out_count:number}) =>
-        row.payment_id===itemBPayment.rows[0].id && row.custody_out_count>=2),
-        "integrity overview must report the number of duplicate custody OUT movements for the payroll payment");
+        row.payment_id===itemBPayment.rows[0].id && row.custody_out_count===1 && Number(row.custody_out_amount)!==expectedAmount),
+        "integrity overview must report the mismatched custody amount and movement count");
 
       const payments = await app.inject({
         method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
