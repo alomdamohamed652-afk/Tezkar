@@ -7,7 +7,7 @@ import {formatMoney} from "../../lib/format";
 
 type Employee={id:string;code:string;full_name:string;department_name:string|null;is_active:boolean;salary_profile_id:string|null;monthly_salary:string|number|null;effective_from:string|null};
 type PayrollItem={id:string;employee_id:string;employee_code:string;employee_name:string;department_name:string|null;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount?:string|number;deduction_mode?:"FIXED"|"PERCENTAGE";deduction_percentage?:string|number|null;deduction_basis?:"BASE_SALARY"|"BASE_PLUS_BONUS";net_amount:string|number;paid_amount:string|number;remaining_amount:string|number;status:string;notes:string|null};
-type PayrollData={period:{id:string;period_month:string;status:string;overtime_multiplier?:string|number}|null;items:PayrollItem[];totals:{employees:number;net:number;paid:number;remaining:number;recordedExpense?:number;expenseDifference?:number;missingExpenseCount?:number;missingExpenseAmount?:number;expenseMismatchCount?:number}};
+type PayrollData={period:{id:string;period_month:string;status:string;overtime_multiplier?:string|number;attendance_calculated_at?:string|null}|null;items:PayrollItem[];totals:{employees:number;net:number;paid:number;remaining:number;recordedExpense?:number;expenseDifference?:number;missingExpenseCount?:number;missingExpenseAmount?:number;expenseMismatchCount?:number}};
 type PayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;reference:string|null;notes:string|null;paid_by_username:string|null;created_at:string};
 type AdjustmentLine={id:string;payroll_item_id:string;line_type:"BONUS"|"DEDUCTION";description:string;amount:string|number;notes:string|null;status:"ACTIVE"|"VOIDED";void_reason?:string|null;voided_by_username?:string|null;source_type?:string;created_by_username?:string|null};
 type SalaryHistoryItem={id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null;created_at:string;created_by_username:string|null};
@@ -26,7 +26,7 @@ const itemStatus:Record<string,string>={UNPAID:"لم يُصرف",PARTIAL:"صرف
 export default function PayrollPage(){
  const {has,permissions}=usePermissions();
  const [employees,setEmployees]=useState<Employee[]>([]),[payroll,setPayroll]=useState<PayrollData>({period:null,items:[],totals:{employees:0,net:0,paid:0,remaining:0}});
- const [month,setMonth]=useState(monthNow()),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState(""),[overtimeMultiplier,setOvertimeMultiplier]=useState("1.5");
+ const [month,setMonth]=useState(monthNow()),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState(""),[overtimeMultiplier,setOvertimeMultiplier]=useState("1.5"),[attendancePreviewStale,setAttendancePreviewStale]=useState(false);
  const [employeeId,setEmployeeId]=useState(""),[monthlySalary,setMonthlySalary]=useState(""),[effectiveFrom,setEffectiveFrom]=useState(today()),[salaryNotes,setSalaryNotes]=useState("");
  const [payTarget,setPayTarget]=useState<PayrollItem|null>(null),[payAmount,setPayAmount]=useState(""),[payDate,setPayDate]=useState(today()),[payMethod,setPayMethod]=useState("CASH"),[payReference,setPayReference]=useState(""),[payNotes,setPayNotes]=useState(""),[paymentIdempotencyKey,setPaymentIdempotencyKey]=useState(""),[fromCustody,setFromCustody]=useState(true),[custodyEmployeeId,setCustodyEmployeeId]=useState("");
  const [attendanceTarget,setAttendanceTarget]=useState<PayrollItem|null>(null),[attendanceDays,setAttendanceDays]=useState<AttendanceDay[]>([]),[attendanceLoading,setAttendanceLoading]=useState(false);
@@ -41,7 +41,7 @@ export default function PayrollPage(){
    if(!has("payroll.view_own")){setError("ليس لديك صلاحية عرض الرواتب.");return}
    const r=await api<{data:OwnPayrollData}>("/api/payroll/my-account");setOwnPayroll(r.data);return;
   }
-  const [e,p]=await Promise.all([api<{data:Employee[]}>("/api/payroll/employees"),api<{data:PayrollData}>("/api/payroll?month="+encodeURIComponent(month))]);setEmployees(e.data);setPayroll(p.data);if(p.data.period?.overtime_multiplier!==undefined)setOvertimeMultiplier(String(p.data.period.overtime_multiplier));if(!employeeId&&e.data.find(x=>x.is_active))setEmployeeId(e.data.find(x=>x.is_active)!.id)
+  const [e,p]=await Promise.all([api<{data:Employee[]}>("/api/payroll/employees"),api<{data:PayrollData}>("/api/payroll?month="+encodeURIComponent(month))]);setEmployees(e.data);setPayroll(p.data);if(p.data.period?.overtime_multiplier!==undefined)setOvertimeMultiplier(String(p.data.period.overtime_multiplier));setAttendancePreviewStale(false);if(!employeeId&&e.data.find(x=>x.is_active))setEmployeeId(e.data.find(x=>x.is_active)!.id)
  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الرواتب")}finally{setLoading(false)}}
  useEffect(()=>{if(permissions!==null)void load()},[month,permissions]);
  async function setSalary(e:FormEvent){e.preventDefault();setBusy(true);setError("");setNotice("");try{await api("/api/payroll/salary-profiles",{method:"POST",body:JSON.stringify({employeeId,monthlySalary:Number(monthlySalary),effectiveFrom,notes:salaryNotes||null})});setMonthlySalary("");setSalaryNotes("");setNotice("تم حفظ الراتب الأساسي مع الاحتفاظ بسجل الرواتب السابق.");await load();await showSalaryHistory()}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الراتب الأساسي")}finally{setBusy(false)}}
@@ -105,23 +105,34 @@ export default function PayrollPage(){
   catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء البند")}
   finally{setBusy(false)}
  }
- async function approve(){if(!payroll.period)return;setBusy(true);setError("");setNotice("");try{
+ async function previewAttendance(){
+  if(!payroll.period)return;
+  if(payroll.period.attendance_calculated_at&&!window.confirm("إعادة الاحتساب ستحدّث بنود الوقت والإضافي وتُسجل النسخة السابقة في سجل الإلغاء. هل تريد المتابعة؟"))return;
+  setBusy(true);setError("");setNotice("");
+  try{
    const [year,monthNumber]=month.split("-").map(Number);const lastDay=new Date(year,monthNumber,0).getDate();
    const from=month+"-01",to=month+"-"+String(lastDay).padStart(2,"0");
    const attendance=await api<{data:AttendanceDay[]}>("/api/attendance/report?from="+encodeURIComponent(from)+"&to="+encodeURIComponent(to));
    const payrollEmployeeIds=new Set(payroll.items.map(item=>item.employee_id));
    const attendanceSnapshot=attendance.data.filter(row=>payrollEmployeeIds.has(row.employeeId));
    const expectedCount=payroll.items.length*lastDay;
-   if(attendanceSnapshot.length!==expectedCount)throw new Error("سجل الحضور غير مكتمل لكل موظفي المسير وأيام الشهر؛ راجع بيانات الحضور قبل الاعتماد.");
+   if(attendanceSnapshot.length!==expectedCount)throw new Error("سجل الحضور غير مكتمل لكل موظفي المسير وأيام الشهر؛ راجع بيانات الحضور قبل الاحتساب.");
    if(!Number.isFinite(Number(overtimeMultiplier))||Number(overtimeMultiplier)<1||Number(overtimeMultiplier)>5)throw new Error("مضاعف الإضافي يجب أن يكون من 1 إلى 5.");
-   const absentDays=attendanceSnapshot.filter(row=>row.status==="ABSENT").length;
-   const overtimeMinutes=attendanceSnapshot.reduce((sum,row)=>sum+(!row.needsReview&&row.status!=="MISSING_PUNCH"&&row.status!=="NO_SCHEDULE_WITH_PUNCH"?Number(row.overtimeMinutes??0):0),0);
-   const reviewDays=attendanceSnapshot.filter(row=>row.needsReview||row.status==="MISSING_PUNCH").length;
-   const confirmed=window.confirm("مراجعة احتساب الوقت قبل الاعتماد:\n\nأيام الغياب المسجلة: "+absentDays+"\nساعات الإضافي المسجلة: "+(overtimeMinutes/60).toFixed(2)+"\nأيام تحتاج مراجعة ولن يطبق عليها خصم تلقائي: "+reviewDays+"\nمضاعف أجر الإضافي: "+overtimeMultiplier+"\n\nسيُحسب خصم الغياب والتأخير والانصراف المبكر من جدول كل موظف، ويُضاف أجر الإضافي كبند مستقل. هل تريد المتابعة؟");
-   if(!confirmed)return;
-   await api("/api/payroll/periods/"+payroll.period.id+"/approve",{method:"POST",body:JSON.stringify({attendanceSnapshot,overtimeMultiplier:Number(overtimeMultiplier)})});
-   setNotice("تم اعتماد مسير الرواتب وحفظ نسخة ثابتة من سجل الحضور لكل موظف ولكل يوم في الشهر.");await load()
-  }catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد مسير الرواتب.")}finally{setBusy(false)}}
+   const result=await api<{data:{totals:{timeDeduction:number;overtimeBonus:number;overtimeHours:number;reviewDays:number}}}>("/api/payroll/periods/"+payroll.period.id+"/attendance-preview",{method:"POST",body:JSON.stringify({attendanceSnapshot,overtimeMultiplier:Number(overtimeMultiplier)})});
+   setAttendancePreviewStale(false);
+   setNotice("تم احتساب الوقت والإضافي. إجمالي خصم الوقت "+money(result.data.totals.timeDeduction)+" ج.م، وأجر الإضافي "+money(result.data.totals.overtimeBonus)+" ج.م. راجع بنود كل موظف قبل اعتماد المسير.");
+   await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر احتساب الوقت والإضافي.")}finally{setBusy(false)}
+ }
+ async function approve(){
+  if(!payroll.period||!payroll.period.attendance_calculated_at||attendancePreviewStale)return;
+  if(!window.confirm("تمت معاينة الحضور وبنود الوقت والإضافي. هل تريد اعتماد المسير بالقيم التي راجعتها؟"))return;
+  setBusy(true);setError("");setNotice("");
+  try{
+   await api("/api/payroll/periods/"+payroll.period.id+"/approve",{method:"POST",body:JSON.stringify({})});
+   setNotice("تم اعتماد مسير الرواتب بعد حفظ نسخة الحضور وبنود الوقت والمكافآت والخصومات.");await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد مسير الرواتب.")}finally{setBusy(false)}
+ }
  async function submitPayment(e:FormEvent){e.preventDefault();if(!payTarget||!paymentIdempotencyKey||(fromCustody&&!custodyEmployeeId))return;setBusy(true);setError("");try{await api("/api/payroll/items/"+payTarget.id+"/payments",{method:"POST",body:JSON.stringify({idempotencyKey:paymentIdempotencyKey,amount:Number(payAmount),paymentDate:payDate,paymentMethod:payMethod,reference:payReference||null,notes:payNotes||null,fromCustody,custodyEmployeeId:fromCustody?custodyEmployeeId:null})});setPayTarget(null);setPayAmount("");setPayReference("");setPayNotes("");setPaymentIdempotencyKey("");setNotice("تم تسجيل صرف الراتب.");await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الصرف")}finally{setBusy(false)}}
  if(!has("payroll.view"))return <div className="app-shell"><Sidebar active="/payroll"/><main className="main"><header className="topbar"><div><h1 className="page-title">مرتباتي</h1><p className="page-subtitle">الراتب الأساسي، المسيرات المعتمدة، الخصومات، أقساط السلف، والمدفوعات الفعلية.</p></div></header><section className="content">
    {error&&<div className="alert error">{error}</div>}
@@ -145,7 +156,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
   </div><div className="form-actions"><button className="primary-button" disabled={busy||!employeeId||monthlySalary===""}>حفظ الراتب الأساسي</button><button type="button" className="secondary-btn" disabled={!employeeId||salaryHistoryLoading} onClick={()=>void showSalaryHistory()}>{salaryHistoryLoading?"جارٍ تحميل السجل...":"عرض سجل تغييرات الراتب"}</button></div></form>}
   {salaryHistoryEmployeeId&&salaryHistoryEmployeeId===employeeId&&<section className="card"><div className="card-header"><div><h2 className="card-title">سجل تغييرات الراتب الأساسي</h2><div className="form-hint">{employees.find(e=>e.id===salaryHistoryEmployeeId)?.full_name||""} · كل تعديل محفوظ بتاريخ سريانه</div></div><button className="secondary-btn" onClick={()=>{setSalaryHistoryEmployeeId("");setSalaryHistory([])}}>إخفاء السجل</button></div><div className="table-wrap"><table><thead><tr><th>الراتب الشهري</th><th>ساري من</th><th>ساري حتى</th><th>ملاحظات</th><th>سُجل بواسطة</th><th>تاريخ التسجيل</th></tr></thead><tbody>{salaryHistory.map(x=><tr key={x.id}><td className="strong">{money(x.monthly_salary)} ج.م</td><td>{String(x.effective_from).slice(0,10)}</td><td>{x.effective_to?String(x.effective_to).slice(0,10):"الحالي"}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"—"}</td><td>{new Date(x.created_at).toLocaleDateString("ar-EG")}</td></tr>)}{!salaryHistory.length&&<tr><td colSpan={6}>لا توجد تغييرات مسجلة لهذا الموظف.</td></tr>}</tbody></table></div></section>}
   <section className="card"><div className="card-header"><div><h2 className="card-title">مسير الرواتب الشهري</h2><div className="form-hint">يتم تثبيت الراتب في المسير عند إنشائه، وأي تغيير لاحق لا يغير المسيرات السابقة. الخصم هنا يدوي ولا ينشئ مصروفًا تلقائيًا؛ سجّل التلفيات أو الإهلاك يدويًا في المالية بشكل منفصل، ولا تخصم القيمة من العهدة النقدية إلا لو دُفعت منها فعلًا.</div></div></div>
-   <div className="toolbar"><label>الشهر<input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></label>{payroll.period?.status==="DRAFT"&&has("payroll.approve")&&<label>مضاعف أجر الإضافي<input type="number" min="1" max="5" step="0.1" value={overtimeMultiplier} onChange={e=>setOvertimeMultiplier(e.target.value)}/><span className="form-hint">من 1 إلى 5 · الافتراضي 1.5</span></label>}<div className="form-actions">{has("payroll.generate")&&<button className="secondary-btn" onClick={generate} disabled={busy}>تجهيز المسير من الرواتب السارية</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&<button className="primary-button" onClick={approve} disabled={busy}>اعتماد المسير</button>}</div></div>
+   <div className="toolbar"><label>الشهر<input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></label>{payroll.period?.status==="DRAFT"&&has("payroll.approve")&&<label>مضاعف أجر الإضافي<input type="number" min="1" max="5" step="0.1" value={overtimeMultiplier} onChange={e=>{setOvertimeMultiplier(e.target.value);setAttendancePreviewStale(true)}}/><span className="form-hint">من 1 إلى 5 · الافتراضي 1.5</span></label>}<div className="form-actions">{has("payroll.generate")&&<button className="secondary-btn" onClick={generate} disabled={busy}>تجهيز المسير من الرواتب السارية</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&<button className="secondary-btn" onClick={previewAttendance} disabled={busy}>{payroll.period.attendance_calculated_at?"إعادة احتساب الوقت والإضافي":"احتساب الوقت والإضافي"}</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&payroll.period.attendance_calculated_at&&<button className="primary-button" onClick={approve} disabled={busy||attendancePreviewStale}>اعتماد المسير</button>}{attendancePreviewStale&&<span className="form-hint">تم تغيير مضاعف الإضافي؛ أعد الاحتساب قبل الاعتماد.</span>}}</div></div>
    {payroll.period&&<div className="form-hint" style={{margin:"10px 0"}}>حالة الفترة: <strong>{periodStatus[payroll.period.status]||payroll.period.status}</strong></div>}
    <div className="stats"><article className="card stat"><div className="stat-label">عدد الموظفين</div><div className="stat-value">{payroll.totals.employees}</div></article><article className="card stat"><div className="stat-label">صافي الرواتب</div><div className="stat-value">{money(payroll.totals.net)} ج.م</div></article><article className="card stat accent"><div className="stat-label">تم صرفه</div><div className="stat-value">{money(payroll.totals.paid)} ج.م</div></article><article className="card stat warning"><div className="stat-label">المتبقي للصرف</div><div className="stat-value">{money(payroll.totals.remaining)} ج.م</div></article></div>
     <div className="stats">
