@@ -218,7 +218,7 @@ export default function FinanceExceptionsPage() {
                 <article className="card stat"><div className="stat-label">إجمالي الحالات المكتشفة</div><div className="stat-value">{Object.values(integrity.counts).reduce((sum, count) => sum + count, 0)}</div></article>
                 <article className="card stat"><div className="stat-label">أنواع الفحص</div><div className="stat-value">{integrityGroups.length}</div></article>
               </div>
-              <div className="grid grid-2">
+              <div className="production-grid">
                 {integrityGroups.map(group => <section className="card" key={group.title}>
                   <div className="card-header"><h3 className="card-title">{group.title}</h3><span className={group.items.length ? "status warning" : "status success"}>{group.items.length}</span></div>
                   <div className="card-body">
