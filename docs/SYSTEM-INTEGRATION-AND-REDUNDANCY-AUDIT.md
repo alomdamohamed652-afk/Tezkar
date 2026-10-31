@@ -125,3 +125,36 @@ The root layout mounted a global Dhikr reminder on every route. The component po
 - No destructive reset, bulk backfill, deletion of historical financial rows, or migration rename as part of cleanup.
 - Do not label a candidate “unused” solely because it is absent from the sidebar; verify code references, route permissions, and external/bookmarked use first.
 - Every cross-module fix should include isolated PostgreSQL integration tests and CI typecheck/tests/build before merge.
+
+
+## Revalidated repository status — 2026-10-31
+
+This section supersedes older sequencing notes above where the repository has since advanced. It is still a static repository/CI audit, not completed browser acceptance testing or production verification.
+
+### Verified current state
+
+- PR #195 was merged on 2026-10-28. The older P0 instruction to finish PR #195 is obsolete.
+- PR #226 (financial integrity center) passed GitHub Actions CI on head `72bce4c`. It remains Draft and unmerged.
+- PR #227 (warehouse low-stock alerts), #228 (searchable employee selector), and #229 (permission presets) each passed CI on their previously checked heads. PR #227 received an additional correction on 2026-10-31: its global minimum-stock calculation now uses active non-scrap warehouses, because the product minimum is global and scrap stock must not hide a usable-stock shortage. CI for that correction is pending.
+- PR #230 ports the pending/approved production status + employee filter regression assertions onto the current release base. CI is pending.
+- The current release base already contains canonical settlement-allocation precedence and a more comprehensive historical-payment reconciliation than the older PR #168 patch. The current production routes also contain the duplicate-allocation precedence logic proposed in PR #210; the remaining distinct coverage from #210 is the direct `GET /api/production` row-level regression assertion, now ported to PR #230.
+- The older payment branches #145, #146, #168, and #210 are substantially behind/diverged from the current release base. Do not merge them as-is; compare their intent against current code and port only a missing test or behavior.
+- The current release base already has the two-person accounting-period close workflow and snapshot tables through migrations `2026101701_accounting_period_approval_snapshots.sql` and `2026101702_accounting_period_snapshot_immutability.sql`, including review, approval, close, reopen, and snapshot immutability. PR #122's separate `9999_quarterly_financial_close.sql` design is an older competing implementation and must not be merged over the current workflow.
+- Effective-dated attendance schedules are already present on the current base through migration `1038_attendance_schedule_effective_dates.sql`, API routes, and the attendance page. Existing attendance calculation tests do not yet exercise schedule-version date boundaries; add focused tests before declaring this area fully verified.
+- The current base already exposes order expense and collection workflows in cash custody. PR #69 should be checked for any unique behavior not already present before considering its old branch.
+- `docs/FRONTEND-ALL-PAGES-AUDIT.md` remains unchecked. All listed routes still require route-level browser checks for responsive behavior, permissions, empty/error states, console/network errors, and Arabic/RTL rendering.
+
+### Updated execution order
+
+1. Finish CI and review the current-base test-only PR #230 and the corrected PR #227.
+2. Complete financial correctness review around payroll, advances, settlements, custody, historical allocations, and order profitability. Keep #226 Draft until the full review is complete.
+3. Add attendance effective-date boundary tests and verify the current period-close workflow; do not resurrect the superseded #122 schema.
+4. Review inventory, scrap traceability, deliveries, machine production, and order-stage lifecycle end to end.
+5. Run a role-by-role API authorization matrix and complete the all-route frontend checklist.
+6. Prepare Railway-only release checks: migration status on the intended environment, backup/restore readiness, API/Web health, and read-only smoke tests. No deployment or production-data mutation is part of this audit.
+
+### Release guardrails
+
+- CI success is necessary but not equivalent to browser acceptance or business-flow verification.
+- Keep test databases disposable and isolated; do not use production data for destructive tests.
+- Do not merge, close, rebase, or deploy a PR solely because its CI is green. Review current-base compatibility and preserve the existing financial source of truth first.
