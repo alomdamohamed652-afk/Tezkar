@@ -33,7 +33,7 @@ type Stage = { id: string; sequence_no: number; stage_name: string; status: stri
 type HistoricalProduction = {
   production_entry_id:string;production_code:string;employee_id:string;employee_code:string;employee_name:string;
   work_date:string;order_code:string|null;order_name:string|null;stage_name:string|null;
-  earned_amount:number|string;actual_paid_amount:number|string;historical_paid_amount:number|string;remaining_amount:number|string;
+  earned_amount:number|string;actual_paid_amount:number|string;historical_paid_amount:number|string;remaining_amount:number|string;overpaid_amount:number|string;
   mark_id:string|null;mark_status:"PAID_PREVIOUSLY"|"NEEDS_REVIEW"|null;mark_notes:string|null;payment_date:string|null;
   ambiguous_payment_evidence:boolean;classification:"PAID_CONFIRMED"|"PAID_HISTORICALLY"|"NEEDS_REVIEW"|"UNPAID";
 };
@@ -126,12 +126,13 @@ export default function FinanceExceptionsPage() {
   },[]);
   useEffect(() => { if (allowed) { void load(); void loadHistoricalProduction(); } else setLoading(false); }, [allowed, load, loadHistoricalProduction]);
   const historicalEmployeeSummary=useMemo(()=>{
-    const grouped=new Map<string,{employeeId:string;employeeCode:string;employeeName:string;production:number;actualPaid:number;historicalPaid:number;remaining:number;unresolvedAmount:number;unresolvedCount:number;productionCount:number}>();
+    const grouped=new Map<string,{employeeId:string;employeeCode:string;employeeName:string;production:number;actualPaid:number;historicalPaid:number;remaining:number;unresolvedAmount:number;overpaidAmount:number;unresolvedCount:number;productionCount:number}>();
     for(const row of historicalProduction){
-      const current=grouped.get(row.employee_id)??{employeeId:row.employee_id,employeeCode:row.employee_code,employeeName:row.employee_name,production:0,actualPaid:0,historicalPaid:0,remaining:0,unresolvedAmount:0,unresolvedCount:0,productionCount:0};
+      const current=grouped.get(row.employee_id)??{employeeId:row.employee_id,employeeCode:row.employee_code,employeeName:row.employee_name,production:0,actualPaid:0,historicalPaid:0,remaining:0,unresolvedAmount:0,overpaidAmount:0,unresolvedCount:0,productionCount:0};
       current.production+=Number(row.earned_amount||0);
       current.actualPaid+=Number(row.actual_paid_amount||0);
       current.historicalPaid+=Number(row.historical_paid_amount||0);
+      current.overpaidAmount+=Number(row.overpaid_amount||0);
       if(row.classification==="NEEDS_REVIEW"){
         current.unresolvedAmount+=Number(row.remaining_amount||0);
         current.unresolvedCount+=1;
@@ -288,9 +289,9 @@ export default function FinanceExceptionsPage() {
             {historicalLoading&&<p className="form-hint">جارٍ فحص سجلات الإنتاج وحركات الدفع المرتبطة…</p>}
             <h3 className="card-title" style={{marginTop:16}}>ملخص حساب كل عامل</h3>
             <p className="form-hint">الإجمالي محسوب من سجلات الإنتاج المعتمدة. كل دفعة تُحسب مرة واحدة حتى لو ظهرت في أكثر من مصدر توزيع. المتبقي المؤكد لا يشمل الحالات غير المحسومة؛ قيمتها تظهر منفصلة تحت المراجعة.</p>
-            <div className="table-wrap"><table><thead><tr><th>العامل</th><th>إجمالي الإنتاج</th><th>مدفوع مثبت</th><th>مدفوع تاريخيًا</th><th>المتبقي المؤكد</th><th>مبلغ تحت المراجعة</th><th>حالات غير محسومة</th></tr></thead><tbody>
-              {historicalEmployeeSummary.map(row=><tr key={row.employeeId}><td>{row.employeeName}<div className="form-hint">{row.employeeCode} · {row.productionCount} سجل إنتاج</div></td><td>{money(row.production)}</td><td>{money(row.actualPaid)}</td><td>{money(row.historicalPaid)}</td><td>{money(row.remaining)}</td><td>{money(row.unresolvedAmount)}</td><td>{row.unresolvedCount? <span className="status warning">{row.unresolvedCount} سجل</span> : <span className="status success">لا يوجد</span>}</td></tr>)}
-              {!historicalEmployeeSummary.length&&<tr><td colSpan={7}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
+            <div className="table-wrap"><table><thead><tr><th>العامل</th><th>إجمالي الإنتاج</th><th>مدفوع مثبت</th><th>مدفوع تاريخيًا</th><th>المتبقي المؤكد</th><th>مبلغ تحت المراجعة</th><th>زيادة/تضاعف</th><th>حالات غير محسومة</th></tr></thead><tbody>
+              {historicalEmployeeSummary.map(row=><tr key={row.employeeId}><td>{row.employeeName}<div className="form-hint">{row.employeeCode} · {row.productionCount} سجل إنتاج</div></td><td>{money(row.production)}</td><td>{money(row.actualPaid)}</td><td>{money(row.historicalPaid)}</td><td>{money(row.remaining)}</td><td>{money(row.unresolvedAmount)}</td><td>{money(row.overpaidAmount)}</td><td>{row.unresolvedCount? <span className="status warning">{row.unresolvedCount} سجل</span> : <span className="status success">لا يوجد</span>}</td></tr>)}
+              {!historicalEmployeeSummary.length&&<tr><td colSpan={8}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
             </tbody></table></div>
             <h3 className="card-title" style={{marginTop:20}}>تفاصيل سجلات الإنتاج</h3>
             <div className="table-wrap"><table><thead><tr><th>سجل الإنتاج</th><th>العامل</th><th>الطلبية / المرحلة</th><th>المستحق</th><th>مدفوع فعليًا</th><th>مدفوع تاريخيًا</th><th>المتبقي</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>

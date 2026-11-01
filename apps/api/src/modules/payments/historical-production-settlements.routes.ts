@@ -155,6 +155,9 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
              GREATEST(0,COALESCE(p.total_earning_amount,p.earning_amount,0)
                -COALESCE(a.amount,0)
                -CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) AS remaining_amount,
+             GREATEST(0,COALESCE(a.amount,0)
+               +CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
+               -COALESCE(p.total_earning_amount,p.earning_amount,0)) AS overpaid_amount,
              m.id AS mark_id,m.status AS mark_status,m.notes AS mark_notes,m.payment_date,
              EXISTS (
                SELECT 1 FROM payment_coverage pc
@@ -162,6 +165,8 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
                   AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
              ) AS ambiguous_payment_evidence,
              CASE
+               WHEN COALESCE(a.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
+                    >COALESCE(p.total_earning_amount,p.earning_amount,0)+0.009 THEN 'NEEDS_REVIEW'
                WHEN COALESCE(a.amount,0)>=COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID_CONFIRMED'
                WHEN COALESCE(a.amount,0)>0.009 THEN 'NEEDS_REVIEW'
                WHEN m.status='PAID_PREVIOUSLY' THEN 'PAID_HISTORICALLY'
