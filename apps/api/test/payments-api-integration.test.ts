@@ -942,6 +942,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie},payload:{status:"NEEDS_REVIEW",notes:"إعادة للمراجعة"}
       });
       assert.equal(undoHistoricalMark.statusCode,200,undoHistoricalMark.body);
+      const retainedHistoricalMark=await apiPool.query(
+        "SELECT status,amount_snapshot FROM historical_production_settlement_marks WHERE production_entry_id=$1",
+        [historicalMarkProduction.id]
+      );
+      assert.equal(retainedHistoricalMark.rows[0].status,"NEEDS_REVIEW");
+      assert.ok(Number(retainedHistoricalMark.rows[0].amount_snapshot)>0,
+        "undo must retain the positive historical amount snapshot for audit while excluding it from paid totals");
       const historicalUnpaidRestored=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${historicalMarkEmployee.id}`,
         headers:{cookie:managerCookie}
