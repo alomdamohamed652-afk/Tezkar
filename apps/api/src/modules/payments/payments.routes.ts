@@ -75,12 +75,15 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-        WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid
+        WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
+      COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
+        JOIN production_entries hp ON hp.id=m.production_entry_id
+        WHERE m.employee_id=$1 AND m.status='PAID_PREVIOUSLY' AND hp.status='APPROVED'),0) AS historical_paid
     FROM production_entries pe WHERE pe.employee_id=$1
   `,[employeeId]);
   if(Number(totals.rows[0]?.approved_count??0)>0) {
     const available=Number(totals.rows[0].production_earned)+Number(totals.rows[0].adjustments)
-      -Number(totals.rows[0].settled)-Number(totals.rows[0].legacy_paid);
+      -Number(totals.rows[0].settled)-Number(totals.rows[0].legacy_paid)-Number(totals.rows[0].historical_paid);
     return Math.round(available*100)/100;
   }
   // Imported ledger-only balances remain supported where no approved production rows exist.
@@ -740,7 +743,9 @@ export async function paymentsRoutes(app:FastifyInstance){
             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
               WHERE es.worker_payment_id=wp.id)
-            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0) AS paid_amount,
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+         + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+             WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0) AS paid_amount,
         GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
           - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
           - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
@@ -755,7 +760,9 @@ export async function paymentsRoutes(app:FastifyInstance){
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                 JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                 WHERE es.worker_payment_id=wp.id)
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0) AS remaining_amount
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+           - COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+             WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0) AS remaining_amount
       FROM production_entries p
       LEFT JOIN order_stages os ON os.id=p.order_stage_id
       LEFT JOIN production_orders o ON o.id=os.order_id
@@ -775,7 +782,9 @@ export async function paymentsRoutes(app:FastifyInstance){
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                 JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                 WHERE es.worker_payment_id=wp.id)
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0)>0.009
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+           - COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+             WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0)>0.009
       ORDER BY p.work_date ASC,p.created_at ASC,p.id ASC
     `,[parsed.data.employeeId]);
     return {data:result.rows};
@@ -1147,7 +1156,9 @@ export async function paymentsRoutes(app:FastifyInstance){
                       AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                         JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                         WHERE es.worker_payment_id=wp.id)
-                      AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0) AS paid_amount
+                      AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+                  + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+                    WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0) AS paid_amount
             FROM production_entries p
             LEFT JOIN order_stages os ON os.id=p.order_stage_id
             LEFT JOIN production_orders o ON o.id=os.order_id
@@ -1178,7 +1189,11 @@ export async function paymentsRoutes(app:FastifyInstance){
                           JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                           WHERE es.worker_payment_id=wp.id)
                         AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
-                 ) FILTER(WHERE p.status='APPROVED'),0) AS paid_against_approved
+                 ) FILTER(WHERE p.status='APPROVED'),0)
+                  + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+                    JOIN production_entries hp ON hp.id=hm.production_entry_id
+                    LEFT JOIN order_stages hos ON hos.id=hp.order_stage_id
+                   WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY' AND hos.order_id=o.id),0) AS paid_against_approved
             FROM production_entries p
             JOIN order_stages os ON os.id=p.order_stage_id
             JOIN production_orders o ON o.id=os.order_id
@@ -1367,7 +1382,11 @@ export async function paymentsRoutes(app:FastifyInstance){
                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                     WHERE es.worker_payment_id=wp.id)
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0)
-            ) AS allocated_paid,
+            ) + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+                 JOIN production_entries hp ON hp.id=hm.production_entry_id
+                 LEFT JOIN order_stages hos ON hos.id=hp.order_stage_id
+                WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
+                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
               -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
@@ -1409,7 +1428,10 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-              WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid
+              WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
+            COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
+              JOIN production_entries hp ON hp.id=m.production_entry_id
+              WHERE m.employee_id=$1 AND m.status='PAID_PREVIOUSLY' AND hp.status='APPROVED'),0) AS historical_paid
         `,[parsed.data.employeeId])
       ]);
       const earned = Number(production.rows[0]?.amount ?? 0);
@@ -1433,12 +1455,13 @@ export async function paymentsRoutes(app:FastifyInstance){
           standaloneAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0),
           ledgerOnlyAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0),
           previouslySettled: Number(availabilityBreakdown.rows[0]?.settled ?? 0) + Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0),
+          historicalPaid: Number(availabilityBreakdown.rows[0]?.historical_paid ?? 0),
           calculationMode: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0 ? "PRODUCTION" : "LEDGER_FALLBACK",
           approvedProductionCount: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0),
           ledgerBalance: Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0),
           outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
           calculatedAvailable: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0
-            ? Math.round((Number(availabilityBreakdown.rows[0]?.production_net ?? 0) + Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0) + Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0) - Number(availabilityBreakdown.rows[0]?.settled ?? 0) - Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0))*100)/100
+            ? Math.round((Number(availabilityBreakdown.rows[0]?.production_net ?? 0) + Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0) + Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0) - Number(availabilityBreakdown.rows[0]?.settled ?? 0) - Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0) - Number(availabilityBreakdown.rows[0]?.historical_paid ?? 0))*100)/100
             : Math.round((Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0) + Number(advances.rows[0]?.amount ?? 0))*100)/100
         },
         orderAccount: parsed.data.orderId ? {
@@ -1682,7 +1705,11 @@ export async function paymentsRoutes(app:FastifyInstance){
                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                     WHERE es.worker_payment_id=wp.id)
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0)
-            ) AS allocated_paid,
+            ) + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+                 JOIN production_entries hp ON hp.id=hm.production_entry_id
+                 LEFT JOIN order_stages hos ON hos.id=hp.order_stage_id
+                WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
+                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
               -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
@@ -1749,7 +1776,9 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wp.id)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0),0) AS remaining
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+             - COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+               WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0) AS remaining
           FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
           WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.id=ANY($2::uuid[])
           ORDER BY p.work_date,p.created_at,p.id

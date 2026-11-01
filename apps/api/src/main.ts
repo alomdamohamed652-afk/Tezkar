@@ -21,6 +21,7 @@ import { laserMachineOperationsRoutes } from "./modules/production/laser-machine
 import { laserScrapReasonRoutes } from "./modules/production/laser-scrap-reasons.routes.js";
 import { productionScrapRoutes } from "./modules/production/production-scrap.routes.js";
 import { paymentsRoutes } from "./modules/payments/payments.routes.js";
+import { historicalProductionSettlementRoutes } from "./modules/payments/historical-production-settlements.routes.js";
 import { earningsRoutes } from "./modules/earnings/earnings.routes.js";
 import { warehouseRoutes } from "./modules/warehouse/warehouse.routes.js";
 import { shiftWithdrawalRoutes } from "./modules/warehouse/shift-withdrawals.routes.js";
@@ -118,6 +119,7 @@ await app.register(laserMachineOperationsRoutes);
 await app.register(laserScrapReasonRoutes);
 await app.register(productionScrapRoutes);
 await app.register(paymentsRoutes);
+await app.register(historicalProductionSettlementRoutes);
 await app.register(earningsRoutes);
 await app.register(warehouseRoutes);
   await app.register(shiftWithdrawalRoutes);

@@ -30,6 +30,13 @@ type AllocationDiagnostic = {
 };
 type Order = { id: string; code: string; order_name: string; status: string };
 type Stage = { id: string; sequence_no: number; stage_name: string; status: string };
+type HistoricalProduction = {
+  production_entry_id:string;production_code:string;employee_id:string;employee_code:string;employee_name:string;
+  work_date:string;order_code:string|null;order_name:string|null;stage_name:string|null;
+  earned_amount:number|string;actual_paid_amount:number|string;historical_paid_amount:number|string;remaining_amount:number|string;overpaid_amount:number|string;
+  mark_id:string|null;mark_status:"PAID_PREVIOUSLY"|"NEEDS_REVIEW"|null;mark_notes:string|null;payment_date:string|null;
+  ambiguous_payment_evidence:boolean;classification:"PAID_CONFIRMED"|"PAID_HISTORICALLY"|"NEEDS_REVIEW"|"UNPAID";
+};
 type FinancialIntegrity = {
   checkedAt: string;
   counts: {
@@ -77,6 +84,10 @@ export default function FinanceExceptionsPage() {
   const [integrity, setIntegrity] = useState<FinancialIntegrity | null>(null);
   const [integrityLoading, setIntegrityLoading] = useState(false);
   const [integrityError, setIntegrityError] = useState("");
+  const [historicalProduction,setHistoricalProduction]=useState<HistoricalProduction[]>([]);
+  const [historicalLoading,setHistoricalLoading]=useState(false);
+  const [historicalSavingId,setHistoricalSavingId]=useState("");
+  const [historicalSearch,setHistoricalSearch]=useState("");
 
   const selected = useMemo(() => payments.find(p => p.payment_id === selectedId) ?? null, [payments, selectedId]);
   const filtered = useMemo(() => {
@@ -105,7 +116,55 @@ export default function FinanceExceptionsPage() {
     }
   }, []);
 
-  useEffect(() => { if (allowed) void load(); else setLoading(false); }, [allowed, load]);
+  const loadHistoricalProduction=useCallback(async()=>{
+    setHistoricalLoading(true);
+    try{
+      const result=await api<{data:HistoricalProduction[]}>("/api/worker-payments/historical-production-settlements");
+      setHistoricalProduction(result.data);
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تسويات مستحقات الإنتاج التاريخية");}
+    finally{setHistoricalLoading(false);}
+  },[]);
+  useEffect(() => { if (allowed) { void load(); void loadHistoricalProduction(); } else setLoading(false); }, [allowed, load, loadHistoricalProduction]);
+  const historicalEmployeeSummary=useMemo(()=>{
+    const grouped=new Map<string,{employeeId:string;employeeCode:string;employeeName:string;production:number;actualPaid:number;historicalPaid:number;unresolvedPaidAmount:number;remaining:number;unresolvedAmount:number;overpaidAmount:number;unresolvedCount:number;productionCount:number}>();
+    for(const row of historicalProduction){
+      const current=grouped.get(row.employee_id)??{employeeId:row.employee_id,employeeCode:row.employee_code,employeeName:row.employee_name,production:0,actualPaid:0,historicalPaid:0,unresolvedPaidAmount:0,remaining:0,unresolvedAmount:0,overpaidAmount:0,unresolvedCount:0,productionCount:0};
+      current.production+=Number(row.earned_amount||0);
+      current.overpaidAmount+=Number(row.overpaid_amount||0);
+      if(row.classification==="NEEDS_REVIEW"){
+        current.unresolvedPaidAmount+=Number(row.actual_paid_amount||0)+Number(row.historical_paid_amount||0);
+        current.unresolvedAmount+=Number(row.remaining_amount||0);
+        current.unresolvedCount+=1;
+      }else{
+        current.actualPaid+=Number(row.actual_paid_amount||0);
+        current.historicalPaid+=Number(row.historical_paid_amount||0);
+        current.remaining+=Number(row.remaining_amount||0);
+      }
+      current.productionCount+=1;
+      grouped.set(row.employee_id,current);
+    }
+    return [...grouped.values()].sort((a,b)=>a.employeeName.localeCompare(b.employeeName,"ar-EG"));
+  },[historicalProduction]);
+  const filteredHistoricalProduction=useMemo(()=>{
+    const q=historicalSearch.trim().toLocaleLowerCase("ar-EG");
+    const rows=historicalProduction.filter(x=>Number(x.remaining_amount)>0.009||x.classification==="NEEDS_REVIEW");
+    if(!q)return rows;
+    return rows.filter(x=>[x.production_code,x.employee_name,x.employee_code,x.order_name??"",x.order_code??"",x.stage_name??""].join(" ").toLocaleLowerCase("ar-EG").includes(q));
+  },[historicalProduction,historicalSearch]);
+  async function updateHistoricalProduction(row:HistoricalProduction,status:"PAID_PREVIOUSLY"|"NEEDS_REVIEW"){
+    const note=window.prompt(status==="PAID_PREVIOUSLY"?"اكتب بيانًا يوضح أن مستحق الإنتاج تم دفعه قبل استخدام النظام:":"اكتب سبب إعادة الحالة للمراجعة:",status==="PAID_PREVIOUSLY"?"تم السداد قبل تشغيل النظام":"إعادة للمراجعة");
+    if(!note||note.trim().length<2)return;
+    const paymentDate=status==="PAID_PREVIOUSLY"?window.prompt("تاريخ السداد السابق (YYYY-MM-DD) — اتركه فارغًا لو غير معروف:",""):null;
+    setHistoricalSavingId(row.production_entry_id);setError("");setSuccess("");
+    try{
+      await api("/api/worker-payments/historical-production-settlements/"+encodeURIComponent(row.production_entry_id),{
+        method:"PATCH",body:JSON.stringify({status,notes:note.trim(),paymentDate:paymentDate?.trim()||null})
+      });
+      setSuccess(status==="PAID_PREVIOUSLY"?"تم إثبات السداد التاريخي. تم تحديث المتبقي من مستحقات الإنتاج فقط، دون إنشاء حركة مالية أو تعديل رصيد العامل.":"تمت إعادة السجل إلى المراجعة؛ لن يُخصم من مستحقات الإنتاج كتسوية تاريخية.");
+      await loadHistoricalProduction();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تحديث حالة التسوية التاريخية");}
+    finally{setHistoricalSavingId("");}
+  }
   useEffect(() => {
     if (!selectedId) { setDiagnostics(null); setDiagnosticsError(""); return; }
     let active = true;
@@ -224,6 +283,32 @@ export default function FinanceExceptionsPage() {
       <section className="content">
         {error && <div role="alert" className="alert error">{error}</div>}
         {success && <div role="status" className="success-box">{success}</div>}
+        {allowed && <section className="card">
+          <div className="card-header"><div><h2 className="card-title">تسوية مستحقات الإنتاج التاريخية</h2><p className="form-hint">إثبات إداري لسداد قديم فقط؛ لا ينشئ قبضًا أو مصروفًا ولا يغيّر دفتر العامل أو السلف أو العهدة.</p></div><button type="button" className="secondary-btn" onClick={()=>void loadHistoricalProduction()} disabled={historicalLoading}>{historicalLoading?"جارٍ الفحص…":"إعادة الفحص"}</button></div>
+          <div className="card-body">
+            <input value={historicalSearch} onChange={e=>setHistoricalSearch(e.target.value)} placeholder="ابحث بكود الإنتاج أو العامل أو الطلبية…" />
+            {historicalLoading&&<p className="form-hint">جارٍ فحص سجلات الإنتاج وحركات الدفع المرتبطة…</p>}
+            <h3 className="card-title" style={{marginTop:16}}>ملخص حساب كل عامل</h3>
+            <p className="form-hint">الإجمالي محسوب من سجلات الإنتاج المعتمدة. كل دفعة تُحسب مرة واحدة حتى لو ظهرت في أكثر من مصدر توزيع. الحالات غير المحسومة لا تُحسب مدفوعة ولا تُخصم من المتبقي إلا بعد مراجعتها.</p>
+            <div className="table-wrap"><table><thead><tr><th>العامل</th><th>إجمالي الإنتاج</th><th>إجمالي المدفوع</th><th>المتبقي</th><th>حالات غير محسومة</th></tr></thead><tbody>
+              {historicalEmployeeSummary.map(row=><tr key={row.employeeId}><td>{row.employeeName}<div className="form-hint">{row.employeeCode} · {row.productionCount} سجل إنتاج</div></td><td>{money(row.production)}</td><td>{money(row.actualPaid+row.historicalPaid)}</td><td>{money(row.remaining)}</td><td>{row.unresolvedCount? <span className="status warning">{row.unresolvedCount} سجل</span> : <span className="status success">لا يوجد</span>}</td></tr>)}
+              {!historicalEmployeeSummary.length&&<tr><td colSpan={5}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
+            </tbody></table></div>
+            <h3 className="card-title" style={{marginTop:20}}>تفاصيل سجلات الإنتاج</h3>
+            <div className="table-wrap"><table><thead><tr><th>سجل الإنتاج</th><th>العامل</th><th>الطلبية / المرحلة</th><th>إجمالي الإنتاج</th><th>إجمالي المدفوع</th><th>المتبقي</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>
+              {filteredHistoricalProduction.map(row=><tr key={row.production_entry_id}>
+                <td><strong>{row.production_code}</strong><div className="form-hint">{String(row.work_date).slice(0,10)}</div></td>
+                <td>{row.employee_name}<div className="form-hint">{row.employee_code}</div></td>
+                <td>{row.order_name||"بدون طلبية"}<div className="form-hint">{row.stage_name||"—"}</div></td>
+                <td>{money(Number(row.earned_amount))}</td><td>{money(Number(row.actual_paid_amount)+Number(row.historical_paid_amount))}</td><td>{money(Number(row.remaining_amount))}</td>
+                <td><span className={row.classification==="PAID_CONFIRMED"||row.classification==="PAID_HISTORICALLY"?"status success":"status warning"}>{row.classification==="PAID_CONFIRMED"||row.classification==="PAID_HISTORICALLY"?"مدفوع":row.classification==="NEEDS_REVIEW"?"غير محسوم — دفعة محتملة":"مستحق"}</span></td>
+                <td>{row.classification==="UNPAID"?<button type="button" className="primary-button" disabled={historicalSavingId===row.production_entry_id} onClick={()=>void updateHistoricalProduction(row,"PAID_PREVIOUSLY")}>{historicalSavingId===row.production_entry_id?"جارٍ الحفظ…":"تسجيل أنه مدفوع"}</button>:row.classification==="PAID_HISTORICALLY"?<button type="button" className="secondary-btn" disabled={historicalSavingId===row.production_entry_id} onClick={()=>void updateHistoricalProduction(row,"NEEDS_REVIEW")}>إلغاء الإثبات</button>:row.classification==="NEEDS_REVIEW"?"راجع الدفعة المحتملة":"—"}</td>
+              </tr>)}
+              {!historicalLoading&&!filteredHistoricalProduction.length&&<tr><td colSpan={8}>لا توجد سجلات مستحقة أو حالات غير محسومة.</td></tr>}
+            </tbody></table></div>
+            <p className="form-hint">السجلات التي لها دفعات فعلية غير موزعة بالكامل تُعلَّم «غير محسوم» ولا يسمح النظام بإثباتها كمدفوعة تاريخيًا حتى تتم مراجعة الدفعة.</p>
+          </div>
+        </section>}
         {canViewIntegrity && <section className="card">
           <div className="card-header">
             <div>
