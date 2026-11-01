@@ -956,6 +956,49 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(historicalUnpaidRestored.json().data.some((row:any)=>row.id===historicalMarkProduction.id),
         "undoing the administrative mark must restore production dues");
 
+      const conflictingEvidenceEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Conflicting Historical Evidence Worker') RETURNING id"
+      )).rows[0];
+      const conflictingProductionRows=[] as Array<{id:string}>;
+      for(let i=0;i<2;i++){
+        const row=(await apiPool.query(
+          `INSERT INTO production_entries(
+             employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+             wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+             status,submitted_by,approved_by,approved_at
+           ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE-10,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now()) RETURNING id`,
+          [conflictingEvidenceEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+           reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+        )).rows[0];
+        conflictingProductionRows.push(row);
+      }
+      const conflictingPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'conflicting allocation source test',$3,'conflicting-allocation-source-test') RETURNING id`,
+        [conflictingEvidenceEmployee.id,manager.id,randomUUID()]
+      )).rows[0];
+      const conflictingSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'conflicting allocation source test',$2,$3) RETURNING id`,
+        [conflictingEvidenceEmployee.id,manager.id,conflictingPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [conflictingSettlement.id,conflictingProductionRows[0].id]
+      );
+      await apiPool.query(
+        "INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [conflictingPayment.id,conflictingProductionRows[1].id]
+      );
+      const conflictingEvidenceList=await app.inject({
+        method:"GET",url:`/api/worker-payments/historical-production-settlements?employeeId=${conflictingEvidenceEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(conflictingEvidenceList.statusCode,200,conflictingEvidenceList.body);
+      assert.equal(conflictingEvidenceList.json().data.length,2);
+      assert.ok(conflictingEvidenceList.json().data.every((row:any)=>row.classification==="NEEDS_REVIEW"),
+        "different production targets in mirrored allocation sources must be treated as ambiguous, not silently deduplicated");
+
       const reconcileKey=randomUUID();
       const reconcilePayment=(await apiPool.query(
         `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
