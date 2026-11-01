@@ -261,8 +261,10 @@ actual AS (
         JOIN employees e ON e.id=p.employee_id
         LEFT JOIN actual a ON a.production_entry_id=p.id
         LEFT JOIN historical_production_settlement_marks m ON m.production_entry_id=p.id
-        LEFT JOIN employee_production_closure_entries cce ON cce.production_entry_id=p.id
-        LEFT JOIN employee_production_closures c ON c.id=cce.closure_id AND c.status='ACTIVE'
+        LEFT JOIN employee_production_closure_entries cce
+          ON cce.production_entry_id=p.id
+         AND cce.closure_id=(SELECT active_closure.id FROM employee_production_closures active_closure
+           WHERE active_closure.employee_id=p.employee_id AND active_closure.status='ACTIVE' LIMIT 1)
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
         LEFT JOIN production_orders o ON o.id=os.order_id
         LEFT JOIN stages s ON s.id=os.stage_id
