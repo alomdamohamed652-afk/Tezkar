@@ -188,7 +188,7 @@ actual AS (
           OR (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
            AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
            AND (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND la.production_entry_id=oa.production_entry_id AND la.amount IS NOT DISTINCT FROM oa.amount))
-             OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=la.production_entry_id AND oa.amount IS NOT DISTINCT FROM la.amount)))
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=la.production_entry_id AND oa.amount IS NOT DISTINCT FROM la.amount))))
         ) AS has_source_conflicts
       FROM worker_payments wp
     ),
