@@ -60,7 +60,15 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
             WHERE prior.employee_id=wp.employee_id
               AND (prior.created_at<wp.created_at OR (prior.created_at=wp.created_at AND prior.id<wp.id))),0)
         )) AS expected_production_amount,
-        COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca WHERE ca.worker_payment_id=wp.id),0) AS allocated_production_amount
+        COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca
+          JOIN production_entries valid_pe ON valid_pe.id=ca.production_entry_id
+          WHERE ca.worker_payment_id=wp.id AND ca.employee_id=valid_pe.employee_id
+            AND valid_pe.status='APPROVED'),0) AS allocated_production_amount,
+        EXISTS(SELECT 1 FROM canonical_allocations invalid_ca
+          LEFT JOIN production_entries invalid_pe ON invalid_pe.id=invalid_ca.production_entry_id
+          WHERE invalid_ca.worker_payment_id=wp.id
+            AND (invalid_pe.id IS NULL OR invalid_ca.employee_id IS DISTINCT FROM invalid_pe.employee_id
+              OR invalid_pe.status<>'APPROVED')) AS has_invalid_allocations
       FROM worker_payments wp
     )
     SELECT p.id,p.employee_id,p.code,p.status,p.work_date,
@@ -72,7 +80,7 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
              SELECT 1 FROM payment_coverage pc
               WHERE pc.employee_id=p.employee_id
                 AND pc.created_at::date>=p.work_date
-                AND pc.expected_production_amount>pc.allocated_production_amount+0.009
+                AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
            ) AS ambiguous_payment_evidence
       FROM production_entries p
       CROSS JOIN actual
@@ -127,7 +135,15 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
             WHERE prior.employee_id=wp.employee_id
               AND (prior.created_at<wp.created_at OR (prior.created_at=wp.created_at AND prior.id<wp.id))),0)
         )) AS expected_production_amount,
-        COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca WHERE ca.worker_payment_id=wp.id),0) AS allocated_production_amount
+        COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca
+          JOIN production_entries valid_pe ON valid_pe.id=ca.production_entry_id
+          WHERE ca.worker_payment_id=wp.id AND ca.employee_id=valid_pe.employee_id
+            AND valid_pe.status='APPROVED'),0) AS allocated_production_amount,
+        EXISTS(SELECT 1 FROM canonical_allocations invalid_ca
+          LEFT JOIN production_entries invalid_pe ON invalid_pe.id=invalid_ca.production_entry_id
+          WHERE invalid_ca.worker_payment_id=wp.id
+            AND (invalid_pe.id IS NULL OR invalid_ca.employee_id IS DISTINCT FROM invalid_pe.employee_id
+              OR invalid_pe.status<>'APPROVED')) AS has_invalid_allocations
       FROM worker_payments wp
     )
       SELECT p.id AS production_entry_id,p.code AS production_code,p.employee_id,
@@ -143,17 +159,16 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
              EXISTS (
                SELECT 1 FROM payment_coverage pc
                 WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
-                  AND pc.expected_production_amount>pc.allocated_production_amount+0.009
+                  AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
              ) AS ambiguous_payment_evidence,
              CASE
                WHEN COALESCE(a.amount,0)>=COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID_CONFIRMED'
                WHEN COALESCE(a.amount,0)>0.009 THEN 'NEEDS_REVIEW'
                WHEN m.status='PAID_PREVIOUSLY' THEN 'PAID_HISTORICALLY'
                WHEN EXISTS (
-                 SELECT 1 FROM worker_payments wp
-                  WHERE wp.employee_id=p.employee_id AND wp.created_at::date>=p.work_date
-                    AND wp.gross_amount > COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca
-                      WHERE ca.worker_payment_id=wp.id),0)+0.009
+                 SELECT 1 FROM payment_coverage pc
+                  WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
+                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
                ) THEN 'NEEDS_REVIEW'
                ELSE 'UNPAID'
              END AS classification
