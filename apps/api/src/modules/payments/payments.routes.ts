@@ -955,8 +955,9 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(row.source==="ORDER"){summary.orderAmount+=amount;summary.orderCount++;}
       if(row.source==="SETTLEMENT"){summary.settlementAmount+=amount;summary.settlementCount++;}
       if(row.validation!=="OK")summary.invalidCount++;
-      if(row.production_entry_id&&seen.has(row.production_entry_id))duplicates.add(row.production_entry_id);
-      if(row.production_entry_id)seen.add(row.production_entry_id);
+      const allocationKey=row.production_entry_id?`${row.source}:${row.production_entry_id}`:null;
+      if(allocationKey&&seen.has(allocationKey))duplicates.add(row.production_entry_id);
+      if(allocationKey)seen.add(allocationKey);
     }
     summary.overAllocated=[summary.legacyAmount,summary.orderAmount,summary.settlementAmount]
       .some(value=>value>summary.paymentAmount+0.009);
