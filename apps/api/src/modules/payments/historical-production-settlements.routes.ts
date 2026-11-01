@@ -41,13 +41,28 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
            SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id
          )
     ),
-    actual AS (
+        unlinked_allocation_conflicts AS (
+      SELECT DISTINCT es.employee_id,sa.production_entry_id
+        FROM employee_earnings_settlements es
+        JOIN employee_earnings_settlement_allocations sa ON sa.settlement_id=es.id
+        JOIN production_entries p ON p.id=sa.production_entry_id AND p.employee_id=es.employee_id
+       WHERE es.worker_payment_id IS NULL
+         AND (
+           EXISTS(SELECT 1 FROM worker_payment_order_allocations oa JOIN worker_payments wp ON wp.id=oa.worker_payment_id
+             WHERE wp.employee_id=es.employee_id AND oa.production_entry_id=sa.production_entry_id AND ABS(oa.amount-sa.amount)<=0.009)
+           OR EXISTS(SELECT 1 FROM worker_payment_allocations la JOIN worker_payments wp ON wp.id=la.worker_payment_id
+             WHERE wp.employee_id=es.employee_id AND la.production_entry_id=sa.production_entry_id AND ABS(la.amount-sa.amount)<=0.009)
+         )
+    ),
+actual AS (
       SELECT COALESCE(SUM(ca.amount),0) AS amount
         FROM canonical_allocations ca
         JOIN production_entries p ON p.id=ca.production_entry_id
        WHERE ca.production_entry_id=$1
          AND ca.employee_id=p.employee_id
          AND p.status='APPROVED'
+         AND NOT EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
+           WHERE uac.employee_id=ca.employee_id AND uac.production_entry_id=ca.production_entry_id)
     ),
     source_conflicts AS (
       SELECT wp.id,
@@ -99,7 +114,8 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
              SELECT 1 FROM payment_coverage pc
               WHERE pc.employee_id=p.employee_id
                 AND pc.created_at::date>=p.work_date
-                AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
+                AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts
+                  OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
            ) AS ambiguous_payment_evidence
       FROM production_entries p
       CROSS JOIN actual
@@ -136,11 +152,26 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
            WHERE es.worker_payment_id=wp.id)
            AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
       ),
-      actual AS (
+          unlinked_allocation_conflicts AS (
+      SELECT DISTINCT es.employee_id,sa.production_entry_id
+        FROM employee_earnings_settlements es
+        JOIN employee_earnings_settlement_allocations sa ON sa.settlement_id=es.id
+        JOIN production_entries p ON p.id=sa.production_entry_id AND p.employee_id=es.employee_id
+       WHERE es.worker_payment_id IS NULL
+         AND (
+           EXISTS(SELECT 1 FROM worker_payment_order_allocations oa JOIN worker_payments wp ON wp.id=oa.worker_payment_id
+             WHERE wp.employee_id=es.employee_id AND oa.production_entry_id=sa.production_entry_id AND ABS(oa.amount-sa.amount)<=0.009)
+           OR EXISTS(SELECT 1 FROM worker_payment_allocations la JOIN worker_payments wp ON wp.id=la.worker_payment_id
+             WHERE wp.employee_id=es.employee_id AND la.production_entry_id=sa.production_entry_id AND ABS(la.amount-sa.amount)<=0.009)
+         )
+    ),
+actual AS (
         SELECT ca.production_entry_id, SUM(ca.amount) AS amount
           FROM canonical_allocations ca
           JOIN production_entries p ON p.id=ca.production_entry_id
          WHERE ca.employee_id=p.employee_id AND p.status='APPROVED'
+           AND NOT EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
+             WHERE uac.employee_id=ca.employee_id AND uac.production_entry_id=ca.production_entry_id)
          GROUP BY ca.production_entry_id
       ),
     source_conflicts AS (
@@ -200,7 +231,8 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
              EXISTS (
                SELECT 1 FROM payment_coverage pc
                 WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
-                  AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
+                  AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts
+                  OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
              ) AS ambiguous_payment_evidence,
              CASE
                WHEN COALESCE(a.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
@@ -208,7 +240,8 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
                WHEN EXISTS (
                  SELECT 1 FROM payment_coverage pc
                   WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
-                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
+                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts
+                  OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
                ) THEN 'NEEDS_REVIEW'
                WHEN COALESCE(a.amount,0)>=COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID_CONFIRMED'
                WHEN COALESCE(a.amount,0)>0.009 THEN 'NEEDS_REVIEW'
@@ -216,7 +249,8 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
                WHEN EXISTS (
                  SELECT 1 FROM payment_coverage pc
                   WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
-                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
+                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts
+                  OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
                ) THEN 'NEEDS_REVIEW'
                ELSE 'UNPAID'
              END AS classification
