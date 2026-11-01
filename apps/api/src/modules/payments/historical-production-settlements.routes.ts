@@ -49,6 +49,24 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
          AND ca.employee_id=p.employee_id
          AND p.status='APPROVED'
     ),
+    source_conflicts AS (
+      SELECT wp.id,
+        (
+          (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id)
+           AND EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+           AND (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=sa.production_entry_id AND oa.amount IS NOT DISTINCT FROM sa.amount))
+             OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND sa.production_entry_id=oa.production_entry_id AND sa.amount IS NOT DISTINCT FROM oa.amount)))
+          OR (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id)
+           AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
+           AND (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND la.production_entry_id=sa.production_entry_id AND la.amount IS NOT DISTINCT FROM sa.amount))
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND sa.production_entry_id=la.production_entry_id AND sa.amount IS NOT DISTINCT FROM la.amount)))
+          OR (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+           AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
+           AND (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND la.production_entry_id=oa.production_entry_id AND la.amount IS NOT DISTINCT FROM oa.amount))
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=la.production_entry_id AND oa.amount IS NOT DISTINCT FROM la.amount)))
+        ) AS has_source_conflicts
+      FROM worker_payments wp
+    ),
     payment_coverage AS (
       SELECT wp.id,wp.employee_id,wp.created_at,
         LEAST(wp.gross_amount,GREATEST(0,
@@ -68,7 +86,8 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
           LEFT JOIN production_entries invalid_pe ON invalid_pe.id=invalid_ca.production_entry_id
           WHERE invalid_ca.worker_payment_id=wp.id
             AND (invalid_pe.id IS NULL OR invalid_ca.employee_id IS DISTINCT FROM invalid_pe.employee_id
-              OR invalid_pe.status<>'APPROVED')) AS has_invalid_allocations
+              OR invalid_pe.status<>'APPROVED')) AS has_invalid_allocations,
+        COALESCE((SELECT sc.has_source_conflicts FROM source_conflicts sc WHERE sc.id=wp.id),false) AS has_source_conflicts
       FROM worker_payments wp
     )
     SELECT p.id,p.employee_id,p.code,p.status,p.work_date,
@@ -80,7 +99,7 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
              SELECT 1 FROM payment_coverage pc
               WHERE pc.employee_id=p.employee_id
                 AND pc.created_at::date>=p.work_date
-                AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
+                AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
            ) AS ambiguous_payment_evidence
       FROM production_entries p
       CROSS JOIN actual
@@ -124,6 +143,24 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
          WHERE ca.employee_id=p.employee_id AND p.status='APPROVED'
          GROUP BY ca.production_entry_id
       ),
+    source_conflicts AS (
+      SELECT wp.id,
+        (
+          (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id)
+           AND EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+           AND (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=sa.production_entry_id AND oa.amount IS NOT DISTINCT FROM sa.amount))
+             OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND sa.production_entry_id=oa.production_entry_id AND sa.amount IS NOT DISTINCT FROM oa.amount)))
+          OR (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id)
+           AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
+           AND (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND la.production_entry_id=sa.production_entry_id AND la.amount IS NOT DISTINCT FROM sa.amount))
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa JOIN employee_earnings_settlements es ON es.id=sa.settlement_id WHERE es.worker_payment_id=wp.id AND sa.production_entry_id=la.production_entry_id AND sa.amount IS NOT DISTINCT FROM la.amount)))
+          OR (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+           AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
+           AND (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND la.production_entry_id=oa.production_entry_id AND la.amount IS NOT DISTINCT FROM oa.amount))
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=la.production_entry_id AND oa.amount IS NOT DISTINCT FROM la.amount)))
+        ) AS has_source_conflicts
+      FROM worker_payments wp
+    ),
     payment_coverage AS (
       SELECT wp.id,wp.employee_id,wp.created_at,
         LEAST(wp.gross_amount,GREATEST(0,
@@ -143,7 +180,8 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
           LEFT JOIN production_entries invalid_pe ON invalid_pe.id=invalid_ca.production_entry_id
           WHERE invalid_ca.worker_payment_id=wp.id
             AND (invalid_pe.id IS NULL OR invalid_ca.employee_id IS DISTINCT FROM invalid_pe.employee_id
-              OR invalid_pe.status<>'APPROVED')) AS has_invalid_allocations
+              OR invalid_pe.status<>'APPROVED')) AS has_invalid_allocations,
+        COALESCE((SELECT sc.has_source_conflicts FROM source_conflicts sc WHERE sc.id=wp.id),false) AS has_source_conflicts
       FROM worker_payments wp
     )
       SELECT p.id AS production_entry_id,p.code AS production_code,p.employee_id,
@@ -162,7 +200,7 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
              EXISTS (
                SELECT 1 FROM payment_coverage pc
                 WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
-                  AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
+                  AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
              ) AS ambiguous_payment_evidence,
              CASE
                WHEN COALESCE(a.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
@@ -173,7 +211,7 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
                WHEN EXISTS (
                  SELECT 1 FROM payment_coverage pc
                   WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
-                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations)
+                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
                ) THEN 'NEEDS_REVIEW'
                ELSE 'UNPAID'
              END AS classification
