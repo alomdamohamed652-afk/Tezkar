@@ -205,6 +205,11 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
              CASE
                WHEN COALESCE(a.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
                     >COALESCE(p.total_earning_amount,p.earning_amount,0)+0.009 THEN 'NEEDS_REVIEW'
+               WHEN EXISTS (
+                 SELECT 1 FROM payment_coverage pc
+                  WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
+                    AND (pc.expected_production_amount>pc.allocated_production_amount+0.009 OR pc.has_invalid_allocations OR pc.has_source_conflicts)
+               ) THEN 'NEEDS_REVIEW'
                WHEN COALESCE(a.amount,0)>=COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID_CONFIRMED'
                WHEN COALESCE(a.amount,0)>0.009 THEN 'NEEDS_REVIEW'
                WHEN m.status='PAID_PREVIOUSLY' THEN 'PAID_HISTORICALLY'
