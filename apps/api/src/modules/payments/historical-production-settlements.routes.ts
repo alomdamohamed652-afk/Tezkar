@@ -220,10 +220,12 @@ actual AS (
              o.code AS order_code,o.order_name,s.name AS stage_name,
              COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned_amount,
              COALESCE(a.amount,0) AS actual_paid_amount,
-             CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END AS historical_paid_amount,
-             GREATEST(0,COALESCE(p.total_earning_amount,p.earning_amount,0)
-               -COALESCE(a.amount,0)
-               -CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) AS remaining_amount,
+             CASE WHEN cce.id IS NOT NULL THEN cce.closed_amount_snapshot
+                  WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END AS historical_paid_amount,
+             CASE WHEN cce.id IS NOT NULL THEN 0
+               ELSE GREATEST(0,COALESCE(p.total_earning_amount,p.earning_amount,0)
+                 -COALESCE(a.amount,0)
+                 -CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) END AS remaining_amount,
              GREATEST(0,COALESCE(a.amount,0)
                +CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
                -COALESCE(p.total_earning_amount,p.earning_amount,0)) AS overpaid_amount,
@@ -235,6 +237,7 @@ actual AS (
                   OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
              ) AS ambiguous_payment_evidence,
              CASE
+               WHEN cce.id IS NOT NULL THEN 'PAID_HISTORICALLY'
                WHEN COALESCE(a.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
                     >COALESCE(p.total_earning_amount,p.earning_amount,0)+0.009 THEN 'NEEDS_REVIEW'
                WHEN EXISTS (
@@ -258,6 +261,8 @@ actual AS (
         JOIN employees e ON e.id=p.employee_id
         LEFT JOIN actual a ON a.production_entry_id=p.id
         LEFT JOIN historical_production_settlement_marks m ON m.production_entry_id=p.id
+        LEFT JOIN employee_production_closure_entries cce ON cce.production_entry_id=p.id
+        LEFT JOIN employee_production_closures c ON c.id=cce.closure_id AND c.status='ACTIVE'
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
         LEFT JOIN production_orders o ON o.id=os.order_id
         LEFT JOIN stages s ON s.id=os.stage_id
