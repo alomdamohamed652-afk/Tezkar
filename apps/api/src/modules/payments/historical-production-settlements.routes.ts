@@ -199,7 +199,9 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
           throw new AppError("HISTORICAL_PAYMENT_NEEDS_REVIEW","توجد دفعة فعلية للعامل غير موزعة بالكامل وقد تكون مرتبطة بهذا السجل. راجع الدفعات القديمة أولًا؛ لم يتم تسجيل التسوية.",409);
       }
       const earned=Number(production.rows[0].earned);
-      const amountSnapshot=parsed.data.status==="PAID_PREVIOUSLY"?Math.max(0,Math.round((earned-Number(evidence.actual_paid))*10000)/10000):0;
+      const amountSnapshot=parsed.data.status==="PAID_PREVIOUSLY"
+        ? Math.max(0,Math.round((earned-Number(evidence.actual_paid))*10000)/10000)
+        : Number(before.rows[0]?.amount_snapshot ?? earned);
       if(parsed.data.status==="PAID_PREVIOUSLY"&&amountSnapshot<=0.0001)
         throw new AppError("NO_REMAINING_PRODUCTION_DUE","لا يوجد متبقٍ على سجل الإنتاج لتسويته",409);
       const saved=await client.query(`

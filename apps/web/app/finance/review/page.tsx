@@ -125,6 +125,20 @@ export default function FinanceExceptionsPage() {
     finally{setHistoricalLoading(false);}
   },[]);
   useEffect(() => { if (allowed) { void load(); void loadHistoricalProduction(); } else setLoading(false); }, [allowed, load, loadHistoricalProduction]);
+  const historicalEmployeeSummary=useMemo(()=>{
+    const grouped=new Map<string,{employeeId:string;employeeCode:string;employeeName:string;production:number;actualPaid:number;historicalPaid:number;remaining:number;unresolvedCount:number;productionCount:number}>();
+    for(const row of historicalProduction){
+      const current=grouped.get(row.employee_id)??{employeeId:row.employee_id,employeeCode:row.employee_code,employeeName:row.employee_name,production:0,actualPaid:0,historicalPaid:0,remaining:0,unresolvedCount:0,productionCount:0};
+      current.production+=Number(row.earned_amount||0);
+      current.actualPaid+=Number(row.actual_paid_amount||0);
+      current.historicalPaid+=Number(row.historical_paid_amount||0);
+      current.remaining+=Number(row.remaining_amount||0);
+      current.productionCount+=1;
+      if(row.classification==="NEEDS_REVIEW")current.unresolvedCount+=1;
+      grouped.set(row.employee_id,current);
+    }
+    return [...grouped.values()].sort((a,b)=>a.employeeName.localeCompare(b.employeeName,"ar-EG"));
+  },[historicalProduction]);
   const filteredHistoricalProduction=useMemo(()=>{
     const q=historicalSearch.trim().toLocaleLowerCase("ar-EG");
     const rows=historicalProduction.filter(x=>Number(x.remaining_amount)>0.009||x.classification==="NEEDS_REVIEW");
@@ -268,6 +282,13 @@ export default function FinanceExceptionsPage() {
           <div className="card-body">
             <input value={historicalSearch} onChange={e=>setHistoricalSearch(e.target.value)} placeholder="ابحث بكود الإنتاج أو العامل أو الطلبية…" />
             {historicalLoading&&<p className="form-hint">جارٍ فحص سجلات الإنتاج وحركات الدفع المرتبطة…</p>}
+            <h3 className="card-title" style={{marginTop:16}}>ملخص حساب كل عامل</h3>
+            <p className="form-hint">الإجمالي محسوب من سجلات الإنتاج المعتمدة. كل دفعة تُحسب مرة واحدة حتى لو ظهرت في أكثر من مصدر توزيع. الحالات غير المحسومة تظل منفصلة ولا نعتبرها مدفوعة أو مستحقة بشكل نهائي.</p>
+            <div className="table-wrap"><table><thead><tr><th>العامل</th><th>إجمالي الإنتاج</th><th>مدفوع مثبت</th><th>مدفوع تاريخيًا</th><th>المتبقي الظاهر</th><th>حالات غير محسومة</th></tr></thead><tbody>
+              {historicalEmployeeSummary.map(row=><tr key={row.employeeId}><td>{row.employeeName}<div className="form-hint">{row.employeeCode} · {row.productionCount} سجل إنتاج</div></td><td>{money(row.production)}</td><td>{money(row.actualPaid)}</td><td>{money(row.historicalPaid)}</td><td>{money(row.remaining)}</td><td>{row.unresolvedCount? <span className="status warning">{row.unresolvedCount} سجل</span> : <span className="status success">لا يوجد</span>}</td></tr>)}
+              {!historicalEmployeeSummary.length&&<tr><td colSpan={6}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
+            </tbody></table></div>
+            <h3 className="card-title" style={{marginTop:20}}>تفاصيل سجلات الإنتاج</h3>
             <div className="table-wrap"><table><thead><tr><th>سجل الإنتاج</th><th>العامل</th><th>الطلبية / المرحلة</th><th>المستحق</th><th>مدفوع فعليًا</th><th>مدفوع تاريخيًا</th><th>المتبقي</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>
               {filteredHistoricalProduction.map(row=><tr key={row.production_entry_id}>
                 <td><strong>{row.production_code}</strong><div className="form-hint">{String(row.work_date).slice(0,10)}</div></td>
