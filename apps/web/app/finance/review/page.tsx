@@ -37,6 +37,7 @@ type HistoricalProduction = {
   mark_id:string|null;mark_status:"PAID_PREVIOUSLY"|"NEEDS_REVIEW"|null;mark_notes:string|null;payment_date:string|null;
   ambiguous_payment_evidence:boolean;classification:"PAID_CONFIRMED"|"PAID_HISTORICALLY"|"NEEDS_REVIEW"|"UNPAID";
 };
+type ProductionClosure = {id:string;employee_id:string;employee_code:string;employee_name:string;closed_at:string;notes:string;approved_production_count:number;production_amount_snapshot:number|string;status:"ACTIVE"|"REVERSED";reversed_at:string|null;reversal_reason:string|null};
 type FinancialIntegrity = {
   checkedAt: string;
   counts: {
@@ -88,6 +89,8 @@ export default function FinanceExceptionsPage() {
   const [historicalLoading,setHistoricalLoading]=useState(false);
   const [historicalSavingId,setHistoricalSavingId]=useState("");
   const [historicalSearch,setHistoricalSearch]=useState("");
+  const [productionClosures,setProductionClosures]=useState<ProductionClosure[]>([]);
+  const [closureSavingId,setClosureSavingId]=useState("");
 
   const selected = useMemo(() => payments.find(p => p.payment_id === selectedId) ?? null, [payments, selectedId]);
   const filtered = useMemo(() => {
@@ -116,6 +119,35 @@ export default function FinanceExceptionsPage() {
     }
   }, []);
 
+  const loadProductionClosures=useCallback(async()=>{
+    try{const result=await api<{data:ProductionClosure[]}>("/api/worker-payments/employee-production-closures");setProductionClosures(result.data);}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تحميل إقفالات مستحقات الإنتاج");}
+  },[]);
+  const closeEmployeeProduction=async(employeeId:string,employeeName:string)=>{
+    const notes=window.prompt("اكتب سبب إقفال مستحقات الإنتاج للعامل "+employeeName+":","إقفال المستحقات القائمة حتى تاريخ التنفيذ");
+    if(!notes||notes.trim().length<3)return;
+    if(!window.confirm("سيتم إقفال سجلات الإنتاج المعتمدة الحالية فقط. لن تتغير الكميات أو الأسعار أو القيود المالية، وسيظل الإنتاج الجديد مستحقًا. هل تؤكد؟"))return;
+    setClosureSavingId(employeeId);setError("");setSuccess("");
+    try{
+      const result=await api<{data:ProductionClosure}>("/api/worker-payments/employee-production-closures",{method:"POST",body:JSON.stringify({employeeId,notes:notes.trim()})});
+      setSuccess("تم إقفال مستحقات الإنتاج الحالية للعامل "+employeeName+" دون إنشاء حركة مالية أو تعديل الإنتاج.");
+      setProductionClosures(current=>[result.data,...current.filter(x=>x.id!==result.data.id)]);
+      await loadHistoricalProduction();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر إقفال مستحقات الإنتاج");}
+    finally{setClosureSavingId("");}
+  };
+  const reverseEmployeeClosure=async(closure:ProductionClosure)=>{
+    const reason=window.prompt("اكتب سبب إلغاء الإقفال:");
+    if(!reason||reason.trim().length<3)return;
+    if(!window.confirm("سيتم إعادة المستحقات المشمولة إلى حالة الاستحقاق. هل تؤكد؟"))return;
+    setClosureSavingId(closure.employee_id);setError("");setSuccess("");
+    try{
+      await api("/api/worker-payments/employee-production-closures/"+encodeURIComponent(closure.id)+"/reverse",{method:"PATCH",body:JSON.stringify({reason:reason.trim()})});
+      setSuccess("تم إلغاء الإقفال وإعادة المستحقات المشمولة.");
+      await Promise.all([loadProductionClosures(),loadHistoricalProduction()]);
+    }catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء الإقفال");}
+    finally{setClosureSavingId("");}
+  };
   const loadHistoricalProduction=useCallback(async()=>{
     setHistoricalLoading(true);
     try{
@@ -124,7 +156,7 @@ export default function FinanceExceptionsPage() {
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تسويات مستحقات الإنتاج التاريخية");}
     finally{setHistoricalLoading(false);}
   },[]);
-  useEffect(() => { if (allowed) { void load(); void loadHistoricalProduction(); } else setLoading(false); }, [allowed, load, loadHistoricalProduction]);
+  useEffect(() => { if (allowed) { void load(); void loadHistoricalProduction(); void loadProductionClosures(); } else setLoading(false); }, [allowed, load, loadHistoricalProduction, loadProductionClosures]);
   const historicalEmployeeSummary=useMemo(()=>{
     const grouped=new Map<string,{employeeId:string;employeeCode:string;employeeName:string;production:number;actualPaid:number;historicalPaid:number;unresolvedPaidAmount:number;remaining:number;unresolvedAmount:number;overpaidAmount:number;unresolvedCount:number;productionCount:number}>();
     for(const row of historicalProduction){
@@ -292,6 +324,16 @@ export default function FinanceExceptionsPage() {
             <p className="form-hint">الإجمالي محسوب من سجلات الإنتاج المعتمدة. كل دفعة تُحسب مرة واحدة حتى لو ظهرت في أكثر من مصدر توزيع. الحالات غير المحسومة لا تُحسب مدفوعة ولا تُخصم من المتبقي إلا بعد مراجعتها.</p>
             <div className="table-wrap"><table><thead><tr><th>العامل</th><th>إجمالي الإنتاج</th><th>إجمالي المدفوع</th><th>المتبقي</th><th>حالات غير محسومة</th></tr></thead><tbody>
               {historicalEmployeeSummary.map(row=><tr key={row.employeeId}><td>{row.employeeName}<div className="form-hint">{row.employeeCode} · {row.productionCount} سجل إنتاج</div></td><td>{money(row.production)}</td><td>{money(row.actualPaid+row.historicalPaid)}</td><td>{money(row.remaining)}</td><td>{row.unresolvedCount? <span className="status warning">{row.unresolvedCount} سجل</span> : <span className="status success">لا يوجد</span>}</td></tr>)}
+              {!historicalEmployeeSummary.length&&<tr><td colSpan={5}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
+            </tbody></table></div>
+            <h3 className="card-title" style={{marginTop:20}}>إقفال مستحقات الإنتاج حسب العامل</h3>
+            <p className="form-hint">الإقفال يخص السجلات المعتمدة الموجودة وقت التنفيذ فقط. لا يغيّر الإنتاج أو الأسعار أو القيود المالية، وأي إنتاج جديد بعده يظل مستحقًا.</p>
+            <div className="table-wrap"><table><thead><tr><th>العامل</th><th>عدد السجلات</th><th>قيمة الإنتاج</th><th>حالة الإقفال</th><th>الإجراء</th></tr></thead><tbody>
+              {historicalEmployeeSummary.map(row=>{const closure=productionClosures.find(x=>x.employee_id===row.employeeId&&x.status==="ACTIVE");return <tr key={row.employeeId}>
+                <td>{row.employeeName}<div className="form-hint">{row.employeeCode}</div></td><td>{row.productionCount}</td><td>{money(row.production)}</td>
+                <td>{closure?<span className="status success">مقفل · {new Date(closure.closed_at).toLocaleDateString("ar-EG")}</span>:<span className="status warning">غير مقفل</span>}</td>
+                <td>{closure?<button type="button" className="secondary-btn" disabled={closureSavingId===row.employeeId} onClick={()=>void reverseEmployeeClosure(closure)}>إلغاء الإقفال</button>:<button type="button" className="primary-button" disabled={closureSavingId===row.employeeId||historicalLoading} onClick={()=>void closeEmployeeProduction(row.employeeId,row.employeeName)}>{closureSavingId===row.employeeId?"جارٍ الإقفال…":"إقفال المستحقات الحالية"}</button>}</td>
+              </tr>;})}
               {!historicalEmployeeSummary.length&&<tr><td colSpan={5}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
             </tbody></table></div>
             <h3 className="card-title" style={{marginTop:20}}>تفاصيل سجلات الإنتاج</h3>

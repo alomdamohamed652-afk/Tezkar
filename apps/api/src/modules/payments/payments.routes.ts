@@ -60,6 +60,29 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
 }
 
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
+  // An explicit employee closure freezes only production approved at closure time.
+  // Earnings approved afterwards remain payable and are calculated independently.
+  const closure=await client.query(
+    "SELECT closed_at FROM employee_production_closures WHERE employee_id=$1 AND status='ACTIVE' ORDER BY closed_at DESC LIMIT 1",
+    [employeeId]
+  );
+  if(closure.rowCount){
+    const cutoff=closure.rows[0].closed_at;
+    const future=await client.query(`
+      SELECT
+        COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
+        COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
+        COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+          LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+          WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at>$2),0) AS legacy_paid,
+        COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
+          FROM employee_earnings_adjustments a WHERE a.employee_id=$1 AND a.created_at>$2 AND a.production_entry_id IS NULL),0) AS adjustments
+      FROM production_entries pe
+      WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.created_at>$2
+    `,[employeeId,cutoff]);
+    return Math.round((Number(future.rows[0].earned)+Number(future.rows[0].adjustments)
+      -Number(future.rows[0].settled)-Number(future.rows[0].legacy_paid))*100)/100;
+  }
   // Gross approved earnings less unified settlements and legacy payments that predate settlement links.
   const totals=await client.query(`
     SELECT COUNT(*) FILTER(WHERE pe.status='APPROVED')::int AS approved_count,

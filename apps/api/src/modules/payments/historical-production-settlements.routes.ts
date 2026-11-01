@@ -267,6 +267,123 @@ actual AS (
     return {data:result.rows};
   });
 
+  app.get("/api/worker-payments/employee-production-closures", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async () => {
+    const result=await pool.query(`
+      SELECT c.id,c.employee_id,e.code AS employee_code,e.full_name AS employee_name,
+             c.closed_at,c.notes,c.approved_production_count,c.production_amount_snapshot,c.status,
+             c.reversed_at,c.reversal_reason
+        FROM employee_production_closures c
+        JOIN employees e ON e.id=c.employee_id
+       ORDER BY c.closed_at DESC
+    `);
+    return {data:result.rows};
+  });
+
+  app.post("/api/worker-payments/employee-production-closures", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed=z.object({employeeId:z.string().uuid(),notes:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","حدد العامل واكتب سبب الإقفال بوضوح",422);
+    return {data:await withTransaction(async(client)=>{
+      const locked=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.employeeId]);
+      if(!locked.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
+      const active=await client.query("SELECT id FROM employee_production_closures WHERE employee_id=$1 AND status='ACTIVE' FOR UPDATE",[parsed.data.employeeId]);
+      if(active.rowCount) throw new AppError("EMPLOYEE_PRODUCTION_ALREADY_CLOSED","يوجد إقفال نشط لهذا العامل بالفعل",409);
+      const snapshot=await client.query(`
+        WITH approved AS (
+          SELECT p.id,p.employee_id,COALESCE(p.total_earning_amount,p.earning_amount,0)::numeric AS earned
+            FROM production_entries p
+           WHERE p.employee_id=$1 AND p.status='APPROVED'
+           FOR UPDATE
+        ), allocations AS (
+          SELECT a.production_entry_id,SUM(a.amount)::numeric AS paid
+            FROM employee_earnings_settlement_allocations a
+            JOIN employee_earnings_settlements s ON s.id=a.settlement_id
+            JOIN approved p ON p.id=a.production_entry_id
+           GROUP BY a.production_entry_id
+          UNION ALL
+          SELECT a.production_entry_id,SUM(a.amount)::numeric
+            FROM worker_payment_order_allocations a
+            JOIN worker_payments wp ON wp.id=a.worker_payment_id
+            JOIN approved p ON p.id=a.production_entry_id
+           WHERE NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+           GROUP BY a.production_entry_id
+          UNION ALL
+          SELECT a.production_entry_id,SUM(a.amount)::numeric
+            FROM worker_payment_allocations a
+            JOIN worker_payments wp ON wp.id=a.worker_payment_id
+            JOIN approved p ON p.id=a.production_entry_id
+           WHERE NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+           GROUP BY a.production_entry_id
+        ), paid AS (
+          SELECT production_entry_id,SUM(paid) AS amount FROM allocations GROUP BY production_entry_id
+        )
+        SELECT p.id,p.earned,
+               COALESCE(pa.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END AS paid,
+               GREATEST(0,p.earned-COALESCE(pa.amount,0)-CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) AS remaining
+          FROM approved p
+          LEFT JOIN paid pa ON pa.production_entry_id=p.id
+          LEFT JOIN historical_production_settlement_marks m ON m.production_entry_id=p.id
+      `,[parsed.data.employeeId]);
+      if(!snapshot.rowCount) throw new AppError("NO_APPROVED_PRODUCTION","لا توجد سجلات إنتاج معتمدة لإقفالها",409);
+      const total=snapshot.rows.reduce((sum,row)=>sum+Number(row.remaining),0);
+      const created=await client.query(`
+        INSERT INTO employee_production_closures
+          (employee_id,notes,approved_production_count,production_amount_snapshot,closed_by)
+        VALUES($1,$2,$3,$4,$5) RETURNING *
+      `,[parsed.data.employeeId,parsed.data.notes,snapshot.rowCount,total,request.user!.userId]);
+      const closure=created.rows[0];
+      for(const row of snapshot.rows){
+        await client.query(`
+          INSERT INTO employee_production_closure_entries
+            (closure_id,production_entry_id,earned_amount_snapshot,previously_paid_snapshot,closed_amount_snapshot)
+          VALUES($1,$2,$3,$4,$5)
+        `,[closure.id,row.id,row.earned,row.paid,row.remaining]);
+      }
+      await writeAudit(client,{
+        actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+        action:"employee_production_forced_closure",module:"payments",
+        entityType:"employee_production_closure",entityId:closure.id,
+        afterData:closure,
+        metadata:{employeeId:parsed.data.employeeId,productionCount:snapshot.rowCount,
+          productionAmountSnapshot:total,productionEntryIds:snapshot.rows.map(row=>row.id),
+          financialMovementCreated:false,ledgerChanged:false,productionChanged:false,pricesChanged:false},
+        ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
+      });
+      return closure;
+    })};
+  });
+
+  app.patch("/api/worker-payments/employee-production-closures/:closureId/reverse", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const params=z.object({closureId:z.string().uuid()}).safeParse(request.params);
+    const body=z.object({reason:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!params.success||!body.success) throw new AppError("VALIDATION_ERROR","بيانات إلغاء الإقفال غير صحيحة",422);
+    return {data:await withTransaction(async(client)=>{
+      const current=await client.query("SELECT * FROM employee_production_closures WHERE id=$1 FOR UPDATE",[params.data.closureId]);
+      if(!current.rowCount||current.rows[0].status!=="ACTIVE") throw new AppError("ACTIVE_CLOSURE_NOT_FOUND","الإقفال غير موجود أو تم إلغاؤه بالفعل",409);
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[current.rows[0].employee_id]);
+      const updated=await client.query(`
+        UPDATE employee_production_closures
+           SET status='REVERSED',reversed_at=now(),reversed_by=$2,reversal_reason=$3,updated_at=now()
+         WHERE id=$1 RETURNING *
+      `,[params.data.closureId,request.user!.userId,body.data.reason]);
+      await writeAudit(client,{
+        actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+        action:"employee_production_closure_reversed",module:"payments",
+        entityType:"employee_production_closure",entityId:params.data.closureId,
+        beforeData:current.rows[0],afterData:updated.rows[0],
+        metadata:{productionChanged:false,financialMovementCreated:false},
+        ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
+      });
+      return updated.rows[0];
+    })};
+  });
+
   app.patch("/api/worker-payments/historical-production-settlements/:productionEntryId", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
