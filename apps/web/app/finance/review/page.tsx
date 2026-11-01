@@ -289,7 +289,7 @@ export default function FinanceExceptionsPage() {
             <input value={historicalSearch} onChange={e=>setHistoricalSearch(e.target.value)} placeholder="ابحث بكود الإنتاج أو العامل أو الطلبية…" />
             {historicalLoading&&<p className="form-hint">جارٍ فحص سجلات الإنتاج وحركات الدفع المرتبطة…</p>}
             <h3 className="card-title" style={{marginTop:16}}>ملخص حساب كل عامل</h3>
-            <p className="form-hint">الإجمالي محسوب من سجلات الإنتاج المعتمدة. كل دفعة تُحسب مرة واحدة حتى لو ظهرت في أكثر من مصدر توزيع. المتبقي المؤكد لا يشمل الحالات غير المحسومة؛ قيمتها تظهر منفصلة تحت المراجعة.</p>
+            <p className="form-hint">الإجمالي محسوب من سجلات الإنتاج المعتمدة. كل دفعة تُحسب مرة واحدة حتى لو ظهرت في أكثر من مصدر توزيع. الحالات غير المحسومة لا تُحسب مدفوعة ولا تُخصم من المتبقي إلا بعد مراجعتها.</p>
             <div className="table-wrap"><table><thead><tr><th>العامل</th><th>إجمالي الإنتاج</th><th>إجمالي المدفوع</th><th>المتبقي</th><th>حالات غير محسومة</th></tr></thead><tbody>
               {historicalEmployeeSummary.map(row=><tr key={row.employeeId}><td>{row.employeeName}<div className="form-hint">{row.employeeCode} · {row.productionCount} سجل إنتاج</div></td><td>{money(row.production)}</td><td>{money(row.actualPaid+row.historicalPaid)}</td><td>{money(row.remaining)}</td><td>{row.unresolvedCount? <span className="status warning">{row.unresolvedCount} سجل</span> : <span className="status success">لا يوجد</span>}</td></tr>)}
               {!historicalEmployeeSummary.length&&<tr><td colSpan={5}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
@@ -304,7 +304,7 @@ export default function FinanceExceptionsPage() {
                 <td><span className={row.classification==="PAID_CONFIRMED"||row.classification==="PAID_HISTORICALLY"?"status success":"status warning"}>{row.classification==="PAID_CONFIRMED"||row.classification==="PAID_HISTORICALLY"?"مدفوع":row.classification==="NEEDS_REVIEW"?"غير محسوم — دفعة محتملة":"مستحق"}</span></td>
                 <td>{row.classification==="UNPAID"?<button type="button" className="primary-button" disabled={historicalSavingId===row.production_entry_id} onClick={()=>void updateHistoricalProduction(row,"PAID_PREVIOUSLY")}>{historicalSavingId===row.production_entry_id?"جارٍ الحفظ…":"إثبات مدفوع سابقًا"}</button>:row.classification==="PAID_HISTORICALLY"?<button type="button" className="secondary-btn" disabled={historicalSavingId===row.production_entry_id} onClick={()=>void updateHistoricalProduction(row,"NEEDS_REVIEW")}>إلغاء الإثبات</button>:row.classification==="NEEDS_REVIEW"?"راجع الدفعة المحتملة":"—"}</td>
               </tr>)}
-              {!historicalLoading&&!filteredHistoricalProduction.length&&<tr><td colSpan={9}>لا توجد سجلات مستحقة أو حالات غير محسومة.</td></tr>}
+              {!historicalLoading&&!filteredHistoricalProduction.length&&<tr><td colSpan={8}>لا توجد سجلات مستحقة أو حالات غير محسومة.</td></tr>}
             </tbody></table></div>
             <p className="form-hint">السجلات التي لها دفعات فعلية غير موزعة بالكامل تُعلَّم «غير محسوم» ولا يسمح النظام بإثباتها كمدفوعة تاريخيًا حتى تتم مراجعة الدفعة.</p>
           </div>
