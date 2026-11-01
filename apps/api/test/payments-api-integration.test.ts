@@ -36,9 +36,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{historicalProductionSettlementRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/payments/historical-production-settlements.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -50,6 +50,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     });
     await app.register(authRoutes);
     await app.register(paymentsRoutes);
+    await app.register(historicalProductionSettlementRoutes);
     await app.register(globalSearchRoutes);
     await app.register(accountingRoutes);
     await app.register(operationsMasterRoutes);
@@ -879,6 +880,75 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(reconcileProduction.total_earning_amount),10);
+      // Historical settlement marks reduce production dues only; they must not create financial movements.
+      const historicalMarkEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Historical Mark Worker') RETURNING id"
+      )).rows[0];
+      const historicalMarkProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE-10,2,$6,$7,10,$8,'PER_PIECE','PER_PIECE',20,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [historicalMarkEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const historicalListBefore=await app.inject({
+        method:"GET",url:`/api/worker-payments/historical-production-settlements?employeeId=${historicalMarkEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalListBefore.statusCode,200,historicalListBefore.body);
+      assert.equal(historicalListBefore.json().data[0].classification,"UNPAID");
+      const historicalMark=await app.inject({
+        method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${historicalMarkProduction.id}`,
+        headers:{cookie:managerCookie},payload:{status:"PAID_PREVIOUSLY",notes:"تم السداد قبل تشغيل النظام"}
+      });
+      assert.equal(historicalMark.statusCode,200,historicalMark.body);
+      const historicalUnpaidAfter=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${historicalMarkEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalUnpaidAfter.statusCode,200,historicalUnpaidAfter.body);
+      assert.equal(historicalUnpaidAfter.json().data.some((row:any)=>row.id===historicalMarkProduction.id),false,
+        "historical mark must remove the production record from outstanding production dues");
+      const historicalAvailable=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${historicalMarkEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalAvailable.statusCode,200,historicalAvailable.body);
+      assert.equal(Number(historicalAvailable.json().data.availableForSettlement),0,
+        "historical marks must reduce payable production availability");
+      const financialArtifacts=await apiPool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS worker_payments,
+          (SELECT COUNT(*) FROM employee_earnings_settlements WHERE employee_id=$1) AS settlements,
+          (SELECT COUNT(*) FROM employee_earnings_ledger WHERE employee_id=$1) AS ledger,
+          (SELECT COUNT(*) FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id WHERE a.employee_id=$1) AS advance_repayments,
+          (SELECT COUNT(*) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT'
+            AND source_id IN (SELECT id FROM worker_payments WHERE employee_id=$1)) AS custody_movements,
+          (SELECT COUNT(*) FROM accounting_expenses WHERE idempotency_key IN
+            (SELECT idempotency_key FROM worker_payments WHERE employee_id=$1)) AS accounting_expenses
+      `,[historicalMarkEmployee.id]);
+      for(const [key,value] of Object.entries(financialArtifacts.rows[0]))assert.equal(Number(value),0,`historical mark must not create ${key}`);
+      const duplicateHistoricalMark=await app.inject({
+        method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${historicalMarkProduction.id}`,
+        headers:{cookie:managerCookie},payload:{status:"PAID_PREVIOUSLY",notes:"محاولة تكرار"}
+      });
+      assert.equal(duplicateHistoricalMark.statusCode,409,"duplicate historical marks must be rejected");
+      const undoHistoricalMark=await app.inject({
+        method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${historicalMarkProduction.id}`,
+        headers:{cookie:managerCookie},payload:{status:"NEEDS_REVIEW",notes:"إعادة للمراجعة"}
+      });
+      assert.equal(undoHistoricalMark.statusCode,200,undoHistoricalMark.body);
+      const historicalUnpaidRestored=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${historicalMarkEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.ok(historicalUnpaidRestored.json().data.some((row:any)=>row.id===historicalMarkProduction.id),
+        "undoing the administrative mark must restore production dues");
+
       const reconcileKey=randomUUID();
       const reconcilePayment=(await apiPool.query(
         `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)

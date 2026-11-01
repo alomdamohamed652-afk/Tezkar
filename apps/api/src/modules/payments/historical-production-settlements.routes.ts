@@ -123,6 +123,7 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
              ) AS ambiguous_payment_evidence,
              CASE
                WHEN COALESCE(a.amount,0)>=COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID_CONFIRMED'
+               WHEN COALESCE(a.amount,0)>0.009 THEN 'NEEDS_REVIEW'
                WHEN m.status='PAID_PREVIOUSLY' THEN 'PAID_HISTORICALLY'
                WHEN EXISTS (
                  SELECT 1 FROM worker_payments wp
