@@ -33,6 +33,7 @@ const groups:NavGroup[]=[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
   {icon:"⇄",label:"تصحيح مصروفات الطلبيات القديمة",href:"/finance/worker-settlements",permissions:["finance.expenses.create"]},
   {icon:"⚠",label:"مراجعة الحالات المالية",href:"/finance/review",permissions:["worker_payments.pay"]},
+  {icon:"🔒",label:"إقفال مستحقات الإنتاج",href:"/production-closure",permissions:["worker_payments.pay"]},
   {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","worker_payments.view","worker_payments.pay"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},

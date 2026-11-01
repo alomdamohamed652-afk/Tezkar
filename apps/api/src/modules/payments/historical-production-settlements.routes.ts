@@ -3,6 +3,7 @@ import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { hashPassword, verifyPassword } from "../auth/auth.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
@@ -125,7 +126,59 @@ actual AS (
   return result.rows[0] ?? null;
 }
 
+const closurePasswordSchema=z.object({password:z.string().min(10).max(200)});
+
+async function assertClosurePassword(request: {headers: Record<string, any>}) {
+  const supplied=request.headers["x-production-closure-password"];
+  const password=Array.isArray(supplied)?supplied[0]:supplied;
+  if(typeof password!=="string"||!password) throw new AppError("CLOSURE_PASSWORD_REQUIRED","أدخل كلمة مرور قسم إقفال المستحقات",401);
+  const result=await pool.query("SELECT password_hash FROM employee_production_closure_access WHERE id=1");
+  const stored=result.rows[0]?.password_hash as string|undefined;
+  if(!stored) throw new AppError("CLOSURE_PASSWORD_NOT_CONFIGURED","لم يتم إعداد كلمة مرور القسم بعد. اطلب من مدير النظام إعدادها.",409);
+  if(!verifyPassword(password,stored)) throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة مرور القسم غير صحيحة",401);
+}
+
 export async function historicalProductionSettlementRoutes(app: FastifyInstance) {
+  app.get("/api/worker-payments/employee-production-closures/access-status", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async () => {
+    const result=await pool.query("SELECT 1 FROM employee_production_closure_access WHERE id=1");
+    return {data:{configured:Boolean(result.rowCount)}};
+  });
+
+  app.post("/api/worker-payments/employee-production-closures/access-setup", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    if(!request.user?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))
+      throw new AppError("FORBIDDEN","إعداد كلمة مرور القسم متاح لمدير النظام فقط",403);
+    const parsed=closurePasswordSchema.safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","كلمة المرور يجب ألا تقل عن 10 أحرف",422);
+    await withTransaction(async(client)=>{
+      const existing=await client.query("SELECT id FROM employee_production_closure_access WHERE id=1 FOR UPDATE");
+      if(existing.rowCount) throw new AppError("CLOSURE_PASSWORD_ALREADY_CONFIGURED","كلمة مرور القسم تم إعدادها بالفعل. استخدم تغيير كلمة المرور.",409);
+      await client.query("INSERT INTO employee_production_closure_access(id,password_hash,updated_by) VALUES(1,$1,$2)",[hashPassword(parsed.data.password),request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_created",module:"payments",entityType:"system_setting",entityId:"employee_production_closure_access",metadata:{passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    });
+    return {data:{success:true}};
+  });
+
+  app.post("/api/worker-payments/employee-production-closures/access-change", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    if(!request.user?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))
+      throw new AppError("FORBIDDEN","تغيير كلمة مرور القسم متاح لمدير النظام فقط",403);
+    const parsed=z.object({currentPassword:z.string().min(1).max(200),newPassword:z.string().min(10).max(200)}).safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تغيير كلمة المرور غير صحيحة",422);
+    await withTransaction(async(client)=>{
+      const current=await client.query("SELECT password_hash FROM employee_production_closure_access WHERE id=1 FOR UPDATE");
+      if(!current.rowCount||!verifyPassword(parsed.data.currentPassword,current.rows[0].password_hash))
+        throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة المرور الحالية غير صحيحة",401);
+      await client.query("UPDATE employee_production_closure_access SET password_hash=$1,updated_by=$2,updated_at=now() WHERE id=1",[hashPassword(parsed.data.newPassword),request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_changed",module:"payments",entityType:"system_setting",entityId:"employee_production_closure_access",metadata:{passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    });
+    return {data:{success:true}};
+  });
+
   app.get("/api/worker-payments/historical-production-settlements", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
@@ -276,7 +329,8 @@ actual AS (
 
   app.get("/api/worker-payments/employee-production-closures", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
-  }, async () => {
+  }, async (request) => {
+    await assertClosurePassword(request);
     const result=await pool.query(`
       SELECT c.id,c.employee_id,e.code AS employee_code,e.full_name AS employee_name,
              c.closed_at,c.notes,c.approved_production_count,c.production_amount_snapshot,c.status,
@@ -291,6 +345,7 @@ actual AS (
   app.post("/api/worker-payments/employee-production-closures", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
+    await assertClosurePassword(request);
     const parsed=z.object({employeeId:z.string().uuid(),notes:z.string().trim().min(3).max(500)}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","حدد العامل واكتب سبب الإقفال بوضوح",422);
     return {data:await withTransaction(async(client)=>{
@@ -367,6 +422,7 @@ actual AS (
   app.patch("/api/worker-payments/employee-production-closures/:closureId/reverse", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
+    await assertClosurePassword(request);
     const params=z.object({closureId:z.string().uuid()}).safeParse(request.params);
     const body=z.object({reason:z.string().trim().min(3).max(500)}).safeParse(request.body);
     if(!params.success||!body.success) throw new AppError("VALIDATION_ERROR","بيانات إلغاء الإقفال غير صحيحة",422);
