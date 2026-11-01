@@ -164,6 +164,8 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
       if(!production.rowCount||production.rows[0].status!=="APPROVED")
         throw new AppError("PRODUCTION_NOT_APPROVED","لا يمكن تسوية سجل إنتاج غير معتمد",409);
       const before=await client.query("SELECT * FROM historical_production_settlement_marks WHERE production_entry_id=$1 FOR UPDATE",[productionEntryId]);
+      if(before.rows[0]?.status==="PAID_PREVIOUSLY"&&parsed.data.status==="PAID_PREVIOUSLY")
+        throw new AppError("HISTORICAL_SETTLEMENT_ALREADY_MARKED","سجل الإنتاج مُثبت كمدفوع تاريخيًا بالفعل؛ لن يتم تسجيله مرة ثانية",409);
       const evidence=await loadProductionSettlement(client,productionEntryId);
       if(parsed.data.status==="PAID_PREVIOUSLY"){
         if(Number(evidence.actual_paid)>0.009)
