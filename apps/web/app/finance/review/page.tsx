@@ -23,6 +23,11 @@ type Payment = {
   production_allocated: number;
   production_allocation_count: number;
 };
+type AllocationDiagnostic = {
+  payment: { gross_amount: number; employee_name: string; order_code: string | null; order_name: string | null };
+  summary: { paymentAmount: number; legacyAmount: number; orderAmount: number; settlementAmount: number; legacyCount: number; orderCount: number; settlementCount: number; invalidCount: number; overAllocated: boolean; duplicateProductionIds: string[] };
+  allocations: Array<{ source: string; production_entry_id: string | null; amount: number | string; production_code: string | null; production_employee_name: string | null; production_order_name: string | null; production_stage_name: string | null; production_status: string | null; validation: string }>;
+};
 type Order = { id: string; code: string; order_name: string; status: string };
 type Stage = { id: string; sequence_no: number; stage_name: string; status: string };
 type FinancialIntegrity = {
@@ -56,6 +61,9 @@ export default function FinanceExceptionsPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [stages, setStages] = useState<Stage[]>([]);
   const [selectedId, setSelectedId] = useState("");
+  const [diagnostics, setDiagnostics] = useState<AllocationDiagnostic | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsError, setDiagnosticsError] = useState("");
   const [orderId, setOrderId] = useState("");
   const [stageId, setStageId] = useState("");
   const [search, setSearch] = useState("");
@@ -98,6 +106,17 @@ export default function FinanceExceptionsPage() {
   }, []);
 
   useEffect(() => { if (allowed) void load(); else setLoading(false); }, [allowed, load]);
+  useEffect(() => {
+    if (!selectedId) { setDiagnostics(null); setDiagnosticsError(""); return; }
+    let active = true;
+    setDiagnosticsLoading(true);
+    setDiagnosticsError("");
+    api<{ data: AllocationDiagnostic }>("/api/worker-payments/" + encodeURIComponent(selectedId) + "/historical-allocation-diagnostics")
+      .then(result => { if (active) setDiagnostics(result.data); })
+      .catch(e => { if (active) setDiagnosticsError(e instanceof Error ? e.message : "تعذر تحميل تفاصيل التوزيع القديم"); })
+      .finally(() => { if (active) setDiagnosticsLoading(false); });
+    return () => { active = false; };
+  }, [selectedId]);
   const loadIntegrity = useCallback(async () => {
     if (!canViewIntegrity) return;
     setIntegrityLoading(true);
@@ -269,6 +288,33 @@ export default function FinanceExceptionsPage() {
             {selected.order_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بالفعل بطلبية في القيد المحاسبي؛ لازم تفضل على نفس الطلبية.</p>}
             {selected.order_stage_id && <p className="form-hint">تنبيه: الدفعة مرتبطة بمرحلة في القيد المحاسبي؛ لازم تفضل على نفس المرحلة.</p>}
             <div className="form-actions"><button type="button" className="primary-button" onClick={() => void allocate()} disabled={saving || !orderId}>{saving ? "جارٍ الحفظ…" : "تأكيد توزيع الدفعة"}</button></div>
+            </div>
+          </section>}
+          {selected && <section className="card">
+            <div className="card-header"><div><h2 className="card-title">تفاصيل التوزيعات القديمة والتحقق منها</h2><p className="form-hint">عرض للقراءة فقط؛ لا يغيّر أي قيد مالي.</p></div></div>
+            <div className="card-body">
+              {diagnosticsLoading && <p className="form-hint">جارٍ فحص مصادر التوزيع…</p>}
+              {diagnosticsError && <div role="alert" className="alert error">{diagnosticsError}</div>}
+              {diagnostics && <>
+                <div className="stats">
+                  <article className="card stat"><div className="stat-label">التوزيع القديم</div><div className="stat-value">{money(diagnostics.summary.legacyAmount)}</div><div className="stat-note">{diagnostics.summary.legacyCount} قيد</div></article>
+                  <article className="card stat"><div className="stat-label">توزيع الطلبية</div><div className="stat-value">{money(diagnostics.summary.orderAmount)}</div><div className="stat-note">{diagnostics.summary.orderCount} قيد</div></article>
+                  <article className="card stat"><div className="stat-label">تسوية المستحقات</div><div className="stat-value">{money(diagnostics.summary.settlementAmount)}</div><div className="stat-note">{diagnostics.summary.settlementCount} قيد</div></article>
+                  <article className="card stat"><div className="stat-label">قيود غير سليمة</div><div className="stat-value">{diagnostics.summary.invalidCount}</div><div className="stat-note">{diagnostics.summary.duplicateProductionIds.length} تكرار داخل نفس مصدر التوزيع</div></article>
+                </div>
+                {diagnostics.summary.overAllocated && <div role="alert" className="alert error">يوجد مصدر توزيع يتجاوز إجمالي الدفعة. لا تعتمد التوزيع قبل المراجعة.</div>}
+                <div className="table-wrap"><table><thead><tr><th>مصدر القيد</th><th>سجل الإنتاج</th><th>العامل المسجل بالإنتاج</th><th>الطلبية / المرحلة</th><th>الحالة</th><th>المبلغ</th></tr></thead><tbody>
+                  {diagnostics.allocations.map((a, index) => <tr key={a.source + ":" + a.production_entry_id + ":" + index}>
+                    <td>{a.source === "LEGACY" ? "قديم" : a.source === "ORDER" ? "توزيع طلبية" : "تسوية مستحقات"}</td>
+                    <td>{a.production_code || a.production_entry_id || "سجل مفقود"}</td>
+                    <td>{a.production_employee_name || "غير موجود"}</td>
+                    <td>{a.production_order_name || "بدون طلبية"}{a.production_stage_name ? <div className="form-hint">{a.production_stage_name}</div> : null}</td>
+                    <td><span className={a.validation === "OK" ? "status success" : "status warning"}>{a.validation === "OK" ? "سليم" : a.validation}</span></td>
+                    <td>{money(Number(a.amount))}</td>
+                  </tr>)}
+                  {!diagnostics.allocations.length && <tr><td colSpan={6}>لا توجد قيود توزيع محفوظة لهذه الدفعة.</td></tr>}
+                </tbody></table></div>
+              </>}
             </div>
           </section>}
         </>}

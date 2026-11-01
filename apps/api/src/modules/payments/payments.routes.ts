@@ -886,6 +886,85 @@ export async function paymentsRoutes(app:FastifyInstance){
     return {data:result.rows};
   });
 
+  // Read-only forensic view for historical payment allocation conflicts.
+  // It deliberately exposes every allocation source instead of collapsing them into one total.
+  app.get("/api/worker-payments/:id/historical-allocation-diagnostics", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const id=(request.params as {id:string}).id;
+    const payment=await pool.query(`
+      SELECT wp.id,wp.employee_id,wp.gross_amount,wp.created_at,
+             e.code AS employee_code,e.full_name AS employee_name,
+             ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,
+             os.sequence_no,st.name AS stage_name,es.id AS settlement_id
+        FROM worker_payments wp
+        JOIN employees e ON e.id=wp.employee_id
+        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        LEFT JOIN production_orders o ON o.id=ae.order_id
+        LEFT JOIN order_stages os ON os.id=ae.order_stage_id
+        LEFT JOIN stages st ON st.id=os.stage_id
+        LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
+       WHERE wp.id=$1
+    `,[id]);
+    if(!payment.rowCount) throw new AppError("HISTORICAL_PAYMENT_NOT_FOUND","الدفعة القديمة غير موجودة",404);
+    const rows=await pool.query(`
+      WITH allocations AS (
+        SELECT 'LEGACY'::text AS source,wpa.production_entry_id,wpa.amount
+          FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=$1
+        UNION ALL
+        SELECT 'ORDER'::text,owa.production_entry_id,owa.amount
+          FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=$1
+        UNION ALL
+        SELECT 'SETTLEMENT'::text,esa.production_entry_id,esa.amount
+          FROM employee_earnings_settlement_allocations esa
+          JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
+         WHERE es.worker_payment_id=$1
+      )
+      SELECT a.source,a.production_entry_id,a.amount,
+             p.code AS production_code,p.employee_id AS production_employee_id,
+             pe.code AS production_employee_code,pe.full_name AS production_employee_name,
+             p.status AS production_status,p.work_date,
+             p.order_stage_id,os.order_id,o.code AS production_order_code,o.order_name AS production_order_name,
+             st.name AS production_stage_name,
+             CASE
+               WHEN p.id IS NULL THEN 'MISSING_PRODUCTION'
+               WHEN p.employee_id<>$2 THEN 'EMPLOYEE_MISMATCH'
+               WHEN $3::uuid IS NOT NULL AND os.order_id IS DISTINCT FROM $3::uuid THEN 'ORDER_MISMATCH'
+               WHEN $4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid THEN 'STAGE_MISMATCH'
+               WHEN p.status<>'APPROVED' THEN 'PRODUCTION_NOT_APPROVED'
+               ELSE 'OK'
+             END AS validation
+        FROM allocations a
+        LEFT JOIN production_entries p ON p.id=a.production_entry_id
+        LEFT JOIN employees pe ON pe.id=p.employee_id
+        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+        LEFT JOIN production_orders o ON o.id=os.order_id
+        LEFT JOIN stages st ON st.id=os.stage_id
+       ORDER BY a.source,p.work_date,p.created_at,a.production_entry_id
+    `,[id,payment.rows[0].employee_id,payment.rows[0].order_id,payment.rows[0].order_stage_id]);
+    const summary={
+      paymentAmount:Number(payment.rows[0].gross_amount),
+      legacyAmount:0,orderAmount:0,settlementAmount:0,
+      legacyCount:0,orderCount:0,settlementCount:0,
+      invalidCount:0,overAllocated:false,duplicateProductionIds:[] as string[]
+    };
+    const seen=new Set<string>(),duplicates=new Set<string>();
+    for(const row of rows.rows){
+      const amount=Number(row.amount);
+      if(row.source==="LEGACY"){summary.legacyAmount+=amount;summary.legacyCount++;}
+      if(row.source==="ORDER"){summary.orderAmount+=amount;summary.orderCount++;}
+      if(row.source==="SETTLEMENT"){summary.settlementAmount+=amount;summary.settlementCount++;}
+      if(row.validation!=="OK")summary.invalidCount++;
+      const allocationKey=row.production_entry_id?`${row.source}:${row.production_entry_id}`:null;
+      if(allocationKey&&seen.has(allocationKey))duplicates.add(row.production_entry_id);
+      if(allocationKey)seen.add(allocationKey);
+    }
+    summary.overAllocated=[summary.legacyAmount,summary.orderAmount,summary.settlementAmount]
+      .some(value=>value>summary.paymentAmount+0.009);
+    summary.duplicateProductionIds=[...duplicates];
+    return {data:{payment:payment.rows[0],summary,allocations:rows.rows}};
+  });
+
   // Order choices for historical payment review. This uses the review permission, not orders.view.
   // Completed orders remain eligible for historical attribution; cancelled orders do not.
   app.get("/api/worker-payments/historical-allocation-orders", {
