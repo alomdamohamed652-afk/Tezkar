@@ -48,6 +48,20 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
        WHERE ca.production_entry_id=$1
          AND ca.employee_id=p.employee_id
          AND p.status='APPROVED'
+    ),
+    payment_coverage AS (
+      SELECT wp.id,wp.employee_id,wp.created_at,
+        LEAST(wp.gross_amount,GREATEST(0,
+          COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount))
+            FROM production_entries pe
+            WHERE pe.employee_id=wp.employee_id AND pe.status='APPROVED' AND pe.work_date<=wp.created_at::date),0)
+          -COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca
+            JOIN worker_payments prior ON prior.id=ca.worker_payment_id
+            WHERE prior.employee_id=wp.employee_id
+              AND (prior.created_at<wp.created_at OR (prior.created_at=wp.created_at AND prior.id<wp.id))),0)
+        )) AS expected_production_amount,
+        COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca WHERE ca.worker_payment_id=wp.id),0) AS allocated_production_amount
+      FROM worker_payments wp
     )
     SELECT p.id,p.employee_id,p.code,p.status,p.work_date,
            COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned,
@@ -55,13 +69,10 @@ async function loadProductionSettlement(client: import("pg").PoolClient, product
            m.id AS mark_id,m.status AS mark_status,m.amount_snapshot AS historical_paid,
            m.notes AS mark_notes,m.payment_date AS marked_payment_date,
            EXISTS (
-             SELECT 1 FROM worker_payments wp
-              WHERE wp.employee_id=p.employee_id
-                AND wp.created_at::date>=p.work_date
-                AND wp.gross_amount > COALESCE((
-                  SELECT SUM(ca.amount) FROM canonical_allocations ca
-                  WHERE ca.worker_payment_id=wp.id
-                ),0)+0.009
+             SELECT 1 FROM payment_coverage pc
+              WHERE pc.employee_id=p.employee_id
+                AND pc.created_at::date>=p.work_date
+                AND pc.expected_production_amount>pc.allocated_production_amount+0.009
            ) AS ambiguous_payment_evidence
       FROM production_entries p
       CROSS JOIN actual
@@ -104,7 +115,21 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
           JOIN production_entries p ON p.id=ca.production_entry_id
          WHERE ca.employee_id=p.employee_id AND p.status='APPROVED'
          GROUP BY ca.production_entry_id
-      )
+      ),
+    payment_coverage AS (
+      SELECT wp.id,wp.employee_id,wp.created_at,
+        LEAST(wp.gross_amount,GREATEST(0,
+          COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount))
+            FROM production_entries pe
+            WHERE pe.employee_id=wp.employee_id AND pe.status='APPROVED' AND pe.work_date<=wp.created_at::date),0)
+          -COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca
+            JOIN worker_payments prior ON prior.id=ca.worker_payment_id
+            WHERE prior.employee_id=wp.employee_id
+              AND (prior.created_at<wp.created_at OR (prior.created_at=wp.created_at AND prior.id<wp.id))),0)
+        )) AS expected_production_amount,
+        COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca WHERE ca.worker_payment_id=wp.id),0) AS allocated_production_amount
+      FROM worker_payments wp
+    )
       SELECT p.id AS production_entry_id,p.code AS production_code,p.employee_id,
              e.code AS employee_code,e.full_name AS employee_name,p.work_date,
              o.code AS order_code,o.order_name,s.name AS stage_name,
@@ -116,10 +141,9 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
                -CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) AS remaining_amount,
              m.id AS mark_id,m.status AS mark_status,m.notes AS mark_notes,m.payment_date,
              EXISTS (
-               SELECT 1 FROM worker_payments wp
-                WHERE wp.employee_id=p.employee_id AND wp.created_at::date>=p.work_date
-                  AND wp.gross_amount > COALESCE((SELECT SUM(ca.amount) FROM canonical_allocations ca
-                    WHERE ca.worker_payment_id=wp.id),0)+0.009
+               SELECT 1 FROM payment_coverage pc
+                WHERE pc.employee_id=p.employee_id AND pc.created_at::date>=p.work_date
+                  AND pc.expected_production_amount>pc.allocated_production_amount+0.009
              ) AS ambiguous_payment_evidence,
              CASE
                WHEN COALESCE(a.amount,0)>=COALESCE(p.total_earning_amount,p.earning_amount,0)-0.009 THEN 'PAID_CONFIRMED'
