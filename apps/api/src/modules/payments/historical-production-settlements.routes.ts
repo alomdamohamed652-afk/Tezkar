@@ -374,6 +374,7 @@ actual AS (
         snapshot.push({id:settlement.id,earned,paid,remaining});
       }
       if(!snapshot.length) throw new AppError("NO_APPROVED_PRODUCTION","لا توجد سجلات إنتاج معتمدة لإقفالها",409);
+      const total=snapshot.reduce((sum,row)=>sum+row.remaining,0);
       const created=await client.query(`
         INSERT INTO employee_production_closures
           (employee_id,notes,approved_production_count,production_amount_snapshot,closed_by)
