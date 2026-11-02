@@ -10,6 +10,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 const listSchema = z.object({ employeeId: z.string().uuid().optional() });
 const updateSchema = z.object({
   status: z.enum(["PAID_PREVIOUSLY", "NEEDS_REVIEW"]),
+  confirmAmbiguousPayment: z.boolean().optional(),
   notes: z.string().trim().min(2).max(500),
   paymentDate: z.string().date().nullable().optional()
 });
@@ -483,10 +484,13 @@ actual AS (
         throw new AppError("HISTORICAL_SETTLEMENT_ALREADY_MARKED","سجل الإنتاج مُثبت كمدفوع تاريخيًا بالفعل؛ لن يتم تسجيله مرة ثانية",409);
       const evidence=await loadProductionSettlement(client,productionEntryId);
       if(parsed.data.status==="PAID_PREVIOUSLY"){
-        if(Number(evidence.actual_paid)>0.009)
-          throw new AppError("PRODUCTION_ALREADY_PAID","يوجد إثبات دفع مرتبط بسجل الإنتاج بالفعل؛ لن يتم إنشاء تسوية تاريخية مكررة",409);
-        if(evidence.ambiguous_payment_evidence)
-          throw new AppError("HISTORICAL_PAYMENT_NEEDS_REVIEW","توجد دفعة فعلية للعامل غير موزعة بالكامل وقد تكون مرتبطة بهذا السجل. راجع الدفعات القديمة أولًا؛ لم يتم تسجيل التسوية.",409);
+        if(Number(evidence.actual_paid)>=Number(evidence.earned)-0.009)
+          throw new AppError("PRODUCTION_ALREADY_PAID","تم سداد قيمة سجل الإنتاج بالكامل بالفعل؛ لن يتم إنشاء تسوية تاريخية مكررة",409);
+        if(evidence.ambiguous_payment_evidence){
+          const isManager=request.user?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase()));
+          if(!parsed.data.confirmAmbiguousPayment || !isManager)
+            throw new AppError("HISTORICAL_PAYMENT_NEEDS_REVIEW","توجد دفعة قديمة غير موزعة بالكامل. لا يمكن اعتماد المتبقي كمدفوع إلا بتأكيد مدير النظام بعد مراجعة مستندات السداد.",409);
+        }
       }
       const earned=Number(production.rows[0].earned);
       const amountSnapshot=parsed.data.status==="PAID_PREVIOUSLY"
@@ -508,7 +512,7 @@ actual AS (
         action:parsed.data.status==="PAID_PREVIOUSLY"?"mark_historical_production_paid":"mark_historical_production_needs_review",
         module:"payments",entityType:"historical_production_settlement",entityId:saved.rows[0].id,
         beforeData:before.rows[0]??null,afterData:saved.rows[0],
-        metadata:{employeeId,productionEntryId,amountSnapshot,financialMovementCreated:false,affectsEmployeeLedger:false,affectsAdvances:false},
+        metadata:{employeeId,productionEntryId,amountSnapshot,ambiguousPaymentOverride:Boolean(parsed.data.confirmAmbiguousPayment&&evidence.ambiguous_payment_evidence),financialMovementCreated:false,affectsEmployeeLedger:false,affectsAdvances:false},
         ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
       });
       return saved.rows[0];

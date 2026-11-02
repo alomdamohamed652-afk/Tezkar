@@ -999,6 +999,61 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(conflictingEvidenceList.json().data.every((row:any)=>row.classification==="NEEDS_REVIEW"),
         "different production targets in mirrored allocation sources must be treated as ambiguous, not silently deduplicated");
 
+      const partialEvidenceEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Partial Historical Evidence Worker') RETURNING id"
+      )).rows[0];
+      const partialEvidenceProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE-10,2,$6,$7,10,$8,'PER_PIECE','PER_PIECE',20,0,0,'APPROVED',$9,$9,now()) RETURNING id`,
+        [partialEvidenceEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const partialEvidencePayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'partial historical allocation test',$3,'partial-historical-allocation-test') RETURNING id`,
+        [partialEvidenceEmployee.id,manager.id,randomUUID()]
+      )).rows[0];
+      const partialEvidenceSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'partial historical allocation test',$2,$3) RETURNING id`,
+        [partialEvidenceEmployee.id,manager.id,partialEvidencePayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,5)",
+        [partialEvidenceSettlement.id,partialEvidenceProduction.id]
+      );
+      const partialEvidenceBefore=await app.inject({
+        method:"GET",url:`/api/worker-payments/historical-production-settlements?employeeId=${partialEvidenceEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(partialEvidenceBefore.statusCode,200,partialEvidenceBefore.body);
+      assert.equal(partialEvidenceBefore.json().data[0].classification,"NEEDS_REVIEW");
+      assert.equal(Number(partialEvidenceBefore.json().data[0].actual_paid_amount),5);
+      const partialEvidenceBlocked=await app.inject({
+        method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${partialEvidenceProduction.id}`,
+        headers:{cookie:managerCookie},payload:{status:"PAID_PREVIOUSLY",notes:"بدون اعتماد المدير"}
+      });
+      assert.equal(partialEvidenceBlocked.statusCode,409,"ambiguous partial payments must require explicit manager confirmation");
+      assert.equal(partialEvidenceBlocked.json().error.code,"HISTORICAL_PAYMENT_NEEDS_REVIEW");
+      const partialEvidenceApproved=await app.inject({
+        method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${partialEvidenceProduction.id}`,
+        headers:{cookie:managerCookie},payload:{status:"PAID_PREVIOUSLY",notes:"تمت مراجعة مستندات السداد",confirmAmbiguousPayment:true}
+      });
+      assert.equal(partialEvidenceApproved.statusCode,200,partialEvidenceApproved.body);
+      assert.equal(Number(partialEvidenceApproved.json().data.amount_snapshot),15,
+        "manager confirmation must settle only the unpaid remainder after subtracting the existing partial allocation");
+      const partialEvidenceArtifacts=await apiPool.query(
+        `SELECT
+          (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS payments,
+          (SELECT COUNT(*) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id IN (SELECT id FROM worker_payments WHERE employee_id=$1)) AS custody`,
+        [partialEvidenceEmployee.id]
+      );
+      assert.equal(Number(partialEvidenceArtifacts.rows[0].payments),1,"historical confirmation must not create another worker payment");
+      assert.equal(Number(partialEvidenceArtifacts.rows[0].custody),0,"historical confirmation must not create a custody movement");
+
       const reconcileKey=randomUUID();
       const reconcilePayment=(await apiPool.query(
         `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
