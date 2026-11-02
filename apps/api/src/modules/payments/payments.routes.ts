@@ -71,22 +71,30 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
     const future=await client.query(`
       SELECT
         COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
-        COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
+        COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+          WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
         COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at>$2),0) AS legacy_paid,
+        COALESCE((SELECT SUM(m.amount_snapshot)
+          FROM historical_production_settlement_marks m
+          JOIN production_entries marked ON marked.id=m.production_entry_id
+          WHERE m.employee_id=$1 AND m.status='PAID_PREVIOUSLY'
+            AND marked.status='APPROVED' AND marked.approved_at>$2),0) AS historical_paid,
         COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
-          FROM employee_earnings_adjustments a WHERE a.employee_id=$1 AND a.production_entry_id IS NULL),0)
+          FROM employee_earnings_adjustments a
+          WHERE a.employee_id=$1 AND a.production_entry_id IS NULL AND a.created_at>$2),0)
         + COALESCE((SELECT SUM(l.credit_amount-l.debit_amount)
           FROM employee_earnings_ledger l
           WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
-            AND l.advance_repayment_id IS NULL
+            AND l.advance_repayment_id IS NULL AND l.created_at>$2
             AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments
       FROM production_entries pe
-      WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.created_at>$2
+      WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.approved_at>$2
     `,[employeeId,cutoff]);
     return Math.round((Number(future.rows[0].earned)+Number(future.rows[0].adjustments)
-      -Number(future.rows[0].settled)-Number(future.rows[0].legacy_paid))*100)/100;
+      -Number(future.rows[0].settled)-Number(future.rows[0].legacy_paid)
+      -Number(future.rows[0].historical_paid))*100)/100;
   }
   // Gross approved earnings less unified settlements and legacy payments that predate settlement links.
   const totals=await client.query(`
