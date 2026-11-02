@@ -1535,6 +1535,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.deepEqual(closureEntries.rows.map((row:any)=>row.production_entry_id),[alreadyApproved.id],
         "closure snapshots must not absorb pending production that is approved later");
+      for(let attempt=0;attempt<5;attempt++){
+        const invalidPassword=await app.inject({
+          method:"GET",url:"/api/worker-payments/employee-production-closures",
+          headers:{cookie:managerCookie,"x-production-closure-password":"Definitely-Wrong-Password"}
+        });
+        assert.equal(invalidPassword.statusCode,401,"incorrect closure passwords must be rejected");
+      }
+      const throttledPassword=await app.inject({
+        method:"GET",url:"/api/worker-payments/employee-production-closures",
+        headers:{cookie:managerCookie,"x-production-closure-password":closurePassword}
+      });
+      assert.equal(throttledPassword.statusCode,429,
+        "five failed closure password attempts must temporarily lock the caller out");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
