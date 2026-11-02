@@ -31,7 +31,7 @@ export default function ProductionClosurePage(){
  const load=useCallback(async()=>{
    const [production,closureRows]=await Promise.all([
     api<{data:Production[]}>("/api/worker-payments/historical-production-settlements"),
-    api<{data:Closure[]}>("/api/worker-payments/employee-production-closures",{headers:{"x-production-closure-password":password}})
+    api<{data:Closure[]}>("/api/worker-payments/employee-production-closures?cacheBust="+Date.now(),{headers:{"x-production-closure-password":password}})
    ]);
    setRows(production.data);setClosures(closureRows.data);
  },[password]);
