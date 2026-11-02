@@ -182,7 +182,7 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
       const existing=await client.query("SELECT id FROM employee_production_closure_access WHERE id=1 FOR UPDATE");
       if(existing.rowCount) throw new AppError("CLOSURE_PASSWORD_ALREADY_CONFIGURED","كلمة مرور القسم تم إعدادها بالفعل. استخدم تغيير كلمة المرور.",409);
       await client.query("INSERT INTO employee_production_closure_access(id,password_hash,updated_by) VALUES(1,$1,$2)",[hashPassword(parsed.data.password),request.user!.userId]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_created",module:"payments",entityType:"system_setting",entityId:"employee_production_closure_access",metadata:{passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_created",module:"payments",entityType:"system_setting",entityId:null,metadata:{settingKey:"employee_production_closure_access",passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
     });
     return {data:{success:true}};
   });
@@ -199,7 +199,7 @@ export async function historicalProductionSettlementRoutes(app: FastifyInstance)
       if(!current.rowCount||!verifyPassword(parsed.data.currentPassword,current.rows[0].password_hash))
         throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة المرور الحالية غير صحيحة",401);
       await client.query("UPDATE employee_production_closure_access SET password_hash=$1,updated_by=$2,updated_at=now() WHERE id=1",[hashPassword(parsed.data.newPassword),request.user!.userId]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_changed",module:"payments",entityType:"system_setting",entityId:"employee_production_closure_access",metadata:{passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_changed",module:"payments",entityType:"system_setting",entityId:null,metadata:{settingKey:"employee_production_closure_access",passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
     });
     return {data:{success:true}};
   });
