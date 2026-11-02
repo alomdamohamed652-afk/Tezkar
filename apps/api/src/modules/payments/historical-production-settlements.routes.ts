@@ -128,14 +128,39 @@ actual AS (
 
 const closurePasswordSchema=z.object({password:z.string().min(10).max(200)});
 
-async function assertClosurePassword(request: {headers: Record<string, any>}) {
+async function assertClosurePassword(request: {headers: Record<string, any>; ip: string}) {
   const supplied=request.headers["x-production-closure-password"];
   const password=Array.isArray(supplied)?supplied[0]:supplied;
   if(typeof password!=="string"||!password) throw new AppError("CLOSURE_PASSWORD_REQUIRED","أدخل كلمة مرور قسم إقفال المستحقات",401);
+  const attempts=await pool.query(
+    "SELECT failed_attempts,locked_until FROM employee_production_closure_access_attempts WHERE ip_address=$1",
+    [request.ip]
+  );
+  if(attempts.rows[0]?.locked_until && new Date(attempts.rows[0].locked_until).getTime()>Date.now())
+    throw new AppError("CLOSURE_PASSWORD_RATE_LIMITED","تم إيقاف المحاولات مؤقتًا بسبب تكرار كلمة المرور الخاطئة. حاول بعد 15 دقيقة.",429);
   const result=await pool.query("SELECT password_hash FROM employee_production_closure_access WHERE id=1");
   const stored=result.rows[0]?.password_hash as string|undefined;
   if(!stored) throw new AppError("CLOSURE_PASSWORD_NOT_CONFIGURED","لم يتم إعداد كلمة مرور القسم بعد. اطلب من مدير النظام إعدادها.",409);
-  if(!verifyPassword(password,stored)) throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة مرور القسم غير صحيحة",401);
+  if(!verifyPassword(password,stored)){
+    await pool.query(`
+      INSERT INTO employee_production_closure_access_attempts(ip_address,failed_attempts,updated_at)
+      VALUES($1,1,now())
+      ON CONFLICT(ip_address) DO UPDATE SET
+        failed_attempts=CASE
+          WHEN employee_production_closure_access_attempts.locked_until IS NOT NULL
+            AND employee_production_closure_access_attempts.locked_until<=now() THEN 1
+          ELSE employee_production_closure_access_attempts.failed_attempts+1 END,
+        locked_until=CASE
+          WHEN (CASE
+            WHEN employee_production_closure_access_attempts.locked_until IS NOT NULL
+              AND employee_production_closure_access_attempts.locked_until<=now() THEN 1
+            ELSE employee_production_closure_access_attempts.failed_attempts+1 END)>=5
+          THEN now()+interval '15 minutes' ELSE NULL END,
+        updated_at=now()
+    `,[request.ip]);
+    throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة مرور القسم غير صحيحة",401);
+  }
+  await pool.query("DELETE FROM employee_production_closure_access_attempts WHERE ip_address=$1",[request.ip]);
 }
 
 export async function historicalProductionSettlementRoutes(app: FastifyInstance) {
