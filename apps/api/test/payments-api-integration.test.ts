@@ -1488,11 +1488,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
              status,submitted_by,approved_by,approved_at,created_at
            )
            VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,50,20,
-             $8,$9,CASE WHEN $8='APPROVED' THEN $9 ELSE NULL END,
-             CASE WHEN $8='APPROVED' THEN now() ELSE NULL END,$10)
+             $8,$9::text,CASE WHEN $8='APPROVED' THEN $10::uuid ELSE NULL END,
+             CASE WHEN $8='APPROVED' THEN now() ELSE NULL END,$11)
            RETURNING id,total_earning_amount`,
           [closureWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
-           bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,status,manager.id,createdAt]
+           bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,status,manager.id,manager.id,createdAt]
         )).rows[0];
       }
       const alreadyApproved=await insertClosureProduction("APPROVED",new Date(Date.now()-120000).toISOString());
