@@ -164,7 +164,7 @@ export default function FinanceExceptionsPage() {
     const note=window.prompt("اكتب بيان التسوية الجماعية، مع التأكيد أن السجلات المحددة تم سدادها بالفعل:", "تمت مراجعة السجلات والتأكد من سدادها سابقًا");
     if(!note||note.trim().length<2)return;
     const paymentDate=window.prompt("تاريخ السداد السابق (YYYY-MM-DD) — اتركه فارغًا لو غير معروف:","");
-    if(paymentDate?.trim()&&!/^\\d{4}-\\d{2}-\\d{2}$/.test(paymentDate.trim())){setError("صيغة التاريخ غير صحيحة. استخدم YYYY-MM-DD.");return;}
+    if(paymentDate?.trim()&&!/^\d{4}-\d{2}-\d{2}$/.test(paymentDate.trim())){setError("صيغة التاريخ غير صحيحة. استخدم YYYY-MM-DD.");return;}
     if(!window.confirm("تأكيد إثبات السداد التاريخي لعدد "+rows.length+" سجل؟ لن يتم إنشاء قبض نقدي أو حركة عهدة."))return;
     setBulkHistoricalSaving(true);setError("");setSuccess("");
     let completed=0;const failed:Array<{code:string;message:string}>=[];
