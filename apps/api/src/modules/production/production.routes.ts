@@ -913,8 +913,22 @@ export async function productionRoutes(app: FastifyInstance) {
     const id = (request.params as { id: string }).id;
 
     const row = await withTransaction(async (client) => {
+      // Use the same employee -> production-entry lock order as employee-level
+      // production closures. This serializes approval with closure snapshots and
+      // prevents an approval started earlier from receiving a pre-closure
+      // transaction timestamp while being omitted from the closure snapshot.
+      const identity = await client.query(
+        "SELECT employee_id FROM production_entries WHERE id=$1",
+        [id]
+      );
+      if (!identity.rowCount) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE", [identity.rows[0].employee_id]);
+
       const current = await getEntry(client, id, true);
       if (!current) throw new AppError("PRODUCTION_NOT_FOUND", "سجل الإنتاج غير موجود", 404);
+      if (current.employee_id !== identity.rows[0].employee_id) {
+        throw new AppError("PRODUCTION_EMPLOYEE_CHANGED", "تغير الموظف المرتبط بسجل الإنتاج؛ أعد المحاولة", 409);
+      }
       if (current.status !== "PENDING") {
         throw new AppError("INVALID_STATUS", "لا يمكن اعتماد سجل الإنتاج إلا إذا كان في حالة انتظار", 409);
       }
