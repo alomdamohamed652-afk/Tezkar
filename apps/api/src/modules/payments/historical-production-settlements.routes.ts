@@ -3,6 +3,7 @@ import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { hashPassword, verifyPassword } from "../auth/auth.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
@@ -125,7 +126,84 @@ actual AS (
   return result.rows[0] ?? null;
 }
 
+const closurePasswordSchema=z.object({password:z.string().min(10).max(200)});
+
+async function assertClosurePassword(request: {headers: Record<string, any>; ip: string}) {
+  const supplied=request.headers["x-production-closure-password"];
+  const password=Array.isArray(supplied)?supplied[0]:supplied;
+  if(typeof password!=="string"||!password) throw new AppError("CLOSURE_PASSWORD_REQUIRED","أدخل كلمة مرور قسم إقفال المستحقات",401);
+  const attempts=await pool.query(
+    "SELECT failed_attempts,locked_until FROM employee_production_closure_access_attempts WHERE ip_address=$1",
+    [request.ip]
+  );
+  if(attempts.rows[0]?.locked_until && new Date(attempts.rows[0].locked_until).getTime()>Date.now())
+    throw new AppError("CLOSURE_PASSWORD_RATE_LIMITED","تم إيقاف المحاولات مؤقتًا بسبب تكرار كلمة المرور الخاطئة. حاول بعد 15 دقيقة.",429);
+  const result=await pool.query("SELECT password_hash FROM employee_production_closure_access WHERE id=1");
+  const stored=result.rows[0]?.password_hash as string|undefined;
+  if(!stored) throw new AppError("CLOSURE_PASSWORD_NOT_CONFIGURED","لم يتم إعداد كلمة مرور القسم بعد. اطلب من مدير النظام إعدادها.",409);
+  if(!verifyPassword(password,stored)){
+    await pool.query(`
+      INSERT INTO employee_production_closure_access_attempts(ip_address,failed_attempts,updated_at)
+      VALUES($1,1,now())
+      ON CONFLICT(ip_address) DO UPDATE SET
+        failed_attempts=CASE
+          WHEN employee_production_closure_access_attempts.locked_until IS NOT NULL
+            AND employee_production_closure_access_attempts.locked_until<=now() THEN 1
+          ELSE employee_production_closure_access_attempts.failed_attempts+1 END,
+        locked_until=CASE
+          WHEN (CASE
+            WHEN employee_production_closure_access_attempts.locked_until IS NOT NULL
+              AND employee_production_closure_access_attempts.locked_until<=now() THEN 1
+            ELSE employee_production_closure_access_attempts.failed_attempts+1 END)>=5
+          THEN now()+interval '15 minutes' ELSE NULL END,
+        updated_at=now()
+    `,[request.ip]);
+    throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة مرور القسم غير صحيحة",401);
+  }
+  await pool.query("DELETE FROM employee_production_closure_access_attempts WHERE ip_address=$1",[request.ip]);
+}
+
 export async function historicalProductionSettlementRoutes(app: FastifyInstance) {
+  app.get("/api/worker-payments/employee-production-closures/access-status", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async () => {
+    const result=await pool.query("SELECT 1 FROM employee_production_closure_access WHERE id=1");
+    return {data:{configured:Boolean(result.rowCount)}};
+  });
+
+  app.post("/api/worker-payments/employee-production-closures/access-setup", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    if(!request.user?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))
+      throw new AppError("FORBIDDEN","إعداد كلمة مرور القسم متاح لمدير النظام فقط",403);
+    const parsed=closurePasswordSchema.safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","كلمة المرور يجب ألا تقل عن 10 أحرف",422);
+    await withTransaction(async(client)=>{
+      const existing=await client.query("SELECT id FROM employee_production_closure_access WHERE id=1 FOR UPDATE");
+      if(existing.rowCount) throw new AppError("CLOSURE_PASSWORD_ALREADY_CONFIGURED","كلمة مرور القسم تم إعدادها بالفعل. استخدم تغيير كلمة المرور.",409);
+      await client.query("INSERT INTO employee_production_closure_access(id,password_hash,updated_by) VALUES(1,$1,$2)",[hashPassword(parsed.data.password),request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_created",module:"payments",entityType:"system_setting",entityId:null,metadata:{settingKey:"employee_production_closure_access",passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    });
+    return {data:{success:true}};
+  });
+
+  app.post("/api/worker-payments/employee-production-closures/access-change", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    if(!request.user?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))
+      throw new AppError("FORBIDDEN","تغيير كلمة مرور القسم متاح لمدير النظام فقط",403);
+    const parsed=z.object({currentPassword:z.string().min(1).max(200),newPassword:z.string().min(10).max(200)}).safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تغيير كلمة المرور غير صحيحة",422);
+    await withTransaction(async(client)=>{
+      const current=await client.query("SELECT password_hash FROM employee_production_closure_access WHERE id=1 FOR UPDATE");
+      if(!current.rowCount||!verifyPassword(parsed.data.currentPassword,current.rows[0].password_hash))
+        throw new AppError("INVALID_CLOSURE_PASSWORD","كلمة المرور الحالية غير صحيحة",401);
+      await client.query("UPDATE employee_production_closure_access SET password_hash=$1,updated_by=$2,updated_at=now() WHERE id=1",[hashPassword(parsed.data.newPassword),request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"production_closure_password_changed",module:"payments",entityType:"system_setting",entityId:null,metadata:{settingKey:"employee_production_closure_access",passwordStoredAsHash:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+    });
+    return {data:{success:true}};
+  });
+
   app.get("/api/worker-payments/historical-production-settlements", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
@@ -220,10 +298,12 @@ actual AS (
              o.code AS order_code,o.order_name,s.name AS stage_name,
              COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned_amount,
              COALESCE(a.amount,0) AS actual_paid_amount,
-             CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END AS historical_paid_amount,
-             GREATEST(0,COALESCE(p.total_earning_amount,p.earning_amount,0)
-               -COALESCE(a.amount,0)
-               -CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) AS remaining_amount,
+             CASE WHEN cce.id IS NOT NULL THEN cce.closed_amount_snapshot
+                  WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END AS historical_paid_amount,
+             CASE WHEN cce.id IS NOT NULL THEN 0
+               ELSE GREATEST(0,COALESCE(p.total_earning_amount,p.earning_amount,0)
+                 -COALESCE(a.amount,0)
+                 -CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END) END AS remaining_amount,
              GREATEST(0,COALESCE(a.amount,0)
                +CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
                -COALESCE(p.total_earning_amount,p.earning_amount,0)) AS overpaid_amount,
@@ -235,6 +315,7 @@ actual AS (
                   OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
              ) AS ambiguous_payment_evidence,
              CASE
+               WHEN cce.id IS NOT NULL THEN 'PAID_HISTORICALLY'
                WHEN COALESCE(a.amount,0)+CASE WHEN m.status='PAID_PREVIOUSLY' THEN m.amount_snapshot ELSE 0 END
                     >COALESCE(p.total_earning_amount,p.earning_amount,0)+0.009 THEN 'NEEDS_REVIEW'
                WHEN EXISTS (
@@ -258,6 +339,10 @@ actual AS (
         JOIN employees e ON e.id=p.employee_id
         LEFT JOIN actual a ON a.production_entry_id=p.id
         LEFT JOIN historical_production_settlement_marks m ON m.production_entry_id=p.id
+        LEFT JOIN employee_production_closure_entries cce
+          ON cce.production_entry_id=p.id
+         AND cce.closure_id=(SELECT active_closure.id FROM employee_production_closures active_closure
+           WHERE active_closure.employee_id=p.employee_id AND active_closure.status='ACTIVE' LIMIT 1)
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
         LEFT JOIN production_orders o ON o.id=os.order_id
         LEFT JOIN stages s ON s.id=os.stage_id
@@ -265,6 +350,114 @@ actual AS (
        ORDER BY p.work_date DESC,p.created_at DESC,p.id
     `,[parsed.data.employeeId??null]);
     return {data:result.rows};
+  });
+
+  app.get("/api/worker-payments/employee-production-closures", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    await assertClosurePassword(request);
+    const result=await pool.query(`
+      SELECT c.id,c.employee_id,e.code AS employee_code,e.full_name AS employee_name,
+             c.closed_at,c.notes,c.approved_production_count,c.production_amount_snapshot,c.status,
+             c.reversed_at,c.reversal_reason
+        FROM employee_production_closures c
+        JOIN employees e ON e.id=c.employee_id
+       ORDER BY c.closed_at DESC
+    `);
+    return {data:result.rows};
+  });
+
+  app.post("/api/worker-payments/employee-production-closures", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    await assertClosurePassword(request);
+    const parsed=z.object({employeeId:z.string().uuid(),notes:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","حدد العامل واكتب سبب الإقفال بوضوح",422);
+    return {data:await withTransaction(async(client)=>{
+      const locked=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[parsed.data.employeeId]);
+      if(!locked.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
+      const active=await client.query("SELECT id FROM employee_production_closures WHERE employee_id=$1 AND status='ACTIVE' FOR UPDATE",[parsed.data.employeeId]);
+      if(active.rowCount) throw new AppError("EMPLOYEE_PRODUCTION_ALREADY_CLOSED","يوجد إقفال نشط لهذا العامل بالفعل",409);
+      const approved=await client.query(
+        "SELECT id FROM production_entries WHERE employee_id=$1 AND status='APPROVED' ORDER BY work_date,created_at,id FOR UPDATE",
+        [parsed.data.employeeId]
+      );
+      if(!approved.rowCount) throw new AppError("NO_APPROVED_PRODUCTION","لا توجد سجلات إنتاج معتمدة لإقفالها",409);
+      const snapshot=[];
+      for(const entry of approved.rows){
+        const settlement=await loadProductionSettlement(client,entry.id);
+        if(!settlement) continue;
+        if(settlement.ambiguous_payment_evidence){
+          throw new AppError("AMBIGUOUS_PAYMENT_EVIDENCE","تعذر إقفال مستحقات العامل لأن هناك توزيعات سداد قديمة غير مؤكدة. راجع الحالات المالية أولًا.",409);
+        }
+        if(settlement.status!=="APPROVED"){
+          throw new AppError("PRODUCTION_STATUS_CHANGED","تغيرت حالة أحد سجلات الإنتاج أثناء الإقفال. أعد المحاولة بعد المراجعة.",409);
+        }
+        const earned=Number(settlement.earned??0);
+        const paid=Number(settlement.actual_paid??0)+(settlement.mark_status==="PAID_PREVIOUSLY"?Number(settlement.historical_paid??0):0);
+        const remaining=Math.max(0,earned-paid);
+        snapshot.push({id:settlement.id,earned,paid,remaining});
+      }
+      if(!snapshot.length) throw new AppError("NO_APPROVED_PRODUCTION","لا توجد سجلات إنتاج معتمدة لإقفالها",409);
+      const total=snapshot.reduce((sum,row)=>sum+row.remaining,0);
+      const created=await client.query(`
+        INSERT INTO employee_production_closures
+          (employee_id,notes,approved_production_count,production_amount_snapshot,closed_by)
+        VALUES($1,$2,$3,$4,$5) RETURNING *
+      `,[parsed.data.employeeId,parsed.data.notes,snapshot.length,total,request.user!.userId]);
+      const closure=created.rows[0];
+      for(const row of snapshot){
+        await client.query(`
+          INSERT INTO employee_production_closure_entries
+            (closure_id,production_entry_id,earned_amount_snapshot,previously_paid_snapshot,closed_amount_snapshot)
+          VALUES($1,$2,$3,$4,$5)
+        `,[closure.id,row.id,row.earned,row.paid,row.remaining]);
+      }
+      await writeAudit(client,{
+        actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+        action:"employee_production_forced_closure",module:"payments",
+        entityType:"employee_production_closure",entityId:closure.id,
+        afterData:closure,
+        metadata:{employeeId:parsed.data.employeeId,productionCount:snapshot.length,
+          productionAmountSnapshot:total,productionEntryIds:snapshot.map(row=>row.id),
+          financialMovementCreated:false,ledgerChanged:false,productionChanged:false,pricesChanged:false},
+        ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
+      });
+      return closure;
+    })};
+  });
+
+  app.patch("/api/worker-payments/employee-production-closures/:closureId/reverse", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    await assertClosurePassword(request);
+    const params=z.object({closureId:z.string().uuid()}).safeParse(request.params);
+    const body=z.object({reason:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!params.success||!body.success) throw new AppError("VALIDATION_ERROR","بيانات إلغاء الإقفال غير صحيحة",422);
+    return {data:await withTransaction(async(client)=>{
+      // Keep the global lock order employee -> closure, matching closure creation
+      // and production approval. Locking the closure first can deadlock with a
+      // concurrent new closure for the same employee.
+      const identity=await client.query("SELECT employee_id FROM employee_production_closures WHERE id=$1",[params.data.closureId]);
+      if(!identity.rowCount) throw new AppError("ACTIVE_CLOSURE_NOT_FOUND","الإقفال غير موجود أو تم إلغاؤه بالفعل",409);
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[identity.rows[0].employee_id]);
+      const current=await client.query("SELECT * FROM employee_production_closures WHERE id=$1 FOR UPDATE",[params.data.closureId]);
+      if(!current.rowCount||current.rows[0].status!=="ACTIVE") throw new AppError("ACTIVE_CLOSURE_NOT_FOUND","الإقفال غير موجود أو تم إلغاؤه بالفعل",409);
+      const updated=await client.query(`
+        UPDATE employee_production_closures
+           SET status='REVERSED',reversed_at=now(),reversed_by=$2,reversal_reason=$3,updated_at=now()
+         WHERE id=$1 RETURNING *
+      `,[params.data.closureId,request.user!.userId,body.data.reason]);
+      await writeAudit(client,{
+        actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+        action:"employee_production_closure_reversed",module:"payments",
+        entityType:"employee_production_closure",entityId:params.data.closureId,
+        beforeData:current.rows[0],afterData:updated.rows[0],
+        metadata:{productionChanged:false,financialMovementCreated:false},
+        ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
+      });
+      return updated.rows[0];
+    })};
   });
 
   app.patch("/api/worker-payments/historical-production-settlements/:productionEntryId", {

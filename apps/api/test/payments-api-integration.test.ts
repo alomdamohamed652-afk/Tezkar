@@ -1468,6 +1468,86 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(newPayoutAfterClose.json().error.code,"ACCOUNTING_PERIOD_CLOSED");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id])).rows[0].count),Number(directCountBeforePeriodLock.rows[0].count),
         "the closed period must not permit an additional payout");
+
+      // Employee production closure regression: a record created before closure but
+      // approved afterwards must remain payable, based on approved_at rather than created_at.
+      const closureWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Production Closure Worker') RETURNING id"
+      )).rows[0];
+      const closurePassword="Closure-Password-2026!";
+      const closureSetup=await app.inject({
+        method:"POST",url:"/api/worker-payments/employee-production-closures/access-setup",
+        headers:{cookie:managerCookie},payload:{password:closurePassword}
+      });
+      assert.equal(closureSetup.statusCode,200,closureSetup.body);
+      async function insertClosureProduction(status:"APPROVED"|"PENDING",createdAt:string){
+        return (await apiPool.query(
+          `INSERT INTO production_entries(
+             employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+             wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+             status,submitted_by,approved_by,approved_at,created_at
+           )
+           VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,50,20,
+             $8,$9::uuid,CASE WHEN $8='APPROVED' THEN $10::uuid ELSE NULL END,
+             CASE WHEN $8='APPROVED' THEN now() ELSE NULL END,$11)
+           RETURNING id,total_earning_amount`,
+          [closureWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+           bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,status,manager.id,manager.id,createdAt]
+        )).rows[0];
+      }
+      const alreadyApproved=await insertClosureProduction("APPROVED",new Date(Date.now()-120000).toISOString());
+      const pendingBeforeClosure=await insertClosureProduction("PENDING",new Date(Date.now()-60000).toISOString());
+      const paymentsBeforeClosure=Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1",[closureWorker.id]
+      )).rows[0].count);
+      const ledgerBeforeClosure=Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_ledger WHERE employee_id=$1",[closureWorker.id]
+      )).rows[0].count);
+      const closureResponse=await app.inject({
+        method:"POST",url:"/api/worker-payments/employee-production-closures",
+        headers:{cookie:managerCookie,"x-production-closure-password":closurePassword},
+        payload:{employeeId:closureWorker.id,notes:"Regression test closure"}
+      });
+      assert.equal(closureResponse.statusCode,200,closureResponse.body);
+      assert.equal(Number(closureResponse.json().data.approved_production_count),1,
+        "closure must snapshot only production already approved at closure time");
+      assert.equal(Number(closureResponse.json().data.production_amount_snapshot),130);
+      await apiPool.query(
+        "UPDATE production_entries SET status='APPROVED',approved_by=$2,approved_at=now(),updated_at=now() WHERE id=$1",
+        [pendingBeforeClosure.id,manager.id]
+      );
+      const afterClosureSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${closureWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(afterClosureSummary.statusCode,200,afterClosureSummary.body);
+      assert.equal(Number(afterClosureSummary.json().data.availableForSettlement),130,
+        "production approved after closure remains fully payable even if its created_at predates closure");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1",[closureWorker.id]
+      )).rows[0].count),paymentsBeforeClosure,"closure must not create a worker payment");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_ledger WHERE employee_id=$1",[closureWorker.id]
+      )).rows[0].count),ledgerBeforeClosure,"closure must not create or alter earnings ledger entries");
+      const closureEntries=await apiPool.query(
+        "SELECT production_entry_id FROM employee_production_closure_entries WHERE closure_id=$1",
+        [closureResponse.json().data.id]
+      );
+      assert.deepEqual(closureEntries.rows.map((row:any)=>row.production_entry_id),[alreadyApproved.id],
+        "closure snapshots must not absorb pending production that is approved later");
+      for(let attempt=0;attempt<5;attempt++){
+        const invalidPassword=await app.inject({
+          method:"GET",url:"/api/worker-payments/employee-production-closures",
+          headers:{cookie:managerCookie,"x-production-closure-password":"Definitely-Wrong-Password"}
+        });
+        assert.equal(invalidPassword.statusCode,401,"incorrect closure passwords must be rejected");
+      }
+      const throttledPassword=await app.inject({
+        method:"GET",url:"/api/worker-payments/employee-production-closures",
+        headers:{cookie:managerCookie,"x-production-closure-password":closurePassword}
+      });
+      assert.equal(throttledPassword.statusCode,429,
+        "five failed closure password attempts must temporarily lock the caller out");
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
