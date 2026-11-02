@@ -88,6 +88,8 @@ export default function FinanceExceptionsPage() {
   const [historicalLoading,setHistoricalLoading]=useState(false);
   const [historicalSavingId,setHistoricalSavingId]=useState("");
   const [historicalSearch,setHistoricalSearch]=useState("");
+  const [selectedHistoricalIds,setSelectedHistoricalIds]=useState<string[]>([]);
+  const [bulkHistoricalSaving,setBulkHistoricalSaving]=useState(false);
 
   const selected = useMemo(() => payments.find(p => p.payment_id === selectedId) ?? null, [payments, selectedId]);
   const filtered = useMemo(() => {
@@ -151,6 +153,36 @@ export default function FinanceExceptionsPage() {
     if(!q)return rows;
     return rows.filter(x=>[x.production_code,x.employee_name,x.employee_code,x.order_name??"",x.order_code??"",x.stage_name??""].join(" ").toLocaleLowerCase("ar-EG").includes(q));
   },[historicalProduction,historicalSearch]);
+  const selectableHistoricalRows=useMemo(()=>filteredHistoricalProduction.filter(row=>row.classification==="UNPAID"),[filteredHistoricalProduction]);
+  const allVisibleHistoricalSelected=selectableHistoricalRows.length>0&&selectableHistoricalRows.every(row=>selectedHistoricalIds.includes(row.production_entry_id));
+  function toggleHistoricalSelection(id:string,checked:boolean){
+    setSelectedHistoricalIds(current=>checked?[...new Set([...current,id])]:current.filter(value=>value!==id));
+  }
+  async function bulkMarkHistoricalPaid(){
+    const rows=historicalProduction.filter(row=>selectedHistoricalIds.includes(row.production_entry_id)&&row.classification==="UNPAID");
+    if(!rows.length)return;
+    const note=window.prompt("اكتب بيان التسوية الجماعية، مع التأكيد أن السجلات المحددة تم سدادها بالفعل:", "تمت مراجعة السجلات والتأكد من سدادها سابقًا");
+    if(!note||note.trim().length<2)return;
+    const paymentDate=window.prompt("تاريخ السداد السابق (YYYY-MM-DD) — اتركه فارغًا لو غير معروف:","");
+    if(paymentDate?.trim()&&!/^\\d{4}-\\d{2}-\\d{2}$/.test(paymentDate.trim())){setError("صيغة التاريخ غير صحيحة. استخدم YYYY-MM-DD.");return;}
+    if(!window.confirm("تأكيد إثبات السداد التاريخي لعدد "+rows.length+" سجل؟ لن يتم إنشاء قبض نقدي أو حركة عهدة."))return;
+    setBulkHistoricalSaving(true);setError("");setSuccess("");
+    let completed=0;const failed:Array<{code:string;message:string}>=[];
+    try{
+      for(const row of rows){
+        try{
+          await api("/api/worker-payments/historical-production-settlements/"+encodeURIComponent(row.production_entry_id),{
+            method:"PATCH",body:JSON.stringify({status:"PAID_PREVIOUSLY",notes:note.trim(),paymentDate:paymentDate?.trim()||null})
+          });
+          completed++;
+        }catch(e){failed.push({code:row.production_code,message:e instanceof Error?e.message:"تعذر تحديث السجل"});}
+      }
+      setSelectedHistoricalIds([]);
+      setSuccess("تم إثبات السداد لـ "+completed+" سجل من أصل "+rows.length+"."+(failed.length?" تعذر تحديث "+failed.length+" سجل؛ لم يتم تجاوزها.":""));
+      if(failed.length)setError(failed.slice(0,10).map(item=>item.code+": "+item.message).join(" | "));
+      await loadHistoricalProduction();
+    }finally{setBulkHistoricalSaving(false);}
+  }
   async function updateHistoricalProduction(row:HistoricalProduction,status:"PAID_PREVIOUSLY"|"NEEDS_REVIEW"){
     const note=window.prompt(status==="PAID_PREVIOUSLY"?"اكتب بيانًا يوضح أن مستحق الإنتاج تم دفعه قبل استخدام النظام:":"اكتب سبب إعادة الحالة للمراجعة:",status==="PAID_PREVIOUSLY"?"تم السداد قبل تشغيل النظام":"إعادة للمراجعة");
     if(!note||note.trim().length<2)return;
@@ -295,8 +327,14 @@ export default function FinanceExceptionsPage() {
               {!historicalEmployeeSummary.length&&<tr><td colSpan={5}>لا توجد سجلات إنتاج معتمدة.</td></tr>}
             </tbody></table></div>
             <h3 className="card-title" style={{marginTop:20}}>تفاصيل سجلات الإنتاج</h3>
-            <div className="table-wrap"><table><thead><tr><th>سجل الإنتاج</th><th>العامل</th><th>الطلبية / المرحلة</th><th>إجمالي الإنتاج</th><th>إجمالي المدفوع</th><th>المتبقي</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>
+            <div className="form-actions" style={{marginBottom:12}}>
+              <button type="button" className="secondary-btn" onClick={()=>setSelectedHistoricalIds(allVisibleHistoricalSelected?[]:selectableHistoricalRows.map(row=>row.production_entry_id))} disabled={!selectableHistoricalRows.length||bulkHistoricalSaving}>{allVisibleHistoricalSelected?"إلغاء تحديد الظاهر":"تحديد كل المستحقات الظاهرة"}</button>
+              <span className="form-hint">المحدد: {selectedHistoricalIds.length} سجل</span>
+              <button type="button" className="primary-button" onClick={()=>void bulkMarkHistoricalPaid()} disabled={!selectedHistoricalIds.length||bulkHistoricalSaving}>{bulkHistoricalSaving?"جارٍ تنفيذ التسوية…":"إثبات سداد المحدد ("+selectedHistoricalIds.length+")"}</button>
+            </div>
+            <div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="تحديد كل السجلات المستحقة الظاهرة" checked={allVisibleHistoricalSelected} onChange={e=>setSelectedHistoricalIds(e.target.checked?selectableHistoricalRows.map(row=>row.production_entry_id):[])} disabled={!selectableHistoricalRows.length||bulkHistoricalSaving}/></th><th>سجل الإنتاج</th><th>العامل</th><th>الطلبية / المرحلة</th><th>إجمالي الإنتاج</th><th>إجمالي المدفوع</th><th>المتبقي</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>
               {filteredHistoricalProduction.map(row=><tr key={row.production_entry_id}>
+                <td>{row.classification==="UNPAID"?<input type="checkbox" aria-label={"تحديد "+row.production_code} checked={selectedHistoricalIds.includes(row.production_entry_id)} onChange={e=>toggleHistoricalSelection(row.production_entry_id,e.target.checked)} disabled={bulkHistoricalSaving}/>:<span className="form-hint">—</span>}</td>
                 <td><strong>{row.production_code}</strong><div className="form-hint">{String(row.work_date).slice(0,10)}</div></td>
                 <td>{row.employee_name}<div className="form-hint">{row.employee_code}</div></td>
                 <td>{row.order_name||"بدون طلبية"}<div className="form-hint">{row.stage_name||"—"}</div></td>
@@ -304,7 +342,7 @@ export default function FinanceExceptionsPage() {
                 <td><span className={row.classification==="PAID_CONFIRMED"||row.classification==="PAID_HISTORICALLY"?"status success":"status warning"}>{row.classification==="PAID_CONFIRMED"||row.classification==="PAID_HISTORICALLY"?"مدفوع":row.classification==="NEEDS_REVIEW"?"غير محسوم — دفعة محتملة":"مستحق"}</span></td>
                 <td>{row.classification==="UNPAID"?<button type="button" className="primary-button" disabled={historicalSavingId===row.production_entry_id} onClick={()=>void updateHistoricalProduction(row,"PAID_PREVIOUSLY")}>{historicalSavingId===row.production_entry_id?"جارٍ الحفظ…":"تسجيل أنه مدفوع"}</button>:row.classification==="PAID_HISTORICALLY"?<button type="button" className="secondary-btn" disabled={historicalSavingId===row.production_entry_id} onClick={()=>void updateHistoricalProduction(row,"NEEDS_REVIEW")}>إلغاء الإثبات</button>:row.classification==="NEEDS_REVIEW"?"راجع الدفعة المحتملة":"—"}</td>
               </tr>)}
-              {!historicalLoading&&!filteredHistoricalProduction.length&&<tr><td colSpan={8}>لا توجد سجلات مستحقة أو حالات غير محسومة.</td></tr>}
+              {!historicalLoading&&!filteredHistoricalProduction.length&&<tr><td colSpan={9}>لا توجد سجلات مستحقة أو حالات غير محسومة.</td></tr>}
             </tbody></table></div>
             <p className="form-hint">السجلات التي لها دفعات فعلية غير موزعة بالكامل تُعلَّم «غير محسوم» ولا يسمح النظام بإثباتها كمدفوعة تاريخيًا حتى تتم مراجعة الدفعة.</p>
           </div>
