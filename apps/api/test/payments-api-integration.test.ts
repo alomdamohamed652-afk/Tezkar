@@ -1241,6 +1241,60 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [orderScopedPayout.json().data.payment.id]
       )).rows[0].count),0,"order-scoped previous-custody settlement must not debit current custody");
 
+      // Cross-payment over-allocation must abort a previous-custody payout atomically.
+      // The same production entry is already fully covered by two distinct legacy sources.
+      const overallocatedWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Cross Payment Over-allocation Worker') RETURNING id"
+      )).rows[0];
+      const overallocatedProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [overallocatedWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(overallocatedProduction.total_earning_amount),10);
+      const legacyDirectPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes)
+         VALUES($1,10,10,0,'CASH',$2,'cross-payment direct allocation fixture') RETURNING id`,
+        [overallocatedWorker.id,manager.id]
+      )).rows[0];
+      const legacyOrderPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes)
+         VALUES($1,10,10,0,'CASH',$2,'cross-payment order allocation fixture') RETURNING id`,
+        [overallocatedWorker.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [legacyDirectPayment.id,overallocatedProduction.id]
+      );
+      await apiPool.query(
+        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)",
+        [legacyOrderPayment.id,overallocatedProduction.id]
+      );
+      const overallocatedPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:overallocatedWorker.id,settlementSource:"PREVIOUS_CUSTODY",
+          orderId:multiOrderId,orderStageId:reconcileOrderStage.id,amount:1,method:"CASH",
+          allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(overallocatedPayout.statusCode,409,overallocatedPayout.body);
+      assert.equal(overallocatedPayout.json().error.code,"PRODUCTION_ALREADY_SETTLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1",
+        [overallocatedWorker.id]
+      )).rows[0].count),2,
+        "a rejected cross-payment over-allocation must roll back the new payment row");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",
+        [overallocatedWorker.id]
+      )).rows[0].count),0,
+        "a rejected cross-payment over-allocation must roll back the settlement row");
+
       const employeeStatementAfterReconcile=await app.inject({
         method:"GET",url:`/api/worker-payments/employee-statement?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
