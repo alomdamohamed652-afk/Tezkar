@@ -435,9 +435,14 @@ actual AS (
     const body=z.object({reason:z.string().trim().min(3).max(500)}).safeParse(request.body);
     if(!params.success||!body.success) throw new AppError("VALIDATION_ERROR","بيانات إلغاء الإقفال غير صحيحة",422);
     return {data:await withTransaction(async(client)=>{
+      // Keep the global lock order employee -> closure, matching closure creation
+      // and production approval. Locking the closure first can deadlock with a
+      // concurrent new closure for the same employee.
+      const identity=await client.query("SELECT employee_id FROM employee_production_closures WHERE id=$1",[params.data.closureId]);
+      if(!identity.rowCount) throw new AppError("ACTIVE_CLOSURE_NOT_FOUND","الإقفال غير موجود أو تم إلغاؤه بالفعل",409);
+      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[identity.rows[0].employee_id]);
       const current=await client.query("SELECT * FROM employee_production_closures WHERE id=$1 FOR UPDATE",[params.data.closureId]);
       if(!current.rowCount||current.rows[0].status!=="ACTIVE") throw new AppError("ACTIVE_CLOSURE_NOT_FOUND","الإقفال غير موجود أو تم إلغاؤه بالفعل",409);
-      await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[current.rows[0].employee_id]);
       const updated=await client.query(`
         UPDATE employee_production_closures
            SET status='REVERSED',reversed_at=now(),reversed_by=$2,reversal_reason=$3,updated_at=now()
