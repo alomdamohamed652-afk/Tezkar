@@ -10,6 +10,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 const listSchema = z.object({ employeeId: z.string().uuid().optional() });
 const updateSchema = z.object({
   status: z.enum(["PAID_PREVIOUSLY", "NEEDS_REVIEW"]),
+  confirmAmbiguousPayment: z.boolean().optional(),
   notes: z.string().trim().min(2).max(500),
   paymentDate: z.string().date().nullable().optional()
 });
@@ -485,8 +486,11 @@ actual AS (
       if(parsed.data.status==="PAID_PREVIOUSLY"){
         if(Number(evidence.actual_paid)>0.009)
           throw new AppError("PRODUCTION_ALREADY_PAID","يوجد إثبات دفع مرتبط بسجل الإنتاج بالفعل؛ لن يتم إنشاء تسوية تاريخية مكررة",409);
-        if(evidence.ambiguous_payment_evidence)
-          throw new AppError("HISTORICAL_PAYMENT_NEEDS_REVIEW","توجد دفعة فعلية للعامل غير موزعة بالكامل وقد تكون مرتبطة بهذا السجل. راجع الدفعات القديمة أولًا؛ لم يتم تسجيل التسوية.",409);
+        if(evidence.ambiguous_payment_evidence){
+          const isManager=request.user?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase()));
+          if(!parsed.data.confirmAmbiguousPayment || !isManager)
+            throw new AppError("HISTORICAL_PAYMENT_NEEDS_REVIEW","توجد دفعة قديمة غير موزعة بالكامل. لا يمكن اعتماد المتبقي كمدفوع إلا بتأكيد مدير النظام بعد مراجعة مستندات السداد.",409);
+        }
       }
       const earned=Number(production.rows[0].earned);
       const amountSnapshot=parsed.data.status==="PAID_PREVIOUSLY"
