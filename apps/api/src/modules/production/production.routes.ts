@@ -1173,8 +1173,10 @@ export async function productionRoutes(app: FastifyInstance) {
       for(const scrap of scrapRows.rows){
         if(!scrap.scrap_movement_id||!scrap.scrap_lot_id)
           throw new AppError("PRODUCTION_SCRAP_MOVEMENT_MISSING","تعذر العثور على حركة أو دفعة مخزون الهالك؛ لم يتم التراجع",409);
+        const lockedScrapLot=await client.query("SELECT original_quantity,remaining_quantity FROM inventory_lots WHERE id=$1 FOR UPDATE",[scrap.scrap_lot_id]);
+        if(!lockedScrapLot.rowCount)throw new AppError("PRODUCTION_SCRAP_LOT_MISSING","دفعة مخزون الهالك غير موجودة؛ لم يتم التراجع",409);
         const scrapQty=Number(scrap.quantity);
-        if(Math.abs(Number(scrap.scrap_lot_remaining)-Number(scrap.scrap_lot_original))>0.0005)
+        if(Math.abs(Number(lockedScrapLot.rows[0].remaining_quantity)-Number(lockedScrapLot.rows[0].original_quantity))>0.0005)
           throw new AppError("PRODUCTION_SCRAP_ALREADY_USED","لا يمكن التراجع لأن كمية من الهالك تم صرفها أو استهلاكها من مخزن الهالك. أعد الكمية أولًا.",409);
         const scrapBalance=await client.query(
           "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
