@@ -1210,7 +1210,7 @@ export async function productionRoutes(app: FastifyInstance) {
           }
           const sourceReverse=await client.query(
             `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
-             VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION_SCRAP_REVERSAL',$12) RETURNING id`,
+             VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION_SCRAP_SOURCE_REVERSAL',$12) RETURNING id`,
             [current.product_id,current.warehouse_id,current.location_id,restoredQty,current.unit_id,
              restoredQty>0?restoredValue/restoredQty:0,restoredValue,current.order_id??null,current.order_stage_id??null,
              "عكس تحويل الهالك لإنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId,scrap.id]
