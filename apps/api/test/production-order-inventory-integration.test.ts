@@ -1695,6 +1695,29 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "the full 580 EGP price reduction must be deducted from the worker's ledger balance");
     assert.ok(Number(negativeDueBalance.rows[0].remaining) < 0,
       "overpayment must remain as a negative worker due balance instead of blocking the price change");
+    const allocationsBeforeProductionReverse=await apiPool.query(
+      "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+      [paidWorkerPaymentId]
+    );
+    const reversePaidProduction=await app.inject({
+      method:"POST",url:"/api/production/"+priceProductionId+"/reverse",
+      headers:{cookie:submitter.cookie},
+      payload:{password:"Test-only-password-2026!",reason:"Integration: reset worker account after recorded payout"}
+    });
+    assert.equal(reversePaidProduction.statusCode,200,reversePaidProduction.body,
+      "an existing payment allocation must not block an audited production reversal");
+    assert.equal(reversePaidProduction.json().data.status,"CANCELLED");
+    const allocationsAfterProductionReverse=await apiPool.query(
+      "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+      [paidWorkerPaymentId]
+    );
+    assert.equal(Number(allocationsAfterProductionReverse.rows[0].count),Number(allocationsBeforeProductionReverse.rows[0].count),
+      "reversal must preserve the original payment allocation history");
+    assert.equal(Number(allocationsAfterProductionReverse.rows[0].amount),Number(allocationsBeforeProductionReverse.rows[0].amount));
+    const preservedPayment=await apiPool.query("SELECT gross_amount FROM worker_payments WHERE id=$1",[paidWorkerPaymentId]);
+    assert.equal(Number(preservedPayment.rows[0].gross_amount),500,
+      "reversal must not alter or recreate the original worker payment");
+
     const overpaidHistory = await app.inject({
       method: "GET", url: "/api/orders/" + priceOrderId + "/price-changes",
       headers: { cookie: submitter.cookie }
