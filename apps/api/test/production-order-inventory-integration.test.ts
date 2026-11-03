@@ -583,15 +583,6 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(approvedScrapReplay.statusCode, 200, approvedScrapReplay.body);
     assert.equal(approvedScrapReplay.json().data.stock_movement_id, approvedScrap.json().data.stock_movement_id);
     assert.equal(approvedScrapReplay.json().data.source_stock_movement_id, approvedScrap.json().data.source_stock_movement_id);
-    const reverseScrappedProduction = await app.inject({
-      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
-      headers: { cookie: submitter.cookie },
-      payload: { password: "Test-only-password-2026!", reason: "Must not reverse scrap-linked stock" }
-    });
-    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
-    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_HAS_SCRAP",
-      "reversal must not silently restore the gross quantity after scrap has been transferred");
-
     // Consume an intermediate-stage product as an input to the final stage.
     // This intentionally differs from the final stage's output product.
     const withdrawal = await app.inject({
@@ -603,6 +594,17 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
+    // Scrap itself is no longer an unconditional reversal blocker. Once the
+    // good-output lot has been consumed downstream, the transaction must still
+    // refuse reversal atomically with the stock-consumed reason.
+    const reverseScrappedProduction = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
+      headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!", reason: "Integration: downstream stock already consumed" }
+    });
+    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
+    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_STOCK_ALREADY_USED");
+
     const withdrawalListPage = await app.inject({
       method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
     });
