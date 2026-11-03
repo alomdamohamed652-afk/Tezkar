@@ -594,16 +594,21 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
-    // Scrap itself is no longer an unconditional reversal blocker. Once the
-    // good-output lot has been consumed downstream, the transaction must still
-    // refuse reversal atomically with the stock-consumed reason.
+    // Scrap linked to an approved production entry can be reversed when its
+    // dedicated scrap stock and source output lots are still fully available.
     const reverseScrappedProduction = await app.inject({
       method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
       headers: { cookie: submitter.cookie },
-      payload: { password: "Test-only-password-2026!", reason: "Integration: downstream stock already consumed" }
+      payload: { password: "Test-only-password-2026!", reason: "Integration: reverse approved production and its scrap" }
     });
-    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
-    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_STOCK_ALREADY_USED");
+    assert.equal(reverseScrappedProduction.statusCode, 200, reverseScrappedProduction.body);
+    assert.equal(reverseScrappedProduction.json().data.status, "CANCELLED");
+    const reversedScrapMovements=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
+      [postApprovalEntryId]
+    );
+    assert.equal(reversedScrapMovements.rows[0].count, 2,
+      "reversal must create compensating movements for both source stock and the scrap warehouse");
 
     const withdrawalListPage = await app.inject({
       method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
