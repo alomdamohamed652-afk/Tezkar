@@ -1043,7 +1043,7 @@ export async function productionRoutes(app: FastifyInstance) {
                   END
             WHERE id=$2
             RETURNING id,order_id,completed_quantity,status`,
-          [stageContribution,current.order_stage_id]
+          [goodQuantity,current.order_stage_id]
         );
         if(!stageUpdate.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب المرتبطة بالإنتاج غير موجودة",409);
         const orderCompletion=await client.query(
@@ -1293,7 +1293,7 @@ export async function productionRoutes(app: FastifyInstance) {
                ELSE completed_at
              END
            WHERE id=$2`,
-          [goodQuantity,current.order_stage_id]
+          [stageContribution,current.order_stage_id]
         );
         if(current.order_id){
           const stageState=await client.query(
