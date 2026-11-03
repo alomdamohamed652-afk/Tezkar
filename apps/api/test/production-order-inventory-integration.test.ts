@@ -607,8 +607,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
       [postApprovalEntryId]
     );
-    assert.equal(reversedScrapMovements.rows[0].count, 2,
-      "reversal must create compensating movements for both source stock and the scrap warehouse");
+    assert.equal(reversedScrapMovements.rows[0].count, 1,
+      "reversal must create a compensating OUT movement from the scrap warehouse");
+    const reversedSourceMovements=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_SOURCE_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
+      [postApprovalEntryId]
+    );
+    assert.equal(reversedSourceMovements.rows[0].count, 1,
+      "reversal must restore source-product stock with a separate transfer-in movement");
 
     const withdrawalListPage = await app.inject({
       method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
