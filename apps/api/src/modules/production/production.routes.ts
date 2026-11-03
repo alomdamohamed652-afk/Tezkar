@@ -1043,7 +1043,7 @@ export async function productionRoutes(app: FastifyInstance) {
                   END
             WHERE id=$2
             RETURNING id,order_id,completed_quantity,status`,
-          [goodQuantity,current.order_stage_id]
+          [stageContribution,current.order_stage_id]
         );
         if(!stageUpdate.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب المرتبطة بالإنتاج غير موجودة",409);
         const orderCompletion=await client.query(
@@ -1156,13 +1156,15 @@ export async function productionRoutes(app: FastifyInstance) {
            LEFT JOIN stock_movements src ON src.reference_type='TRANSFER' AND src.reference_id=sm.id
           WHERE s.production_entry_id=$1
           ORDER BY s.created_at,s.id
-          FOR UPDATE OF s,sm,il`,
+          FOR UPDATE OF s`,
         [id]
       );
       const lot=await client.query("SELECT * FROM inventory_lots WHERE source_type='PRODUCTION' AND source_id=$1 FOR UPDATE",[id]);
       if(!lot.rowCount)throw new AppError("PRODUCTION_LOT_MISSING","تعذر العثور على دفعة المخزون الناتجة عن هذا الإنتاج؛ لم يتم التراجع",409);
       const sourceLot=lot.rows[0];
       const goodQuantity=Number(sourceLot.original_quantity);
+      const postApprovalScrapQuantity=scrapRows.rows.filter(row=>row.scrap_movement_type==="TRANSFER_IN").reduce((sum,row)=>sum+Number(row.quantity),0);
+      const stageContribution=Math.max(0,goodQuantity-postApprovalScrapQuantity);
       const remainingQty=Number(sourceLot.remaining_quantity);
       if(Math.abs(remainingQty-goodQuantity)>0.0005)throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من الإنتاج الصالح تم صرفه أو استهلاكه من المخزن. عالج الحركات التابعة أولًا.",409);
 
