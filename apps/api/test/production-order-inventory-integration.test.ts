@@ -583,15 +583,6 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(approvedScrapReplay.statusCode, 200, approvedScrapReplay.body);
     assert.equal(approvedScrapReplay.json().data.stock_movement_id, approvedScrap.json().data.stock_movement_id);
     assert.equal(approvedScrapReplay.json().data.source_stock_movement_id, approvedScrap.json().data.source_stock_movement_id);
-    const reverseScrappedProduction = await app.inject({
-      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
-      headers: { cookie: submitter.cookie },
-      payload: { password: "Test-only-password-2026!", reason: "Must not reverse scrap-linked stock" }
-    });
-    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
-    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_HAS_SCRAP",
-      "reversal must not silently restore the gross quantity after scrap has been transferred");
-
     // Consume an intermediate-stage product as an input to the final stage.
     // This intentionally differs from the final stage's output product.
     const withdrawal = await app.inject({
@@ -603,6 +594,28 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
+    // Scrap linked to an approved production entry can be reversed when its
+    // dedicated scrap stock and source output lots are still fully available.
+    const reverseScrappedProduction = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
+      headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!", reason: "Integration: reverse approved production and its scrap" }
+    });
+    assert.equal(reverseScrappedProduction.statusCode, 200, reverseScrappedProduction.body);
+    assert.equal(reverseScrappedProduction.json().data.status, "CANCELLED");
+    const reversedScrapMovements=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
+      [postApprovalEntryId]
+    );
+    assert.equal(reversedScrapMovements.rows[0].count, 1,
+      "reversal must create a compensating OUT movement from the scrap warehouse");
+    const reversedSourceMovements=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_SOURCE_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
+      [postApprovalEntryId]
+    );
+    assert.equal(reversedSourceMovements.rows[0].count, 1,
+      "reversal must restore source-product stock with a separate transfer-in movement");
+
     const withdrawalListPage = await app.inject({
       method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
     });
@@ -1693,6 +1706,29 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "the full 580 EGP price reduction must be deducted from the worker's ledger balance");
     assert.ok(Number(negativeDueBalance.rows[0].remaining) < 0,
       "overpayment must remain as a negative worker due balance instead of blocking the price change");
+    const allocationsBeforeProductionReverse=await apiPool.query(
+      "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+      [paidWorkerPaymentId]
+    );
+    const reversePaidProduction=await app.inject({
+      method:"POST",url:"/api/production/"+priceProductionId+"/reverse",
+      headers:{cookie:submitter.cookie},
+      payload:{password:"Test-only-password-2026!",reason:"Integration: reset worker account after recorded payout"}
+    });
+    assert.equal(reversePaidProduction.statusCode,200,reversePaidProduction.body,
+      "an existing payment allocation must not block an audited production reversal");
+    assert.equal(reversePaidProduction.json().data.status,"CANCELLED");
+    const allocationsAfterProductionReverse=await apiPool.query(
+      "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+      [paidWorkerPaymentId]
+    );
+    assert.equal(Number(allocationsAfterProductionReverse.rows[0].count),Number(allocationsBeforeProductionReverse.rows[0].count),
+      "reversal must preserve the original payment allocation history");
+    assert.equal(Number(allocationsAfterProductionReverse.rows[0].amount),Number(allocationsBeforeProductionReverse.rows[0].amount));
+    const preservedPayment=await apiPool.query("SELECT gross_amount FROM worker_payments WHERE id=$1",[paidWorkerPaymentId]);
+    assert.equal(Number(preservedPayment.rows[0].gross_amount),500,
+      "reversal must not alter or recreate the original worker payment");
+
     const overpaidHistory = await app.inject({
       method: "GET", url: "/api/orders/" + priceOrderId + "/price-changes",
       headers: { cookie: submitter.cookie }

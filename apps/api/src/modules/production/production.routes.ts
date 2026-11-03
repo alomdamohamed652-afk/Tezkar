@@ -1140,29 +1140,126 @@ export async function productionRoutes(app: FastifyInstance) {
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
       if(current.status!=="APPROVED")throw new AppError("REVERSAL_REQUIRES_APPROVED","التراجع العكسي متاح لسجل إنتاج معتمد فقط؛ السجلات المعلقة يمكن إلغاؤها مباشرة",409);
       await assertAccountingPeriodOpen(client,current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10));
-      const paid=await client.query("SELECT 1 FROM worker_payment_allocations WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
-      if(paid.rowCount)throw new AppError("PRODUCTION_ALREADY_PAID","لا يمكن عكس إنتاج تم تخصيص دفعة مالية له. عالج دفعة العامل أولًا حتى لا يتغير رصيد المستحقات بأثر رجعي.",409);
-      const scrap=await client.query("SELECT 1 FROM production_scrap_records WHERE production_entry_id=$1 LIMIT 1 FOR SHARE",[id]);
-      if(scrap.rowCount)throw new AppError("PRODUCTION_HAS_SCRAP","لا يمكن عكس إنتاج مسجل عليه هالك؛ عالج حركات الهالك والمخزون أولًا.",409);
+      // Payment allocations are historical evidence, not a reason to block a controlled
+      // reversal. Keep worker payments, settlements and their allocation rows immutable;
+      // offset the production earning with a separate ledger entry below.
+      const scrapRows=await client.query(
+        `SELECT s.id,s.quantity,s.scrap_type,sm.id AS scrap_movement_id,sm.product_id AS scrap_product_id,
+                sm.warehouse_id AS scrap_warehouse_id,sm.location_id AS scrap_location_id,
+                sm.movement_type AS scrap_movement_type,il.id AS scrap_lot_id,
+                il.original_quantity AS scrap_lot_original,il.remaining_quantity AS scrap_lot_remaining,
+                src.id AS source_movement_id,src.quantity AS source_movement_quantity,
+                src.unit_cost AS source_unit_cost,src.total_cost AS source_total_cost
+           FROM production_scrap_records s
+           LEFT JOIN stock_movements sm ON sm.reference_type='PRODUCTION_SCRAP' AND sm.reference_id=s.id
+           LEFT JOIN inventory_lots il ON il.source_type='PRODUCTION_SCRAP' AND il.source_id=sm.id
+           LEFT JOIN stock_movements src ON src.reference_type='TRANSFER' AND src.reference_id=sm.id
+          WHERE s.production_entry_id=$1
+          ORDER BY s.created_at,s.id
+          FOR UPDATE OF s`,
+        [id]
+      );
       const lot=await client.query("SELECT * FROM inventory_lots WHERE source_type='PRODUCTION' AND source_id=$1 FOR UPDATE",[id]);
       if(!lot.rowCount)throw new AppError("PRODUCTION_LOT_MISSING","تعذر العثور على دفعة المخزون الناتجة عن هذا الإنتاج؛ لم يتم التراجع",409);
       const sourceLot=lot.rows[0];
-      const originalQty=Number(sourceLot.original_quantity);
-      const remainingQty=Number(sourceLot.remaining_quantity);
-      if(Math.abs(remainingQty-originalQty)>0.0005)throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من إنتاج العملية تم صرفه أو استهلاكه من المخزن. عالج الحركات التابعة أولًا.",409);
+      const goodQuantity=Number(sourceLot.original_quantity);
+      const postApprovalScrapQuantity=scrapRows.rows.filter(row=>row.scrap_movement_type==="TRANSFER_IN").reduce((sum,row)=>sum+Number(row.quantity),0);
+      const stageContribution=Math.max(0,goodQuantity-postApprovalScrapQuantity);
+      // Reverse every scrap transfer in the same transaction. Scrap stock must still
+      // be present; if it was consumed, stop without changing any financial or stock row.
+      for(const scrap of scrapRows.rows){
+        if(!scrap.scrap_movement_id||!scrap.scrap_lot_id)
+          throw new AppError("PRODUCTION_SCRAP_MOVEMENT_MISSING","تعذر العثور على حركة أو دفعة مخزون الهالك؛ لم يتم التراجع",409);
+        const lockedScrapLot=await client.query("SELECT original_quantity,remaining_quantity FROM inventory_lots WHERE id=$1 FOR UPDATE",[scrap.scrap_lot_id]);
+        if(!lockedScrapLot.rowCount)throw new AppError("PRODUCTION_SCRAP_LOT_MISSING","دفعة مخزون الهالك غير موجودة؛ لم يتم التراجع",409);
+        const scrapQty=Number(scrap.quantity);
+        if(Math.abs(Number(lockedScrapLot.rows[0].remaining_quantity)-Number(lockedScrapLot.rows[0].original_quantity))>0.0005)
+          throw new AppError("PRODUCTION_SCRAP_ALREADY_USED","لا يمكن التراجع لأن كمية من الهالك تم صرفها أو استهلاكها من مخزن الهالك. أعد الكمية أولًا.",409);
+        const scrapBalance=await client.query(
+          "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+          [scrap.scrap_product_id,scrap.scrap_warehouse_id,scrap.scrap_location_id]
+        );
+        if(!scrapBalance.rowCount||Number(scrapBalance.rows[0].quantity)+0.0005<scrapQty)
+          throw new AppError("PRODUCTION_SCRAP_BALANCE_CHANGED","رصيد مخزن الهالك لا يسمح بعكس الكمية كاملة",409);
+
+        // For approved production, scrap creation transferred source-product stock
+        // into the dedicated scrap product. Restore the exact source lots and value.
+        if(scrap.source_movement_id){
+          const sourceLots=await client.query(
+            "SELECT lot_id,quantity,unit_cost,total_cost FROM stock_movement_lots WHERE movement_id=$1 ORDER BY lot_id FOR UPDATE",
+            [scrap.source_movement_id]
+          );
+          const restoredQty=sourceLots.rows.reduce((sum,row)=>sum+Number(row.quantity),0);
+          const restoredValue=sourceLots.rows.reduce((sum,row)=>sum+Number(row.total_cost),0);
+          if(Math.abs(restoredQty-scrapQty)>0.0005)
+            throw new AppError("PRODUCTION_SCRAP_SOURCE_LOTS_MISSING","دفعات تكلفة مصدر الهالك غير مكتملة؛ لم يتم التراجع",409);
+          const sourceBalance=await client.query(
+            "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",
+            [current.product_id,current.warehouse_id,current.location_id]
+          );
+          if(!sourceBalance.rowCount)
+            throw new AppError("PRODUCTION_SCRAP_SOURCE_BALANCE_MISSING","رصيد مخزن الإنتاج الأصلي غير موجود؛ لم يتم التراجع",409);
+          const nextSourceQty=Number(sourceBalance.rows[0].quantity)+restoredQty;
+          const nextSourceValue=Number(sourceBalance.rows[0].inventory_value)+restoredValue;
+          await client.query(
+            "UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=CASE WHEN $1::numeric>0 THEN $2/$1::numeric ELSE 0 END,updated_at=now() WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5",
+            [nextSourceQty,nextSourceValue,current.product_id,current.warehouse_id,current.location_id]
+          );
+          for(const source of sourceLots.rows){
+            await client.query("UPDATE inventory_lots SET remaining_quantity=remaining_quantity+$1,updated_at=now() WHERE id=$2",[source.quantity,source.lot_id]);
+          }
+          const sourceReverse=await client.query(
+            `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
+             VALUES('TRANSFER_IN',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION_SCRAP_SOURCE_REVERSAL',$12) RETURNING id`,
+            [current.product_id,current.warehouse_id,current.location_id,restoredQty,current.unit_id,
+             restoredQty>0?restoredValue/restoredQty:0,restoredValue,current.order_id??null,current.order_stage_id??null,
+             "عكس تحويل الهالك لإنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId,scrap.id]
+          );
+          for(const source of sourceLots.rows){
+            await client.query(
+              "INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",
+              [sourceReverse.rows[0].id,source.lot_id,source.quantity,source.unit_cost,source.total_cost]
+            );
+          }
+        }
+
+        const nextScrapQty=Number(scrapBalance.rows[0].quantity)-scrapQty;
+        const nextScrapValue=Math.max(0,Number(scrapBalance.rows[0].inventory_value));
+        await client.query(
+          "UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=CASE WHEN $1::numeric>0 THEN $2/$1::numeric ELSE 0 END,updated_at=now() WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5",
+          [nextScrapQty,nextScrapValue,scrap.scrap_product_id,scrap.scrap_warehouse_id,scrap.scrap_location_id]
+        );
+        const scrapReverse=await client.query(
+          `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
+           VALUES('OUT',$1,$2,$3,$4,$5,0,0,$6,$7,$8,$9,'PRODUCTION_SCRAP_REVERSAL',$10) RETURNING id`,
+          [scrap.scrap_product_id,scrap.scrap_warehouse_id,scrap.scrap_location_id,scrapQty,
+           (await client.query("SELECT unit_id FROM products WHERE id=$1",[scrap.scrap_product_id])).rows[0]?.unit_id,
+           current.order_id??null,current.order_stage_id??null,"عكس هالك إنتاج "+current.code+" — "+parsed.data.reason,
+           request.user!.userId,scrap.id]
+        );
+        await client.query(
+          "INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,0,0)",
+          [scrapReverse.rows[0].id,scrap.scrap_lot_id,scrapQty]
+        );
+        await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[scrap.scrap_lot_id]);
+      }
+
+      const restoredProductionLot=await client.query("SELECT remaining_quantity FROM inventory_lots WHERE id=$1 FOR UPDATE",[sourceLot.id]);
+      if(Math.abs(Number(restoredProductionLot.rows[0]?.remaining_quantity??0)-goodQuantity)>0.0005)
+        throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من الإنتاج الصالح تم صرفه أو استهلاكه من المخزن بعد احتساب الهالك. عالج الحركات التابعة أولًا.",409);
       const balance=await client.query("SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[current.product_id,current.warehouse_id,current.location_id]);
-      if(!balance.rowCount||Number(balance.rows[0].quantity)+0.0005<Number(current.quantity))throw new AppError("PRODUCTION_STOCK_BALANCE_CHANGED","رصيد المخزون الحالي لا يسمح بعكس الكمية كاملة",409);
-      const nextQty=Number(balance.rows[0].quantity)-Number(current.quantity);
-      const removedValue=Number(sourceLot.unit_cost)*Number(current.quantity);
+      if(!balance.rowCount||Number(balance.rows[0].quantity)+0.0005<goodQuantity)throw new AppError("PRODUCTION_STOCK_BALANCE_CHANGED","رصيد المخزون الحالي لا يسمح بعكس كمية الإنتاج الصالحة كاملة",409);
+      const nextQty=Number(balance.rows[0].quantity)-goodQuantity;
+      const removedValue=Number(sourceLot.unit_cost)*goodQuantity;
       const nextValue=Math.max(0,Number(balance.rows[0].inventory_value)-removedValue);
       const nextAvg=nextQty>0?nextValue/nextQty:0;
       await client.query("UPDATE stock_balances SET quantity=$1,inventory_value=$2,avg_unit_cost=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[nextQty,nextValue,nextAvg,current.product_id,current.warehouse_id,current.location_id]);
       const movement=await client.query(
         `INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,order_id,order_stage_id,notes,created_by,reference_type,reference_id)
          VALUES('OUT',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PRODUCTION_REVERSAL',$12) RETURNING id`,
-        [current.product_id,current.warehouse_id,current.location_id,current.quantity,current.unit_id,sourceLot.unit_cost,removedValue,current.order_id??null,current.order_stage_id??null,"عكس إنتاج "+current.code+" — "+parsed.data.reason,request.user!.userId,id]
+        [current.product_id,current.warehouse_id,current.location_id,goodQuantity,current.unit_id,sourceLot.unit_cost,removedValue,current.order_id??null,current.order_stage_id??null,"عكس الإنتاج الصالح "+current.code+" — "+parsed.data.reason,request.user!.userId,id]
       );
-      await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[movement.rows[0].id,sourceLot.id,current.quantity,sourceLot.unit_cost,removedValue]);
+      await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[movement.rows[0].id,sourceLot.id,goodQuantity,sourceLot.unit_cost,removedValue]);
       await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[sourceLot.id]);
       const originalEarning=await client.query("SELECT employee_id,credit_amount FROM employee_earnings_ledger WHERE production_entry_id=$1 AND entry_type='PRODUCTION_APPROVAL' FOR UPDATE",[id]);
       if(!originalEarning.rowCount)throw new AppError("PRODUCTION_EARNING_MISSING","لا يوجد قيد مستحقات أصلي يمكن عكسه بأمان",409);
@@ -1196,7 +1293,7 @@ export async function productionRoutes(app: FastifyInstance) {
                ELSE completed_at
              END
            WHERE id=$2`,
-          [current.quantity,current.order_stage_id]
+          [stageContribution,current.order_stage_id]
         );
         if(current.order_id){
           const stageState=await client.query(
