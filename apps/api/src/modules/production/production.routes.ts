@@ -1165,9 +1165,6 @@ export async function productionRoutes(app: FastifyInstance) {
       const goodQuantity=Number(sourceLot.original_quantity);
       const postApprovalScrapQuantity=scrapRows.rows.filter(row=>row.scrap_movement_type==="TRANSFER_IN").reduce((sum,row)=>sum+Number(row.quantity),0);
       const stageContribution=Math.max(0,goodQuantity-postApprovalScrapQuantity);
-      const remainingQty=Number(sourceLot.remaining_quantity);
-      if(Math.abs(remainingQty-goodQuantity)>0.0005)throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من الإنتاج الصالح تم صرفه أو استهلاكه من المخزن. عالج الحركات التابعة أولًا.",409);
-
       // Reverse every scrap transfer in the same transaction. Scrap stock must still
       // be present; if it was consumed, stop without changing any financial or stock row.
       for(const scrap of scrapRows.rows){
@@ -1247,6 +1244,9 @@ export async function productionRoutes(app: FastifyInstance) {
         await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[scrap.scrap_lot_id]);
       }
 
+      const restoredProductionLot=await client.query("SELECT remaining_quantity FROM inventory_lots WHERE id=$1 FOR UPDATE",[sourceLot.id]);
+      if(Math.abs(Number(restoredProductionLot.rows[0]?.remaining_quantity??0)-goodQuantity)>0.0005)
+        throw new AppError("PRODUCTION_STOCK_ALREADY_USED","لا يمكن التراجع لأن جزءًا من الإنتاج الصالح تم صرفه أو استهلاكه من المخزن بعد احتساب الهالك. عالج الحركات التابعة أولًا.",409);
       const balance=await client.query("SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[current.product_id,current.warehouse_id,current.location_id]);
       if(!balance.rowCount||Number(balance.rows[0].quantity)+0.0005<goodQuantity)throw new AppError("PRODUCTION_STOCK_BALANCE_CHANGED","رصيد المخزون الحالي لا يسمح بعكس كمية الإنتاج الصالحة كاملة",409);
       const nextQty=Number(balance.rows[0].quantity)-goodQuantity;
