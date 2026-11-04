@@ -253,6 +253,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const allowedAfterChange=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:newPasswordCookie}});
       assert.equal(allowedAfterChange.statusCode,200,allowedAfterChange.body,
         "the account must regain normal protected API access after changing the temporary password");
+      invalidSessionHandlerExecuted=false;
       const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
       assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
       assert.equal(resetNotification.rows[0].entity_type,"user");
