@@ -196,10 +196,11 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     assert.ok(shiftLeaderStockRow,"shift leader should retain stock quantity visibility");
     assert.equal(Object.hasOwn(shiftLeaderStockRow,"avg_unit_cost"),false);
     assert.equal(Object.hasOwn(shiftLeaderStockRow,"inventory_value"),false);
-    const shiftLeaderLots=await app.inject({method:"GET",url:"/api/warehouse/lots?productId="+receiptRaceProduct.rows[0].id,headers:{cookie:shiftLeaderCookie}});
+    const shiftLeaderLots=await app.inject({method:"GET",url:"/api/warehouse/lots",headers:{cookie:shiftLeaderCookie}});
     assert.equal(shiftLeaderLots.statusCode,200,shiftLeaderLots.body);
     const shiftLeaderLot=shiftLeaderLots.json().data[0];
     assert.ok(shiftLeaderLot,"shift leader should retain lot quantity visibility");
+    assert.ok(Object.hasOwn(shiftLeaderLot,"remaining_quantity"),"shift leader should retain remaining lot quantities");
     assert.equal(Object.hasOwn(shiftLeaderLot,"unit_cost"),false);
     const shiftLeaderMovements=await app.inject({method:"GET",url:"/api/warehouse/movements",headers:{cookie:shiftLeaderCookie}});
     assert.equal(shiftLeaderMovements.statusCode,200,shiftLeaderMovements.body);
