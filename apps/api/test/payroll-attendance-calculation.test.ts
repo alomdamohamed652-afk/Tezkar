@@ -123,6 +123,9 @@ test("signed attendance snapshots reject edited and expired rows", () => {
   }, issuedAt);
 
   assert.equal(verifyAttendanceSnapshot(signed, issuedAt), true);
+  const serialized = JSON.parse(JSON.stringify(signAttendanceSnapshot({ firstIn: new Date("2026-11-04T08:00:00.000Z") }, issuedAt)));
+  assert.equal(verifyAttendanceSnapshot(serialized, issuedAt), true,
+    "timestamp fields must remain verifiable after the attendance API JSON round-trip");
   assert.equal(verifyAttendanceSnapshot({ ...signed, workedMinutes: 1 }, issuedAt), false);
   assert.equal(verifyAttendanceSnapshot(signed, issuedAt + 16 * 60 * 1000), false);
 });
