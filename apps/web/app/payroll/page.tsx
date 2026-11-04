@@ -17,6 +17,7 @@ type OwnPayrollItem={id:string;employee_id:string;period_month:string;period_sta
 type OwnPayrollData={employee:{id:string;code:string;full_name:string};salaryHistory:Array<{id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null}>;payrollItems:OwnPayrollItem[]};
 type AttendanceDay={date:string;employeeId:string;employeeCode:string;employeeName:string;firstIn:string|null;lastOut:string|null;scheduledStart?:string|null;scheduledEnd?:string|null;isDayOff?:boolean;workedMinutes:number;workedHours:number;lateMinutes:number;earlyMinutes:number;overtimeMinutes?:number;status:string;needsReview:boolean;suspiciousCount:number;duplicatePunchCount:number;punchCount:number};
 type CustodyHolder={id:string;code:string;full_name:string;balance:string|number};
+type AttendancePreview={month:string;overtimeMultiplier:number;employees:Array<{employeeId:string;employeeName:string;scheduledHours:number;regularWorkedHours:number;missingHours:number;absenceMinutes:number;lateMinutes:number;earlyMinutes:number;overtimeHours:number;hourlyRate:number;timeDeduction:number;overtimeBonus:number;reviewDays:number}>;totals:{timeDeduction:number;overtimeBonus:number;overtimeHours:number;missingHours:number;reviewDays:number}};
 const attendanceStatus:Record<string,string>={PRESENT:"حاضر",ABSENT:"غائب",MISSING_PUNCH:"بصمة ناقصة",DAY_OFF:"إجازة",DAY_OFF_WITH_PUNCH:"إجازة مع بصمة",NO_SCHEDULE:"بدون جدول",NO_SCHEDULE_WITH_PUNCH:"بصمة بدون جدول",NOT_STARTED:"لم يبدأ اليوم"};
 const paymentMethodLabel:Record<string,string>={CASH:"نقدي",BANK_TRANSFER:"تحويل بنكي",WALLET:"محفظة إلكترونية",OTHER:"أخرى"};
 const money=(v:string|number)=>formatMoney(v);
@@ -27,7 +28,7 @@ const itemStatus:Record<string,string>={UNPAID:"لم يُصرف",PARTIAL:"صرف
 export default function PayrollPage(){
  const {has,permissions}=usePermissions();
  const [employees,setEmployees]=useState<Employee[]>([]),[payroll,setPayroll]=useState<PayrollData>({period:null,items:[],totals:{employees:0,net:0,paid:0,remaining:0}});
- const [month,setMonth]=useState(monthNow()),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState(""),[overtimeMultiplier,setOvertimeMultiplier]=useState("1.5"),[attendancePreviewStale,setAttendancePreviewStale]=useState(false);
+ const [month,setMonth]=useState(monthNow()),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState(""),[overtimeMultiplier,setOvertimeMultiplier]=useState("1.5"),[attendancePreviewStale,setAttendancePreviewStale]=useState(false);const [attendancePreview,setAttendancePreview]=useState<AttendancePreview|null>(null);
  const [employeeId,setEmployeeId]=useState(""),[monthlySalary,setMonthlySalary]=useState(""),[effectiveFrom,setEffectiveFrom]=useState(today()),[salaryNotes,setSalaryNotes]=useState("");
  const [payTarget,setPayTarget]=useState<PayrollItem|null>(null),[payAmount,setPayAmount]=useState(""),[payDate,setPayDate]=useState(today()),[payMethod,setPayMethod]=useState("CASH"),[payReference,setPayReference]=useState(""),[payNotes,setPayNotes]=useState(""),[paymentIdempotencyKey,setPaymentIdempotencyKey]=useState(""),[fromCustody,setFromCustody]=useState(true),[custodyEmployeeId,setCustodyEmployeeId]=useState("");
  const [attendanceTarget,setAttendanceTarget]=useState<PayrollItem|null>(null),[attendanceDays,setAttendanceDays]=useState<AttendanceDay[]>([]),[attendanceLoading,setAttendanceLoading]=useState(false);
@@ -124,9 +125,10 @@ export default function PayrollPage(){
    const expectedCount=payroll.items.length*lastDay;
    if(attendanceSnapshot.length!==expectedCount)throw new Error("سجل الحضور غير مكتمل لكل موظفي المسير وأيام الشهر؛ راجع بيانات الحضور قبل الاحتساب.");
    if(!Number.isFinite(Number(overtimeMultiplier))||Number(overtimeMultiplier)<1||Number(overtimeMultiplier)>5)throw new Error("مضاعف الإضافي يجب أن يكون من 1 إلى 5.");
-   const result=await api<{data:{totals:{timeDeduction:number;overtimeBonus:number;overtimeHours:number;reviewDays:number}}}>("/api/payroll/periods/"+payroll.period.id+"/attendance-preview",{method:"POST",body:JSON.stringify({attendanceSnapshot,overtimeMultiplier:Number(overtimeMultiplier)})});
+   const result=await api<{data:Omit<AttendancePreview,"month">}>("/api/payroll/periods/"+payroll.period.id+"/attendance-preview",{method:"POST",body:JSON.stringify({attendanceSnapshot,overtimeMultiplier:Number(overtimeMultiplier)})});
+   setAttendancePreview({...result.data,month});
    setAttendancePreviewStale(false);
-   setNotice("تم احتساب الوقت والإضافي. إجمالي خصم الوقت "+money(result.data.totals.timeDeduction)+" ج.م، وأجر الإضافي "+money(result.data.totals.overtimeBonus)+" ج.م. راجع بنود كل موظف قبل اعتماد المسير.");
+   setNotice("تم احتساب الوقت والإضافي. إجمالي خصم الوقت "+money(result.data.totals.timeDeduction)+" ج.م، وأجر الإضافي "+money(result.data.totals.overtimeBonus)+" ج.م. راجع تفصيل كل موظف وأيام المراجعة قبل الاعتماد.");
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر احتساب الوقت والإضافي.")}finally{setBusy(false)}
  }
@@ -164,6 +166,20 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
   <section className="card"><div className="card-header"><div><h2 className="card-title">مسير الرواتب الشهري</h2><div className="form-hint">يتم تثبيت الراتب في المسير عند إنشائه، وأي تغيير لاحق لا يغير المسيرات السابقة. الخصم هنا يدوي ولا ينشئ مصروفًا تلقائيًا؛ سجّل التلفيات أو الإهلاك يدويًا في المالية بشكل منفصل، ولا تخصم القيمة من العهدة النقدية إلا لو دُفعت منها فعلًا.</div></div></div>
    <div className="toolbar"><label>الشهر<input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></label>{payroll.period?.status==="DRAFT"&&has("payroll.approve")&&<label>مضاعف أجر الإضافي<input type="number" min="1" max="5" step="0.1" value={overtimeMultiplier} onChange={e=>{setOvertimeMultiplier(e.target.value);setAttendancePreviewStale(true)}}/><span className="form-hint">من 1 إلى 5 · الافتراضي 1.5</span></label>}<div className="form-actions">{has("payroll.generate")&&<button className="secondary-btn" onClick={generate} disabled={busy}>تجهيز المسير من الرواتب السارية</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&<button className="secondary-btn" onClick={previewAttendance} disabled={busy}>{payroll.period.attendance_calculated_at?"إعادة احتساب الوقت والإضافي":"احتساب الوقت والإضافي"}</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&payroll.period.attendance_calculated_at&&<button className="primary-button" onClick={approve} disabled={busy||attendancePreviewStale}>اعتماد المسير</button>}{attendancePreviewStale&&<span className="form-hint">تم تغيير مضاعف الإضافي؛ أعد الاحتساب قبل الاعتماد.</span>}</div></div>
    {payroll.period&&<div className="form-hint" style={{margin:"10px 0"}}>حالة الفترة: <strong>{periodStatus[payroll.period.status]||payroll.period.status}</strong></div>}
+   {attendancePreview?.month===month&&<section className="card" style={{marginTop:16}}>
+    <div className="card-header"><div><h3 className="card-title">مراجعة احتساب الحضور والوقت الإضافي</h3><div className="form-hint">مضاعف الإضافي: {attendancePreview.overtimeMultiplier}× · معدل الساعة محسوب من الأساسي ودقائق الجدول الساري</div></div></div>
+    <div className="stats">
+     <article className="card stat"><div className="stat-label">خصم الوقت</div><div className="stat-value">{money(attendancePreview.totals.timeDeduction)} ج.م</div></article>
+     <article className="card stat"><div className="stat-label">أجر الإضافي</div><div className="stat-value">{money(attendancePreview.totals.overtimeBonus)} ج.م</div></article>
+     <article className="card stat"><div className="stat-label">ساعات إضافية</div><div className="stat-value">{attendancePreview.totals.overtimeHours.toFixed(2)}</div></article>
+     <article className={"card stat "+(attendancePreview.totals.reviewDays>0?"warning":"")}><div className="stat-label">أيام تحتاج مراجعة</div><div className="stat-value">{attendancePreview.totals.reviewDays}</div></article>
+    </div>
+    {attendancePreview.totals.reviewDays>0&&<div className="alert warning">هناك أيام حضور غير محسومة. لم تُحتسب عليها خصومات أو ساعات إضافية تلقائيًا؛ راجع البصمة أو سجّل تصحيحًا يدويًا قبل اعتماد المسير.</div>}
+    <div className="table-wrap"><table><thead><tr><th>الموظف</th><th>ساعات الجدول</th><th>ساعات العمل العادية</th><th>ساعات ناقصة</th><th>إضافي</th><th>أجر الساعة</th><th>خصم الوقت</th><th>أجر الإضافي</th><th>أيام مراجعة</th></tr></thead><tbody>
+     {attendancePreview.employees.map(employee=><tr key={employee.employeeId}><td className="strong">{employee.employeeName}</td><td>{employee.scheduledHours.toFixed(2)}</td><td>{employee.regularWorkedHours.toFixed(2)}</td><td>{employee.missingHours.toFixed(2)}</td><td>{employee.overtimeHours.toFixed(2)}</td><td>{money(employee.hourlyRate)} ج.م</td><td>{money(employee.timeDeduction)} ج.م</td><td>{money(employee.overtimeBonus)} ج.م</td><td>{employee.reviewDays}</td></tr>)}
+    </tbody></table></div>
+   </section>}
+
    <div className="stats"><article className="card stat"><div className="stat-label">عدد الموظفين</div><div className="stat-value">{payroll.totals.employees}</div></article><article className="card stat"><div className="stat-label">صافي الرواتب</div><div className="stat-value">{money(payroll.totals.net)} ج.م</div></article><article className="card stat accent"><div className="stat-label">تم صرفه</div><div className="stat-value">{money(payroll.totals.paid)} ج.م</div></article><article className="card stat warning"><div className="stat-label">المتبقي للصرف</div><div className="stat-value">{money(payroll.totals.remaining)} ج.م</div></article></div>
     <div className="stats">
       <article className="card stat"><div className="stat-label">المصروف المسجل محاسبيًا</div><div className="stat-value">{payroll.period?.status === "DRAFT" ? "بعد الاعتماد" : money(payroll.totals.recordedExpense ?? 0) + " ج.م"}</div></article>
