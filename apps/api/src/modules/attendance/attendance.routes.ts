@@ -200,11 +200,12 @@ export async function attendanceRoutes(app:FastifyInstance){
   return {ok:true};
  });
  app.get("/api/attendance/report",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
-  const q=request.query as {from?:string;to?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
+  const q=request.query as {from?:string;to?:string;includeInactive?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
   if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
   const first=new Date(dates.data.from+"T00:00:00Z"),last=new Date(dates.data.to+"T00:00:00Z");const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
   if(daysCount>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
-  const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
+  const includeInactive=q.includeInactive==="true";
+  const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE ($1::boolean=TRUE OR e.is_active=TRUE) ORDER BY e.code`,[includeInactive])).rows;
   const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$1::date) ORDER BY employee_id,weekday,effective_from",[dates.data.from,dates.data.to])).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
   // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
