@@ -163,6 +163,33 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM warehouse_receipts")).rows[0].count),receiptCountBeforeDeniedCost,
       "a denied cost-bearing receipt must not create a receipt or stock movement");
 
+    const receiptRaceProduct=await apiPool.query(
+      "INSERT INTO products(name,product_type,unit_id,track_inventory,is_active) VALUES($1,'FINISHED_GOOD',$2,TRUE,TRUE) RETURNING id",
+      ["Concurrent receipt API "+randomBytes(4).toString("hex"),unit.rows[0].id]
+    );
+    const receiptRaceWarehouse=await apiPool.query("INSERT INTO warehouses(name) VALUES('Concurrent receipt API warehouse') RETURNING id");
+    const receiptRaceLocation=await apiPool.query(
+      "INSERT INTO warehouse_locations(warehouse_id,code,name) VALUES($1,'R','Receipt race') RETURNING id",
+      [receiptRaceWarehouse.rows[0].id]
+    );
+    const createReceipt=(quantity:number,unitCost:number)=>app!.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:cookieHeader},
+      payload:{source:"Concurrent first balance receipt",lines:[{
+        productId:receiptRaceProduct.rows[0].id,warehouseId:receiptRaceWarehouse.rows[0].id,
+        locationId:receiptRaceLocation.rows[0].id,quantity,unitCost
+      }]}
+    });
+    const concurrentReceiptCreates=await Promise.all([createReceipt(5,2),createReceipt(7,3)]);
+    assert.deepEqual(concurrentReceiptCreates.map(response=>response.statusCode),[201,201],
+      concurrentReceiptCreates.map(response=>`${response.statusCode}: ${response.body}`).join("\\n"));
+    const receiptRaceBalance=await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [receiptRaceProduct.rows[0].id,receiptRaceWarehouse.rows[0].id,receiptRaceLocation.rows[0].id]
+    );
+    assert.equal(receiptRaceBalance.rowCount,1,"concurrent receipt APIs must initialize one stock balance");
+    assert.equal(Number(receiptRaceBalance.rows[0].quantity),12);
+    assert.equal(Number(receiptRaceBalance.rows[0].inventory_value),31);
+
     const receive = (warehouseId: string, locationId: string, quantity: number, unitCost: number) =>
       app!.inject({
         method: "POST",
