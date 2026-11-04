@@ -8,12 +8,13 @@ import {SearchableSelect} from "../../components/searchable-select";
 type Item={id:string;code:string;name:string};
 type Location=Item&{warehouse_id:string};
 type Warehouse=Item&{warehouse_type:string};
-type Receipt={id:string;code:string;receipt_date:string;source:string;line_count:number;total_cost:number;created_at:string};
+type Receipt={id:string;code:string;receipt_date:string;source:string;line_count:number;total_cost:number|null;created_at:string};
 type Line={productId:string;warehouseId:string;locationId:string;quantity:string;unitCost:string;batchCode:string;weight:string};
 const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
 
 export default function ReceiptsPage(){
- const {has}=usePermissions();
+ const {has,session}=usePermissions();
+ const canViewCosts=has("warehouse.dashboard")&&!session?.roleCodes?.some(role=>role.toLowerCase()==="shift_leader");
  const [products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Warehouse[]>([]),[locations,setLocations]=useState<Location[]>([]),[receipts,setReceipts]=useState<Receipt[]>([]);
  const [receiptDate,setReceiptDate]=useState(new Date().toISOString().slice(0,10)),[source,setSource]=useState(""),[notes,setNotes]=useState(""),[lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",locationId:"",quantity:"",unitCost:"",batchCode:"",weight:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  async function load(){try{const [p,w,l,r]=await Promise.all([api<{data:Item[]}>("/api/products"),api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Receipt[]}>("/api/warehouse/receipts")]);setProducts(p.data);setWarehouses(w.data);setLocations(l.data);setReceipts(r.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الاستلامات")}}
@@ -43,6 +44,6 @@ export default function ReceiptsPage(){
   </div>
   <div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ الحفظ...":"تسجيل الاستلام"}</button></div>
  </form>}
- <section className="card"><div className="card-header"><h2 className="card-title">سجل الاستلامات</h2><span className="count-badge">{receipts.length}</span></div><div className="table-wrap"><table><thead><tr><th>رقم الاستلام</th><th>التاريخ</th><th>المصدر</th><th>الأصناف</th><th>التكلفة</th></tr></thead><tbody>{receipts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.receipt_date}</td><td className="strong">{x.source}</td><td>{x.line_count}</td><td className="money">{formatMoney(x.total_cost||0)}</td></tr>)}{!receipts.length&&<tr><td colSpan={5}>لا توجد استلامات.</td></tr>}</tbody></table></div></section>
+ <section className="card"><div className="card-header"><h2 className="card-title">سجل الاستلامات</h2><span className="count-badge">{receipts.length}</span></div><div className="table-wrap"><table><thead><tr><th>رقم الاستلام</th><th>التاريخ</th><th>المصدر</th><th>الأصناف</th>{canViewCosts&&<th>التكلفة</th>}</tr></thead><tbody>{receipts.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.receipt_date}</td><td className="strong">{x.source}</td><td>{x.line_count}</td>{canViewCosts&&<td className="money">{formatMoney(x.total_cost||0)}</td>}</tr>)}{!receipts.length&&<tr><td colSpan={canViewCosts?5:4}>لا توجد استلامات.</td></tr>}</tbody></table></div></section>
  </section></main></div>
 }
