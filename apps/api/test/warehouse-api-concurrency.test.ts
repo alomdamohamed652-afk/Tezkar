@@ -153,6 +153,16 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     assert.equal(shiftLeaderReceiptDetail.statusCode,200,shiftLeaderReceiptDetail.body);
     assert.equal(shiftLeaderReceiptDetail.json().data.lines[0].unit_cost,null,"shift leader must not receive receipt unit cost through the detail API");
 
+    const receiptCountBeforeDeniedCost=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM warehouse_receipts")).rows[0].count);
+    const deniedReceiptCost=await app.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:shiftLeaderCookie},
+      payload:{source:"Shift leader must not set receipt costs",lines:[{productId:product.rows[0].id,warehouseId:sourceWarehouse.rows[0].id,locationId:sourceLocation.rows[0].id,quantity:1,unitCost:99}]}
+    });
+    assert.equal(deniedReceiptCost.statusCode,403,deniedReceiptCost.body);
+    assert.equal(deniedReceiptCost.json().error.code,"WAREHOUSE_COST_PERMISSION_REQUIRED");
+    assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM warehouse_receipts")).rows[0].count),receiptCountBeforeDeniedCost,
+      "a denied cost-bearing receipt must not create a receipt or stock movement");
+
     const receive = (warehouseId: string, locationId: string, quantity: number, unitCost: number) =>
       app!.inject({
         method: "POST",
