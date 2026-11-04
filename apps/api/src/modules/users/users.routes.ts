@@ -86,7 +86,7 @@ export async function userRoutes(app: FastifyInstance){
    const role=await client.query(
     `SELECT r.id,r.code,r.is_system,
             EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
-                    WHERE rp.role_id=r.id AND p.code='rbac.manage') AS manages_rbac
+                    WHERE rp.role_id=r.id AND p.code IN ('rbac.manage','users.manage_roles')) AS manages_rbac
        FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
     [parsed.data.roleCode]
    );
