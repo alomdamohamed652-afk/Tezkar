@@ -616,6 +616,21 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "custody outflow must include the 600 cash paid plus 400 advance repayment");
       assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="IN").amount),400,
         "advance repayment must be returned to the cash custody balance");
+      const februaryEmployeeB=februaryData.json().data.items.find((row:any)=>row.employee_id===employeeB.rows[0].id);
+      assert.ok(februaryEmployeeB,"second employee should have a February payroll item");
+      const previousCustodyPayment=await app.inject({
+        method:"POST",url:`/api/payroll/items/${februaryEmployeeB.id}/payments`,
+        headers:{cookie:cookieHeader},
+        payload:{idempotencyKey:randomUUID(),amount:Number(februaryEmployeeB.net_amount),paymentMethod:"CASH",settlementSource:"PREVIOUS_CUSTODY"}
+      });
+      assert.equal(previousCustodyPayment.statusCode,201,previousCustodyPayment.body,
+        "historical cash payout must be recordable without selecting or debiting a current custodian");
+      const previousCustodyMovements=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1",
+        [previousCustodyPayment.json().data.payment.id]
+      );
+      assert.equal(previousCustodyMovements.rows[0].count,0,
+        "previous-custody payroll settlement must not debit a custody balance twice");
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
