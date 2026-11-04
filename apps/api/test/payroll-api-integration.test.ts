@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { usersRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -68,6 +68,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         import("../src/modules/advances/advances.routes.js"),
         import("../src/modules/accounting/accounting.routes.js"),
         import("../src/modules/employees/employees.routes.js"),
+        import("../src/modules/users/users.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -86,6 +87,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(advanceRoutes);
     await app.register(accountingRoutes);
     await app.register(employeeRoutes);
+    await app.register(usersRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -172,6 +174,34 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const nonAdminSetCookie=nonAdminLogin.headers["set-cookie"];
       assert.ok(nonAdminSetCookie,"non-admin login must issue a session cookie");
       const nonAdminCookie=(Array.isArray(nonAdminSetCookie)?nonAdminSetCookie[0]:nonAdminSetCookie).split(";")[0];
+
+      const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
+      const accountResetUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        ["account-password-reset-"+randomBytes(5).toString("hex"),hashPassword(password),accountResetEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[accountResetUser.rows[0].id]);
+      const accountOldSession=await apiPool.query(
+        "INSERT INTO user_sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day') RETURNING id",
+        [accountResetUser.rows[0].id,randomBytes(32).toString("hex")]
+      );
+      const deniedAccountReset=await app.inject({
+        method:"POST",url:"/api/users/"+accountResetUser.rows[0].id+"/reset-password",
+        headers:{cookie:nonAdminCookie}
+      });
+      assert.equal(deniedAccountReset.statusCode,403,deniedAccountReset.body);
+      assert.equal(deniedAccountReset.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[accountResetUser.rows[0].id])).rows[0].must_change_password,false);
+      const accountResetResponse=await app.inject({
+        method:"POST",url:"/api/users/"+accountResetUser.rows[0].id+"/reset-password",
+        headers:{cookie:cookieHeader}
+      });
+      assert.equal(accountResetResponse.statusCode,200,accountResetResponse.body);
+      assert.ok(accountResetResponse.json().data.temporaryPassword.length>=20);
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[accountResetUser.rows[0].id])).rows[0].must_change_password,true);
+      assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[accountOldSession.rows[0].id])).rows[0].revoked_at);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET'",[accountResetUser.rows[0].id])).rows[0].count,1);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM audit_log WHERE entity_type='user' AND entity_id=$1 AND action='reset_password'",[accountResetUser.rows[0].id])).rows[0].count,1);
       const deniedReset=await app.inject({
         method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
         headers:{cookie:nonAdminCookie}
