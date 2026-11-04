@@ -135,7 +135,8 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){const duplicate=seen.has(value);seen.add(value);
    const f=await c.query(`SELECT c.id,c.code,c.quantity,c.weight_grams,c.status,c.first_printed_at,c.created_at,g.id group_id,g.name,g.packaging_type,g.product_id,g.order_id,g.notes,g.display_product_name,g.weight_min_kg,g.weight_max_kg,p.name product_name,p.code product_code,o.code order_code,o.order_name
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id WHERE c.code=$1 LIMIT 1`,[value]),row=f.rows[0]??null;
-   const alreadyScanned=Boolean(!duplicate&&p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount);
+   if(!duplicate&&p.data.sessionId){await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[p.data.sessionId+":"+value]);}
+    const alreadyScanned=Boolean(!duplicate&&p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount);
    const result=classifyReverseCodeScan({duplicateInRequest:duplicate,alreadyScannedInSession:alreadyScanned,codeStatus:row?.status??null});
    await c.query("INSERT INTO reverse_code_scan_logs(code_id,scanned_value,session_id,result,scanned_by) VALUES($1,$2,$3,$4,$5)",[row?.id??null,value,p.data.sessionId??null,result,request.user!.userId]);const carton=row?await c.query("SELECT * FROM reverse_code_carton_records WHERE code_id=$1",[row.id]):{rows:[]};out.push({value,result,code:row,carton:carton.rows[0]??null});}return {data:out};});
  });
