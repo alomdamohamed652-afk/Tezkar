@@ -208,7 +208,7 @@ export async function canViewOrderFinancials(userId: string): Promise<boolean> {
   const client = await pool.connect();
   try {
     return (await hasPermission(client, userId, "finance.profitability.view"))
-      || (await hasPermission(client, userId, "orders.dashboard"));
+      || (await hasPermission(client, userId, "worker_payments.pay"));
   } finally {
     client.release();
   }
@@ -674,7 +674,16 @@ export async function orderRoutes(app: FastifyInstance) {
       paid_amount:paidMap.get(x.id)??0,
       remaining_amount:Math.max(0,Number(x.total_earning_amount??x.earning_amount)+Number(x.price_adjustment_amount??0)-Number(paidMap.get(x.id)??0))
     }));
-    return {data:{order:order.rows[0],finalProduct:orderLines.rows.length===1?orderLines.rows[0]:null,finalProducts:orderLines.rows,stages:stages.rows,production:productionWithPayments,machineProduction:machineProduction.rows,scrapRecords:scrapRecords.rows,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]}};
+    const dashboardData={order:order.rows[0],finalProduct:orderLines.rows.length===1?orderLines.rows[0]:null,finalProducts:orderLines.rows,stages:stages.rows,production:productionWithPayments,machineProduction:machineProduction.rows,scrapRecords:scrapRecords.rows,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]};
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    if(!canViewFinancials){
+      const {contract_value:_contractValue,...safeOrder}=dashboardData.order;
+      const safeStages=dashboardData.stages.map(({stage_rate,stage_rate_method,stage_expense_cost,...stage}:Record<string,unknown>)=>stage);
+      const safeProduction=dashboardData.production.map(({earning_amount,bonus_amount,deduction_amount,total_earning_amount,price_adjustment_amount,paid_amount,remaining_amount,...entry}:Record<string,unknown>)=>entry);
+      const safeMovements=dashboardData.movements.map(({unit_cost,total_cost,...movement}:Record<string,unknown>)=>movement);
+      return {data:{...dashboardData,order:safeOrder,stages:safeStages,production:safeProduction,movements:safeMovements,totals:null}};
+    }
+    return {data:dashboardData};
   });
 
   app.get("/api/machines", { preHandler: [authenticateRequest, requirePermission("machines.view")] }, async () => {
