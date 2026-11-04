@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { usersRoutes }, { accountRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { userRoutes }, { accountRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -88,7 +88,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(advanceRoutes);
     await app.register(accountingRoutes);
     await app.register(employeeRoutes);
-    await app.register(usersRoutes);
+    await app.register(userRoutes);
     await app.register(accountRoutes);
 
     let invalidSessionHandlerExecuted = false;
