@@ -23,9 +23,7 @@ async function assertCanAssignPrivilegedRole(
   actorUserId: string,
   role: { code: string; is_system: boolean; manages_rbac: boolean }
 ) {
-  const privileged=(role.is_system&&role.code.toLowerCase()!=="worker")
-    || ["manager","admin","owner"].includes(role.code.toLowerCase())
-    || role.manages_rbac;
+  const privileged=role.code.toLowerCase()!=="worker"||role.manages_rbac;
   if(!privileged)return;
   const admin=await client.query(
     `SELECT EXISTS(
