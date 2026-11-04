@@ -86,6 +86,11 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     ...overtimeIns.slice(1),
     ...overtimeOuts.slice(0, -1),
   ];
+  const unresolvedRepeatedEvents = extraSameType.filter((event) => event.review_status !== "APPROVED");
+  // A repeated same-type event can make a missing checkout look like a long
+  // continuous shift. Freeze the day's payable minutes until a reviewer approves
+  // the extra punches or corrects their event types.
+  const countedEvents = unresolvedRepeatedEvents.length ? [] : usable;
   const candidateIds = new Set([
     ...collapsed.duplicateIds,
     ...extraSameType.map((event) => event.id),
@@ -108,7 +113,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     outPunch: normalOuts.at(-1) ?? null,
     otIn: overtimeIns[0] ?? null,
     otOut: overtimeOuts.at(-1) ?? null,
-    countedEvents: usable,
+    countedEvents,
     duplicateIds: collapsed.duplicateIds,
     duplicatePunchCount: collapsed.duplicateIds.length,
     reviewPunchIds,
