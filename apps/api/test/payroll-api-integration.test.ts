@@ -217,6 +217,29 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employees WHERE full_name=$1",[attemptedPrivilegedEmployeeName])).rows[0].count),0,
         "employee creation must not bypass privileged role assignment protection");
 
+      const deactivationEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Session Revocation On Employee Deactivation') RETURNING id");
+      const deactivationUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id,username",
+        ["deactivate-session-"+randomBytes(5).toString("hex"),hashPassword(password),deactivationEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[deactivationUser.rows[0].id]);
+      const deactivationLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:deactivationUser.rows[0].username,password}});
+      assert.equal(deactivationLogin.statusCode,200,deactivationLogin.body);
+      const deactivationSetCookie=deactivationLogin.headers["set-cookie"];
+      assert.ok(deactivationSetCookie,"employee login must issue a session cookie");
+      const deactivationCookie=(Array.isArray(deactivationSetCookie)?deactivationSetCookie[0]:deactivationSetCookie).split(";")[0];
+      const deactivationSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL",[deactivationUser.rows[0].id]);
+      assert.equal(deactivationSession.rowCount,1);
+      const employeeDeactivated=await app.inject({method:"DELETE",url:"/api/employees/"+deactivationEmployee.rows[0].id,headers:{cookie:cookieHeader}});
+      assert.equal(employeeDeactivated.statusCode,200,employeeDeactivated.body);
+      assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[deactivationSession.rows[0].id])).rows[0].revoked_at,
+        "deactivating an employee must revoke every existing login session");
+      const employeeReactivated=await app.inject({method:"POST",url:"/api/employees/"+deactivationEmployee.rows[0].id+"/activate",headers:{cookie:cookieHeader}});
+      assert.equal(employeeReactivated.statusCode,200,employeeReactivated.body);
+      const oldSessionAfterReactivation=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:deactivationCookie}});
+      assert.equal(oldSessionAfterReactivation.statusCode,401,oldSessionAfterReactivation.body,
+        "reactivating an employee must never restore a session revoked during deactivation");
+
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
