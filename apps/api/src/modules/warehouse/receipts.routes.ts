@@ -73,6 +73,12 @@ export async function receiptRoutes(app:FastifyInstance){
   const row=await withTransaction(async client=>{
    const receiptDate=p.data.receiptDate??new Date().toISOString().slice(0,10);
    await assertAccountingPeriodOpen(client,receiptDate);
+   const productIds=[...new Set(p.data.lines.map(item=>item.productId))].sort();
+   const lockedProducts=await client.query(
+    "SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",
+    [productIds]
+   );
+   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
    const r=await client.query("INSERT INTO warehouse_receipts(receipt_date,source,notes,created_by) VALUES($1,$2,$3,$4) RETURNING *",[receiptDate,p.data.source,p.data.notes??null,request.user!.userId]);
    for(const item of p.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[item.productId]);
