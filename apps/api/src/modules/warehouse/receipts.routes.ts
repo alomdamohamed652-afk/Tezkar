@@ -81,7 +81,9 @@ export async function receiptRoutes(app:FastifyInstance){
    if(!lot.rowCount)throw new AppError("INVENTORY_LOT_NOT_FOUND","دفعة المخزون غير موجودة",404);
    if(lot.rows[0].cost_confirmed)throw new AppError("INVENTORY_COST_ALREADY_CONFIRMED","تم اعتماد تكلفة هذه الدفعة بالفعل",409);
    const quantity=Number(lot.rows[0].remaining_quantity);
+   const originalQuantity=Number(lot.rows[0].original_quantity);
    if(quantity<=0)throw new AppError("INVENTORY_LOT_EMPTY","لا يمكن اعتماد تكلفة دفعة مستنفدة",409);
+   if(Math.abs(quantity-originalQuantity)>1e-7)throw new AppError("INVENTORY_LOT_ALREADY_CONSUMED","لا يمكن اعتماد تكلفة دفعة بدأ صرفها؛ راجع سجل الحركة والتكلفة يدويًا.",409);
    const balance=await client.query("SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[lot.rows[0].product_id,lot.rows[0].warehouse_id,lot.rows[0].location_id]);
    if(!balance.rowCount||Number(balance.rows[0].quantity)+1e-9<quantity)throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المخزون لا يغطي كمية الدفعة المعلقة؛ راجع المخزون قبل اعتماد التكلفة",409);
    const oldCost=Number(lot.rows[0].unit_cost);
@@ -90,7 +92,7 @@ export async function receiptRoutes(app:FastifyInstance){
    if(nextValue< -1e-7)throw new AppError("INVENTORY_VALUE_INVALID","اعتماد التكلفة سيؤدي إلى قيمة مخزون سالبة",409);
    const updated=await client.query("UPDATE inventory_lots SET unit_cost=$1,cost_confirmed=TRUE,updated_at=now() WHERE id=$2 RETURNING *",[parsed.data.unitCost,id]);
    if(lot.rows[0].receipt_line_id)await client.query("UPDATE warehouse_receipt_lines SET unit_cost=$1,cost_confirmed=TRUE WHERE id=$2",[parsed.data.unitCost,lot.rows[0].receipt_line_id]);
-   if(lot.rows[0].stock_movement_id)await client.query("UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",[parsed.data.unitCost,quantity*parsed.data.unitCost,lot.rows[0].stock_movement_id]);
+   if(lot.rows[0].stock_movement_id)await client.query("UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",[parsed.data.unitCost,originalQuantity*parsed.data.unitCost,lot.rows[0].stock_movement_id]);
    await client.query("UPDATE stock_balances SET inventory_value=$1,avg_unit_cost=CASE WHEN quantity>0 THEN $1/quantity ELSE 0 END,updated_at=now() WHERE product_id=$2 AND warehouse_id=$3 AND location_id=$4",[Math.max(0,nextValue),lot.rows[0].product_id,lot.rows[0].warehouse_id,lot.rows[0].location_id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"confirm_cost",module:"warehouse",entityType:"inventory_lot",entityId:id,beforeData:lot.rows[0],afterData:updated.rows[0],metadata:{receiptLineId:lot.rows[0].receipt_line_id,unitCost:parsed.data.unitCost,quantity},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
