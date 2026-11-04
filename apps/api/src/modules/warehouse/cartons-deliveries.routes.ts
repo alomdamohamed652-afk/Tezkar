@@ -97,6 +97,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
   assertDeliveryValuePermission(parsed.data.deliveryValue,canViewFinancials);
   const row=await withTransaction(async(client)=>{
+   const productIds=[...new Set(parsed.data.lines.map(line=>String(line.productId)))].sort();
+   const lockedProducts=await client.query("SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",[productIds]);
+   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إنشاء مسودة لطلبية ملغاة",409);
@@ -171,6 +174,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    if(d.rows[0].status!=="DRAFT")throw new AppError("INVALID_STATUS","المسودة لم تعد مفتوحة للاعتماد",409);
    const lines=await client.query("SELECT * FROM delivery_permission_lines WHERE delivery_permission_id=$1 ORDER BY id",[id]);
    if(!lines.rowCount)throw new AppError("EMPTY_DELIVERY_DRAFT","امسح كرتونة واحدة على الأقل قبل إنهاء المسودة",422);
+   const productIds=[...new Set(lines.rows.map((line:any)=>String(line.product_id)))].sort();
+   const lockedProducts=await client.query("SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",[productIds]);
+   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",409);
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[d.rows[0].order_id]);
    if(!order.rowCount||order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","الطلبية غير موجودة أو ملغاة",409);
    const sums=new Map<string,number>();
@@ -195,7 +201,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    }
    const byLocation=new Map<string,number>();
    for(const line of lines.rows){const key=[line.product_id,line.warehouse_id,line.location_id].join(":");byLocation.set(key,(byLocation.get(key)??0)+Number(line.quantity));}
-   for(const [key,quantity] of byLocation){const [productId,warehouseId,locationId]=key.split(":");const stock=await client.query("SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[productId,warehouseId,locationId]);const reserved=await client.query("SELECT COALESCE(SUM(l.quantity),0) AS quantity FROM delivery_permission_lines l JOIN delivery_permissions p ON p.id=l.delivery_permission_id WHERE l.product_id=$1 AND l.warehouse_id=$2 AND l.location_id=$3 AND p.status='READY' AND p.id<>$4",[productId,warehouseId,locationId,id]);if(quantity>Number(stock.rows[0]?.quantity??0)-Number(reserved.rows[0].quantity)+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","إجمالي الكراتين يتجاوز رصيد المخزن المتاح",409);}
+   for(const [key,quantity] of byLocation){const [productId,warehouseId,locationId]=key.split(":");const lots=await client.query("SELECT id,remaining_quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 AND cost_confirmed=TRUE ORDER BY created_at,id FOR UPDATE",[productId,warehouseId,locationId]);const eligibleQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);const reserved=await client.query("SELECT COALESCE(SUM(l.quantity),0) AS quantity FROM delivery_permission_lines l JOIN delivery_permissions p ON p.id=l.delivery_permission_id WHERE l.product_id=$1 AND l.warehouse_id=$2 AND l.location_id=$3 AND p.status='READY' AND p.id<>$4",[productId,warehouseId,locationId,id]);if(quantity>eligibleQuantity-Number(reserved.rows[0].quantity)+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","الكمية المتاحة بتكلفة معتمدة لا تكفي؛ راجع دفعات التكلفة المعلقة أو الأذونات الجاهزة",409);}
    const updated=await client.query("UPDATE delivery_permissions SET status='READY',updated_at=now() WHERE id=$1 RETURNING *",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"ready",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
@@ -321,20 +327,21 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     const productionAvailable=Number(produced.rows[0].quantity)-Number(reserved.rows[0].quantity);
     if(Number(line.quantity)>productionAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION","كمية إذن التسليم تتجاوز الإنتاج المعتمد المتبقي للطلبية",409);
 
-    const stock=await client.query(
-      `SELECT quantity
-         FROM stock_balances
+    const eligibleLots=await client.query(
+      `SELECT id,remaining_quantity FROM inventory_lots
         WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3
-        FOR UPDATE`,
+          AND remaining_quantity>0 AND cost_confirmed=TRUE
+        ORDER BY created_at,id FOR UPDATE`,
       [line.productId,line.warehouseId,line.locationId]);
+    const eligibleQuantity=eligibleLots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
     const reservedAtLocation=await client.query(
       `SELECT COALESCE(SUM(dl.quantity),0) AS quantity
          FROM delivery_permission_lines dl
          JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
         WHERE dl.product_id=$1 AND dl.warehouse_id=$2 AND dl.location_id=$3 AND dp.status='READY'`,
       [line.productId,line.warehouseId,line.locationId]);
-    const stockAvailable=Number(stock.rows[0]?.quantity??0)-Number(reservedAtLocation.rows[0].quantity);
-    if(Number(line.quantity)>stockAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","كمية إذن التسليم تتجاوز رصيد المخزن المتاح بعد الأذونات الجاهزة",409);
+    const stockAvailable=eligibleQuantity-Number(reservedAtLocation.rows[0].quantity);
+    if(Number(line.quantity)>stockAvailable+1e-9)throw new AppError("DELIVERY_EXCEEDS_STOCK","كمية إذن التسليم تتجاوز رصيد الدفعات ذات التكلفة المعتمدة بعد الأذونات الجاهزة",409);
 
     await client.query("INSERT INTO delivery_permission_lines(delivery_permission_id,order_item_id,product_id,warehouse_id,location_id,quantity,unit_id,carton_code,carton_weight,piece_count,sample_quantity,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",[d.rows[0].id,resolvedOrderItemId,line.productId,line.warehouseId,line.locationId,line.quantity,product.rows[0].unit_id,canonicalCartonCode,line.cartonWeight??null,line.pieceCount??null,line.sampleQuantity??null,line.details??null]);
    }
