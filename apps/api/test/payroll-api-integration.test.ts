@@ -176,6 +176,16 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const nonAdminSetCookie=nonAdminLogin.headers["set-cookie"];
       assert.ok(nonAdminSetCookie,"non-admin login must issue a session cookie");
       const nonAdminCookie=(Array.isArray(nonAdminSetCookie)?nonAdminSetCookie[0]:nonAdminSetCookie).split(";")[0];
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='users.create' WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      const attemptedManagerUsername="privilege-escalation-"+randomBytes(5).toString("hex");
+      const deniedManagerCreation=await app.inject({
+        method:"POST",url:"/api/users",headers:{cookie:nonAdminCookie},
+        payload:{username:attemptedManagerUsername,password:"Test-Only-Password-2026!",roleCode:"manager"}
+      });
+      assert.equal(deniedManagerCreation.statusCode,403,deniedManagerCreation.body);
+      assert.equal(deniedManagerCreation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM users WHERE username=$1",[attemptedManagerUsername])).rows[0].count),0,
+        "non-admin account creators must not be able to assign the system manager role through the API");
 
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
