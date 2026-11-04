@@ -1502,6 +1502,15 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(leaderPriceChanges.statusCode,403,leaderPriceChanges.body,
       "shift leaders must not receive historical or current order pricing changes");
+    for(const url of [
+      "/api/production/earnings/settlement-eligible",
+      "/api/production/earnings/order-summary",
+      "/api/production/earnings/settlements"
+    ]){
+      const deniedEarnings=await app.inject({method:"GET",url,headers:{cookie:leader.cookie}});
+      assert.equal(deniedEarnings.statusCode,403,deniedEarnings.body,
+        "shift leaders must not read financial production endpoint "+url);
+    }
 
     const managerDeliveryDraft=await app.inject({
       method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:submitter.cookie},
