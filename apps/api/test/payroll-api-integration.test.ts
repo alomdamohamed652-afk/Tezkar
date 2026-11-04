@@ -165,6 +165,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         ["password-reset-denied-"+randomBytes(5).toString("hex"),hashPassword(password)]
       );
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[nonAdminUser.rows[0].id]);
+      // Give this non-admin role the route permission so the request reaches the explicit system-manager guard.
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='users.edit' WHERE r.code='worker' ON CONFLICT DO NOTHING");
       const nonAdminLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:nonAdminUser.rows[0].username,password}});
       assert.equal(nonAdminLogin.statusCode,200,nonAdminLogin.body);
       const nonAdminSetCookie=nonAdminLogin.headers["set-cookie"];
@@ -175,6 +177,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         headers:{cookie:nonAdminCookie}
       });
       assert.equal(deniedReset.statusCode,403,deniedReset.body);
+      assert.equal(deniedReset.json().error.code,"RBAC_ADMIN_REQUIRED",deniedReset.body,
+        "a non-manager who has users.edit must still be blocked by the explicit system-manager check");
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[passwordResetUser.rows[0].id])).rows[0].must_change_password,false,
+        "denied password reset must not mutate the target account");
 
       const resetEmployeeResponse=await app.inject({
         method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
@@ -187,6 +193,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(resetUserState.rows[0].must_change_password,true);
       assert.notEqual(resetUserState.rows[0].password_hash,hashPassword(password));
       assert.equal((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[oldSession.rows[0].id])).rows[0].revoked_at!==null,true);
+      const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
+      assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
+      assert.equal(resetNotification.rows[0].entity_type,"user");
+      assert.equal(resetNotification.rows[0].entity_id,passwordResetUser.rows[0].id);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM audit_log WHERE entity_type='employee' AND entity_id=$1 AND action='reset_password'",[passwordResetEmployee.rows[0].id])).rows[0].count,1,
+        "successful password reset must be audited");
 
       const unauthenticated = await app.inject({
         method: "POST", url: "/api/payroll/periods/00000000-0000-0000-0000-000000000000/approve"
