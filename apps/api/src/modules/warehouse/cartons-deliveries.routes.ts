@@ -13,12 +13,12 @@ const deliverySchema=z.object({orderId:z.string().uuid(),destination:z.string().
 const releaseSchema=z.object({scanCode:z.string().trim().min(4).max(100)});
 
 async function assertLocation(client:import("pg").PoolClient,w:string,l:string){const r=await client.query("SELECT id FROM warehouse_locations WHERE id=$1 AND warehouse_id=$2 AND is_active=TRUE",[l,w]);if(!r.rowCount)throw new AppError("LOCATION_NOT_FOUND","مكان التخزين غير موجود أو غير نشط",422);}
-async function changeBalance(client:import("pg").PoolClient,p:string,w:string,l:string,delta:number,unitCostOverride?:number){
+async function changeBalance(client:import("pg").PoolClient,p:string,w:string,l:string,delta:number,unitCostOverride?:number,totalCostOverride?:number){
  const r=await client.query("SELECT quantity,avg_unit_cost,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[p,w,l]);
  const current=Number(r.rows[0]?.quantity??0),avg=Number(r.rows[0]?.avg_unit_cost??0),value=Number(r.rows[0]?.inventory_value??0),next=current+delta;
  if(next< -1e-9)throw new AppError("INSUFFICIENT_STOCK","الرصيد غير كافٍ لتنفيذ إذن التسليم",409);
  const unitCost=delta<0&&unitCostOverride!==undefined?unitCostOverride:avg;
- const totalCost=Math.abs(delta)*unitCost;
+ const totalCost=delta<0&&totalCostOverride!==undefined?totalCostOverride:Math.abs(delta)*unitCost;
  const nextValue=delta<0?Math.max(0,value-totalCost):value+totalCost;
  const nextAvg=next>0?nextValue/next:0;
  if(r.rowCount)await client.query("UPDATE stock_balances SET quantity=$1,avg_unit_cost=$2,inventory_value=$3,updated_at=now() WHERE product_id=$4 AND warehouse_id=$5 AND location_id=$6",[next,nextAvg,nextValue,p,w,l]);
@@ -397,7 +397,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
      movementId:movement.rows[0].id,productId:line.product_id,warehouseId:line.warehouse_id,
      locationId:line.location_id,quantity:Number(line.quantity)
     });
-    const movementCost=await changeBalance(client,line.product_id,line.warehouse_id,line.location_id,-Number(line.quantity),fifo.unitCost);
+    const movementCost=await changeBalance(client,line.product_id,line.warehouse_id,line.location_id,-Number(line.quantity),fifo.unitCost,fifo.totalCost);
     await client.query("UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",[movementCost.unitCost,movementCost.totalCost,movement.rows[0].id]);
    }
    const updated=await client.query("UPDATE delivery_permissions SET status='RELEASED',released_by=$1,released_at=now(),updated_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,id]);
