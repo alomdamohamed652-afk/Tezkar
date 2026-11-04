@@ -270,6 +270,9 @@ export async function orderRoutes(app: FastifyInstance) {
   app.post("/api/orders", { preHandler: [authenticateRequest, requirePermission("orders.create")] }, async (request, reply) => {
     const parsed = orderSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات الطلب غير صحيحة",422);
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    if(!canViewFinancials&&(Number(parsed.data.contractValue??0)>0||parsed.data.stages.some(stage=>stage.stageRate!==undefined&&stage.stageRate!==null||stage.stageRateMethod!==undefined&&stage.stageRateMethod!==null)))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","إدخال قيمة التعاقد وأسعار مراحل الإنتاج متاح للمخولين ماليًا فقط",403);
     const row = await withTransaction(async (client) => {
       const created = await client.query(
         `INSERT INTO production_orders(order_name,customer_name,order_date,delivery_start_date,due_date,last_delivery_date,notes,created_by,status,contract_value)
@@ -380,6 +383,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),contractValue:z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"قيمة الطلبية بحد أقصى منزلتين عشريتين"}).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
+    if(parsed.data.contractValue!==undefined&&!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تعديل قيمة التعاقد متاح للمخولين ماليًا فقط",403);
     const p=parsed.data;
     const result=await withTransaction(async client=>{
       const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
@@ -461,6 +466,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const orderId=(request.params as {id:string}).id;
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional().default(false)}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).refine(x=>!x.isFinalProduct||Boolean((x.outputProductId||x.outputProductName)&&x.plannedQuantity!=null&&x.plannedQuantity>0),{message:"المنتج النهائي وكمية المرحلة مطلوبان"}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);
+    if((parsed.data.stageRate!==undefined||parsed.data.stageRateMethod!==undefined)&&!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تحديد سعر المرحلة وطريقة احتسابه متاح للمخولين ماليًا فقط",403);
     const r=await withTransaction(async client=>{
       const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
@@ -508,6 +515,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل المرحلة غير صحيحة",422);
+    if((parsed.data.stageRate!==undefined||parsed.data.stageRateMethod!==undefined)&&!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تعديل سعر المرحلة وطريقة احتسابه متاح للمخولين ماليًا فقط",403);
     const p=parsed.data;
     const r=await withTransaction(async client=>{
       const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[id]);
@@ -550,6 +559,8 @@ export async function orderRoutes(app: FastifyInstance) {
       reason:z.string().trim().min(2).max(500)
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تغيير سعر الطلبية غير صحيحة",422);
+    if(!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تغيير أسعار المراحل وإعادة احتساب المستحقات متاح للمخولين ماليًا فقط",403);
     const result=await withTransaction(async client=>{
       const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
