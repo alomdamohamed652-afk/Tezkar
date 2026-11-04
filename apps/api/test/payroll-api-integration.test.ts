@@ -234,6 +234,19 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(employeeDeactivated.statusCode,200,employeeDeactivated.body);
       assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[deactivationSession.rows[0].id])).rows[0].revoked_at,
         "deactivating an employee must revoke every existing login session");
+      // Simulate legacy inconsistent data from before session revocation existed.
+      await apiPool.query("UPDATE users SET is_active=TRUE WHERE id=$1",[deactivationUser.rows[0].id]);
+      await apiPool.query("UPDATE user_sessions SET revoked_at=NULL WHERE id=$1",[deactivationSession.rows[0].id]);
+      const legacyInactiveEmployeeLogin=await app.inject({
+        method:"POST",url:"/api/auth/login",payload:{username:deactivationUser.rows[0].username,password}
+      });
+      assert.equal(legacyInactiveEmployeeLogin.statusCode,401,
+        "an active login account must still be rejected when its linked employee is inactive");
+      const legacyInactiveEmployeeSession=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:deactivationCookie}});
+      assert.equal(legacyInactiveEmployeeSession.statusCode,401,
+        "legacy sessions must remain invalid while the linked employee is inactive");
+      await apiPool.query("UPDATE user_sessions SET revoked_at=now() WHERE id=$1",[deactivationSession.rows[0].id]);
+      await apiPool.query("UPDATE users SET is_active=FALSE WHERE id=$1",[deactivationUser.rows[0].id]);
       const blockedAccountReactivation=await app.inject({
         method:"PATCH",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader},payload:{isActive:true}
       });
