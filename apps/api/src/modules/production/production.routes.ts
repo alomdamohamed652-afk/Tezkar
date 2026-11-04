@@ -1446,7 +1446,7 @@ export async function productionRoutes(app: FastifyInstance) {
 
 
  
-  app.get("/api/production/earnings/settlement-eligible", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async () => {
+  app.get("/api/production/earnings/settlement-eligible", { preHandler: [authenticateRequest, requireAnyPermission(["worker_payments.pay","all"],["finance.profitability.view","all"])] }, async () => {
     const result = await pool.query(`
       SELECT e.id,e.code,e.full_name,
         COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FROM production_entries p WHERE p.employee_id=e.id AND p.status='APPROVED'),0)
@@ -1466,7 +1466,7 @@ export async function productionRoutes(app: FastifyInstance) {
     return {data:result.rows};
   });
 
-  app.get("/api/production/earnings/order-summary", { preHandler: [authenticateRequest, requireAnyPermission(["production.view","all"],["worker_payments.pay","all"])] }, async request => {
+  app.get("/api/production/earnings/order-summary", { preHandler: [authenticateRequest, requireAnyPermission(["worker_payments.pay","all"],["finance.profitability.view","all"])] }, async request => {
     const q=z.object({orderId:z.string().uuid().optional(),employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلاتر حساب الطلبيات غير صحيحة",422);
     const values:unknown[]=[];const filters:string[]=[];
@@ -1568,7 +1568,7 @@ export async function productionRoutes(app: FastifyInstance) {
     return {data:result.rows,unallocatedHistoricalPayments:unallocated.rows};
   });
 
-  app.get("/api/production/earnings/settlements", { preHandler: [authenticateRequest, requirePermission("production.view")] }, async request => {
+  app.get("/api/production/earnings/settlements", { preHandler: [authenticateRequest, requireAnyPermission(["worker_payments.pay","all"],["finance.profitability.view","all"])] }, async request => {
     const q=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر الموظف غير صحيح",422);
     const values:unknown[]=[];let where="";
