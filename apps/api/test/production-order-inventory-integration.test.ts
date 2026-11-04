@@ -1512,6 +1512,36 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
         "shift leaders must not read financial production endpoint "+url);
     }
 
+    const supervisor=await makeUser("order-dashboard-supervisor",true);
+    await apiPool.query("DELETE FROM user_roles WHERE user_id=$1",[supervisor.userId]);
+    await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supervisor'",[supervisor.userId]);
+    const supervisorLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:(await apiPool.query("SELECT username FROM users WHERE id=$1",[supervisor.userId])).rows[0].username,password:"Test-only-password-2026!"}});
+    assert.equal(supervisorLogin.statusCode,200,supervisorLogin.body);
+    const supervisorCookieValue=supervisorLogin.headers["set-cookie"];
+    assert.ok(supervisorCookieValue);
+    const supervisorCookie=(Array.isArray(supervisorCookieValue)?supervisorCookieValue[0]:supervisorCookieValue).split(";")[0];
+    const supervisorDashboard=await app.inject({method:"GET",url:"/api/orders/"+orderValueTestId+"/dashboard",headers:{cookie:supervisorCookie}});
+    assert.equal(supervisorDashboard.statusCode,200,supervisorDashboard.body);
+    assert.equal(Object.hasOwn(supervisorDashboard.json().data.order,"contract_value"),false,
+      "operational order dashboard must redact contract values from supervisors");
+    assert.equal(Object.hasOwn(supervisorDashboard.json().data.stages[0],"stage_rate"),false,
+      "operational order dashboard must redact stage rates from supervisors");
+    assert.equal(Object.hasOwn(supervisorDashboard.json().data.stages[0],"stage_expense_cost"),false,
+      "operational order dashboard must redact stage expenses from supervisors");
+    assert.equal(supervisorDashboard.json().data.totals,null,
+      "operational order dashboard must not return financial totals to supervisors");
+    const supervisorReconciliation=await app.inject({method:"GET",url:"/api/orders/"+orderValueTestId+"/reconciliation",headers:{cookie:supervisorCookie}});
+    assert.equal(supervisorReconciliation.statusCode,200,supervisorReconciliation.body,
+      "supervisors should retain operational order reconciliation access");
+    const deniedContractEdit=await app.inject({method:"PATCH",url:"/api/orders/"+orderValueTestId,headers:{cookie:supervisorCookie},payload:{contractValue:99999}});
+    assert.equal(deniedContractEdit.statusCode,403,deniedContractEdit.body);
+    const deniedStagePriceCreate=await app.inject({method:"POST",url:"/api/orders/"+orderValueTestId+"/stages",headers:{cookie:supervisorCookie},payload:{stageName:"Unauthorized priced stage",sequenceNo:2,stageRate:9,stageRateMethod:"PER_PIECE"}});
+    assert.equal(deniedStagePriceCreate.statusCode,403,deniedStagePriceCreate.body);
+    const deniedStagePriceEdit=await app.inject({method:"PATCH",url:"/api/order-stages/"+supervisorDashboard.json().data.stages[0].id,headers:{cookie:supervisorCookie},payload:{stageRate:9}});
+    assert.equal(deniedStagePriceEdit.statusCode,403,deniedStagePriceEdit.body);
+    const deniedStagePriceChange=await app.inject({method:"POST",url:"/api/orders/"+orderValueTestId+"/price-changes",headers:{cookie:supervisorCookie},payload:{orderStageId:supervisorDashboard.json().data.stages[0].id,newRate:9,scope:"NEW_ONLY",reason:"Unauthorized financial change"}});
+    assert.equal(deniedStagePriceChange.statusCode,403,deniedStagePriceChange.body);
+
     const managerDeliveryDraft=await app.inject({
       method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:submitter.cookie},
       payload:{orderId:orderValueTestId,destination:"Financial visibility draft",deliveryValue:9876}
