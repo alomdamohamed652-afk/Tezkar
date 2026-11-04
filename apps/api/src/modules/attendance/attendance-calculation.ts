@@ -67,7 +67,13 @@ function collapseNearDuplicateEvents(events: readonly AttendancePunchEvent[]) {
 }
 
 export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent[]) {
-  const collapsed = collapseNearDuplicateEvents(ordered);
+  // Pending, rejected and suspicious-unreviewed punches remain in the raw
+  // attendance history, but cannot contribute to payable worked time.
+  const eligible = ordered.filter((event) =>
+    event.review_status === "APPROVED"
+    || (event.review_status === "AUTO_ACCEPTED" && !event.suspicious)
+  );
+  const collapsed = collapseNearDuplicateEvents(eligible);
   const usable = collapsed.accepted;
   const normalIns = usable.filter((p) => p.status === "IN");
   const normalOuts = usable.filter((p) => p.status === "OUT");
@@ -83,7 +89,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   const candidateIds = new Set([
     ...collapsed.duplicateIds,
     ...extraSameType.map((event) => event.id),
-    ...usable.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
+    ...ordered.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
   ]);
   // A second same-type punch is a review candidate, not automatically an error:
   // employees may legitimately have multiple shifts. Once a manager reviews it,
@@ -102,6 +108,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     outPunch: normalOuts.at(-1) ?? null,
     otIn: overtimeIns[0] ?? null,
     otOut: overtimeOuts.at(-1) ?? null,
+    countedEvents: usable,
     duplicateIds: collapsed.duplicateIds,
     duplicatePunchCount: collapsed.duplicateIds.length,
     reviewPunchIds,
