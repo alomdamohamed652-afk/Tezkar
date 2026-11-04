@@ -195,6 +195,16 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(deniedShiftLeaderCreation.json().error.code,"RBAC_ADMIN_REQUIRED");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM users WHERE username=$1",[attemptedShiftLeaderUsername])).rows[0].count),0,
         "non-admin account creators must not assign privileged system operational roles either");
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='employees.create' WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      const attemptedPrivilegedEmployeeName="Privilege escalation employee "+randomBytes(5).toString("hex");
+      const deniedPrivilegedEmployee=await app.inject({
+        method:"POST",url:"/api/employees",headers:{cookie:nonAdminCookie},
+        payload:{fullName:attemptedPrivilegedEmployeeName,roleCode:"manager"}
+      });
+      assert.equal(deniedPrivilegedEmployee.statusCode,403,deniedPrivilegedEmployee.body);
+      assert.equal(deniedPrivilegedEmployee.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employees WHERE full_name=$1",[attemptedPrivilegedEmployeeName])).rows[0].count),0,
+        "employee creation must not bypass privileged role assignment protection");
 
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
