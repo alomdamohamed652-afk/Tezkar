@@ -338,6 +338,45 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(adjustmentLines.rowCount,4);
 
+      // Exercise named adjustment CRUD through the HTTP API, not only fixture SQL.
+      const listedAdjustments = await app.inject({
+        method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments`, headers: { cookie: cookieHeader }
+      });
+      assert.equal(listedAdjustments.statusCode, 200, listedAdjustments.body);
+      assert.equal(listedAdjustments.json().data.length, 2);
+      const bonusLineId = adjustmentLines.rows[0].id;
+      const editBonus = await app.inject({
+        method: "PATCH", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${bonusLineId}`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "BONUS", description: "Edited test bonus", amount: 125, notes: "API edit test" }
+      });
+      assert.equal(editBonus.statusCode, 200, editBonus.body);
+      assert.equal(Number(editBonus.json().data.amount), 125);
+      const restoreBonus = await app.inject({
+        method: "PATCH", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${bonusLineId}`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "BONUS", description: "Test bonus", amount: 100 }
+      });
+      assert.equal(restoreBonus.statusCode, 200, restoreBonus.body);
+      const temporaryAdjustment = await app.inject({
+        method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "DEDUCTION", description: "Temporary API test deduction", amount: 10 }
+      });
+      assert.equal(temporaryAdjustment.statusCode, 201, temporaryAdjustment.body);
+      const deleteTemporaryAdjustment = await app.inject({
+        method: "DELETE",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader }
+      });
+      assert.equal(deleteTemporaryAdjustment.statusCode, 200, deleteTemporaryAdjustment.body);
+      assert.equal(deleteTemporaryAdjustment.json().data.deleted, true);
+      const afterAdjustmentCrud = await apiPool.query(
+        "SELECT bonus_amount,deduction_amount FROM payroll_items WHERE id=$1", [itemA.rows[0].id]
+      );
+      assert.equal(Number(afterAdjustmentCrud.rows[0].bonus_amount), 100);
+      assert.equal(Number(afterAdjustmentCrud.rows[0].deduction_amount), 100);
+
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
         headers: { cookie: cookieHeader }, payload: { idempotencyKey: randomUUID(), amount: 100 }
