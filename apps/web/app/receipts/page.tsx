@@ -20,11 +20,11 @@ export default function ReceiptsPage(){
  const [selectedReceipt,setSelectedReceipt]=useState<Receipt|null>(null),[receiptLines,setReceiptLines]=useState<ReceiptLine[]>([]),[costInputs,setCostInputs]=useState<Record<string,string>>({}),[detailsLoading,setDetailsLoading]=useState(false),[costSaving,setCostSaving]=useState(false);
  const [receiptDate,setReceiptDate]=useState(new Date().toISOString().slice(0,10)),[source,setSource]=useState(""),[notes,setNotes]=useState(""),[lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",locationId:"",quantity:"",unitCost:"",batchCode:"",weight:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  async function openReceiptCosts(receipt:Receipt){
-  setSelectedReceipt(receipt);setDetailsLoading(true);setReceiptLines([]);setCostInputs({});
+  setSelectedReceipt(receipt);setDetailsLoading(true);setReceiptLines([]);setError("");
   try{
    const result=await api<{data:{lines:ReceiptLine[]}}>("/api/warehouse/receipts/"+receipt.id);
    setReceiptLines(result.data.lines);
-   setCostInputs(Object.fromEntries(result.data.lines.filter(line=>!line.cost_confirmed&&line.inventory_lot_id).map(line=>[line.inventory_lot_id!,""])));
+   setCostInputs(Object.fromEntries(result.data.lines.filter(line=>!line.cost_confirmed&&line.inventory_lot_id).map(line=>[line.inventory_lot_id!,costInputs[line.inventory_lot_id!]??""])));
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تفاصيل الاستلام");setSelectedReceipt(null)}
   finally{setDetailsLoading(false)}
  }
