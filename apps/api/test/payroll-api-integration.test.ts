@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { signAttendanceSnapshot } from "../src/modules/attendance/attendance-snapshot-signature.js";
 
 const adminUrl = process.env.TEST_DATABASE_URL;
 const apiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -365,7 +366,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
           {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
           {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
         ];
-      }).flat();
+      }).flat().map(row=>signAttendanceSnapshot(row));
       const missingSnapshotApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader },payload:{}
@@ -552,7 +553,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
           {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
           {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
         ];
-      }).flat();
+      }).flat().map(row=>signAttendanceSnapshot(row));
       const februaryPreview=await app.inject({
         method:"POST",url:`/api/payroll/periods/${februaryData.json().data.period.id}/attendance-preview`,
         headers:{cookie:cookieHeader},payload:{attendanceSnapshot:februaryAttendanceSnapshot,overtimeMultiplier:1.5}
