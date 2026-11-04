@@ -31,7 +31,7 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
   const lots=await client.query(`
     SELECT id,location_id,remaining_quantity,unit_cost
       FROM inventory_lots
-     WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0
+     WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0 AND cost_confirmed=TRUE
      ORDER BY created_at ASC,id ASC
      FOR UPDATE`,
     [input.productId,input.warehouseId]
@@ -203,7 +203,7 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
     // A stage withdrawal represents consumed inputs, not the stage output. Input
     // products must be allowed to differ from order_stages.output_product_id.
     const available=await client.query(
-      "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0",
+      "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0 AND cost_confirmed=TRUE",
       [item.productId,item.warehouseId]
     );
     if(Number(available.rows[0].quantity)<item.quantity)throw new AppError("INSUFFICIENT_STOCK","الكمية المطلوبة أكبر من رصيد الصنف في المخزن",409);
