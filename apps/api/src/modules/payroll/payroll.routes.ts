@@ -629,6 +629,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       await assertAccountingMonthOpen(client,month);
       const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 AND status='ACTIVE' FOR UPDATE",[params.lineId,params.id]);
       if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود أو تم إلغاؤه",404);
+      if(before.rows[0].source_type!=="MANUAL")throw new AppError("PAYROLL_SYSTEM_LINE_LOCKED","بنود الحضور المحسوبة آليًا لا تعدل مباشرة؛ أعد معاينة الحضور أو أضف بندًا يدويًا مستقلًا",409);
       const updated=await client.query("UPDATE payroll_adjustment_lines SET line_type=$1,description=$2,amount=$3,notes=$4 WHERE id=$5 AND payroll_item_id=$6 AND status='ACTIVE' RETURNING *",[parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,params.lineId,params.id]);
       const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[params.id]);
       const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
@@ -651,6 +652,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       await assertAccountingMonthOpen(client,month);
       const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 AND status='ACTIVE' FOR UPDATE",[params.lineId,params.id]);
       if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","البند غير موجود أو تم إلغاؤه بالفعل",404);
+      if(before.rows[0].source_type!=="MANUAL")throw new AppError("PAYROLL_SYSTEM_LINE_LOCKED","بنود الحضور المحسوبة آليًا لا تلغى مباشرة؛ أعد معاينة الحضور أو أضف بندًا يدويًا مستقلًا",409);
       const voided=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason=$1,voided_by=$2,voided_at=now() WHERE id=$3 AND payroll_item_id=$4 AND status='ACTIVE' RETURNING *",[parsed.data.reason,request.user!.userId,params.lineId,params.id]);
       const totals=await client.query("SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS' AND status='ACTIVE'),0) AS bonus,COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION' AND status='ACTIVE'),0) AS deduction FROM payroll_adjustment_lines WHERE payroll_item_id=$1",[params.id]);
       const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
