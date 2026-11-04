@@ -6,7 +6,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
-import { calculatePayrollDeduction } from "./payroll-calculation.js";
+import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -115,19 +115,24 @@ export async function payrollRoutes(app: FastifyInstance) {
       LEFT JOIN (SELECT payroll_item_id,SUM(amount) AS paid FROM payroll_payments GROUP BY payroll_item_id) p ON p.payroll_item_id=i.id
       LEFT JOIN accounting_expenses ae ON ae.id=i.accounting_expense_id
       WHERE i.period_id=$1 ORDER BY e.full_name`, [period.rows[0].id]);
-    const totals = items.rows.reduce((a, x) => ({
-      employees:a.employees+1,
-      net:a.net+Number(x.net_amount),
-      paid:a.paid+Number(x.paid_amount),
-      remaining:a.remaining+Number(x.remaining_amount),
-      recordedExpense:a.recordedExpense+Number(x.recorded_expense_amount),
-      // Keep missing links separate from amount mismatches: a missing expense has no
-      // recorded amount to compare, so it must not inflate the linked-difference total.
-      expenseDifference:a.expenseDifference+(x.accounting_expense_id ? Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount)) : 0),
-      missingExpenseCount:a.missingExpenseCount+(Number(x.net_amount)>0&&!x.accounting_expense_id?1:0),
-      missingExpenseAmount:a.missingExpenseAmount+(!x.accounting_expense_id&&Number(x.net_amount)>0?Number(x.net_amount):0),
-      expenseMismatchCount:a.expenseMismatchCount+(x.accounting_expense_id && Math.abs(Number(x.net_amount)-Number(x.recorded_expense_amount))>0.01?1:0)
-    }), { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0, missingExpenseAmount:0, expenseMismatchCount:0 });
+    const totals = items.rows.reduce((a, x) => {
+      // Accounting records the salary expense before advance recovery; advance repayment
+      // reduces the employee's take-home cash, not the employer's salary expense.
+      const expectedExpense = calculatePayrollExpenseAmount(Number(x.net_amount), Number(x.advance_repayment_amount ?? 0));
+      const expenseDifference = x.accounting_expense_id ? Math.abs(expectedExpense - Number(x.recorded_expense_amount)) : 0;
+      const missingExpense = !x.accounting_expense_id && expectedExpense > 0;
+      return {
+        employees:a.employees+1,
+        net:a.net+Number(x.net_amount),
+        paid:a.paid+Number(x.paid_amount),
+        remaining:a.remaining+Number(x.remaining_amount),
+        recordedExpense:a.recordedExpense+Number(x.recorded_expense_amount),
+        expenseDifference:a.expenseDifference+expenseDifference,
+        missingExpenseCount:a.missingExpenseCount+(missingExpense?1:0),
+        missingExpenseAmount:a.missingExpenseAmount+(missingExpense?expectedExpense:0),
+        expenseMismatchCount:a.expenseMismatchCount+(x.accounting_expense_id && expenseDifference>0.01?1:0)
+      };
+    }, { employees:0, net:0, paid:0, remaining:0, recordedExpense:0, expenseDifference:0, missingExpenseCount:0, missingExpenseAmount:0, expenseMismatchCount:0 });
     return { data: { period: period.rows[0], items: items.rows, totals } };
   });
 
