@@ -271,7 +271,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const parsed = orderSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات الطلب غير صحيحة",422);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    if(!canViewFinancials&&(Number(parsed.data.contractValue??0)>0||parsed.data.stages.some(stage=>stage.stageRate!==undefined&&stage.stageRate!==null||stage.stageRateMethod!==undefined&&stage.stageRateMethod!==null)))
+    if(!canViewFinancials&&(Number(parsed.data.contractValue??0)>0||(parsed.data.stages??[]).some(stage=>stage.stageRate!==undefined&&stage.stageRate!==null||stage.stageRateMethod!==undefined&&stage.stageRateMethod!==null)))
       throw new AppError("FINANCIAL_PERMISSION_REQUIRED","إدخال قيمة التعاقد وأسعار مراحل الإنتاج متاح للمخولين ماليًا فقط",403);
     const row = await withTransaction(async (client) => {
       const created = await client.query(
