@@ -134,9 +134,16 @@ export async function registrationRoutes(app: FastifyInstance) {
         throw new AppError("PHONE_REQUIRED", "طلب التسجيل ده قديم ولا يحتوي على رقم موبايل صالح؛ ارفضه واطلب من صاحبه إعادة التسجيل", 422);
       }
 
-      const role = await client.query("SELECT id,code FROM roles WHERE code=$1 AND is_active=TRUE", [parsed.data.roleCode]);
+      const role = await client.query(
+        `SELECT r.id,r.code,r.is_system,
+                EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                        WHERE rp.role_id=r.id AND p.code IN ('rbac.manage','users.manage_roles')) AS manages_rbac
+           FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
+        [parsed.data.roleCode]
+      );
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "الدور غير موجود أو غير نشط", 422);
-      if (role.rows[0].code === "manager") throw new AppError("MANAGER_ROLE_RESTRICTED", "لا يمكن منح دور مدير النظام من خلال طلب التسجيل؛ عيّنه يدويًا من إدارة الحسابات بعد المراجعة.", 403);
+      if ((role.rows[0].is_system && String(role.rows[0].code).toLowerCase() !== "worker") || role.rows[0].manages_rbac)
+        throw new AppError("PRIVILEGED_ROLE_RESTRICTED", "لا يمكن منح دور إداري أو تشغيلي مميز من خلال طلب التسجيل؛ عيّنه مدير النظام يدويًا بعد المراجعة.", 403);
 
       let linkedUserId: string | null = null;
       let employeeId = parsed.data.employeeId ?? null;
