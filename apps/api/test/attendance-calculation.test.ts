@@ -231,6 +231,25 @@ test("effective-dated schedule lookup does not leak across employees or weekdays
   assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-15"), null);
 });
 
+test("unreviewed repeated clock-ins cannot inflate a continuous shift's payable hours", () => {
+  const unresolved = selectAttendanceDayEvents([
+    punch("first-in", "IN", 8 * 60),
+    punch("second-in", "IN", 16 * 60),
+    punch("last-out", "OUT", 20 * 60),
+  ]);
+  assert.equal(unresolved.needsReview, true);
+  assert.deepEqual(unresolved.countedEvents, []);
+  assert.equal(calculateWorkedMinutes(unresolved.countedEvents), 0);
+
+  const reviewed = selectAttendanceDayEvents([
+    punch("first-in", "IN", 8 * 60),
+    punch("second-in", "IN", 16 * 60, { review_status: "APPROVED" }),
+    punch("last-out", "OUT", 20 * 60),
+  ]);
+  assert.equal(reviewed.needsReview, false);
+  assert.equal(reviewed.countedEvents.length, 3);
+});
+
 test("pending and rejected punches remain auditable but never contribute to worked time", () => {
   const pending = selectAttendanceDayEvents([
     punch("pending-in", "IN", 8 * 60, { review_status: "PENDING", suspicious: true }),
