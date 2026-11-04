@@ -297,6 +297,9 @@ export async function warehouseRoutes(app: FastifyInstance) {
   app.post("/api/warehouse/movements",{preHandler:[authenticateRequest,requirePermission("warehouse.move")]},async(request,reply)=>{
     const parsed=movementSchema.safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات حركة المخزن غير صحيحة",422);
+    const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
+    if(!canViewCosts&&parsed.data.unitCost!==undefined&&parsed.data.unitCost!==null)
+      throw new AppError("WAREHOUSE_COST_PERMISSION_REQUIRED","تسجيل تكلفة حركة المخزن متاح للمخولين ماليًا فقط",403);
     const row=await withTransaction(async(client)=>{
       await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       // Serialize stock mutations for the same product. This prevents concurrent first-time balance inserts and opposing transfers from locking balance rows in opposite orders.
@@ -337,7 +340,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
         await client.query("UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",[finalSourceCost.unitCost,finalSourceCost.totalCost,source.rows[0].id]);
         await adjustStockValueAfterLotConsumption(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,finalSourceCost.totalCost);
       } else {
-        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity,unitCost:sourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:parsed.data.movementType,sourceId:source.rows[0].id});
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity,unitCost:sourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:parsed.data.movementType,sourceId:source.rows[0].id,costConfirmed:effectiveUnitCost!==undefined&&effectiveUnitCost!==null||sourceCost.unitCost>0,stockMovementId:source.rows[0].id});
       }
       let destination=null;
       if(parsed.data.movementType==="TRANSFER_OUT"){
