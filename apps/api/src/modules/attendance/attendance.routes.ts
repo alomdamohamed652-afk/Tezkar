@@ -8,6 +8,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { belongsToAttendanceShift, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents } from "./attendance-calculation.js";
 import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
+import { signAttendanceSnapshot } from "./attendance-snapshot-signature.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
@@ -250,10 +251,12 @@ export async function attendanceRoutes(app:FastifyInstance){
     if(!override)continue;
     const firstIn=override.first_in?String(row.date)+"T"+String(override.first_in).slice(0,8):null;
     const lastOut=override.last_out?String(row.date)+"T"+String(override.last_out).slice(0,8):null;
-    report[index]={...row,firstIn,lastOut,workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
+    report[index]={...row,firstIn,lastOut,workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),isDayOff:String(override.status)==="DAY_OFF",overtimeMinutes:0,overtimePending:false,needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
   }
   const totals={rows:report.length,totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
-  return {data:report,summary:totals};
+  const snapshotIssuedAt=Date.now();
+  const signedReport=report.map(row=>signAttendanceSnapshot(row as Record<string,unknown>,snapshotIssuedAt));
+  return {data:signedReport,summary:totals};
  });
 
 }

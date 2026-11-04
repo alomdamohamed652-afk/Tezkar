@@ -81,6 +81,7 @@ export async function accountingRoutes(app:FastifyInstance){
       JOIN employees emp ON emp.id=i.employee_id
       LEFT JOIN employee_earnings_ledger el ON el.payroll_adjustment_line_id=l.id
      WHERE p.status IN ('APPROVED','CLOSED')
+       AND l.status='ACTIVE'
        AND (
          el.id IS NULL
          OR el.employee_id IS DISTINCT FROM i.employee_id
