@@ -1544,7 +1544,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(deniedContractCreate.statusCode,403,deniedContractCreate.body);
     const deniedStagePriceOnOrderCreate=await app.inject({method:"POST",url:"/api/orders",headers:{cookie:supervisorCookie},payload:{orderName:"Unauthorized stage price create",orderDate:"2099-01-10",stages:[{stageName:"Unauthorized stage",sequenceNo:1,stageRate:9,stageRateMethod:"PER_PIECE"}]}});
     assert.equal(deniedStagePriceOnOrderCreate.statusCode,403,deniedStagePriceOnOrderCreate.body);
-    const operationalOrderCreate=await app.inject({method:"POST",url:"/api/orders",headers:{cookie:supervisorCookie},payload:{orderName:"Operational order without pricing",orderDate:"2099-01-11"}});
+    const operationalOrderCreate=await app.inject({method:"POST",url:"/api/orders",headers:{cookie:supervisorCookie},payload:{orderName:"Operational order without pricing",orderDate:"2099-01-11",stages:[{stageName:"Operational stage without price",sequenceNo:1,outputProductName:"Operational final product without price",plannedQuantity:1,isFinalProduct:true}]}});
     assert.equal(operationalOrderCreate.statusCode,201,operationalOrderCreate.body,
       "operational roles can create an order without financial values or explicit stage arrays");
     const deniedStagePriceCreate=await app.inject({method:"POST",url:"/api/orders/"+orderValueTestId+"/stages",headers:{cookie:supervisorCookie},payload:{stageName:"Unauthorized priced stage",sequenceNo:2,stageRate:9,stageRateMethod:"PER_PIECE"}});
