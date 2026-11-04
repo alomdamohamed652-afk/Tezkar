@@ -234,6 +234,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(employeeDeactivated.statusCode,200,employeeDeactivated.body);
       assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[deactivationSession.rows[0].id])).rows[0].revoked_at,
         "deactivating an employee must revoke every existing login session");
+      const blockedAccountReactivation=await app.inject({
+        method:"PATCH",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader},payload:{isActive:true}
+      });
+      assert.equal(blockedAccountReactivation.statusCode,409,blockedAccountReactivation.body);
+      assert.equal(blockedAccountReactivation.json().error.code,"EMPLOYEE_INACTIVE",
+        "account management must not reactivate an account while its employee record is inactive");
       const employeeReactivated=await app.inject({method:"POST",url:"/api/employees/"+deactivationEmployee.rows[0].id+"/activate",headers:{cookie:cookieHeader}});
       assert.equal(employeeReactivated.statusCode,200,employeeReactivated.body);
       const oldSessionAfterReactivation=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:deactivationCookie}});
