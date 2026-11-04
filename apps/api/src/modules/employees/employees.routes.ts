@@ -227,7 +227,16 @@ export async function employeeRoutes(app: FastifyInstance) {
     const r=await withTransaction(async client=>{
       const before=await client.query("SELECT id,code,full_name,is_active FROM employees WHERE id=$1 FOR UPDATE",[id]);
       if(!before.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
-      const user=await client.query("SELECT id FROM users WHERE employee_id=$1 FOR UPDATE",[id]);
+      const user=await client.query(
+        `SELECT u.id,r.code,r.is_system,
+                EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                        WHERE rp.role_id=r.id AND p.code IN ('rbac.manage','users.manage_roles')) AS manages_rbac
+           FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles r ON r.id=ur.role_id
+          WHERE u.employee_id=$1 ORDER BY u.id FOR UPDATE OF u`,
+        [id]
+      );
+      for(const account of user.rows)if(account.code)
+        await assertCanAssignPrivilegedRole(client,request.user!.userId,account);
       if(!before.rows[0].is_active)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id IN (SELECT id FROM users WHERE employee_id=$1) AND revoked_at IS NULL",[id]);
       if(!user.rowCount)throw new AppError("EMPLOYEE_ACCOUNT_NOT_FOUND","لا يوجد حساب دخول مرتبط بالموظف؛ راجع بيانات الحساب قبل التفعيل",409);
       const employee=await client.query("UPDATE employees SET is_active=TRUE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
