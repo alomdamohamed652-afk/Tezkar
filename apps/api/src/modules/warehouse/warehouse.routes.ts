@@ -84,6 +84,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const parsed=z.object({targetWarehouseId:z.string().uuid().nullable().optional(),targetLocationId:z.string().uuid().nullable().optional()}).safeParse(req.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","وجهة النقل غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const source=await client.query("SELECT * FROM warehouses WHERE id=$1 FOR UPDATE",[id]);
       if(!source.rowCount)throw new AppError("WAREHOUSE_NOT_FOUND","المخزن غير موجود",404);
       if(!source.rows[0].is_active)return source.rows[0];
@@ -131,6 +132,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const parsed=z.object({targetWarehouseId:z.string().uuid().nullable().optional(),targetLocationId:z.string().uuid().nullable().optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","وجهة النقل غير صحيحة",422);
     const row=await withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const location=await client.query("SELECT l.*,w.name AS warehouse_name FROM warehouse_locations l JOIN warehouses w ON w.id=l.warehouse_id WHERE l.id=$1 FOR UPDATE",[id]);
       if(!location.rowCount)throw new AppError("LOCATION_NOT_FOUND","المكان غير موجود",404);
       if(!location.rows[0].is_active)return location.rows[0];
@@ -354,6 +356,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const parsed=z.object({productId:z.string().uuid(),warehouseId:z.string().uuid(),locationId:z.string().uuid(),averageUnitCost:z.number().finite().nonnegative(),notes:z.string().trim().max(500).optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل التكلفة غير صحيحة",422);
     return withTransaction(async client=>{
+      await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
       const product=await client.query("SELECT id,name,unit_id FROM products WHERE id=$1 AND track_inventory=TRUE FOR UPDATE",[parsed.data.productId]);
       if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",404);
       const balance=await client.query("SELECT b.*,w.name AS warehouse_name,l.name AS location_name FROM stock_balances b JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE b.product_id=$1 AND b.warehouse_id=$2 AND b.location_id=$3 FOR UPDATE OF b",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
