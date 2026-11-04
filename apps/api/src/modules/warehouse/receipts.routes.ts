@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { createInventoryLot } from "./inventory-lots.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
+import { canViewWarehouseCosts } from "./warehouse.routes.js";
 
 const line=z.object({
   productId:z.string().uuid(),
@@ -45,20 +46,23 @@ async function addStock(client:import("pg").PoolClient,p:string,w:string,l:strin
 }
 
 export async function receiptRoutes(app:FastifyInstance){
- app.get("/api/warehouse/receipts",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
+ app.get("/api/warehouse/receipts",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+  const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
   const r=await pool.query(
    `SELECT wr.id,wr.code,wr.receipt_date,wr.source,wr.notes,wr.created_at,
-           COUNT(wrl.id)::int AS line_count,COALESCE(SUM(wrl.quantity*wrl.unit_cost),0) AS total_cost
+           COUNT(wrl.id)::int AS line_count,
+           CASE WHEN $1::boolean THEN COALESCE(SUM(wrl.quantity*wrl.unit_cost),0) ELSE NULL END AS total_cost
       FROM warehouse_receipts wr LEFT JOIN warehouse_receipt_lines wrl ON wrl.receipt_id=wr.id
-     GROUP BY wr.id ORDER BY wr.receipt_date DESC,wr.created_at DESC LIMIT 300`);
+     GROUP BY wr.id ORDER BY wr.receipt_date DESC,wr.created_at DESC LIMIT 300`,[canViewCosts]);
   return {data:r.rows};
  });
 
  app.get("/api/warehouse/receipts/:id",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
   const id=(request.params as {id:string}).id;
+  const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
   const receipt=await pool.query("SELECT * FROM warehouse_receipts WHERE id=$1",[id]);
   if(!receipt.rowCount)throw new AppError("RECEIPT_NOT_FOUND","إذن الاستلام غير موجود",404);
-  const lines=await pool.query("SELECT rwl.*,p.name AS product_name,w.name AS warehouse_name,l.name AS location_name,u.name AS unit_name FROM warehouse_receipt_lines rwl JOIN products p ON p.id=rwl.product_id JOIN warehouses w ON w.id=rwl.warehouse_id JOIN warehouse_locations l ON l.id=rwl.location_id JOIN units u ON u.id=rwl.unit_id WHERE rwl.receipt_id=$1 ORDER BY rwl.id",[id]);
+  const lines=await pool.query("SELECT rwl.id,rwl.receipt_id,rwl.product_id,rwl.warehouse_id,rwl.location_id,rwl.quantity,rwl.unit_id,CASE WHEN $2::boolean THEN rwl.unit_cost ELSE NULL END AS unit_cost,rwl.batch_code,rwl.weight,rwl.notes,p.name AS product_name,w.name AS warehouse_name,l.name AS location_name,u.name AS unit_name FROM warehouse_receipt_lines rwl JOIN products p ON p.id=rwl.product_id JOIN warehouses w ON w.id=rwl.warehouse_id JOIN warehouse_locations l ON l.id=rwl.location_id JOIN units u ON u.id=rwl.unit_id WHERE rwl.receipt_id=$1 ORDER BY rwl.id",[id,canViewCosts]);
   return {data:{receipt:receipt.rows[0],lines:lines.rows}};
  });
 
