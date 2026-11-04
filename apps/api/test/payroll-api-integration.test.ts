@@ -636,6 +636,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
       assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      const missingAttendanceSnapshot=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers:{cookie:cookieHeader},payload:{}
+      });
+      assert.equal(missingAttendanceSnapshot.statusCode,422,missingAttendanceSnapshot.body);
+      assert.equal(missingAttendanceSnapshot.json().error.code,"ATTENDANCE_SNAPSHOT_REQUIRED");
       const pendingPayrollPunch=await apiPool.query(
         "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE','2099-01-15T08:00:00Z','IN','FINGERPRINT',TRUE,'PENDING',$2) RETURNING id",
         [employeeA.rows[0].id,randomBytes(32).toString("hex")]
