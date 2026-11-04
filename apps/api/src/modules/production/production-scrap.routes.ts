@@ -230,7 +230,7 @@ export async function productionScrapRoutes(app: FastifyInstance) {
         const sourceLots = await client.query(
           `SELECT COALESCE(SUM(remaining_quantity),0) AS quantity
              FROM inventory_lots
-            WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0`,
+            WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 AND cost_confirmed=TRUE`,
           [entry.rows[0].product_id, sourceWarehouseId, sourceLocationId]
         );
         if (Math.abs(Number(sourceLots.rows[0]?.quantity ?? 0) - availableSourceQuantity) > 1e-7) {
