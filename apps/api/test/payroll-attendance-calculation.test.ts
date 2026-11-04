@@ -114,18 +114,19 @@ test("manual attendance days never inherit or receive fingerprint overtime", () 
 
 test("signed attendance snapshots reject edited and expired rows", () => {
   const issuedAt = Date.now();
+  const secret = "test-attendance-snapshot-secret-32chars";
   const signed = signAttendanceSnapshot({
     date: "2026-11-04",
     employeeId: "00000000-0000-4000-8000-000000000001",
     status: "PRESENT",
     workedMinutes: 480,
     overtimeMinutes: 60
-  }, issuedAt);
+  }, issuedAt, secret);
 
-  assert.equal(verifyAttendanceSnapshot(signed, issuedAt), true);
-  const serialized = JSON.parse(JSON.stringify(signAttendanceSnapshot({ firstIn: new Date("2026-11-04T08:00:00.000Z") }, issuedAt)));
-  assert.equal(verifyAttendanceSnapshot(serialized, issuedAt), true,
+  assert.equal(verifyAttendanceSnapshot(signed, issuedAt, secret), true);
+  const serialized = JSON.parse(JSON.stringify(signAttendanceSnapshot({ firstIn: new Date("2026-11-04T08:00:00.000Z") }, issuedAt, secret)));
+  assert.equal(verifyAttendanceSnapshot(serialized, issuedAt, secret), true,
     "timestamp fields must remain verifiable after the attendance API JSON round-trip");
-  assert.equal(verifyAttendanceSnapshot({ ...signed, workedMinutes: 1 }, issuedAt), false);
-  assert.equal(verifyAttendanceSnapshot(signed, issuedAt + 16 * 60 * 1000), false);
+  assert.equal(verifyAttendanceSnapshot({ ...signed, workedMinutes: 1 }, issuedAt, secret), false);
+  assert.equal(verifyAttendanceSnapshot(signed, issuedAt + 16 * 60 * 1000, secret), false);
 });
