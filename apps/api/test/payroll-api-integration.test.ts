@@ -186,6 +186,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(deniedManagerCreation.json().error.code,"RBAC_ADMIN_REQUIRED");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM users WHERE username=$1",[attemptedManagerUsername])).rows[0].count),0,
         "non-admin account creators must not be able to assign the system manager role through the API");
+      const attemptedShiftLeaderUsername="privileged-role-escalation-"+randomBytes(5).toString("hex");
+      const deniedShiftLeaderCreation=await app.inject({
+        method:"POST",url:"/api/users",headers:{cookie:nonAdminCookie},
+        payload:{username:attemptedShiftLeaderUsername,password:"Test-Only-Password-2026!",roleCode:"shift_leader"}
+      });
+      assert.equal(deniedShiftLeaderCreation.statusCode,403,deniedShiftLeaderCreation.body);
+      assert.equal(deniedShiftLeaderCreation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM users WHERE username=$1",[attemptedShiftLeaderUsername])).rows[0].count),0,
+        "non-admin account creators must not assign privileged system operational roles either");
 
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
