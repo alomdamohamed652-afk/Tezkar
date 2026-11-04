@@ -83,8 +83,16 @@ export async function userRoutes(app: FastifyInstance){
   const parsed=createUserSchema.safeParse(request.body);
   if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المستخدم غير صحيحة",422);
   const row=await withTransaction(async client=>{
-   const role=await client.query("SELECT id FROM roles WHERE code=$1 AND is_active=TRUE",[parsed.data.roleCode]);
+   const role=await client.query(
+    `SELECT r.id,r.code,
+            EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                    WHERE rp.role_id=r.id AND p.code='rbac.manage') AS manages_rbac
+       FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
+    [parsed.data.roleCode]
+   );
    if(!role.rowCount) throw new AppError("ROLE_NOT_FOUND","الدور غير موجود أو غير نشط",422);
+   if(["manager","admin","owner"].includes(String(role.rows[0].code).toLowerCase())||role.rows[0].manages_rbac)
+     await assertSystemPermissionAdmin(request.user!.userId);
    if(parsed.data.employeeId){const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);}
    try{
     const user=await client.query("INSERT INTO users(username,password_hash,employee_id) VALUES($1,$2,$3) RETURNING id,code,username,employee_id,is_active,created_at",[parsed.data.username,hashPassword(parsed.data.password),parsed.data.employeeId??null]);
