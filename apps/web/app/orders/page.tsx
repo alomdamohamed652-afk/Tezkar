@@ -16,7 +16,7 @@ const statusOptions=[{value:"DRAFT",label:"مسودة"},{value:"PLANNED",label:"
 export default function OrdersPage(){
  const {has,session}=usePermissions();
  const isShiftLeader=session?.roleCodes?.some(code=>code.toLowerCase()==="shift_leader")??false;
- const canViewOrderFinancials=has("finance.profitability.view")||has("orders.dashboard");
+ const canViewOrderFinancials=has("finance.profitability.view")||has("worker_payments.pay");
  const canOpenOrderDetails=has("orders.dashboard")&&!isShiftLeader;
  const [orders,setOrders]=useState<Order[]>([]);
  const [productionTypes,setProductionTypes]=useState<ProductionType[]>([]);
