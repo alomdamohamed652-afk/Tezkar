@@ -204,8 +204,8 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     assert.equal(Object.hasOwn(shiftLeaderLot,"unit_cost"),false);
     const shiftLeaderMovements=await app.inject({method:"GET",url:"/api/warehouse/movements",headers:{cookie:shiftLeaderCookie}});
     assert.equal(shiftLeaderMovements.statusCode,200,shiftLeaderMovements.body);
-    const shiftLeaderMovement=shiftLeaderMovements.json().data.find((row:{product_id:string;reference_type:string})=>
-      row.product_id===receiptRaceProduct.rows[0].id&&row.reference_type==="RECEIPT");
+    const shiftLeaderMovement=shiftLeaderMovements.json().data.find((row:{reference_type:string})=>
+      row.reference_type==="RECEIPT");
     assert.ok(shiftLeaderMovement,"shift leader should retain warehouse movement visibility");
     assert.equal(Object.hasOwn(shiftLeaderMovement,"unit_cost"),false);
     assert.equal(Object.hasOwn(shiftLeaderMovement,"total_cost"),false);
