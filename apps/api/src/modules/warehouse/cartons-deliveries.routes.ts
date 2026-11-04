@@ -64,7 +64,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"carton",entityId:finalCarton.id,afterData:finalCarton,ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return finalCarton;
   });
-  return reply.code(201).send({data:redactDeliveryValue(row,canViewFinancials)});
+  return reply.code(201).send({data:row});
  });
 
  app.get("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.view")]},async(request)=>{
@@ -109,7 +109,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"delivery_permission_draft",entityId:created.rows[0].id,afterData:created.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return created.rows[0];
   });
-  return reply.code(201).send({data:row});
+  return reply.code(201).send({data:redactDeliveryValue(row,canViewFinancials)});
  });
  app.post("/api/delivery-permissions/:id/scan",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request,reply)=>{
   const id=(request.params as {id:string}).id;const parsed=draftScanSchema.safeParse(request.body);
