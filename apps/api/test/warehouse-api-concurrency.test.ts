@@ -189,6 +189,27 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     assert.equal(receiptRaceBalance.rowCount,1,"concurrent receipt APIs must initialize one stock balance");
     assert.equal(Number(receiptRaceBalance.rows[0].quantity),12);
     assert.equal(Number(receiptRaceBalance.rows[0].inventory_value),31);
+    const shiftLeaderStock=await app.inject({method:"GET",url:"/api/warehouse/stock",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderStock.statusCode,200,shiftLeaderStock.body);
+    const shiftLeaderStockRow=shiftLeaderStock.json().data.find((row:{product_id:string;warehouse_id:string;location_id:string})=>
+      row.product_id===receiptRaceProduct.rows[0].id&&row.warehouse_id===receiptRaceWarehouse.rows[0].id&&row.location_id===receiptRaceLocation.rows[0].id);
+    assert.ok(shiftLeaderStockRow,"shift leader should retain stock quantity visibility");
+    assert.equal(Object.hasOwn(shiftLeaderStockRow,"avg_unit_cost"),false);
+    assert.equal(Object.hasOwn(shiftLeaderStockRow,"inventory_value"),false);
+    const shiftLeaderLots=await app.inject({method:"GET",url:"/api/warehouse/lots",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderLots.statusCode,200,shiftLeaderLots.body);
+    const shiftLeaderLot=shiftLeaderLots.json().data.find((row:{product_id:string})=>row.product_id===receiptRaceProduct.rows[0].id);
+    assert.ok(shiftLeaderLot,"shift leader should retain lot quantity visibility");
+    assert.equal(Object.hasOwn(shiftLeaderLot,"unit_cost"),false);
+    const shiftLeaderMovements=await app.inject({method:"GET",url:"/api/warehouse/movements",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderMovements.statusCode,200,shiftLeaderMovements.body);
+    const shiftLeaderMovement=shiftLeaderMovements.json().data.find((row:{product_id:string;reference_type:string})=>
+      row.product_id===receiptRaceProduct.rows[0].id&&row.reference_type==="RECEIPT");
+    assert.ok(shiftLeaderMovement,"shift leader should retain warehouse movement visibility");
+    assert.equal(Object.hasOwn(shiftLeaderMovement,"unit_cost"),false);
+    assert.equal(Object.hasOwn(shiftLeaderMovement,"total_cost"),false);
+    const shiftLeaderDashboard=await app.inject({method:"GET",url:"/api/warehouse/dashboard",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderDashboard.statusCode,403,shiftLeaderDashboard.body);
 
     const receive = (warehouseId: string, locationId: string, quantity: number, unitCost: number) =>
       app!.inject({
