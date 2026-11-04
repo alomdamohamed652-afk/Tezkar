@@ -273,6 +273,25 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(oldAccountSession.statusCode,401,oldAccountSession.body,
         "reactivating an account must not revive its revoked sessions");
 
+      const privilegedInactiveEmployee=await apiPool.query("INSERT INTO employees(full_name,is_active) VALUES('Inactive Privileged Account Employee',FALSE) RETURNING id");
+      const privilegedInactiveUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,FALSE,FALSE,FALSE) RETURNING id",
+        ["inactive-privileged-"+randomBytes(5).toString("hex"),hashPassword(password),privilegedInactiveEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager'",[privilegedInactiveUser.rows[0].id]);
+      const deniedPrivilegedAccountActivation=await app.inject({
+        method:"PATCH",url:"/api/users/"+privilegedInactiveUser.rows[0].id,headers:{cookie:nonAdminCookie},payload:{isActive:true}
+      });
+      assert.equal(deniedPrivilegedAccountActivation.statusCode,403,deniedPrivilegedAccountActivation.body);
+      assert.equal(deniedPrivilegedAccountActivation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      const deniedPrivilegedEmployeeActivation=await app.inject({
+        method:"POST",url:"/api/employees/"+privilegedInactiveEmployee.rows[0].id+"/activate",headers:{cookie:nonAdminCookie}
+      });
+      assert.equal(deniedPrivilegedEmployeeActivation.statusCode,403,deniedPrivilegedEmployeeActivation.body);
+      assert.equal(deniedPrivilegedEmployeeActivation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal((await apiPool.query("SELECT is_active FROM users WHERE id=$1",[privilegedInactiveUser.rows[0].id])).rows[0].is_active,false);
+      assert.equal((await apiPool.query("SELECT is_active FROM employees WHERE id=$1",[privilegedInactiveEmployee.rows[0].id])).rows[0].is_active,false);
+
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
