@@ -190,6 +190,7 @@ export async function userRoutes(app: FastifyInstance){
         if(!employee.rowCount)throw new AppError("EMPLOYEE_INACTIVE","لا يمكن تفعيل حساب مرتبط بموظف غير نشط؛ فعّل ملف الموظف أولًا",409);
       }
     }
+    if(parsed.data.isActive&&!before.rows[0].is_active)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
     await client.query("UPDATE users SET is_active=$1,updated_at=now() WHERE id=$2",[parsed.data.isActive,id]);
     if(!parsed.data.isActive)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
    }
