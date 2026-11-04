@@ -1487,6 +1487,48 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(leaderOrderDetail.statusCode, 200, leaderOrderDetail.body);
     assert.equal(Object.hasOwn(leaderOrderDetail.json().data, "contract_value"), false,
       "shift leaders must not receive contract value from order detail API either");
+    assert.equal(Object.hasOwn(leaderOrderDetail.json().data.stages[0], "stage_rate"), false,
+      "shift leaders must not receive stage rates from nested order detail data");
+    const leaderOrderStages=await app.inject({
+      method:"GET",url:"/api/order-stages",headers:{cookie:leader.cookie}
+    });
+    assert.equal(leaderOrderStages.statusCode,200,leaderOrderStages.body);
+    const leaderStageRow=leaderOrderStages.json().data.find((x:{order_id:string})=>x.order_id===orderValueTestId);
+    assert.ok(leaderStageRow,"shift leaders must retain operational stage visibility");
+    assert.equal(Object.hasOwn(leaderStageRow,"stage_rate"),false,
+      "shift leaders must not receive stage rates from the order stages API");
+    const leaderPriceChanges=await app.inject({
+      method:"GET",url:"/api/orders/"+orderValueTestId+"/price-changes",headers:{cookie:leader.cookie}
+    });
+    assert.equal(leaderPriceChanges.statusCode,403,leaderPriceChanges.body,
+      "shift leaders must not receive historical or current order pricing changes");
+
+    const managerDeliveryDraft=await app.inject({
+      method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:submitter.cookie},
+      payload:{orderId:orderValueTestId,destination:"Financial visibility draft",deliveryValue:9876}
+    });
+    assert.equal(managerDeliveryDraft.statusCode,201,managerDeliveryDraft.body);
+    const leaderDeliveryList=await app.inject({
+      method:"GET",url:"/api/delivery-permissions",headers:{cookie:leader.cookie}
+    });
+    assert.equal(leaderDeliveryList.statusCode,200,leaderDeliveryList.body);
+    const leaderDeliveryRow=leaderDeliveryList.json().data.find((x:{id:string})=>x.id===managerDeliveryDraft.json().data.id);
+    assert.ok(leaderDeliveryRow,"shift leaders may see operational delivery records");
+    assert.equal(Object.hasOwn(leaderDeliveryRow,"delivery_value"),false,
+      "shift leaders must not receive delivery financial values from the list API");
+    const deniedLeaderDeliveryDraft=await app.inject({
+      method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:leader.cookie},
+      payload:{orderId:orderValueTestId,destination:"Unauthorized value entry",deliveryValue:9876}
+    });
+    assert.equal(deniedLeaderDeliveryDraft.statusCode,403,deniedLeaderDeliveryDraft.body);
+    assert.equal(deniedLeaderDeliveryDraft.json().error.code,"FINANCIAL_PERMISSION_REQUIRED");
+    const deniedLeaderDirectDelivery=await app.inject({
+      method:"POST",url:"/api/delivery-permissions",headers:{cookie:leader.cookie},
+      payload:{orderId:orderValueTestId,destination:"Unauthorized direct value",deliveryValue:9876,
+        lines:[{productId:leaderStageRow.output_product_id,warehouseId:warehouse.rows[0].id,locationId:location.rows[0].id,quantity:1}]}
+    });
+    assert.equal(deniedLeaderDirectDelivery.statusCode,403,deniedLeaderDirectDelivery.body);
+    assert.equal(deniedLeaderDirectDelivery.json().error.code,"FINANCIAL_PERMISSION_REQUIRED");
 
     // A pending production row can be cancelled only after password confirmation.
     const pendingOrder = await app.inject({
