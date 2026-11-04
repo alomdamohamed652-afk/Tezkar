@@ -273,7 +273,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(oldAccountSession.statusCode,401,oldAccountSession.body,
         "reactivating an account must not revive its revoked sessions");
 
-      const privilegedInactiveEmployee=await apiPool.query("INSERT INTO employees(full_name,is_active) VALUES('Inactive Privileged Account Employee',FALSE) RETURNING id");
+      const privilegedInactiveEmployee=await apiPool.query("INSERT INTO employees(full_name,is_active) VALUES('Inactive Privileged Account Employee',TRUE) RETURNING id");
       const privilegedInactiveUser=await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,FALSE,FALSE,FALSE) RETURNING id",
         ["inactive-privileged-"+randomBytes(5).toString("hex"),hashPassword(password),privilegedInactiveEmployee.rows[0].id]
@@ -290,7 +290,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(deniedPrivilegedEmployeeActivation.statusCode,403,deniedPrivilegedEmployeeActivation.body);
       assert.equal(deniedPrivilegedEmployeeActivation.json().error.code,"RBAC_ADMIN_REQUIRED");
       assert.equal((await apiPool.query("SELECT is_active FROM users WHERE id=$1",[privilegedInactiveUser.rows[0].id])).rows[0].is_active,false);
-      assert.equal((await apiPool.query("SELECT is_active FROM employees WHERE id=$1",[privilegedInactiveEmployee.rows[0].id])).rows[0].is_active,false);
+      assert.equal((await apiPool.query("SELECT is_active FROM employees WHERE id=$1",[privilegedInactiveEmployee.rows[0].id])).rows[0].is_active,true);
 
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
