@@ -504,7 +504,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       }
       if(fromCustody && !custodyEmployeeId)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","اختر الموظف صاحب العهدة التي سيتم الصرف منها",409);
       if(fromCustody){
-        const holder=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[custodyEmployeeId]);
+        const holder=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[custodyEmployeeId]);
         if(!holder.rowCount)throw new AppError("CUSTODY_EMPLOYEE_NOT_FOUND","صاحب العهدة غير موجود أو غير نشط",409);
         const custodyBalance=await client.query(
           "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
