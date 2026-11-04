@@ -66,8 +66,26 @@ export async function employeeRoutes(app: FastifyInstance) {
         ]
       );
       const row = result.rows[0];
-      const role = await client.query("SELECT id FROM roles WHERE code=$1 AND is_active=TRUE", [parsed.data.roleCode]);
+      const role = await client.query(
+        `SELECT r.id,r.code,r.is_system,
+                EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                        WHERE rp.role_id=r.id AND p.code='rbac.manage') AS manages_rbac
+           FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
+        [parsed.data.roleCode]
+      );
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "دور المستخدم غير موجود أو غير نشط", 422);
+      if ((role.rows[0].is_system && String(role.rows[0].code).toLowerCase() !== "worker")
+        || ["manager","admin","owner"].includes(String(role.rows[0].code).toLowerCase())
+        || role.rows[0].manages_rbac) {
+        const admin=await client.query(
+          `SELECT EXISTS(
+             SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+              WHERE ur.user_id=$1 AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE
+           ) AS allowed`,
+          [request.user!.userId]
+        );
+        if(!admin.rows[0]?.allowed)throw new AppError("RBAC_ADMIN_REQUIRED","إنشاء حساب بدور إداري أو تشغيلي مميز متاح لمدير النظام فقط",403);
+      }
 
       const generatedPassword = "Tz" + crypto.randomBytes(9).toString("base64url");
       const generatedUsername = row.code.toLowerCase();
