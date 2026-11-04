@@ -75,9 +75,28 @@ export async function payrollRoutes(app: FastifyInstance) {
       await assertAccountingMonthOpen(client,parsed.data.effectiveFrom);
       const employee = await client.query("SELECT id,full_name FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE", [parsed.data.employeeId]);
       if (!employee.rowCount) throw new AppError("EMPLOYEE_NOT_FOUND", "الموظف غير موجود أو غير نشط", 404);
-      const previous = await client.query("SELECT * FROM employee_salary_profiles WHERE employee_id=$1 AND effective_to IS NULL FOR UPDATE", [parsed.data.employeeId]);
+      const profiles = await client.query(
+        "SELECT * FROM employee_salary_profiles WHERE employee_id=$1 ORDER BY effective_from FOR UPDATE",
+        [parsed.data.employeeId]
+      );
       const effectiveFrom = parsed.data.effectiveFrom;
-      if (previous.rowCount) {
+      const previous = { rows: profiles.rows.filter(profile => profile.effective_to === null) };
+      const futureOverlap = profiles.rows.find(profile =>
+        String(profile.effective_from).slice(0,10) > effectiveFrom &&
+        (profile.effective_to === null || String(profile.effective_to).slice(0,10) >= effectiveFrom)
+      );
+      if (futureOverlap) {
+        throw new AppError("SALARY_DATE_OVERLAP", "يوجد سجل راتب بتاريخ لاحق يتداخل مع تاريخ السريان الجديد. راجع سجل الرواتب وعدّل التاريخ قبل الحفظ.", 409);
+      }
+      const closedOverlap = profiles.rows.find(profile =>
+        profile.effective_to !== null &&
+        String(profile.effective_from).slice(0,10) <= effectiveFrom &&
+        String(profile.effective_to).slice(0,10) >= effectiveFrom
+      );
+      if (closedOverlap) {
+        throw new AppError("SALARY_DATE_OVERLAP", "تاريخ السريان الجديد يقع داخل فترة راتب مسجلة بالفعل.", 409);
+      }
+      if (previous.rows.length) {
         const previousStart = String(previous.rows[0].effective_from).slice(0,10);
         if (effectiveFrom <= previousStart) throw new AppError("SALARY_DATE_INVALID", "تاريخ سريان الراتب الجديد يجب أن يكون بعد تاريخ بداية الراتب الحالي", 409);
         const end = new Date(effectiveFrom + "T00:00:00Z"); end.setUTCDate(end.getUTCDate()-1);

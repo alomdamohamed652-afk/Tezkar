@@ -157,7 +157,6 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
         <td>{money(i.remaining_amount)}</td>
         <td><span className={"status " + (i.status === "PAID" ? "success" : i.status === "PARTIAL" ? "warning" : "muted")}>{itemStatus[i.status] || i.status}</span></td>
         <td><div className="row-actions">
-          {payroll.period?.status === "DRAFT" && has("payroll.manage") && <button className="secondary-btn" disabled={busy} onClick={() => void openAdjustments(i)}>بنود المكافآت والخصومات</button>}
           {has("attendance.view") && <button className="secondary-btn" onClick={() => void openAttendance(i)}>سجل الحضور والانصراف</button>}
           {(payroll.period?.status === "APPROVED" || payroll.period?.status === "CLOSED") && has("payroll.pay") && Number(i.remaining_amount) > 0 && <button className="primary-button" onClick={() => {setPayTarget(i);setPayAmount(String(i.remaining_amount));setPayDate(today());setPayMethod("CASH");setFromCustody(true);setCustodyEmployeeId("");setPayReference("");setPayNotes("");setPaymentIdempotencyKey(crypto.randomUUID());void refreshCustodyHolders(today());}}>صرف</button>}
           {has("payroll.view") && <button className="secondary-btn" onClick={() => window.open("/payroll/slip?month="+encodeURIComponent(month)+"&item="+encodeURIComponent(i.id), "_blank", "noopener,noreferrer")}>مفردات المرتب</button>}
@@ -167,6 +166,14 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
     );
   })}</tbody></table></div>}
   </section>
+   {payroll.period?.status === "DRAFT" && has("payroll.manage") && <section className="card">
+    <div className="card-header"><div><h2 className="card-title">البونصات والخصومات المستحقة آخر الشهر</h2><div className="form-hint">اختار الموظف من القائمة وسجل كل مكافأة أو خصم ببيان مستقل قبل اعتماد المسير.</div></div></div>
+    {!payroll.items.length ? <div className="empty">جهّز مسير الشهر أولًا لعرض الموظفين.</div> : <div className="table-wrap"><table><thead><tr><th>الموظف</th><th>القسم</th><th>إجمالي البونصات</th><th>إجمالي الخصومات</th><th>صافي المسير الحالي</th><th>الإجراء</th></tr></thead><tbody>{payroll.items.map(item => <tr key={item.id}>
+     <td><div className="strong">{item.employee_name}</div><div className="form-hint">{item.employee_code}</div></td>
+     <td>{item.department_name || "—"}</td><td>{money(item.bonus_amount)} ج.م</td><td>{money(item.deduction_amount)} ج.م</td><td className="strong">{money(item.net_amount)} ج.م</td>
+     <td><button className="secondary-btn" disabled={busy} onClick={() => void openAdjustments(item)}>إدارة البنود</button></td>
+    </tr>)}</tbody></table></div>}
+   </section>}
   <section className="card"><div className="card-header"><h2 className="card-title">الرواتب الأساسية الحالية</h2></div><div className="table-wrap"><table><thead><tr><th>الموظف</th><th>القسم</th><th>الراتب الشهري</th><th>ساري من</th><th>الحالة</th></tr></thead><tbody>{employees.filter(e=>e.salary_profile_id).map(e=><tr key={e.id}><td>{e.full_name}<div className="form-hint">{e.code}</div></td><td>{e.department_name||"—"}</td><td>{money(e.monthly_salary||0)} ج.م</td><td>{e.effective_from?new Date(e.effective_from+"T00:00:00").toLocaleDateString("ar-EG"):"—"}</td><td><span className={"status "+(e.is_active?"success":"muted")}>{e.is_active?"نشط":"غير نشط"}</span></td></tr>)}{!employees.some(e=>e.salary_profile_id)&&<tr><td colSpan={5} className="empty">لم يتم تعريف رواتب أساسية بعد.</td></tr>}</tbody></table></div></section>
  </section>
  {adjustmentTarget&&<div className="modal-backdrop" onClick={()=>setAdjustmentTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">بنود المكافآت والخصومات</h2><div className="form-hint">{adjustmentTarget.employee_name} · كل مكافأة أو خصم يُسجل ببيان مستقل</div></div><button className="secondary-btn" onClick={()=>setAdjustmentTarget(null)}>إغلاق</button></div>
