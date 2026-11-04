@@ -482,8 +482,22 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(timeLineHistory.rowCount,4,"recalculation must preserve prior generated time lines as voided history");
       assert.equal(timeLineHistory.rows.filter((line:any)=>line.status==="VOIDED").length,2);
       assert.ok(timeLineHistory.rows.filter((line:any)=>line.status==="VOIDED").every((line:any)=>line.void_reason));
-      const draftTimeLines=await apiPool.query("SELECT source_type,line_type,amount FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",[timeItem.id]);
+      const draftTimeLines=await apiPool.query("SELECT id,source_type,line_type,amount FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY source_type",[timeItem.id]);
       assert.equal(draftTimeLines.rowCount,2,"time adjustments must be visible and reviewable while the period is still a draft");
+      const generatedOvertimeLine=draftTimeLines.rows.find((line:any)=>line.source_type==="ATTENDANCE_OVERTIME");
+      const generatedDeductionLine=draftTimeLines.rows.find((line:any)=>line.source_type==="ATTENDANCE_TIME_DEDUCTION");
+      const deniedGeneratedEdit=await app.inject({
+        method:"PATCH",url:`/api/payroll/items/${timeItem.id}/adjustments/${generatedOvertimeLine.id}`,
+        headers:{cookie:cookieHeader},payload:{lineType:"BONUS",description:"Tampered overtime",amount:999}
+      });
+      assert.equal(deniedGeneratedEdit.statusCode,409,deniedGeneratedEdit.body);
+      assert.equal(deniedGeneratedEdit.json().error.code,"PAYROLL_SYSTEM_LINE_LOCKED");
+      const deniedGeneratedVoid=await app.inject({
+        method:"DELETE",url:`/api/payroll/items/${timeItem.id}/adjustments/${generatedDeductionLine.id}`,
+        headers:{cookie:cookieHeader},payload:{reason:"Tampered attendance deduction"}
+      });
+      assert.equal(deniedGeneratedVoid.statusCode,409,deniedGeneratedVoid.body);
+      assert.equal(deniedGeneratedVoid.json().error.code,"PAYROLL_SYSTEM_LINE_LOCKED");
       const timeApproval=await app.inject({
         method:"POST",url:`/api/payroll/periods/${timePeriod.id}/approve`,
         headers:{cookie:cookieHeader},payload:{}
