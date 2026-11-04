@@ -204,7 +204,7 @@ const machineProductionSchema = z.object({
   notes: z.string().trim().max(500).optional()
 });
 
-async function canViewOrderFinancials(userId: string): Promise<boolean> {
+export async function canViewOrderFinancials(userId: string): Promise<boolean> {
   const client = await pool.connect();
   try {
     return (await hasPermission(client, userId, "finance.profitability.view"))
@@ -240,13 +240,15 @@ export async function orderRoutes(app: FastifyInstance) {
     const params:unknown[]=[]; const where:string[]=["os.status <> 'CANCELLED'","o.status NOT IN ('COMPLETED','CANCELLED')"];
     if(q.data.orderId){params.push(q.data.orderId);where.push("os.order_id=$"+params.length);}
     const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id,os.production_type_id,os.is_final_product FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
-    return {data:r.rows};
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    const data=canViewFinancials?r.rows:r.rows.map(({stage_rate,stage_rate_unit_id,...safe})=>safe);
+    return {data};
   });
 
   app.get("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const id = (request.params as { id: string }).id;
     const order = await pool.query(
-      `SELECT o.*,
+      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,o.contract_value,o.created_at,o.updated_at,
               COALESCE(json_agg(DISTINCT jsonb_build_object('id',ol.id,'product_id',ol.product_id,'product_name',p.name,'product_code',p.code,'quantity',ol.quantity,'unit_id',ol.unit_id,'unit_name',u.name,'notes',ol.notes)) FILTER (WHERE ol.id IS NOT NULL),'[]') AS lines,
               COALESCE((SELECT json_agg(jsonb_build_object('id',os.id,'stage_id',os.stage_id,'stage_name',s.name,'stage_code',s.code,'sequence_no',os.sequence_no,'status',os.status,'planned_quantity',os.planned_quantity,'completed_quantity',os.completed_quantity,'output_product_id',os.output_product_id,'output_product_name',op.name,'stage_rate',os.stage_rate,'stage_rate_method',os.stage_rate_method,'stage_rate_unit_id',os.stage_rate_unit_id,'production_type_id',os.production_type_id,'is_final_product',os.is_final_product,'notes',os.notes) ORDER BY os.sequence_no) FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products op ON op.id=os.output_product_id WHERE os.order_id=o.id),'[]') AS stages
          FROM production_orders o
@@ -257,7 +259,11 @@ export async function orderRoutes(app: FastifyInstance) {
         GROUP BY o.id`, [id]);
     if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    if(!canViewFinancials){const {contract_value,...safeOrder}=order.rows[0];return {data:safeOrder};}
+    if(!canViewFinancials){
+      const {contract_value,...safeOrder}=order.rows[0];
+      safeOrder.stages=(safeOrder.stages??[]).map(({stage_rate,stage_rate_unit_id,...stage}:Record<string,unknown>)=>stage);
+      return {data:safeOrder};
+    }
     return { data: order.rows[0] };
   });
 
@@ -624,6 +630,8 @@ export async function orderRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/orders/:id/price-changes", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
+    if(!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FORBIDDEN","عرض تغييرات أسعار الطلبات متاح للمخولين ماليًا فقط",403);
     const orderId=(request.params as {id:string}).id;
     const result=await pool.query(
       `SELECT pc.id,pc.code,pc.order_stage_id,pc.previous_rate,pc.new_rate,pc.new_rate_method,pc.scope,pc.reason,pc.affected_entries,pc.total_delta,pc.created_at,
