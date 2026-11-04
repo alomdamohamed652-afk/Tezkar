@@ -31,3 +31,9 @@ export function calculatePayrollDeduction(input: PayrollDeductionInput): { basis
   const amount = Math.round((basisAmount * input.percentage / 100 + Number.EPSILON) * 100) / 100;
   return { basisAmount, amount };
 }
+
+
+/** Salary expense excludes employee advance recovery, which only reduces take-home pay. */
+export function calculatePayrollExpenseAmount(netAmount: number, advanceRepaymentAmount: number): number {
+  return Math.round((netAmount + advanceRepaymentAmount + Number.EPSILON) * 100) / 100;
+}
