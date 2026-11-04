@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculateAttendancePayroll, calculatePayrollDeduction } from "./payroll-calculation.js";
+import { verifyAttendanceSnapshot } from "../attendance/attendance-snapshot-signature.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -307,6 +308,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       for(const item of items.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
       const suppliedKeys=new Set<string>();
       for(const row of parsed.data.attendanceSnapshot){
+        if(!verifyAttendanceSnapshot(row as Record<string,unknown>))
+          throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","بيانات الحضور تغيرت أو انتهت صلاحية المعاينة؛ حدّث تقرير البصمة وأعد المحاولة",422);
         const key=row.employeeId+"|"+row.date;
         if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
           throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","سجل الحضور يحتوي تاريخًا خارج الشهر أو موظفًا غير موجود أو يومًا مكررًا",422);
