@@ -192,6 +192,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const resetUserState=await apiPool.query("SELECT must_change_password,password_hash FROM users WHERE id=$1",[passwordResetUser.rows[0].id]);
       assert.equal(resetUserState.rows[0].must_change_password,true);
       assert.notEqual(resetUserState.rows[0].password_hash,hashPassword(password));
+      assert.equal((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[oldSession.rows[0].id])).rows[0].revoked_at!==null,true);
       const forcedChangeLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:resetEmployeeResponse.json().data.username,password:resetEmployeeResponse.json().data.temporaryPassword}});
       assert.equal(forcedChangeLogin.statusCode,200,forcedChangeLogin.body);
       const forcedChangeSetCookie=forcedChangeLogin.headers["set-cookie"];
@@ -201,7 +202,6 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(blockedUntilPasswordChange.statusCode,403,blockedUntilPasswordChange.body);
       assert.equal(blockedUntilPasswordChange.json().error.code,"PASSWORD_CHANGE_REQUIRED",
         "a temporary password must not grant access to normal protected API routes");
-      assert.equal((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[oldSession.rows[0].id])).rows[0].revoked_at!==null,true);
       const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
       assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
       assert.equal(resetNotification.rows[0].entity_type,"user");
