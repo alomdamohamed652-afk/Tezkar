@@ -747,6 +747,42 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(previousCustodyMovements.rows[0].count,0,
         "previous-custody payroll settlement must not debit a custody balance twice");
+
+      const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',100,'concurrent payroll custody opening',$2)",
+        [concurrentCustodyHolder.rows[0].id,userId]
+      );
+      const concurrentPeriod=await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-03-01','APPROVED',$1,$1,now()) RETURNING id",
+        [userId]
+      );
+      const concurrentEmployees=await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Concurrent Payroll Employee C'),('Concurrent Payroll Employee D') RETURNING id"
+      );
+      const concurrentItems=await Promise.all(concurrentEmployees.rows.map(employee=>
+        apiPool.query(
+          "INSERT INTO payroll_items(period_id,employee_id,base_salary,status) VALUES($1,$2,80,'UNPAID') RETURNING id",
+          [concurrentPeriod.rows[0].id,employee.id]
+        )
+      ));
+      const concurrentCustodyPayments=await Promise.all(concurrentItems.map(item=>app.inject({
+        method:"POST",url:`/api/payroll/items/${item.rows[0].id}/payments`,
+        headers:{cookie:cookieHeader},
+        payload:{idempotencyKey:randomUUID(),amount:80,paymentMethod:"CASH",fromCustody:true,custodyEmployeeId:concurrentCustodyHolder.rows[0].id}
+      })));
+      assert.equal(concurrentCustodyPayments.filter(response=>response.statusCode===201).length,1,
+        concurrentCustodyPayments.map(response=>`${response.statusCode}: ${response.body}`).join("\n"));
+      assert.equal(concurrentCustodyPayments.filter(response=>response.statusCode===409&&response.json().error.code==="INSUFFICIENT_CASH_CUSTODY_BALANCE").length,1,
+        "simultaneous payments must serialize against the same cash-custody holder balance");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [concurrentCustodyHolder.rows[0].id]
+      )).rows[0].balance),20,"concurrent payroll payments must not overdraw the shared custody balance");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int count FROM cash_custody_transactions WHERE employee_id=$1 AND source_type='PAYROLL_PAYMENT' AND direction='OUT'",
+        [concurrentCustodyHolder.rows[0].id]
+      )).rows[0].count),1,"only one concurrent payroll cash-out may be committed");
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
