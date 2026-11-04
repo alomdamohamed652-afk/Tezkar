@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -67,6 +67,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         import("../src/modules/operations-master/operations-master.routes.js"),
         import("../src/modules/advances/advances.routes.js"),
         import("../src/modules/accounting/accounting.routes.js"),
+        import("../src/modules/employees/employees.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -84,6 +85,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(operationsMasterRoutes);
     await app.register(advanceRoutes);
     await app.register(accountingRoutes);
+    await app.register(employeeRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -134,6 +136,29 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const secondSetCookie = secondLogin.headers["set-cookie"];
       assert.ok(secondSetCookie, "reviewer login must issue a session cookie");
       const secondCookieHeader = (Array.isArray(secondSetCookie) ? secondSetCookie[0] : secondSetCookie).split(";")[0];
+
+      const passwordResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Password Reset Integration Employee') RETURNING id");
+      const passwordResetUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        ["password-reset-"+randomBytes(5).toString("hex"),hashPassword(password),passwordResetEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[passwordResetUser.rows[0].id]);
+      const oldSession=await apiPool.query(
+        "INSERT INTO user_sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day') RETURNING id",
+        [passwordResetUser.rows[0].id,randomBytes(32).toString("hex")]
+      );
+      const resetEmployeeResponse=await app.inject({
+        method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
+        headers:{cookie:cookieHeader}
+      });
+      assert.equal(resetEmployeeResponse.statusCode,200,resetEmployeeResponse.body);
+      assert.equal(resetEmployeeResponse.json().data.username,(await apiPool.query("SELECT username FROM users WHERE id=$1",[passwordResetUser.rows[0].id])).rows[0].username);
+      assert.ok(resetEmployeeResponse.json().data.temporaryPassword.length>=20);
+      const resetUserState=await apiPool.query("SELECT must_change_password,password_hash FROM users WHERE id=$1",[passwordResetUser.rows[0].id]);
+      assert.equal(resetUserState.rows[0].must_change_password,true);
+      assert.notEqual(resetUserState.rows[0].password_hash,hashPassword(password));
+      assert.equal((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[oldSession.rows[0].id])).rows[0].revoked_at!==null,true);
+
 
       const login = await app.inject({
         method: "POST",
