@@ -243,6 +243,7 @@ export async function employeeRoutes(app: FastifyInstance) {
       const e=await client.query("UPDATE employees SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,full_name,is_active",[id]);
       if(!e.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
       await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE employee_id=$1",[id]);
+       await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id IN (SELECT id FROM users WHERE employee_id=$1) AND revoked_at IS NULL",[id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"employees",entityType:"employee",entityId:id,afterData:e.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return e.rows[0];
     });
