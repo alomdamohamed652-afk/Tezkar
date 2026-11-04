@@ -18,6 +18,26 @@ const createEmployeeSchema = z.object({
   roleCode: z.string().trim().min(2).max(60).default("worker")
 });
 
+async function assertCanAssignPrivilegedRole(
+  client: import("pg").PoolClient,
+  actorUserId: string,
+  role: { code: string; is_system: boolean; manages_rbac: boolean }
+) {
+  const privileged=(role.is_system&&role.code.toLowerCase()!=="worker")
+    || ["manager","admin","owner"].includes(role.code.toLowerCase())
+    || role.manages_rbac;
+  if(!privileged)return;
+  const admin=await client.query(
+    `SELECT EXISTS(
+       SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+        WHERE ur.user_id=$1 AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE
+     ) AS allowed`,
+    [actorUserId]
+  );
+  if(!admin.rows[0]?.allowed)
+    throw new AppError("RBAC_ADMIN_REQUIRED","تعيين دور إداري أو تشغيلي مميز متاح لمدير النظام فقط",403);
+}
+
 export async function employeeRoutes(app: FastifyInstance) {
   app.get("/api/employees", {
     preHandler: [authenticateRequest, requireAnyPermission(["employees.view", "all"], ["employees.lookup", "all"])]
@@ -74,18 +94,7 @@ export async function employeeRoutes(app: FastifyInstance) {
         [parsed.data.roleCode]
       );
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "دور المستخدم غير موجود أو غير نشط", 422);
-      if ((role.rows[0].is_system && String(role.rows[0].code).toLowerCase() !== "worker")
-        || ["manager","admin","owner"].includes(String(role.rows[0].code).toLowerCase())
-        || role.rows[0].manages_rbac) {
-        const admin=await client.query(
-          `SELECT EXISTS(
-             SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
-              WHERE ur.user_id=$1 AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE
-           ) AS allowed`,
-          [request.user!.userId]
-        );
-        if(!admin.rows[0]?.allowed)throw new AppError("RBAC_ADMIN_REQUIRED","إنشاء حساب بدور إداري أو تشغيلي مميز متاح لمدير النظام فقط",403);
-      }
+      await assertCanAssignPrivilegedRole(client,request.user!.userId,role.rows[0]);
 
       const generatedPassword = "Tz" + crypto.randomBytes(9).toString("base64url");
       const generatedUsername = row.code.toLowerCase();
@@ -152,8 +161,15 @@ export async function employeeRoutes(app: FastifyInstance) {
       }
 
       if (p.roleCode !== undefined) {
-        const role = await client.query("SELECT id FROM roles WHERE code=$1 AND is_active=TRUE", [p.roleCode]);
+        const role = await client.query(
+          `SELECT r.id,r.code,r.is_system,
+                  EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                          WHERE rp.role_id=r.id AND p.code='rbac.manage') AS manages_rbac
+             FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
+          [p.roleCode]
+        );
         if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "دور المستخدم غير موجود أو غير نشط", 422);
+        await assertCanAssignPrivilegedRole(client,request.user!.userId,role.rows[0]);
         const user = await client.query("SELECT id FROM users WHERE employee_id=$1 FOR UPDATE", [id]);
         if (!user.rowCount) throw new AppError("EMPLOYEE_ACCOUNT_NOT_FOUND", "لا يوجد حساب دخول مرتبط بالموظف", 409);
         await client.query("DELETE FROM user_roles WHERE user_id=$1", [user.rows[0].id]);
