@@ -129,6 +129,7 @@ export async function userRoutes(app: FastifyInstance){
    if(!before.rowCount)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",404);
    if(before.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","حساب الإعداد الأولي لا يمكن تعطيله",409);
    const after=await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,username,employee_id,is_active,is_bootstrap",[id]);
+   await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"iam",entityType:"user",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return after.rows[0];
   });
@@ -181,7 +182,7 @@ export async function userRoutes(app: FastifyInstance){
    if(before.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","حساب الإعداد الأولي لا يمكن إدارته من هنا",409);
    if(parsed.data.roleCode){await assertSystemPermissionAdmin(request.user!.userId);const role=await client.query("SELECT id,code FROM roles WHERE code=$1 AND is_active=TRUE",[parsed.data.roleCode]);if(!role.rowCount)throw new AppError("ROLE_NOT_FOUND","الدور غير موجود أو غير نشط",422);await client.query("DELETE FROM user_roles WHERE user_id=$1",[id]);await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)",[id,role.rows[0].id]);}
    if(parsed.data.employeeId!==undefined){if(parsed.data.employeeId){const emp=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);if(!emp.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);}await client.query("UPDATE users SET employee_id=$1,updated_at=now() WHERE id=$2",[parsed.data.employeeId,id]);}
-   if(parsed.data.isActive!==undefined)await client.query("UPDATE users SET is_active=$1,updated_at=now() WHERE id=$2",[parsed.data.isActive,id]);
+   if(parsed.data.isActive!==undefined){await client.query("UPDATE users SET is_active=$1,updated_at=now() WHERE id=$2",[parsed.data.isActive,id]);if(!parsed.data.isActive)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);}
    const after=await client.query("SELECT id,code,username,employee_id,is_active,is_bootstrap FROM users WHERE id=$1",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"iam",entityType:"user",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return after.rows[0];
