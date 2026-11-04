@@ -1489,6 +1489,11 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "shift leaders must not receive contract value from order detail API either");
     assert.equal(Object.hasOwn(leaderOrderDetail.json().data.stages[0], "stage_rate"), false,
       "shift leaders must not receive stage rates from nested order detail data");
+    const deniedLeaderOrderDashboard=await app.inject({
+      method:"GET",url:"/api/orders/"+orderValueTestId+"/dashboard",headers:{cookie:leader.cookie}
+    });
+    assert.equal(deniedLeaderOrderDashboard.statusCode,403,deniedLeaderOrderDashboard.body,
+      "shift leaders must not access the broader order dashboard");
     const leaderOrderStages=await app.inject({
       method:"GET",url:"/api/order-stages",headers:{cookie:leader.cookie}
     });
