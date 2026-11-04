@@ -230,3 +230,34 @@ test("effective-dated schedule lookup does not leak across employees or weekdays
   assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 5, "2026-10-22"), null);
   assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-15"), null);
 });
+
+test("pending and rejected punches remain auditable but never contribute to worked time", () => {
+  const pending = selectAttendanceDayEvents([
+    punch("pending-in", "IN", 8 * 60, { review_status: "PENDING", suspicious: true }),
+    punch("accepted-out", "OUT", 17 * 60),
+  ]);
+  assert.equal(pending.needsReview, true);
+  assert.deepEqual(pending.reviewPunchIds, ["pending-in"]);
+  assert.equal(pending.inPunch, null);
+  assert.equal(pending.outPunch?.id, "accepted-out");
+  assert.deepEqual(pending.countedEvents.map(event => event.id), ["accepted-out"]);
+  assert.equal(calculateWorkedMinutes(pending.countedEvents), 0);
+
+  const rejected = selectAttendanceDayEvents([
+    punch("accepted-in", "IN", 8 * 60),
+    punch("rejected-out", "OUT", 17 * 60, { review_status: "REJECTED" }),
+  ]);
+  assert.equal(rejected.outPunch, null);
+  assert.deepEqual(rejected.countedEvents.map(event => event.id), ["accepted-in"]);
+  assert.equal(calculateWorkedMinutes(rejected.countedEvents), 0);
+});
+
+test("approved suspicious punches become countable only after explicit review", () => {
+  const result = selectAttendanceDayEvents([
+    punch("approved-in", "IN", 8 * 60, { review_status: "APPROVED", suspicious: true }),
+    punch("approved-out", "OUT", 17 * 60, { review_status: "APPROVED", suspicious: true }),
+  ]);
+  assert.equal(result.needsReview, false);
+  assert.equal(result.countedEvents.length, 2);
+  assert.equal(calculateWorkedMinutes(result.countedEvents), 9 * 60);
+});
