@@ -331,6 +331,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
       const delta=(parsed.data.movementType==="OUT"||parsed.data.movementType==="TRANSFER_OUT"||(parsed.data.movementType==="ADJUSTMENT"&&parsed.data.adjustmentDirection==="OUT"))?-parsed.data.quantity:parsed.data.quantity;
       const effectiveUnitCost=(delta<0 || parsed.data.movementType==="RETURN")?null:parsed.data.unitCost;
       const sourceCost=await changeBalance(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,delta,effectiveUnitCost);
+      if(delta>0&&effectiveUnitCost==null&&sourceCost.unitCost<=0)
+        throw new AppError("WAREHOUSE_COST_REQUIRED","لا يمكن إدخال مخزون بتكلفة مجهولة أو صفرية تلقائيًا. أدخل التكلفة الفعلية أو سجّل استلامًا بتكلفة معلقة ليعتمدها مدير المخزن.",409);
       const adjustmentReferenceType=parsed.data.movementType==="ADJUSTMENT"?"ADJUSTMENT_"+parsed.data.adjustmentDirection:null;
       const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,carton_code,batch_code,weight,notes,created_by,order_id,order_stage_id,reference_type,scrap_origin_type,scrap_origin_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *",[parsed.data.movementType,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,parsed.data.quantity,product.rows[0].unit_id,sourceCost.unitCost,sourceCost.totalCost,parsed.data.cartonCode??null,parsed.data.batchCode??null,parsed.data.weight??null,parsed.data.notes??null,request.user!.userId,parsed.data.orderId??null,parsed.data.orderStageId??null,adjustmentReferenceType,parsed.data.scrapOriginType??null,parsed.data.scrapOriginReference??null]);
       let finalSourceCost=sourceCost;
@@ -340,7 +342,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
         await client.query("UPDATE stock_movements SET unit_cost=$1,total_cost=$2 WHERE id=$3",[finalSourceCost.unitCost,finalSourceCost.totalCost,source.rows[0].id]);
         await adjustStockValueAfterLotConsumption(client,parsed.data.productId,parsed.data.warehouseId,sourceLocationId,finalSourceCost.totalCost);
       } else {
-        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity,unitCost:sourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:parsed.data.movementType,sourceId:source.rows[0].id,costConfirmed:effectiveUnitCost!==undefined&&effectiveUnitCost!==null||sourceCost.unitCost>0,stockMovementId:source.rows[0].id});
+        await createInventoryLot(client,{productId:parsed.data.productId,warehouseId:parsed.data.warehouseId,locationId:sourceLocationId,quantity:parsed.data.quantity,unitCost:sourceCost.unitCost,batchCode:parsed.data.batchCode??null,sourceType:parsed.data.movementType,sourceId:source.rows[0].id,costConfirmed:true,stockMovementId:source.rows[0].id});
       }
       let destination=null;
       if(parsed.data.movementType==="TRANSFER_OUT"){
