@@ -514,8 +514,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         if(requiredCustodyAmount>Number(custodyBalance.rows[0]?.balance??0)+0.0001)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد عهدة الموظف المختار لا يكفي لإجمالي الصرف والتسوية؛ لم يتم تسجيل أي حركة",409);
       }
       if(parsed.data.paymentMethod==="CASH" && !fromCustody && settlementSource!=="PREVIOUS_CUSTODY")throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة أو مسجلًا كتسوية من عهدة سابقة",422);
-      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
-        [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
+      const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,settlement_source,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,payroll_item_id,amount,payment_date,payment_method,settlement_source,reference,notes,paid_by,created_at",
+        [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,settlementSource,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
       let custodyIn=null;
       if(fromCustody && committedAdvanceRepayment>0)custodyIn=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3::date,$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
