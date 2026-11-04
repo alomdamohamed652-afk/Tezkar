@@ -1525,7 +1525,7 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     const deniedLeaderDirectDelivery=await app.inject({
       method:"POST",url:"/api/delivery-permissions",headers:{cookie:leader.cookie},
       payload:{orderId:orderValueTestId,destination:"Unauthorized direct value",deliveryValue:9876,
-        lines:[{productId:leaderStageRow.output_product_id,warehouseId:expectedFinished.id,locationId:finalSaved.rows[0].location_id,quantity:1}]}
+        lines:[{productId:finalSaved.rows[0].product_id,warehouseId:expectedFinished.id,locationId:finalSaved.rows[0].location_id,quantity:1}]}
     });
     assert.equal(deniedLeaderDirectDelivery.statusCode,403,deniedLeaderDirectDelivery.body);
     assert.equal(deniedLeaderDirectDelivery.json().error.code,"FINANCIAL_PERMISSION_REQUIRED");
