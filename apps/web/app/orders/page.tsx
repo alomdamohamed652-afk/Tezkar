@@ -83,8 +83,8 @@ export default function OrdersPage(){
        <div><span className="field-caption">الكمية المخططة</span><input inputMode="decimal" value={row.plannedQuantity} onChange={e=>updateStage(i,"plannedQuantity",e.target.value)} required /></div>
        <label className="stage-final-checkbox"><input type="checkbox" checked={row.isFinalProduct} onChange={e=>updateStage(i,"isFinalProduct",e.target.checked)}/> منتج نهائي للتسليم</label>
        <div><span className="field-caption">نوع الإنتاج (تحليلي)</span><SearchableSelect value={row.productionTypeId} onChange={v=>updateStage(i,"productionTypeId",v)} placeholder="بدون تصنيف" options={[{value:"",label:"بدون تصنيف"},...productionTypes.map(t=>({value:t.id,label:t.name}))]}/></div>
-       <div><span className="field-caption">طريقة الحساب</span><SearchableSelect value={row.stageRateMethod} onChange={v=>updateStage(i,"stageRateMethod",v)} options={[{value:"PER_PIECE",label:"بالقطعة (الكمية × السعر)"},{value:"PER_1000",label:"لكل ألف (الكمية ÷ ١٠٠٠ × السعر)"},{value:"PER_HOUR",label:"بالساعة"},{value:"PER_DAY",label:"باليومية"},{value:"PERCENTAGE",label:"نسبة"}]}/></div>
-       <div><span className="field-caption">سعر المرحلة</span><input inputMode="decimal" value={row.stageRate} onChange={e=>updateStage(i,"stageRate",e.target.value)} placeholder="مثال: 300" required /></div>
+       {canViewOrderFinancials&&<><div><span className="field-caption">طريقة الحساب</span><SearchableSelect value={row.stageRateMethod} onChange={v=>updateStage(i,"stageRateMethod",v)} options={[{value:"PER_PIECE",label:"بالقطعة (الكمية × السعر)"},{value:"PER_1000",label:"لكل ألف (الكمية ÷ ١٠٠٠ × السعر)"},{value:"PER_HOUR",label:"بالساعة"},{value:"PER_DAY",label:"باليومية"},{value:"PERCENTAGE",label:"نسبة"}]}/></div>
+       <div><span className="field-caption">سعر المرحلة</span><input inputMode="decimal" value={row.stageRate} onChange={e=>updateStage(i,"stageRate",e.target.value)} placeholder="مثال: 300" required /></div></>}
        <button type="button" className="danger-button" onClick={()=>removeStage(i)}>حذف</button>
       </div>)}</div>}
     </div>
