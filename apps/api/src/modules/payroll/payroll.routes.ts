@@ -354,7 +354,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       const salaryItems = await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
-      if(snapshot && snapshot.length){
+      if(expectedKeys.size>0&&!snapshot)
+        throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لا يمكن اعتماد مسير المرتبات دون إرفاق سجل الحضور الكامل لكل موظف وأيام الشهر.",422);
+      if(snapshot){
         const suppliedKeys=new Set<string>();
         for(const row of snapshot){
           const key=row.employeeId+"|"+row.date;
