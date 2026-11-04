@@ -212,6 +212,93 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     const shiftLeaderDashboard=await app.inject({method:"GET",url:"/api/warehouse/dashboard",headers:{cookie:shiftLeaderCookie}});
     assert.equal(shiftLeaderDashboard.statusCode,403,shiftLeaderDashboard.body);
 
+    const pendingProduct=await apiPool.query(
+      "INSERT INTO products(name,product_type,unit_id,track_inventory,is_active) VALUES($1,'FINISHED_GOOD',$2,TRUE,TRUE) RETURNING id",
+      ["Pending receipt cost "+randomBytes(4).toString("hex"),unit.rows[0].id]
+    );
+    const pendingWarehouse=await apiPool.query("INSERT INTO warehouses(name) VALUES('Pending cost warehouse') RETURNING id");
+    const pendingLocation=await apiPool.query(
+      "INSERT INTO warehouse_locations(warehouse_id,code,name) VALUES($1,'P','Pending cost') RETURNING id",
+      [pendingWarehouse.rows[0].id]
+    );
+    const pendingReceiptResponse=await app.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:shiftLeaderCookie},
+      payload:{source:"Shift leader quantity-only receipt",lines:[{
+        productId:pendingProduct.rows[0].id,warehouseId:pendingWarehouse.rows[0].id,
+        locationId:pendingLocation.rows[0].id,quantity:3
+      }]}
+    });
+    assert.equal(pendingReceiptResponse.statusCode,201,pendingReceiptResponse.body);
+    const pendingReceiptId=pendingReceiptResponse.json().data.id as string;
+    const pendingLine=await apiPool.query(
+      "SELECT id FROM warehouse_receipt_lines WHERE receipt_id=$1",
+      [pendingReceiptId]
+    );
+    const pendingLot=await apiPool.query(
+      "SELECT id,remaining_quantity,unit_cost,cost_confirmed,stock_movement_id FROM inventory_lots WHERE receipt_line_id=$1",
+      [pendingLine.rows[0].id]
+    );
+    assert.equal(pendingLot.rowCount,1,"quantity-only receipt must create a linked inventory lot");
+    assert.equal(pendingLot.rows[0].cost_confirmed,false,"quantity-only receipt must remain cost-pending");
+    assert.equal(Number(pendingLot.rows[0].unit_cost),0);
+    const pendingBalance=await apiPool.query(
+      "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(pendingBalance.rows[0].quantity),3);
+    assert.equal(Number(pendingBalance.rows[0].inventory_value),0);
+    const deniedCostConfirmation=await app.inject({
+      method:"PATCH",url:"/api/warehouse/lots/"+pendingLot.rows[0].id+"/cost",
+      headers:{cookie:shiftLeaderCookie},payload:{unitCost:12.5}
+    });
+    assert.equal(deniedCostConfirmation.statusCode,403,deniedCostConfirmation.body);
+    const deniedPendingLotWithdrawal=await app.inject({
+      method:"POST",url:"/api/warehouse/movements",headers:{cookie:cookieHeader},
+      payload:{movementType:"OUT",productId:pendingProduct.rows[0].id,warehouseId:pendingWarehouse.rows[0].id,
+        locationId:pendingLocation.rows[0].id,quantity:1,notes:"Must not consume unpriced stock"}
+    });
+    assert.equal(deniedPendingLotWithdrawal.statusCode,409,deniedPendingLotWithdrawal.body,
+      "FIFO withdrawal must reject inventory whose receipt cost is pending");
+    const pendingBalanceAfterDenied=await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(pendingBalanceAfterDenied.rows[0].quantity),3,"failed pending-cost withdrawal must roll back quantity");
+    const confirmedCost=await app.inject({
+      method:"PATCH",url:"/api/warehouse/lots/"+pendingLot.rows[0].id+"/cost",
+      headers:{cookie:cookieHeader},payload:{unitCost:12.5}
+    });
+    assert.equal(confirmedCost.statusCode,200,confirmedCost.body);
+    const confirmedLot=await apiPool.query(
+      "SELECT unit_cost,cost_confirmed FROM inventory_lots WHERE id=$1",[pendingLot.rows[0].id]
+    );
+    assert.equal(confirmedLot.rows[0].cost_confirmed,true);
+    assert.equal(Number(confirmedLot.rows[0].unit_cost),12.5);
+    const confirmedBalance=await apiPool.query(
+      "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(confirmedBalance.rows[0].quantity),3);
+    assert.equal(Number(confirmedBalance.rows[0].inventory_value),37.5);
+    assert.equal(Number(confirmedBalance.rows[0].avg_unit_cost),12.5);
+    const confirmedMovement=await apiPool.query(
+      "SELECT unit_cost,total_cost FROM stock_movements WHERE id=$1",[pendingLot.rows[0].stock_movement_id]
+    );
+    assert.equal(Number(confirmedMovement.rows[0].unit_cost),12.5);
+    assert.equal(Number(confirmedMovement.rows[0].total_cost),37.5);
+    const allowedPricedWithdrawal=await app.inject({
+      method:"POST",url:"/api/warehouse/movements",headers:{cookie:cookieHeader},
+      payload:{movementType:"OUT",productId:pendingProduct.rows[0].id,warehouseId:pendingWarehouse.rows[0].id,
+        locationId:pendingLocation.rows[0].id,quantity:1,notes:"Consume after cost approval"}
+    });
+    assert.equal(allowedPricedWithdrawal.statusCode,201,allowedPricedWithdrawal.body);
+    const finalPendingBalance=await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(finalPendingBalance.rows[0].quantity),2);
+    assert.equal(Number(finalPendingBalance.rows[0].inventory_value),25);
+
     const receive = (warehouseId: string, locationId: string, quantity: number, unitCost: number) =>
       app!.inject({
         method: "POST",
