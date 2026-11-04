@@ -111,6 +111,7 @@ export default function PayrollPage(){
    const attendanceSnapshot=attendance.data.filter(row=>payrollEmployeeIds.has(row.employeeId));
    const expectedCount=payroll.items.length*lastDay;
    if(attendanceSnapshot.length!==expectedCount)throw new Error("سجل الحضور غير مكتمل لكل موظفي المسير وأيام الشهر؛ راجع بيانات الحضور قبل الاعتماد.");
+   if(attendanceSnapshot.some(row=>row.needsReview))throw new Error("يوجد يوم يحتوي على بصمة معلقة أو متكررة تحتاج مراجعة قبل اعتماد مسير المرتبات.");
    await api("/api/payroll/periods/"+payroll.period.id+"/approve",{method:"POST",body:JSON.stringify({attendanceSnapshot})});
    setNotice("تم اعتماد مسير الرواتب وحفظ نسخة ثابتة من سجل الحضور لكل موظف ولكل يوم في الشهر.");await load()
   }catch(e){setError(e instanceof Error?e.message:"تعذر اعتماد مسير الرواتب.")}finally{setBusy(false)}}
