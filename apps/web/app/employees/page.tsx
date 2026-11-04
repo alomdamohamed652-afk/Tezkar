@@ -15,6 +15,9 @@ type ShiftAssignment={id:string;shift_id:string;shift_code:string;shift_name:str
 export default function EmployeesPage(){
   const {has}=usePermissions();
   const [employees,setEmployees]=useState<Employee[]>([]);
+  const [search,setSearch]=useState("");
+  const [resetPasswordBusy,setResetPasswordBusy]=useState(false);
+  const [temporaryPasswordResult,setTemporaryPasswordResult]=useState<{username:string;temporaryPassword:string;employeeName:string}|null>(null);
   const [departments,setDepartments]=useState<Department[]>([]);
   const [jobs,setJobs]=useState<JobTitle[]>([]);
   const [roles,setRoles]=useState<Role[]>([]);
@@ -38,6 +41,16 @@ export default function EmployeesPage(){
     finally{setLoading(false);}
   }
   useEffect(()=>{void load()},[]);
+
+  async function resetEmployeePassword(employee:Employee){
+    if(!window.confirm("سيتم إنشاء كلمة مرور مؤقتة لحساب الموظف وإلغاء كل جلسات دخوله الحالية. هل تريد المتابعة؟"))return;
+    setResetPasswordBusy(true);setTemporaryPasswordResult(null);setError("");
+    try{
+      const result=await api<{data:{username:string;temporaryPassword:string}}>("/api/employees/"+employee.id+"/reset-password",{method:"POST"});
+      setTemporaryPasswordResult({...result.data,employeeName:employee.full_name});
+    }catch(e){setError(e instanceof Error?e.message:"تعذرت إعادة تعيين كلمة المرور")}
+    finally{setResetPasswordBusy(false)}
+  }
 
   async function deactivate(){if(!deactivateTarget)return;try{await api("/api/employees/"+deactivateTarget.id,{method:"DELETE"});setDeactivateTarget(null);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
   async function restoreEmployee(employee:Employee){setError("");try{await api("/api/employees/"+employee.id+"/activate",{method:"POST"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تفعيل الموظف")}}
@@ -82,13 +95,14 @@ export default function EmployeesPage(){
   }
 
   const filteredJobs=jobs.filter(x=>!departmentId||x.department_id===departmentId);
+  const filteredEmployees=employees.filter(x=>(x.full_name+" "+x.code+" "+(x.phone??"")+" "+(x.department_name??"")+" "+(x.job_title_name??"")).toLocaleLowerCase("ar").includes(search.trim().toLocaleLowerCase("ar")));
 
   return <div className="app-shell"><Sidebar active="/employees"/><main className="main">
     <header className="topbar"><div><h1 className="page-title">الموظفون</h1><p className="page-subtitle">إضافة الموظف تنشئ له حساب دخول تلقائيًا بالدور المحدد</p></div>
       {has("employees.create")&&<button className="primary-button" onClick={()=>setShowForm(v=>!v)}>{showForm?"إلغاء":"+ إضافة موظف"}</button>}</header>
     <section className="content">
       {error&&<div className="alert error">{error}</div>}
-      {credentials&&<div className="card" style={{border:"1px solid #d9a441",background:"#fffaf0"}}><div className="card-header"><h2 className="card-title">بيانات الدخول الجديدة</h2></div><p>احفظ البيانات وسلمها للموظف. كلمة المرور لن تظهر مرة أخرى.</p><div className="form-grid"><label>اسم المستخدم<input readOnly value={credentials.username}/></label><label>كلمة المرور<input readOnly value={credentials.password}/></label><label>الدور<input readOnly value={credentials.roleCode}/></label></div></div>}
+      {temporaryPasswordResult&&<div className="card" style={{border:"1px solid #d9a441",background:"#fffaf0"}}><div className="card-header"><h2 className="card-title">كلمة المرور المؤقتة — تظهر مرة واحدة</h2><button className="secondary-btn" onClick={()=>setTemporaryPasswordResult(null)}>إغلاق</button></div><p>الموظف: <strong>{temporaryPasswordResult.employeeName}</strong> · الحساب: <strong>{temporaryPasswordResult.username}</strong></p><label>كلمة المرور المؤقتة<input readOnly dir="ltr" value={temporaryPasswordResult.temporaryPassword}/></label><p className="form-hint">انسخها وسلمها لصاحب الحساب بشكل آمن. تم إلغاء جلساته القديمة، وسيُطلب منه تغييرها عند أول تسجيل دخول.</p><button className="secondary-btn" onClick={()=>{void navigator.clipboard?.writeText(temporaryPasswordResult.temporaryPassword)}}>نسخ كلمة المرور</button></div>}{credentials&&<div className="card" style={{border:"1px solid #d9a441",background:"#fffaf0"}}><div className="card-header"><h2 className="card-title">بيانات الدخول الجديدة</h2></div><p>احفظ البيانات وسلمها للموظف. كلمة المرور لن تظهر مرة أخرى.</p><div className="form-grid"><label>اسم المستخدم<input readOnly value={credentials.username}/></label><label>كلمة المرور<input readOnly value={credentials.password}/></label><label>الدور<input readOnly value={credentials.roleCode}/></label></div></div>}
       {showForm&&has("employees.create")&&<form className="card form-card" onSubmit={submit}><div className="card-header"><h2 className="card-title">موظف جديد + حساب دخول</h2></div>
         <div className="form-grid">
           <label>اسم الموظف<input value={fullName} onChange={e=>setFullName(e.target.value)} required/></label>
@@ -99,8 +113,8 @@ export default function EmployeesPage(){
           <label>تاريخ التعيين<input type="date" value={hiredAt} onChange={e=>setHiredAt(e.target.value)}/></label>
         </div><div className="form-actions"><button className="primary-button" disabled={saving}>{saving?"جارٍ إنشاء الموظف والحساب...":"حفظ الموظف وإنشاء الحساب"}</button></div>
       </form>}
-      <section className="card"><div className="card-header"><h2 className="card-title">قائمة الموظفين</h2><span className="count-badge">{employees.length}</span></div>
-        {loading?<div className="empty">جارٍ تحميل البيانات...</div>:!employees.length?<div className="empty">لا يوجد موظفون مسجلون.</div>:<div className="table-wrap"><table><thead><tr><th>الاسم</th><th>الكود</th><th>القسم</th><th>الوظيفة</th><th>الهاتف</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{employees.map(x=><tr key={x.id}><td className="strong">{x.full_name}</td><td className="mono">{x.code}</td><td>{x.department_name??"—"}</td><td>{x.job_title_name??"—"}</td><td>{x.phone??"—"}</td><td><span className={"status "+(x.is_active?"success":"muted")}>{x.is_active?"نشط":"غير نشط"}</span></td><td><div className="row-actions">{has("employees.edit")&&x.is_active&&<button className="secondary-btn" onClick={()=>openEdit(x)}>تعديل</button>}{has("shifts.assign_employee")&&x.is_active&&<button className="secondary-btn" onClick={()=>openShifts(x)}>الورديات</button>}{has("employees.delete")&&x.is_active&&<button className="danger-button" onClick={()=>setDeactivateTarget(x)}>تعطيل</button>}{has("employees.edit")&&!x.is_active&&<button className="secondary-btn" onClick={()=>restoreEmployee(x)}>تفعيل</button>}</div></td></tr>)}</tbody></table></div>}
+      <section className="card"><div className="card-header"><h2 className="card-title">قائمة الموظفين</h2><span className="count-badge">{filteredEmployees.length} / {employees.length}</span></div><div className="settings-toolbar"><input aria-label="بحث في الموظفين" placeholder="ابحث بالاسم أو كود الموظف أو الهاتف أو القسم أو الوظيفة" value={search} onChange={e=>setSearch(e.target.value)}/></div>
+        {loading?<div className="empty">جارٍ تحميل البيانات...</div>:!filteredEmployees.length?<div className="empty">{search.trim()?"لا توجد نتائج مطابقة للبحث.":"لا يوجد موظفون مسجلون."}</div>:<div className="table-wrap"><table><thead><tr><th>الاسم</th><th>الكود</th><th>القسم</th><th>الوظيفة</th><th>الهاتف</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{filteredEmployees.map(x=><tr key={x.id}><td className="strong">{x.full_name}</td><td className="mono">{x.code}</td><td>{x.department_name??"—"}</td><td>{x.job_title_name??"—"}</td><td>{x.phone??"—"}</td><td><span className={"status "+(x.is_active?"success":"muted")}>{x.is_active?"نشط":"غير نشط"}</span></td><td><div className="row-actions">{has("employees.edit")&&x.is_active&&<button className="secondary-btn" onClick={()=>openEdit(x)}>تعديل</button>}{has("users.edit")&&x.is_active&&<button className="secondary-btn" disabled={resetPasswordBusy} onClick={()=>void resetEmployeePassword(x)}>إعادة تعيين كلمة المرور</button>}{has("shifts.assign_employee")&&x.is_active&&<button className="secondary-btn" onClick={()=>openShifts(x)}>الورديات</button>}{has("employees.delete")&&x.is_active&&<button className="danger-button" onClick={()=>setDeactivateTarget(x)}>تعطيل</button>}{has("employees.edit")&&!x.is_active&&<button className="secondary-btn" onClick={()=>restoreEmployee(x)}>تفعيل</button>}</div></td></tr>)}</tbody></table></div>}
       </section>
     </section>
     {editTarget&&<div className="modal-backdrop" onClick={()=>setEditTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><h2 className="card-title">تعديل الموظف</h2><button className="secondary-btn" onClick={()=>setEditTarget(null)}>إغلاق</button></div><div className="form-grid"><label>اسم الموظف<input value={editName} onChange={e=>setEditName(e.target.value)}/></label><label>الهاتف<input value={editPhone} onChange={e=>setEditPhone(e.target.value)}/></label><label>القسم<SearchableSelect value={editDepartment} onChange={v=>{setEditDepartment(v);setEditJob("")}} placeholder="بدون قسم" options={[{value:"",label:"بدون قسم"},...departments.map(x=>({value:x.id,label:x.name}))]}/></label><label>الوظيفة<SearchableSelect value={editJob} onChange={setEditJob} placeholder="بدون وظيفة" options={[{value:"",label:"بدون وظيفة"},...jobs.filter(x=>!editDepartment||x.department_id===editDepartment).map(x=>({value:x.id,label:x.name}))]}/></label><label>دور النظام<SearchableSelect value={editRole} onChange={setEditRole} options={roles.map(x=>({value:x.code,label:x.name}))}/></label></div><div className="form-actions"><button className="primary-button" disabled={editSaving||!editName.trim()} onClick={saveEdit}>{editSaving?"جارٍ الحفظ...":"حفظ التعديل"}</button></div></div></div>}
