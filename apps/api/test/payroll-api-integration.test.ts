@@ -239,6 +239,20 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const oldSessionAfterReactivation=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:deactivationCookie}});
       assert.equal(oldSessionAfterReactivation.statusCode,401,oldSessionAfterReactivation.body,
         "reactivating an employee must never restore a session revoked during deactivation");
+      const reactivatedLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:deactivationUser.rows[0].username,password}});
+      assert.equal(reactivatedLogin.statusCode,200,reactivatedLogin.body);
+      const reactivatedSetCookie=reactivatedLogin.headers["set-cookie"];
+      const reactivatedCookie=(Array.isArray(reactivatedSetCookie)?reactivatedSetCookie[0]:reactivatedSetCookie).split(";")[0];
+      const reactivatedSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[deactivationUser.rows[0].id]);
+      const accountDeactivated=await app.inject({method:"DELETE",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader}});
+      assert.equal(accountDeactivated.statusCode,200,accountDeactivated.body);
+      assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[reactivatedSession.rows[0].id])).rows[0].revoked_at,
+        "deactivating an account from account management must revoke all sessions");
+      const accountReactivated=await app.inject({method:"PATCH",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader},payload:{isActive:true}});
+      assert.equal(accountReactivated.statusCode,200,accountReactivated.body);
+      const oldAccountSession=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:reactivatedCookie}});
+      assert.equal(oldAccountSession.statusCode,401,oldAccountSession.body,
+        "reactivating an account must not revive its revoked sessions");
 
       const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
       const accountResetUser=await apiPool.query(
