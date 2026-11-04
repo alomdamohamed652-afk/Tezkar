@@ -51,9 +51,9 @@ export default function OrdersPage(){
   e.preventDefault();setSaving(true);setError("");
   try{
    await api("/api/orders",{method:"POST",body:JSON.stringify({
-    orderName,customerName:customer||undefined,contractValue:Number(normalizeNumber(contractValue||"0")),orderDate:date,deliveryStartDate:deliveryStart||undefined,lastDeliveryDate:lastDelivery||undefined,notes:notes||undefined,
+    orderName,customerName:customer||undefined,...(canViewOrderFinancials?{contractValue:Number(normalizeNumber(contractValue||"0"))}:{}),orderDate:date,deliveryStartDate:deliveryStart||undefined,lastDeliveryDate:lastDelivery||undefined,notes:notes||undefined,
     lines:[],
-    stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(normalizeNumber(x.plannedQuantity)):undefined,notes:x.notes||undefined,stageRate:x.stageRate?Number(normalizeNumber(x.stageRate)):undefined,stageRateMethod:x.stageRate||x.stageRateMethod?x.stageRateMethod:undefined,productionTypeId:x.productionTypeId||undefined,isFinalProduct:x.isFinalProduct}))
+    stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(normalizeNumber(x.plannedQuantity)):undefined,notes:x.notes||undefined,...(canViewOrderFinancials&&x.stageRate.trim()?{stageRate:Number(normalizeNumber(x.stageRate)),stageRateMethod:x.stageRateMethod}:{}),productionTypeId:x.productionTypeId||undefined,isFinalProduct:x.isFinalProduct}))
    })});
    setOrderName("");setCustomer("");setContractValue("0");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلبية")}finally{setSaving(false)}
@@ -67,7 +67,7 @@ export default function OrdersPage(){
     <div className="form-grid">
      <label>اسم الطلبية<input value={orderName} onChange={e=>setOrderName(e.target.value)} placeholder="مثال: طلبية الجوهري أكتوبر" required/></label>
      <label>اسم العميل / الجهة<input value={customer} onChange={e=>setCustomer(e.target.value)} placeholder="اختياري"/></label>
-     <label>قيمة البيع المتفق عليها / الإيراد المستحق<input inputMode="decimal" value={contractValue} onChange={e=>setContractValue(e.target.value)} placeholder="0.00" required/></label>
+     {canViewOrderFinancials&&<label>قيمة البيع المتفق عليها / الإيراد المستحق<input inputMode="decimal" value={contractValue} onChange={e=>setContractValue(e.target.value)} placeholder="0.00" required/></label>}
      <label>تاريخ الطلب<input type="date" value={date} onChange={e=>setDate(e.target.value)} required/></label>
      <label>بداية التسليم<input type="date" value={deliveryStart} onChange={e=>setDeliveryStart(e.target.value)}/></label>
      <label>آخر دفعة تسليم<input type="date" value={lastDelivery} onChange={e=>setLastDelivery(e.target.value)}/></label>
@@ -75,7 +75,7 @@ export default function OrdersPage(){
      <label style={{gridColumn:"1/-1"}}>ملاحظات<textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="ملاحظات التشغيل أو التسليم"/></label>
     </div>
     <div className="card-body order-stages-editor">
-     <div className="section-title"><div><strong>مراحل الطلب</strong><div className="form-hint">كل مرحلة لها منتج ناتج وسعر إنتاج وطريقة تسعير. السعر ينتقل تلقائيًا لإنتاج العامل.</div></div><button type="button" className="secondary-btn" onClick={addStage}>+ إضافة مرحلة</button></div>
+     <div className="section-title"><div><strong>مراحل الطلب</strong><div className="form-hint">كل مرحلة لها منتج ناتج وكمية مخططة. بيانات الأسعار وطريقة التسعير تظهر للمخولين ماليًا فقط.</div></div><button type="button" className="secondary-btn" onClick={addStage}>+ إضافة مرحلة</button></div>
      {!stageRows.length?<div className="empty small-empty">أضف مراحل الطلب واحدة واحدة.</div>:
       <div className="stage-editor-list">{stageRows.map((row,i)=><div className="stage-editor-row" key={i}><div className="stage-number">{i+1}</div>
        <div><span className="field-caption">اسم المرحلة</span><input value={row.stageName} onChange={e=>updateStage(i,"stageName",e.target.value)} placeholder="مثال: طباعة المقلمة"/></div>
@@ -88,7 +88,7 @@ export default function OrdersPage(){
        <button type="button" className="danger-button" onClick={()=>removeStage(i)}>حذف</button>
       </div>)}</div>}
     </div>
-    <div className="form-actions"><button className="primary-button" disabled={saving||!stageRows.length||!stageRows.every(x=>x.stageName.trim()&&x.outputProductName.trim()&&Number(normalizeNumber(x.plannedQuantity))>0&&x.stageRate.trim())||!stageRows.some(x=>x.isFinalProduct)}>{saving?"جارٍ الحفظ...":"حفظ الطلبية"}</button></div>
+    <div className="form-actions"><button className="primary-button" disabled={saving||!stageRows.length||!stageRows.every(x=>x.stageName.trim()&&x.outputProductName.trim()&&Number(normalizeNumber(x.plannedQuantity))>0&&(!canViewOrderFinancials||x.stageRate.trim()))||!stageRows.some(x=>x.isFinalProduct)}>{saving?"جارٍ الحفظ...":"حفظ الطلبية"}</button></div>
    </form>}
 
    <section className="card"><div className="card-header"><div><h2 className="card-title">لوحة الطلبات</h2><div className="form-hint">كل طلبية لها ملف مستقل للتشغيل والتكلفة والمسحوبات والتسليم.</div></div><span className="count-badge">{orders.length}</span></div>
