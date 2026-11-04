@@ -142,7 +142,7 @@ export async function registrationRoutes(app: FastifyInstance) {
         [parsed.data.roleCode]
       );
       if (!role.rowCount) throw new AppError("ROLE_NOT_FOUND", "الدور غير موجود أو غير نشط", 422);
-      if ((role.rows[0].is_system && String(role.rows[0].code).toLowerCase() !== "worker") || role.rows[0].manages_rbac)
+      if (String(role.rows[0].code).toLowerCase() !== "worker" || role.rows[0].manages_rbac)
         throw new AppError("PRIVILEGED_ROLE_RESTRICTED", "لا يمكن منح دور إداري أو تشغيلي مميز من خلال طلب التسجيل؛ عيّنه مدير النظام يدويًا بعد المراجعة.", 403);
 
       let linkedUserId: string | null = null;
