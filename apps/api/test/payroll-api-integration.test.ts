@@ -379,6 +379,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(incompleteAttendancePreview.statusCode,422,incompleteAttendancePreview.body);
       assert.equal(incompleteAttendancePreview.json().error.code,"ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      const tamperedAttendanceSnapshot=attendanceSnapshot.map((row,index)=>index===0?{...row,workedMinutes:999}:row);
+      const tamperedAttendancePreview=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/attendance-preview`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot:tamperedAttendanceSnapshot,overtimeMultiplier:1.5}
+      });
+      assert.equal(tamperedAttendancePreview.statusCode,422,tamperedAttendancePreview.body);
+      assert.equal(tamperedAttendancePreview.json().error.code,"ATTENDANCE_SNAPSHOT_INVALID",
+        "payroll must reject browser-edited attendance data even when the dates and employees are valid");
       const attendancePreview=await app.inject({
         method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/attendance-preview`,
         headers:{cookie:cookieHeader},payload:{attendanceSnapshot,overtimeMultiplier:1.5}
@@ -457,7 +465,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         if(index===2){day.status="MISSING_PUNCH";day.needsReview=true;day.lateMinutes=120;day.overtimeMinutes=60;}
         if(index===3){day.lateMinutes=30;day.earlyMinutes=10;day.workedMinutes=440;}
         return day;
-      });
+      }).map(row=>signAttendanceSnapshot(row));
       const timePreview=await app.inject({
         method:"POST",url:`/api/payroll/periods/${timePeriod.id}/attendance-preview`,
         headers:{cookie:cookieHeader},payload:{attendanceSnapshot:timeSnapshot,overtimeMultiplier:1.5}
