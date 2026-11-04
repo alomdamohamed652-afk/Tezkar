@@ -1029,13 +1029,21 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(cartonAfterRelease.rows[0].status, "PARTIAL");
     assert.equal(cartonAfterRelease.rows[0].barcode, carton.barcode);
     const cartonMovement = await apiPool.query(
-      "SELECT movement_type,quantity,carton_code,reference_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      "SELECT id,movement_type,quantity,unit_cost,total_cost,carton_code,reference_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
       [cartonDeliveryId]
     );
     assert.equal(cartonMovement.rowCount, 1);
     assert.equal(cartonMovement.rows[0].movement_type, "OUT");
     assert.equal(Number(cartonMovement.rows[0].quantity), 2);
     assert.equal(cartonMovement.rows[0].carton_code, carton.barcode);
+    const cartonFifoAllocations=await apiPool.query(
+      "SELECT COALESCE(SUM(quantity),0) AS quantity,COALESCE(SUM(total_cost),0) AS total_cost,COUNT(*)::int AS lot_count FROM stock_movement_lots WHERE movement_id=$1",
+      [cartonMovement.rows[0].id]
+    );
+    assert.ok(cartonFifoAllocations.rows[0].lot_count>0,"carton delivery must consume and record FIFO inventory-lot allocations");
+    assert.equal(Number(cartonFifoAllocations.rows[0].quantity),2,"FIFO allocations must match the released carton quantity");
+    assert.equal(Number(cartonFifoAllocations.rows[0].total_cost),Number(cartonMovement.rows[0].total_cost),
+      "delivery movement cost must equal the sum of its FIFO lot allocations");
     const stockAfterCartonDelivery = await apiPool.query(
       "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
