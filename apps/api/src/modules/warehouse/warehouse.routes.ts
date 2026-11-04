@@ -198,7 +198,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const params:unknown[]=[];const where:string[]=["l.remaining_quantity>0"];
     if(parsed.data.warehouseId){params.push(parsed.data.warehouseId);where.push("l.warehouse_id=$"+params.length)}
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("l.product_id=$"+params.length)}
-    const r=await pool.query(`SELECT l.id,l.batch_code,l.unit_cost,l.original_quantity,l.remaining_quantity,l.source_type,l.created_at,
+    const r=await pool.query(`SELECT l.id,l.batch_code,l.unit_cost,l.original_quantity,l.remaining_quantity,l.cost_confirmed,l.source_type,l.created_at,
       p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,loc.code AS location_code,loc.name AS location_name,u.name AS unit_name
       FROM inventory_lots l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id
       JOIN warehouse_locations loc ON loc.id=l.location_id JOIN units u ON u.id=p.unit_id
@@ -218,7 +218,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     params.push(parsed.data.limit+1);
     const limitParam=params.length;
     params.push(parsed.data.offset);
-    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,m.order_id,m.order_stage_id,po.code AS order_code,po.order_name AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC,m.id DESC LIMIT $"+limitParam+" OFFSET $"+(limitParam+1),params);
+    const result=await pool.query("SELECT m.id,m.code,m.movement_type,m.quantity,m.unit_cost,m.total_cost,m.carton_code,m.batch_code,m.weight,m.notes,m.created_at,m.reference_type,m.reference_id,m.scrap_origin_type,m.scrap_origin_reference,COALESCE(il.cost_confirmed,TRUE) AS cost_confirmed,m.order_id,m.order_stage_id,po.code AS order_code,po.order_name AS order_name,st.name AS stage_name,source_warehouse.name AS transfer_from_warehouse,cu.username AS created_by_username,p.code AS product_code,p.name AS product_name,w.name AS warehouse_name,w.warehouse_type,l.name AS location_name,u.name AS unit_name FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id JOIN warehouse_locations l ON l.id=m.location_id JOIN units u ON u.id=m.unit_id LEFT JOIN order_stages os ON os.id=m.order_stage_id LEFT JOIN production_orders po ON po.id=COALESCE(os.order_id,m.order_id) LEFT JOIN stages st ON st.id=os.stage_id LEFT JOIN stock_movements source_movement ON source_movement.id=m.reference_id AND m.reference_type='TRANSFER' LEFT JOIN inventory_lots il ON il.stock_movement_id=m.id LEFT JOIN warehouses source_warehouse ON source_warehouse.id=source_movement.warehouse_id LEFT JOIN users cu ON cu.id=m.created_by "+(where.length?"WHERE "+where.join(" AND "):"")+" ORDER BY m.created_at DESC,m.id DESC LIMIT $"+limitParam+" OFFSET $"+(limitParam+1),params);
     const hasMore=result.rows.length>parsed.data.limit;
     const rows=hasMore?result.rows.slice(0,parsed.data.limit):result.rows;
     const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
@@ -366,7 +366,8 @@ export async function warehouseRoutes(app: FastifyInstance) {
       const before=balance.rows[0];
       const quantity=Number(before.quantity);
       if(quantity<=0)throw new AppError("EMPTY_STOCK","لا يمكن تعديل تكلفة رصيد كميته صفر",409);
-      const lots=await client.query("SELECT id,remaining_quantity,unit_cost FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+      const lots=await client.query("SELECT id,remaining_quantity,unit_cost,cost_confirmed FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",[parsed.data.productId,parsed.data.warehouseId,parsed.data.locationId]);
+      if(lots.rows.some(lot=>!lot.cost_confirmed))throw new AppError("INVENTORY_COST_PENDING","اعتمد تكلفة كل دفعة معلقة بشكل منفصل قبل إعادة تقييم متوسط تكلفة المخزون.",409);
       const lotsQuantity=lots.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0);
       if(Math.abs(lotsQuantity-quantity)>1e-7)throw new AppError("INVENTORY_INTEGRITY_MISMATCH","مجموع دفعات التكلفة لا يطابق رصيد المخزن؛ تم إيقاف التعديل لحماية التكلفة",409);
       const nextValue=quantity*parsed.data.averageUnitCost;
