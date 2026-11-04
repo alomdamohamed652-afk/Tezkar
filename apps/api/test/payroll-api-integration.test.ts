@@ -510,9 +510,30 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "approving payroll must not repay an advance before the salary is paid");
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[salaryPercentageAdvance.rows[0].id])).rows[0].count,0);
 
+      const limitedCustodyHolder=await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Limited Payroll Custody Holder') RETURNING id"
+      );
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',999,'limited payroll custody test balance',$2)",
+        [limitedCustodyHolder.rows[0].id,userId]
+      );
+      const februaryPaymentPayload={idempotencyKey:randomUUID(),amount:600,paymentMethod:"CASH",fromCustody:true,custodyEmployeeId:limitedCustodyHolder.rows[0].id};
+      const insufficientPayrollCustody=await app.inject({
+        method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
+        headers:{cookie:cookieHeader},payload:februaryPaymentPayload
+      });
+      assert.equal(insufficientPayrollCustody.statusCode,409,insufficientPayrollCustody.body);
+      assert.equal(insufficientPayrollCustody.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE",
+        "cash payroll must reserve the cash payment plus the advance-repayment offset");
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM payroll_payments WHERE payroll_item_id=$1",[februaryItem.id])).rows[0].count,0,
+        "insufficient custody must roll back the payroll payment and advance repayments");
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1,'complete payroll custody test balance',$2)",
+        [limitedCustodyHolder.rows[0].id,userId]
+      );
       const februaryPayment=await app.inject({
         method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
-        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"TEST"}
+        headers:{cookie:cookieHeader},payload:februaryPaymentPayload
       });
       assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
       assert.equal(februaryPayment.json().data.status,"PAID");
@@ -590,7 +611,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
         [februaryPayment.json().data.payment.id]
       );
-      assert.equal(custodySummary.rowCount,0,"non-cash payroll payments must not create cash-custody movements");
+      assert.equal(custodySummary.rowCount,2,"cash payroll must record both the full custody outflow and the advance-repayment offset");
+      assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="OUT").amount),1000,
+        "custody outflow must include the 600 cash paid plus 400 advance repayment");
+      assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="IN").amount),400,
+        "advance repayment must be returned to the cash custody balance");
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }
