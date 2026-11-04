@@ -57,6 +57,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       { default: cookie },
       { authRoutes },
       { warehouseRoutes },
+      { receiptRoutes },
       { hashPassword },
       poolModule
     ] = await Promise.all([
@@ -64,6 +65,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       import("@fastify/cookie"),
       import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"),
+      import("../src/modules/warehouse/receipts.routes.js"),
       import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
@@ -77,6 +79,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     });
     await app.register(authRoutes);
     await app.register(warehouseRoutes);
+    await app.register(receiptRoutes);
 
     const employee = await apiPool.query(
       "INSERT INTO employees(full_name) VALUES ('Warehouse concurrency test') RETURNING id"
