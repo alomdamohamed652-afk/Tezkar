@@ -94,11 +94,11 @@ export async function attendanceRoutes(app:FastifyInstance){
    for(const r of rows){
     if((await client.query("SELECT id FROM attendance_punches WHERE external_key=$1",[r.key])).rowCount){duplicates++;continue;}
     const mapping=await client.query("SELECT employee_id FROM attendance_employee_settings WHERE device_code=$1",[r.code]);const employeeId=mapping.rows[0]?.employee_id??null;
-    const near=await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND review_status<>'REJECTED' AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString(),r.state]);
+    const near=await client.query("SELECT id FROM attendance_punches WHERE (device_code=$1 OR ($4::uuid IS NOT NULL AND employee_id=$4)) AND status=$3 AND review_status<>'REJECTED' AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString(),r.state,employeeId]);
     // A second same-type punch on the same Cairo calendar date is ambiguous even when hours apart
     // (for example IN at 15:00 and IN at 23:00 on a 15:00–23:00 shift). Preserve both and require review.
     const repeatedSameDay = ["IN","OUT","OVERTIME_IN","OVERTIME_OUT"].includes(r.state)
-      ? await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND review_status<>'REJECTED' AND (punch_at AT TIME ZONE 'Africa/Cairo')::date = ($2::timestamptz AT TIME ZONE 'Africa/Cairo')::date",[r.code,r.at.toISOString(),r.state])
+      ? await client.query("SELECT id FROM attendance_punches WHERE (device_code=$1 OR ($4::uuid IS NOT NULL AND employee_id=$4)) AND status=$3 AND review_status<>'REJECTED' AND (punch_at AT TIME ZONE 'Africa/Cairo')::date = ($2::timestamptz AT TIME ZONE 'Africa/Cairo')::date",[r.code,r.at.toISOString(),r.state,employeeId])
       : { rows: [], rowCount: 0 };
     if(repeatedSameDay.rowCount){
       await client.query("UPDATE attendance_punches SET suspicious=TRUE,review_status='PENDING' WHERE id = ANY($1::uuid[]) AND review_status <> 'REJECTED'",[repeatedSameDay.rows.map((row:{id:string})=>row.id)]);
