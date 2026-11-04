@@ -137,6 +137,19 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(secondSetCookie, "reviewer login must issue a session cookie");
       const secondCookieHeader = (Array.isArray(secondSetCookie) ? secondSetCookie[0] : secondSetCookie).split(";")[0];
 
+
+
+
+      const login = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username: (await apiPool.query("SELECT username FROM users WHERE id=$1", [userId])).rows[0].username, password }
+      });
+      assert.equal(login.statusCode, 200, login.body);
+      const setCookie = login.headers["set-cookie"];
+      assert.ok(setCookie, "login must issue a session cookie");
+      const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
+
       const passwordResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Password Reset Integration Employee') RETURNING id");
       const passwordResetUser=await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
@@ -158,17 +171,6 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(resetUserState.rows[0].must_change_password,true);
       assert.notEqual(resetUserState.rows[0].password_hash,hashPassword(password));
       assert.equal((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[oldSession.rows[0].id])).rows[0].revoked_at!==null,true);
-
-
-      const login = await app.inject({
-        method: "POST",
-        url: "/api/auth/login",
-        payload: { username: (await apiPool.query("SELECT username FROM users WHERE id=$1", [userId])).rows[0].username, password }
-      });
-      assert.equal(login.statusCode, 200, login.body);
-      const setCookie = login.headers["set-cookie"];
-      assert.ok(setCookie, "login must issue a session cookie");
-      const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
 
       const unauthenticated = await app.inject({
         method: "POST", url: "/api/payroll/periods/00000000-0000-0000-0000-000000000000/approve"
