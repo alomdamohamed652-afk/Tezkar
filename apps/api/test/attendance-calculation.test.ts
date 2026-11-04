@@ -199,6 +199,15 @@ test("worked hours include completed overtime pairs and ignore incomplete pairs"
 });
 
 
+test("overtime minutes sum separate completed intervals without counting breaks", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T16:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T17:00:00.000Z" },
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T19:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T20:30:00.000Z" },
+  ]), 150);
+});
+
 test("effective-dated weekly schedules switch exactly on their boundary dates", () => {
   const schedules: EffectiveAttendanceSchedule[] = [
     { employee_id: "employee-1", weekday: 4, effective_from: "1900-01-01", effective_to: "2026-10-21", starts_at: "08:00", ends_at: "16:00", is_day_off: false },
