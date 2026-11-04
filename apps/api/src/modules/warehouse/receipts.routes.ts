@@ -71,6 +71,8 @@ export async function receiptRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   const parsed=z.object({unitCost:z.number().finite().nonnegative().max(100000000)}).safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","تكلفة الوحدة غير صحيحة",422);
+  if(!await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes))
+   throw new AppError("FORBIDDEN","اعتماد تكلفة دفعات المخزون متاح للمخولين ماليًا فقط",403);
   const result=await withTransaction(async client=>{
    const locator=await client.query("SELECT product_id FROM inventory_lots WHERE id=$1",[id]);
    if(!locator.rowCount)throw new AppError("INVENTORY_LOT_NOT_FOUND","دفعة المخزون غير موجودة",404);
