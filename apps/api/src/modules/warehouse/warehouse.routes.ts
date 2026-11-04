@@ -26,7 +26,7 @@ const movementSchema = z.object({
   targetLocationId: z.string().uuid().optional(), scrapOriginType: z.enum(["ORDER","ADJUSTMENT","STOCKTAKE","TRANSFER","PRODUCTION","OTHER"]).nullable().optional(), scrapOriginReference: z.string().trim().max(160).nullable().optional()
 });
 
-async function canViewWarehouseCosts(userId: string, roleCodes: string[] = []): Promise<boolean> {
+export async function canViewWarehouseCosts(userId: string, roleCodes: string[] = []): Promise<boolean> {
   if (roleCodes.some(code => code.toLowerCase() === "shift_leader")) return false;
   const client = await pool.connect();
   try {
