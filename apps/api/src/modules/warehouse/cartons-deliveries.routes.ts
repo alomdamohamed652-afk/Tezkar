@@ -163,6 +163,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  });
  app.post("/api/delivery-permissions/:id/ready",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
   const id=(request.params as {id:string}).id;
+  const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
   const row=await withTransaction(async(client)=>{
    const d=await client.query("SELECT * FROM delivery_permissions WHERE id=$1 FOR UPDATE",[id]);
    if(!d.rowCount)throw new AppError("NOT_FOUND","مسودة التسليم غير موجودة",404);
@@ -199,10 +200,11 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"ready",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
-  return {data:row};
+  return {data:redactDeliveryValue(row,canViewFinancials)};
  });
  app.post("/api/delivery-permissions/:id/cancel-draft",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
   const id=(request.params as {id:string}).id;
+  const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
   const row=await withTransaction(async(client)=>{
    const d=await client.query("SELECT * FROM delivery_permissions WHERE id=$1 FOR UPDATE",[id]);
    if(!d.rowCount)throw new AppError("NOT_FOUND","المسودة غير موجودة",404);
@@ -212,7 +214,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"cancel",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
-  return {data:row};
+  return {data:redactDeliveryValue(row,canViewFinancials)};
  });
 
  app.get("/api/delivery-permissions/availability",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request)=>{
@@ -256,6 +258,8 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
  
  app.post("/api/delivery-permissions",{preHandler:[authenticateRequest,requirePermission("deliveries.create")]},async(request,reply)=>{
   const parsed=deliverySchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إذن التسليم غير صحيحة",422);
+  const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+  assertDeliveryValuePermission(parsed.data.deliveryValue,canViewFinancials);
   const scannedCodes=new Set<string>();
   for(const line of parsed.data.lines){
    const code=line.cartonCode?.trim();
@@ -337,11 +341,12 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"delivery_permission",entityId:d.rows[0].id,afterData:d.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return d.rows[0];
   });
-  return reply.code(201).send({data:row});
+  return reply.code(201).send({data:redactDeliveryValue(row,canViewFinancials)});
  });
 
  app.post("/api/delivery-permissions/:id/release",{preHandler:[authenticateRequest,requirePermission("deliveries.release")]},async(request)=>{
   const id=(request.params as {id:string}).id;const parsed=releaseSchema.safeParse(request.body);if(!parsed.success)throw new AppError("VALIDATION_ERROR","كود المسح مطلوب",422);
+  const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
   const row=await withTransaction(async(client)=>{
    await assertAccountingPeriodOpen(client,new Date().toISOString().slice(0,10));
    const d=await client.query("SELECT * FROM delivery_permissions WHERE id=$1 FOR UPDATE",[id]);if(!d.rowCount)throw new AppError("NOT_FOUND","إذن التسليم غير موجود",404);
@@ -417,6 +422,6 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"release",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],metadata:{scanCode:parsed.data.scanCode},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
-  return {data:row};
+  return {data:redactDeliveryValue(row,canViewFinancials)};
  });
 }
