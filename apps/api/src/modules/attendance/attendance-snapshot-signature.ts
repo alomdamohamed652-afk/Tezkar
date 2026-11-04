@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
 
 function stableJson(value: unknown): string {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
   const object = value as Record<string, unknown>;
