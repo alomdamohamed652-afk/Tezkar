@@ -107,6 +107,20 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     const setCookie = login.headers["set-cookie"];
     assert.ok(setCookie, "login must issue a session cookie");
     const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
+
+    const shiftLeaderEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES ('Warehouse cost visibility shift leader') RETURNING id");
+    const shiftLeaderUsername="warehouse-shift-leader-"+randomBytes(5).toString("hex");
+    const shiftLeaderUser=await apiPool.query(
+      "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+      [shiftLeaderUsername,hashPassword(password),shiftLeaderEmployee.rows[0].id]
+    );
+    await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='shift_leader'",[shiftLeaderUser.rows[0].id]);
+    await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code IN ('warehouse.view','warehouse.dashboard') WHERE r.code='shift_leader' ON CONFLICT DO NOTHING");
+    const shiftLeaderLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:shiftLeaderUsername,password}});
+    assert.equal(shiftLeaderLogin.statusCode,200,shiftLeaderLogin.body);
+    const shiftLeaderSetCookie=shiftLeaderLogin.headers["set-cookie"];
+    assert.ok(shiftLeaderSetCookie,"shift leader login must issue a session cookie");
+    const shiftLeaderCookie=(Array.isArray(shiftLeaderSetCookie)?shiftLeaderSetCookie[0]:shiftLeaderSetCookie).split(";")[0];
     const unit = await apiPool.query("SELECT id FROM units WHERE code='PCS' LIMIT 1");
     assert.ok(unit.rowCount, "migrations should seed the PCS unit");
     const product = await apiPool.query(
@@ -123,6 +137,21 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       "INSERT INTO warehouse_locations(warehouse_id,code,name) VALUES ($1,'B','Target') RETURNING id",
       [targetWarehouse.rows[0].id]
     );
+
+    const receipt=await apiPool.query("INSERT INTO warehouse_receipts(source,created_by) VALUES('Receipt cost visibility test',$1) RETURNING id",[user.rows[0].id]);
+    await apiPool.query(
+      "INSERT INTO warehouse_receipt_lines(receipt_id,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost) VALUES($1,$2,$3,$4,2,$5,17.5)",
+      [receipt.rows[0].id,product.rows[0].id,sourceWarehouse.rows[0].id,sourceLocation.rows[0].id,unit.rows[0].id]
+    );
+    const managerReceiptList=await app.inject({method:"GET",url:"/api/warehouse/receipts",headers:{cookie:cookieHeader}});
+    assert.equal(managerReceiptList.statusCode,200,managerReceiptList.body);
+    assert.equal(Number(managerReceiptList.json().data[0].total_cost),35,"manager should see receipt cost");
+    const shiftLeaderReceiptList=await app.inject({method:"GET",url:"/api/warehouse/receipts",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderReceiptList.statusCode,200,shiftLeaderReceiptList.body);
+    assert.equal(shiftLeaderReceiptList.json().data[0].total_cost,null,"shift leader must not receive receipt cost through the list API");
+    const shiftLeaderReceiptDetail=await app.inject({method:"GET",url:"/api/warehouse/receipts/"+receipt.rows[0].id,headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderReceiptDetail.statusCode,200,shiftLeaderReceiptDetail.body);
+    assert.equal(shiftLeaderReceiptDetail.json().data.lines[0].unit_cost,null,"shift leader must not receive receipt unit cost through the detail API");
 
     const receive = (warehouseId: string, locationId: string, quantity: number, unitCost: number) =>
       app!.inject({
