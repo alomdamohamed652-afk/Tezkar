@@ -14,7 +14,7 @@ type LabelLayout={width:number;height:number;margin:number};
 type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;display_product_name?:string|null;order_code?:string;weight_min_kg?:string|null;weight_max_kg?:string|null})|null;carton?:any};
 type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
 const createScanSession=()=>{
- if(typeof crypto!=="undefined"&&"randomUUID"in crypto)return crypto.randomUUID();
+ try{return crypto.randomUUID();}catch{}
  const bytes=new Uint8Array(16);
  try{crypto.getRandomValues(bytes);}
  catch{for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256);}
