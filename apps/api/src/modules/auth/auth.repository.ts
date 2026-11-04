@@ -10,19 +10,22 @@ export async function findUserForLogin(client: pg.PoolClient, username: string) 
      LEFT JOIN employees e ON e.id = u.employee_id
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      LEFT JOIN roles r ON r.id = ur.role_id
-     WHERE u.username = $1
-        OR (
-          length(regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g')) >= 10
-          AND RIGHT(regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g'), 10)
-              = RIGHT(regexp_replace($1, '[^0-9]', '', 'g'), 10)
-          AND length(regexp_replace($1, '[^0-9]', '', 'g')) >= 10
+     WHERE (
+          u.username = $1
+          OR (
+            length(regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g')) >= 10
+            AND RIGHT(regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g'), 10)
+                = RIGHT(regexp_replace($1, '[^0-9]', '', 'g'), 10)
+            AND length(regexp_replace($1, '[^0-9]', '', 'g')) >= 10
+          )
+          OR (
+            length(regexp_replace(COALESCE(e.phone, ''), '[^0-9]', '', 'g')) >= 10
+            AND RIGHT(regexp_replace(COALESCE(e.phone, ''), '[^0-9]', '', 'g'), 10)
+                = RIGHT(regexp_replace($1, '[^0-9]', '', 'g'), 10)
+            AND length(regexp_replace($1, '[^0-9]', '', 'g')) >= 10
+          )
         )
-        OR (
-          length(regexp_replace(COALESCE(e.phone, ''), '[^0-9]', '', 'g')) >= 10
-          AND RIGHT(regexp_replace(COALESCE(e.phone, ''), '[^0-9]', '', 'g'), 10)
-              = RIGHT(regexp_replace($1, '[^0-9]', '', 'g'), 10)
-          AND length(regexp_replace($1, '[^0-9]', '', 'g')) >= 10
-        )
+        AND (u.employee_id IS NULL OR e.is_active=TRUE)
      GROUP BY u.id, e.full_name
      ORDER BY CASE WHEN u.username = $1 THEN 0 ELSE 1 END
      LIMIT 2`,
