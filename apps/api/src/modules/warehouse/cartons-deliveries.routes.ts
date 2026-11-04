@@ -97,9 +97,6 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
   assertDeliveryValuePermission(parsed.data.deliveryValue,canViewFinancials);
   const row=await withTransaction(async(client)=>{
-   const productIds=[...new Set(parsed.data.lines.map(line=>String(line.productId)))].sort();
-   const lockedProducts=await client.query("SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",[productIds]);
-   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إنشاء مسودة لطلبية ملغاة",409);
@@ -275,6 +272,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    scannedCodes.add(normalized);
   }
   const row=await withTransaction(async(client)=>{
+   const productIds=[...new Set(parsed.data.lines.map(line=>String(line.productId)))].sort();
+   const lockedProducts=await client.query("SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",[productIds]);
+   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
    const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[parsed.data.orderId]);
    if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
    if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED","لا يمكن إنشاء تسليم لطلبية ملغاة",409);
