@@ -68,6 +68,8 @@ export async function receiptRoutes(app:FastifyInstance){
 
  app.post("/api/warehouse/receipts",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.move","all"],["warehouse.receipt.create","all"])]},async(request,reply)=>{
   const p=schema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الاستلام غير صحيحة",422);
+  const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
+  if(!canViewCosts&&p.data.lines.some(item=>item.unitCost>0))throw new AppError("WAREHOUSE_COST_PERMISSION_REQUIRED","لا تملك صلاحية تسجيل تكلفة الأصناف. يمكن تسجيل الكمية دون تكلفة، ويستكمل مدير المخزن بيانات التكلفة.",403);
   const row=await withTransaction(async client=>{
    const receiptDate=p.data.receiptDate??new Date().toISOString().slice(0,10);
    await assertAccountingPeriodOpen(client,receiptDate);
