@@ -176,7 +176,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const nonAdminSetCookie=nonAdminLogin.headers["set-cookie"];
       assert.ok(nonAdminSetCookie,"non-admin login must issue a session cookie");
       const nonAdminCookie=(Array.isArray(nonAdminSetCookie)?nonAdminSetCookie[0]:nonAdminSetCookie).split(";")[0];
-      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='users.create' WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code IN ('users.create','employees.create','employees.edit') WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      const deniedEmployeeRoleChange=await app.inject({
+        method:"PATCH",url:`/api/employees/${passwordResetEmployee.rows[0].id}`,headers:{cookie:nonAdminCookie},
+        payload:{roleCode:"manager"}
+      });
+      assert.equal(deniedEmployeeRoleChange.statusCode,403,deniedEmployeeRoleChange.body);
+      assert.equal(deniedEmployeeRoleChange.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal((await apiPool.query(
+        "SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1",
+        [passwordResetUser.rows[0].id]
+      )).rows[0].code,"worker","employee editing must not bypass privileged role assignment protection");
+
       const attemptedManagerUsername="privilege-escalation-"+randomBytes(5).toString("hex");
       const deniedManagerCreation=await app.inject({
         method:"POST",url:"/api/users",headers:{cookie:nonAdminCookie},
