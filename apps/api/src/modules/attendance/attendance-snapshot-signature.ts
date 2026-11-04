@@ -1,6 +1,4 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { env } from "../../config.js";
-
 const SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
 
 function stableJson(value: unknown): string {
@@ -11,7 +9,9 @@ function stableJson(value: unknown): string {
 }
 
 function signatureFor(payload: Record<string, unknown>): string {
-  return createHmac("sha256", env.SESSION_SECRET).update(stableJson(payload)).digest("hex");
+  const secret = process.env.SESSION_SECRET;
+  if (!secret || secret.length < 32) throw new Error("SESSION_SECRET must be configured before signing attendance snapshots.");
+  return createHmac("sha256", secret).update(stableJson(payload)).digest("hex");
 }
 
 /** Sign the server-computed attendance row so payroll cannot trust edited browser values. */
