@@ -241,7 +241,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if(q.data.orderId){params.push(q.data.orderId);where.push("os.order_id=$"+params.length);}
     const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id,os.production_type_id,os.is_final_product FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    const data=canViewFinancials?r.rows:r.rows.map(({stage_rate,stage_rate_unit_id,...safe})=>safe);
+    const data=canViewFinancials?r.rows:r.rows.map(({stage_rate,stage_rate_method,stage_rate_unit_id,...safe})=>safe);
     return {data};
   });
 
@@ -261,7 +261,7 @@ export async function orderRoutes(app: FastifyInstance) {
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
     if(!canViewFinancials){
       const {contract_value,...safeOrder}=order.rows[0];
-      safeOrder.stages=(safeOrder.stages??[]).map(({stage_rate,stage_rate_unit_id,...stage}:Record<string,unknown>)=>stage);
+      safeOrder.stages=(safeOrder.stages??[]).map(({stage_rate,stage_rate_method,stage_rate_unit_id,...stage}:Record<string,unknown>)=>stage);
       return {data:safeOrder};
     }
     return { data: order.rows[0] };
