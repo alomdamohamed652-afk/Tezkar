@@ -505,7 +505,8 @@ export async function payrollRoutes(app: FastifyInstance) {
           "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1 AND transaction_date<=$2::date",
           [custodyEmployeeId,paymentDate]
         );
-        if(parsed.data.amount>Number(custodyBalance.rows[0]?.balance??0)+0.0001)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد عهدة الموظف المختار لا يكفي لصافي النقد المطلوب لصرف الراتب؛ لم يتم تسجيل أي حركة",409);
+        const requiredCustodyAmount=parsed.data.amount+committedAdvanceRepayment;
+        if(requiredCustodyAmount>Number(custodyBalance.rows[0]?.balance??0)+0.0001)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد عهدة الموظف المختار لا يكفي لإجمالي الصرف والتسوية؛ لم يتم تسجيل أي حركة",409);
       }
       if(parsed.data.paymentMethod==="CASH" && !fromCustody)throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة",422);
       const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
