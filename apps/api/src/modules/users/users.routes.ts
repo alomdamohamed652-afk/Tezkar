@@ -42,9 +42,7 @@ async function assertCanReactivatePrivilegedUser(client: import("pg").PoolClient
   [targetUserId]
  );
  for(const role of roles.rows){
-  if((role.is_system&&String(role.code).toLowerCase()!=="worker")
-    ||["manager","admin","owner"].includes(String(role.code).toLowerCase())
-    ||role.manages_rbac)await assertSystemPermissionAdmin(actorUserId);
+  if(String(role.code).toLowerCase()!=="worker"||role.manages_rbac)await assertSystemPermissionAdmin(actorUserId);
  }
 }
 
@@ -107,7 +105,7 @@ export async function userRoutes(app: FastifyInstance){
     [parsed.data.roleCode]
    );
    if(!role.rowCount) throw new AppError("ROLE_NOT_FOUND","الدور غير موجود أو غير نشط",422);
-   if((role.rows[0].is_system&&String(role.rows[0].code).toLowerCase()!=="worker")||["manager","admin","owner"].includes(String(role.rows[0].code).toLowerCase())||role.rows[0].manages_rbac)
+   if(String(role.rows[0].code).toLowerCase()!=="worker"||role.rows[0].manages_rbac)
      await assertSystemPermissionAdmin(request.user!.userId);
    if(parsed.data.employeeId){const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);}
    try{
