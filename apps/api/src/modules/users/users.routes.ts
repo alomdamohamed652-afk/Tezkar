@@ -32,6 +32,22 @@ async function assertSystemPermissionAdmin(userId: string) {
  if(!result.rows[0]?.allowed)throw new AppError("RBAC_ADMIN_REQUIRED","إدارة الصلاحيات متاحة لمدير النظام فقط",403);
 }
 
+async function assertCanReactivatePrivilegedUser(client: import("pg").PoolClient, actorUserId: string, targetUserId: string) {
+ const roles=await client.query(
+  `SELECT r.code,r.is_system,
+          EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                  WHERE rp.role_id=r.id AND p.code IN ('rbac.manage','users.manage_roles')) AS manages_rbac
+     FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+    WHERE ur.user_id=$1`,
+  [targetUserId]
+ );
+ for(const role of roles.rows){
+  if((role.is_system&&String(role.code).toLowerCase()!=="worker")
+    ||["manager","admin","owner"].includes(String(role.code).toLowerCase())
+    ||role.manages_rbac)await assertSystemPermissionAdmin(actorUserId);
+ }
+}
+
 export async function userRoutes(app: FastifyInstance){
  app.get("/api/users",{preHandler:[authenticateRequest,requirePermission("users.view")]},async()=>{
   const result=await pool.query("SELECT u.id,u.code,u.username,u.employee_id,e.code AS employee_code,COALESCE(u.full_name,e.full_name) AS full_name, u.is_active,u.is_bootstrap,u.must_complete_setup,u.last_login_at,COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}') AS role_codes FROM users u LEFT JOIN employees e ON e.id=u.employee_id LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles r ON r.id=ur.role_id GROUP BY u.id,e.code,e.full_name ORDER BY u.code");
@@ -189,6 +205,7 @@ export async function userRoutes(app: FastifyInstance){
         const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[effectiveEmployeeId]);
         if(!employee.rowCount)throw new AppError("EMPLOYEE_INACTIVE","لا يمكن تفعيل حساب مرتبط بموظف غير نشط؛ فعّل ملف الموظف أولًا",409);
       }
+      if(!before.rows[0].is_active)await assertCanReactivatePrivilegedUser(client,request.user!.userId,id);
     }
     if(parsed.data.isActive&&!before.rows[0].is_active)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
     await client.query("UPDATE users SET is_active=$1,updated_at=now() WHERE id=$2",[parsed.data.isActive,id]);
