@@ -324,6 +324,33 @@ export async function payrollRoutes(app: FastifyInstance) {
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
       const daysInMonth=monthEndDate.getUTCDate();
+      const unresolvedAttendance=await client.query(
+        `SELECT COUNT(*)::int AS count
+           FROM attendance_punches p
+           JOIN payroll_items i ON i.employee_id=p.employee_id
+          WHERE i.period_id=$1
+            AND (p.punch_at AT TIME ZONE 'Africa/Cairo')::date BETWEEN $2::date AND $3::date
+            AND p.review_status NOT IN ('APPROVED','REJECTED')
+            AND NOT EXISTS (
+              SELECT 1 FROM attendance_day_overrides o
+               WHERE o.employee_id=p.employee_id
+                 AND o.attendance_date=(p.punch_at AT TIME ZONE 'Africa/Cairo')::date
+            )
+            AND (
+              p.review_status='PENDING' OR p.suspicious=TRUE
+              OR (p.status IN ('IN','OUT','OVERTIME_IN','OVERTIME_OUT') AND EXISTS (
+                SELECT 1 FROM attendance_punches other
+                 WHERE other.employee_id=p.employee_id
+                   AND other.status=p.status
+                   AND other.id<>p.id
+                   AND (other.punch_at AT TIME ZONE 'Africa/Cairo')::date=(p.punch_at AT TIME ZONE 'Africa/Cairo')::date
+                   AND other.review_status<>'REJECTED'
+              ))
+            )`,
+        [id,monthStart,monthEnd]
+      );
+      if(Number(unresolvedAttendance.rows[0]?.count??0)>0)
+        throw new AppError("ATTENDANCE_REVIEW_REQUIRED","لا يمكن اعتماد مسير المرتبات قبل مراجعة البصمات المعلقة أو المتكررة لكل موظفي المسير، أو تسوية اليوم يدويًا.",409);
       const salaryItems = await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
