@@ -121,7 +121,7 @@ export function Sidebar({active}:{active:string}){
    <div className="brand">
     <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
-    <button type="button" className="sidebar-collapse-toggle" onClick={toggleSidebar} aria-label={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"} title={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"}>{sidebarPreferences.collapsed?"‹":"›"}</button>
+    {!isMobile&&<button type="button" className="sidebar-collapse-toggle" onClick={toggleSidebar} aria-label={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"} title={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"}>{sidebarPreferences.collapsed?"‹":"›"}</button>}
    </div>
    <div className="sidebar-user">
     <div className="sidebar-avatar">{(session?.fullName||session?.username||"م").trim().slice(0,1).toUpperCase()}</div>
@@ -132,8 +132,8 @@ export function Sidebar({active}:{active:string}){
     {visibleGroups.map(group=>{
      const expanded=isMobile?true:(sidebarPreferences.groups[group.label]??true);
      return <div className={"nav-group"+(!expanded?" nav-group-collapsed":"")} key={group.label}>
-      <button type="button" className="nav-title" onClick={()=>toggleGroup(group.label)} aria-expanded={expanded} title={group.label}>
-       <span>{group.label}</span><span className="nav-group-chevron">{expanded?"−":"+"}</span>
+      <button type="button" className="nav-title" onClick={()=>{if(!isMobile)toggleGroup(group.label)}} disabled={isMobile} aria-expanded={expanded} title={group.label}>
+       <span>{group.label}</span>{!isMobile&&<span className="nav-group-chevron">{expanded?"−":"+"}</span>}
       </button>
       {expanded&&<nav className="nav">{group.items.map(item=><Link className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href} prefetch title={item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</Link>)}</nav>}
      </div>
