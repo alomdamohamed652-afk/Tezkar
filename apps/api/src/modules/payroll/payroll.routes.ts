@@ -542,7 +542,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         [item.rows[0].employee_id,status==="PAID"?"تم صرف راتبك بالكامل":"تم تسجيل دفعة من راتبك",
           status==="PAID"?"تم تسجيل صرف مستحقات راتبك بالكامل.":"تم تسجيل دفعة راتب جديدة بمبلغ "+parsed.data.amount.toFixed(2)+" ج.م.",id]
       );
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{committedAdvanceRepayment,fromCustody,custodyEmployeeId,cashCustodyOutId:custodyOut?.rows[0]?.id??null,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"payment",module:"payroll",entityType:"payroll_payment",entityId:payment.rows[0].id,afterData:payment.rows[0],metadata:{settlementSource,committedAdvanceRepayment,fromCustody,custodyEmployeeId,cashCustodyOutId:custodyOut?.rows[0]?.id??null,cashCustodyInId:custodyIn?.rows[0]?.id??null},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return { payment:payment.rows[0], paidAmount:newPaid, remainingAmount:Math.max(0,Number(item.rows[0].net_amount)-newPaid), status, replayed:false };
     });
     const {replayed,...responseData}=result;
