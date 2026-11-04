@@ -84,14 +84,14 @@ export async function userRoutes(app: FastifyInstance){
   if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المستخدم غير صحيحة",422);
   const row=await withTransaction(async client=>{
    const role=await client.query(
-    `SELECT r.id,r.code,
+    `SELECT r.id,r.code,r.is_system,
             EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
                     WHERE rp.role_id=r.id AND p.code='rbac.manage') AS manages_rbac
        FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
     [parsed.data.roleCode]
    );
    if(!role.rowCount) throw new AppError("ROLE_NOT_FOUND","الدور غير موجود أو غير نشط",422);
-   if(["manager","admin","owner"].includes(String(role.rows[0].code).toLowerCase())||role.rows[0].manages_rbac)
+   if((role.rows[0].is_system&&String(role.rows[0].code).toLowerCase()!=="worker")||["manager","admin","owner"].includes(String(role.rows[0].code).toLowerCase())||role.rows[0].manages_rbac)
      await assertSystemPermissionAdmin(request.user!.userId);
    if(parsed.data.employeeId){const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);}
    try{
