@@ -160,6 +160,34 @@ export async function employeeRoutes(app: FastifyInstance) {
     return { data: updated };
   });
 
+  app.post("/api/employees/:id/reset-password",{preHandler:[authenticateRequest,requirePermission("users.edit")]},async(request)=>{
+    const id=(request.params as {id:string}).id;
+    const result=await withTransaction(async client=>{
+      const admin=await client.query(
+        `SELECT EXISTS(
+          SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+          WHERE ur.user_id=$1 AND r.code='manager' AND r.is_system=TRUE AND r.is_active=TRUE
+        ) AS allowed`,
+        [request.user!.userId]
+      );
+      if(!admin.rows[0]?.allowed)throw new AppError("RBAC_ADMIN_REQUIRED","إعادة تعيين كلمات المرور متاحة لمدير النظام فقط",403);
+      const employee=await client.query("SELECT id,code,full_name,is_active FROM employees WHERE id=$1 FOR UPDATE",[id]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+      if(!employee.rows[0].is_active)throw new AppError("EMPLOYEE_INACTIVE","لا يمكن إعادة تعيين كلمة مرور موظف غير نشط",409);
+      const user=await client.query("SELECT id,username,is_active,is_bootstrap FROM users WHERE employee_id=$1 FOR UPDATE",[id]);
+      if(!user.rowCount)throw new AppError("EMPLOYEE_ACCOUNT_NOT_FOUND","لا يوجد حساب دخول مرتبط بالموظف",409);
+      if(user.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","لا يمكن إعادة تعيين كلمة مرور حساب الإعداد الأساسي من هنا",409);
+      if(!user.rows[0].is_active)throw new AppError("USER_INACTIVE","حساب الموظف غير نشط؛ فعّل الحساب أولًا",409);
+      const temporaryPassword="Tz!"+crypto.randomBytes(15).toString("base64url");
+      await client.query("UPDATE users SET password_hash=$1,must_change_password=TRUE,updated_at=now() WHERE id=$2",[hashPassword(temporaryPassword),user.rows[0].id]);
+      await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[user.rows[0].id]);
+      await client.query("INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id) VALUES($1,'PASSWORD_RESET','تمت إعادة تعيين كلمة مرور حسابك','قام مدير النظام بإعادة تعيين كلمة المرور. استخدم كلمة المرور المؤقتة التي سلّمها لك المدير، ثم غيّرها من صفحة حسابي.','user',$2)",[user.rows[0].id,user.rows[0].id]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reset_password",module:"employees",entityType:"employee",entityId:id,metadata:{employeeCode:employee.rows[0].code,targetUsername:user.rows[0].username,sessionsRevoked:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {username:user.rows[0].username,temporaryPassword};
+    });
+    return {data:result};
+  });
+
   app.post("/api/employees/:id/activate",{preHandler:[authenticateRequest,requirePermission("employees.edit")]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const r=await withTransaction(async client=>{
