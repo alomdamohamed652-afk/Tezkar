@@ -31,7 +31,8 @@ const paymentSchema = z.object({
   reference: z.string().trim().max(200).nullable().optional(),
   notes: z.string().trim().max(1000).nullable().optional(),
   fromCustody: z.boolean().optional(),
-  custodyEmployeeId: z.string().uuid().nullable().optional()
+  custodyEmployeeId: z.string().uuid().nullable().optional(),
+  settlementSource: z.enum(["CURRENT_CUSTODY","PREVIOUS_CUSTODY"]).optional()
 });
 
 export async function payrollRoutes(app: FastifyInstance) {
@@ -422,7 +423,8 @@ export async function payrollRoutes(app: FastifyInstance) {
     const id = (request.params as {id:string}).id;
     const parsed = paymentSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات صرف الراتب غير صحيحة", 422);
-    const fromCustody=parsed.data.fromCustody ?? (parsed.data.paymentMethod==="CASH");
+    const settlementSource=parsed.data.settlementSource??"CURRENT_CUSTODY";
+    const fromCustody=settlementSource==="PREVIOUS_CUSTODY"?false:(parsed.data.fromCustody ?? (parsed.data.paymentMethod==="CASH"));
     const custodyEmployeeId=fromCustody ? (parsed.data.custodyEmployeeId ?? request.user!.employeeId) : null;
     if(fromCustody && parsed.data.paymentMethod!=="CASH")throw new AppError("CUSTODY_CASH_ONLY","لا يمكن تسجيل تحويل أو محفظة كحركة صرف من عهدة نقدية؛ اختر النقدي أو ألغِ ربط العهدة",422);
     const result = await withTransaction(async client => {
@@ -437,7 +439,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         reference:parsed.data.reference??null,
         notes:parsed.data.notes??null,
         fromCustody,
-        custodyEmployeeId
+        custodyEmployeeId,
+        settlementSource
       });
       const prior=await client.query(
         `SELECT pp.id,pp.payroll_item_id,pp.amount,pp.payment_date,pp.payment_method,pp.reference,pp.notes,pp.paid_by,pp.created_at,
@@ -508,7 +511,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         const requiredCustodyAmount=parsed.data.amount+committedAdvanceRepayment;
         if(requiredCustodyAmount>Number(custodyBalance.rows[0]?.balance??0)+0.0001)throw new AppError("INSUFFICIENT_CASH_CUSTODY_BALANCE","رصيد عهدة الموظف المختار لا يكفي لإجمالي الصرف والتسوية؛ لم يتم تسجيل أي حركة",409);
       }
-      if(parsed.data.paymentMethod==="CASH" && !fromCustody)throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة",422);
+      if(parsed.data.paymentMethod==="CASH" && !fromCustody && settlementSource!=="PREVIOUS_CUSTODY")throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة أو مسجلًا كتسوية من عهدة سابقة",422);
       const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,payroll_item_id,amount,payment_date,payment_method,reference,notes,paid_by,created_at",
         [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
       let custodyIn=null;
