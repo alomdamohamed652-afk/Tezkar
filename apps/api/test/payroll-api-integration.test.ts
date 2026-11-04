@@ -160,6 +160,22 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO user_sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day') RETURNING id",
         [passwordResetUser.rows[0].id,randomBytes(32).toString("hex")]
       );
+      const nonAdminUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,TRUE,FALSE,FALSE) RETURNING id,username",
+        ["password-reset-denied-"+randomBytes(5).toString("hex"),hashPassword(password)]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[nonAdminUser.rows[0].id]);
+      const nonAdminLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:nonAdminUser.rows[0].username,password}});
+      assert.equal(nonAdminLogin.statusCode,200,nonAdminLogin.body);
+      const nonAdminSetCookie=nonAdminLogin.headers["set-cookie"];
+      assert.ok(nonAdminSetCookie,"non-admin login must issue a session cookie");
+      const nonAdminCookie=(Array.isArray(nonAdminSetCookie)?nonAdminSetCookie[0]:nonAdminSetCookie).split(";")[0];
+      const deniedReset=await app.inject({
+        method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
+        headers:{cookie:nonAdminCookie}
+      });
+      assert.equal(deniedReset.statusCode,403,deniedReset.body);
+
       const resetEmployeeResponse=await app.inject({
         method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
         headers:{cookie:cookieHeader}
