@@ -424,6 +424,8 @@ export async function payrollRoutes(app: FastifyInstance) {
     const parsed = paymentSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "بيانات صرف الراتب غير صحيحة", 422);
     const settlementSource=parsed.data.settlementSource??"CURRENT_CUSTODY";
+    if(settlementSource==="PREVIOUS_CUSTODY"&&parsed.data.paymentMethod!=="CASH")
+      throw new AppError("PREVIOUS_CUSTODY_CASH_ONLY","التسوية من عهدة سابقة مخصصة للصرف النقدي فقط",422);
     const fromCustody=settlementSource==="PREVIOUS_CUSTODY"?false:(parsed.data.fromCustody ?? (parsed.data.paymentMethod==="CASH"));
     const custodyEmployeeId=fromCustody ? (parsed.data.custodyEmployeeId ?? request.user!.employeeId) : null;
     if(fromCustody && parsed.data.paymentMethod!=="CASH")throw new AppError("CUSTODY_CASH_ONLY","لا يمكن تسجيل تحويل أو محفظة كحركة صرف من عهدة نقدية؛ اختر النقدي أو ألغِ ربط العهدة",422);
