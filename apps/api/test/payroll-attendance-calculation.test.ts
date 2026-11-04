@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateAttendancePayroll } from "../src/modules/payroll/payroll-calculation.js";
+import { signAttendanceSnapshot, verifyAttendanceSnapshot } from "../src/modules/attendance/attendance-snapshot-signature.js";
 
 test("attendance payroll deducts absence and late/early time using scheduled monthly minutes", () => {
   const result = calculateAttendancePayroll({
@@ -108,4 +109,20 @@ test("manual attendance days never inherit or receive fingerprint overtime", () 
   });
   assert.equal(result.overtimeMinutes, 0);
   assert.equal(result.overtimeBonus, 0);
+});
+
+
+test("signed attendance snapshots reject edited and expired rows", () => {
+  const issuedAt = Date.now();
+  const signed = signAttendanceSnapshot({
+    date: "2026-11-04",
+    employeeId: "00000000-0000-4000-8000-000000000001",
+    status: "PRESENT",
+    workedMinutes: 480,
+    overtimeMinutes: 60
+  }, issuedAt);
+
+  assert.equal(verifyAttendanceSnapshot(signed, issuedAt), true);
+  assert.equal(verifyAttendanceSnapshot({ ...signed, workedMinutes: 1 }, issuedAt), false);
+  assert.equal(verifyAttendanceSnapshot(signed, issuedAt + 16 * 60 * 1000), false);
 });
