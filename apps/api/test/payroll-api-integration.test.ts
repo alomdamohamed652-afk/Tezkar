@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { usersRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { usersRoutes }, { accountRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -69,6 +69,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         import("../src/modules/accounting/accounting.routes.js"),
         import("../src/modules/employees/employees.routes.js"),
         import("../src/modules/users/users.routes.js"),
+        import("../src/modules/auth/account.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -88,6 +89,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(accountingRoutes);
     await app.register(employeeRoutes);
     await app.register(usersRoutes);
+    await app.register(accountRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -232,6 +234,25 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(blockedUntilPasswordChange.statusCode,403,blockedUntilPasswordChange.body);
       assert.equal(blockedUntilPasswordChange.json().error.code,"PASSWORD_CHANGE_REQUIRED",
         "a temporary password must not grant access to normal protected API routes");
+
+      const changedTemporaryPassword=await app.inject({
+        method:"POST",url:"/api/account/change-password",headers:{cookie:forcedChangeCookie},
+        payload:{currentPassword:resetEmployeeResponse.json().data.temporaryPassword,newPassword:"New-Password-2026!",confirmPassword:"New-Password-2026!"}
+      });
+      assert.equal(changedTemporaryPassword.statusCode,200,changedTemporaryPassword.body);
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[passwordResetUser.rows[0].id])).rows[0].must_change_password,false,
+        "changing the temporary password must clear the forced-change flag");
+      const newPasswordLogin=await app.inject({
+        method:"POST",url:"/api/auth/login",
+        payload:{username:resetEmployeeResponse.json().data.username,password:"New-Password-2026!"}
+      });
+      assert.equal(newPasswordLogin.statusCode,200,newPasswordLogin.body);
+      const newPasswordCookieHeader=newPasswordLogin.headers["set-cookie"];
+      assert.ok(newPasswordCookieHeader,"new password login must issue a fresh session");
+      const newPasswordCookie=(Array.isArray(newPasswordCookieHeader)?newPasswordCookieHeader[0]:newPasswordCookieHeader).split(";")[0];
+      const allowedAfterChange=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:newPasswordCookie}});
+      assert.equal(allowedAfterChange.statusCode,200,allowedAfterChange.body,
+        "the account must regain normal protected API access after changing the temporary password");
       const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
       assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
       assert.equal(resetNotification.rows[0].entity_type,"user");
