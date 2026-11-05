@@ -58,7 +58,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  const reconciliationHandler = async () => {
   // Read-only checks: findings are never repaired automatically and no balance is changed.
-  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch] = await Promise.all([
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.accounting_expense_id,e.amount AS expense_amount,e.category
@@ -196,7 +196,32 @@ export async function accountingRoutes(app:FastifyInstance){
             OR movements.holder_count<>1
             OR movements.holder_id IS DISTINCT FROM e.paid_from_employee_id::text
             OR ROUND(movements.movement_amount::numeric,2)<>ROUND(e.amount::numeric,2))
-     ORDER BY e.expense_date DESC,e.created_at DESC`)
+     ORDER BY e.expense_date DESC,e.created_at DESC`),
+   pool.query(`
+    SELECT ar.id AS repayment_id,ar.advance_id,a.code AS advance_code,
+           a.employee_id,emp.full_name AS employee_name,
+           ar.amount,ar.payment_date::text AS payment_date,
+           movements.movement_count AS custody_movement_count,
+           movements.movement_amount AS custody_amount,
+           movements.holder_count AS custody_holder_count,
+           movements.holder_id AS custody_holder_id
+      FROM advance_repayments ar
+      JOIN advance_requests a ON a.id=ar.advance_id
+      JOIN employees emp ON emp.id=a.employee_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS movement_count,
+               COALESCE(SUM(c.amount),0) AS movement_amount,
+               COUNT(DISTINCT c.employee_id)::int AS holder_count,
+               MIN(c.employee_id::text) AS holder_id
+          FROM cash_custody_transactions c
+         WHERE c.source_type='ADVANCE_REPAYMENT'
+           AND c.source_id=ar.id AND c.direction='IN'
+      ) movements ON TRUE
+     WHERE ar.source_payroll_item_id IS NULL
+       AND (movements.movement_count<>1
+            OR movements.holder_count<>1
+            OR ROUND(movements.movement_amount::numeric,2)<>ROUND(ar.amount::numeric,2))
+     ORDER BY ar.payment_date DESC,emp.full_name`)
   ]);
   return {
    checkedAt:new Date().toISOString(),
@@ -207,7 +232,8 @@ export async function accountingRoutes(app:FastifyInstance){
     payrollPaymentMismatches:paymentIntegrity.rows.length,
     advanceDeductionMismatches:advanceDeductionMismatch.rows.length,
     paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows.length,
-    expensesMissingCustodyLink:expenseCustodyMismatch.rows.length
+    expensesMissingCustodyLink:expenseCustodyMismatch.rows.length,
+    advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows.length
    },
    issues:{
     missingPayrollExpenses:missingExpenses.rows,
@@ -216,7 +242,8 @@ export async function accountingRoutes(app:FastifyInstance){
     payrollPaymentMismatches:paymentIntegrity.rows,
     advanceDeductionMismatches:advanceDeductionMismatch.rows,
     paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows,
-    expensesMissingCustodyLink:expenseCustodyMismatch.rows
+    expensesMissingCustodyLink:expenseCustodyMismatch.rows,
+    advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows
    }
   };
  };
