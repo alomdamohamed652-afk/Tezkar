@@ -44,11 +44,12 @@ export function calculatePayrollAttendance(input: {
   }
   const scheduledMinutes = policy.workDaysPerMonth * policy.dailyWorkMinutes;
   const minuteRate = (baseSalary + existingBonus) / scheduledMinutes;
-  let lateMinutes = 0, earlyMinutes = 0, unpaidPermissionMinutes = 0;
+  let lateMinutes = 0, earlyMinutes = 0, paidPermissionMinutes = 0, unpaidPermissionMinutes = 0;
   let absenceMinutes = 0, overtimeMinutes = 0, dayOffWorkedMinutes = 0;
   for (const day of days) {
     if (day.needsReview) throw new Error("ATTENDANCE_REVIEW_REQUIRED");
     const worked = minutes(day.workedMinutes);
+    paidPermissionMinutes += minutes(day.paidPermissionMinutes);
     if (day.isDayOff || day.status === "DAY_OFF" || day.status === "DAY_OFF_WITH_PUNCH") {
       dayOffWorkedMinutes += worked;
       continue;
@@ -71,7 +72,7 @@ export function calculatePayrollAttendance(input: {
   const dayOffBonus = money((dayOffWorkedMinutes / policy.dailyWorkMinutes) * policy.dayOffPayAmount);
   return {
     scheduledMinutes, minuteRate: Math.round((minuteRate + Number.EPSILON) * 10000) / 10000,
-    lateMinutes, earlyMinutes, unpaidPermissionMinutes, absenceMinutes,
+    lateMinutes, earlyMinutes, paidPermissionMinutes, unpaidPermissionMinutes, absenceMinutes,
     deductionMinutes, overtimeMinutes, dayOffWorkedMinutes,
     deductionAmount, overtimeBonus, dayOffBonus,
     totalBonus: money(overtimeBonus + dayOffBonus),
