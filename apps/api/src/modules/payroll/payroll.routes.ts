@@ -406,6 +406,14 @@ export async function payrollRoutes(app: FastifyInstance) {
         const rawPolicy=policyResult.rows[0]??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
         const rawEmployeeDays=snapshot.filter(row=>row.employeeId===item.employee_id) as unknown as PayrollAttendanceDay[];
         const activeProfiles=await client.query("SELECT effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=$1 AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[item.employee_id,monthEnd,monthStart]);
+        const salaryActiveDays=rawEmployeeDays.filter(day=>activeProfiles.rows.some(profile=>
+          day.date>=String(profile.effective_from).slice(0,10)&&(profile.effective_to===null||day.date<=String(profile.effective_to).slice(0,10))
+        )).length;
+        if(salaryActiveDays===0)throw new AppError("PAYROLL_SALARY_PROFILE_REQUIRED","لا توجد فترة راتب سارية لهذا الموظف داخل الشهر المحدد.",409);
+        // payroll_items.base_salary is prorated by calendar days across salary-profile versions.
+        // Prorate the denominator by the same active-day fraction so new hires and mid-month
+        // salary changes retain the correct per-minute rate.
+        const effectiveScheduledMinutes=Number(rawPolicy.work_days_per_month)*Number(rawPolicy.daily_work_minutes)*salaryActiveDays/daysInMonth;
         const employeeDays=rawEmployeeDays.map(day=>{
           const salaryActive=activeProfiles.rows.some(profile=>day.date>=String(profile.effective_from).slice(0,10)&&(profile.effective_to===null||day.date<=String(profile.effective_to).slice(0,10)));
           if(salaryActive)return day;
@@ -418,7 +426,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           calculation=calculatePayrollAttendance({
             baseSalary:Number(itemBefore.rows[0].base_salary),
             existingBonus:Number(itemBefore.rows[0].bonus_amount),
-            policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier)},
+            policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),scheduledMinutes:effectiveScheduledMinutes},
             days:employeeDays
           });
         } catch(error) {
@@ -430,7 +438,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر يوم الراحة لهذا الموظف.",409);
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
-        const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier)};
+        const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
         if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب',$2,$3,$4,'attendance:deduction')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
