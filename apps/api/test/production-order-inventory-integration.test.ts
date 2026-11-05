@@ -1299,9 +1299,19 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
     );
     assert.equal(Number(stockBeforeGuardTest.rows[0].quantity), 3);
+    const eligibleLotsBeforeGuardTest = await apiPool.query(
+      "SELECT id,remaining_quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND cost_confirmed=TRUE AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.ok(eligibleLotsBeforeGuardTest.rows.length>0,"the finished stock must have at least one confirmed inventory lot");
+    assert.ok(eligibleLotsBeforeGuardTest.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0)>=2,
+      "the initial confirmed lots must cover the scanned carton before the low-stock scenario");
     try {
+      // READY validates confirmed FIFO lots, not the aggregate stock_balances row.
+      // Make the actual eligible-lot quantity insufficient while preserving the
+      // original stock ledger for exact restoration below.
       await apiPool.query(
-        "UPDATE stock_balances SET quantity=1 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+        "UPDATE inventory_lots SET remaining_quantity=0 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND cost_confirmed=TRUE",
         [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
       );
       const rejectLowStock = await app.inject({
@@ -1310,12 +1320,18 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       });
       assert.equal(rejectLowStock.statusCode, 409, rejectLowStock.body);
       assert.equal(rejectLowStock.json().error.code, "DELIVERY_EXCEEDS_STOCK");
-    } finally {
-      await apiPool.query(
-        "UPDATE stock_balances SET quantity=$1,inventory_value=$2 WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5",
-        [stockBeforeGuardTest.rows[0].quantity, stockBeforeGuardTest.rows[0].inventory_value,
-          finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+      const stockAfterRejection = await apiPool.query(
+        "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+        [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
       );
+      assert.equal(Number(stockAfterRejection.rows[0].quantity),Number(stockBeforeGuardTest.rows[0].quantity),
+        "a rejected READY transition must not change aggregate stock quantity");
+      assert.equal(Number(stockAfterRejection.rows[0].inventory_value),Number(stockBeforeGuardTest.rows[0].inventory_value),
+        "a rejected READY transition must not change aggregate stock value");
+    } finally {
+      for(const lot of eligibleLotsBeforeGuardTest.rows){
+        await apiPool.query("UPDATE inventory_lots SET remaining_quantity=$1 WHERE id=$2",[lot.remaining_quantity,lot.id]);
+      }
     }
     const cancelLowStockDraft = await app.inject({
       method: "POST", url: "/api/delivery-permissions/" + lowStockDraftId + "/cancel-draft",
