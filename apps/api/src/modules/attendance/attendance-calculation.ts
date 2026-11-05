@@ -105,10 +105,10 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   // A repeated same-type event can make a missing checkout look like a long
   // continuous shift. Freeze the day's payable minutes until a reviewer approves
   // the extra punches or corrects their event types.
-  const unpairedPunchIds=[
-    ...findUnpairedPunchIds(usable,"IN","OUT"),
-    ...findUnpairedPunchIds(usable,"OVERTIME_IN","OVERTIME_OUT"),
-  ];
+  // Regular multi-shift punches retain the established reviewer workflow. Overtime
+  // is a separate optional interval, so an incomplete overtime pair must be explicitly
+  // resolved instead of silently disappearing from payroll.
+  const unpairedPunchIds=findUnpairedPunchIds(usable,"OVERTIME_IN","OVERTIME_OUT");
   const countedEvents = unresolvedRepeatedEvents.length || unpairedPunchIds.length ? [] : usable;
   const candidateIds = new Set([
     ...collapsed.duplicateIds,
