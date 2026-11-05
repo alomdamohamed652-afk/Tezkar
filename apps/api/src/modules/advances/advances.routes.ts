@@ -232,7 +232,7 @@ export async function advanceRoutes(app:FastifyInstance){
       const lockedEmployees=await lockAdvanceEmployees(client,[identity.rows[0].employee_id,request.user!.employeeId!]);
       if(!lockedEmployees.get(identity.rows[0].employee_id)?.is_active)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف المستفيد غير موجود أو غير نشط",409);
       if(!lockedEmployees.get(request.user!.employeeId!)?.is_active)throw new AppError("CUSTODY_EMPLOYEE_REQUIRED","ملف مستلم السداد غير نشط",409);
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",[p.data.idempotencyKey]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[p.data.idempotencyKey]);
       const advance=await client.query("SELECT a.*,e.full_name AS employee_name FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1 FOR UPDATE OF a",[id]);
       if(!advance.rowCount)throw new AppError("NOT_FOUND","السلفة غير موجودة",404);
       const existing=await client.query("SELECT * FROM advance_repayments WHERE idempotency_key=$1 FOR UPDATE",[p.data.idempotencyKey]);
