@@ -281,7 +281,7 @@ export async function attendanceRoutes(app:FastifyInstance){
     if(!override)continue;
     const firstIn=override.first_in?String(row.date)+"T"+String(override.first_in).slice(0,8):null;
     const lastOut=override.last_out?String(row.date)+"T"+String(override.last_out).slice(0,8):null;
-    report[index]={...row,firstIn,lastOut,firstInMinute:minutesOfTime(override.first_in),lastOutMinute:minutesOfTime(override.last_out),workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
+    const overrideStartMinute=minutesOfTime(override.first_in);let overrideEndMinute=minutesOfTime(override.last_out);if(overrideEndMinute!==null&&typeof row.scheduledEndMinute==="number"&&row.scheduledEndMinute>=1440&&overrideEndMinute<Number(row.scheduledStartMinute??0))overrideEndMinute+=1440;report[index]={...row,firstIn,lastOut,firstInMinute:overrideStartMinute,lastOutMinute:overrideEndMinute,workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
   }
   for(let index=0;index<report.length;index++){
     const row=report[index] as Record<string,unknown>;
