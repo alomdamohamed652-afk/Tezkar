@@ -1,5 +1,5 @@
 "use client";
-import {FormEvent,useEffect,useState} from "react";
+import {FormEvent,useEffect,useRef,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 import {formatMoney,formatQuantity} from "../../lib/format";
@@ -17,6 +17,7 @@ export default function AdvancesPage(){
  const {has,permissions}=usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[method,setMethod]=useState("CUSTOM"),[installment,setInstallment]=useState(""),[salaryPercentage,setSalaryPercentage]=useState(""),[percentage,setPercentage]=useState(""),[productionPeriodDays,setProductionPeriodDays]=useState("15"),[productionMinimumEarning,setProductionMinimumEarning]=useState(""),[productionInstallmentAmount,setProductionInstallmentAmount]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleNotes,setSettleNotes]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null),[myAccount,setMyAccount]=useState<MyAccount|null>(null);
+ const repaymentKeys=useRef(new Map<string,string>());
  async function load(){
   try{
    const suffix=employeeId?"?employeeId="+encodeURIComponent(employeeId):"";
@@ -66,7 +67,14 @@ export default function AdvancesPage(){
  async function repay(id:string,remaining:number){
   const raw=window.prompt("مبلغ السداد — المتبقي "+remaining);if(raw===null)return;
   const amountValue=Number(normalizeNumber(raw));if(!Number.isFinite(amountValue)||amountValue<=0){setError("مبلغ السداد غير صحيح");return}
-  try{await api("/api/advances/"+id+"/repayments",{method:"POST",body:JSON.stringify({amount:amountValue,repaymentType:"CUSTOM"})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل السداد")}
+  const fingerprint=id+":"+amountValue;
+  let idempotencyKey=repaymentKeys.current.get(fingerprint);
+  if(!idempotencyKey){idempotencyKey=crypto.randomUUID();repaymentKeys.current.set(fingerprint,idempotencyKey);}
+  try{
+   await api("/api/advances/"+id+"/repayments",{method:"POST",body:JSON.stringify({amount:amountValue,repaymentType:"CUSTOM",idempotencyKey})});
+   repaymentKeys.current.delete(fingerprint);
+   await load();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل السداد")}
  }
  async function settleProduction(e:FormEvent){
   e.preventDefault();setSettling(true);setError("");setSettlementResult(null);
