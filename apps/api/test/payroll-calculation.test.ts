@@ -80,3 +80,13 @@ test("minute-based attendance payroll refuses unresolved and missing-punch days"
     days: [{ date: "2026-11-02", status: "MISSING_PUNCH" }]
   }), /ATTENDANCE_MISSING_PUNCH/);
 });
+
+
+test("minute-based payroll requires a configured rest-day rate when a rest day was worked", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 0, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-06", status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 240 }]
+  }), /DAY_OFF_RATE_REQUIRED/);
+});
