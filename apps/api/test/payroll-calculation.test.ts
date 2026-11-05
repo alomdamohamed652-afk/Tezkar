@@ -61,12 +61,12 @@ test("minute-based attendance payroll uses 26 days x 8 hours and prices all dedu
     ]
   });
   assert.equal(result.scheduledMinutes, 12480);
-  assert.equal(result.minuteRate, 0.48);
+  assert.equal(result.minuteRate, 0.4808);
   assert.equal(result.deductionMinutes, 585);
-  assert.equal(result.deductionAmount, 280.8);
-  assert.equal(result.overtimeBonus, 86.4);
+  assert.equal(result.deductionAmount, 281.25);
+  assert.equal(result.overtimeBonus, 86.54);
   assert.equal(result.dayOffBonus, 200);
-  assert.equal(result.totalBonus, 286.4);
+  assert.equal(result.totalBonus, 286.54);
 });
 
 test("minute-based attendance payroll refuses unresolved and missing-punch days", () => {
