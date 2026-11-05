@@ -123,3 +123,38 @@ test("minute-based payroll requires a schedule for every attendance day", () => 
     days: [{ date: "2026-11-09", status: "NO_SCHEDULE", workedMinutes: 0 }]
   }), /ATTENDANCE_SCHEDULE_REQUIRED/);
 });
+
+
+test("minute rate denominator is prorated for a salary active during half the month", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 3000,
+    existingBonus: 0,
+    policy: {
+      workDaysPerMonth: 26,
+      dailyWorkMinutes: 480,
+      dayOffPayAmount: 0,
+      overtimeMultiplier: 1.5,
+      scheduledMinutes: 26 * 480 / 2
+    },
+    days: [{ date: "2026-11-20", status: "PRESENT", lateMinutes: 30 }]
+  });
+  assert.equal(result.scheduledMinutes, 6240);
+  assert.equal(result.minuteRate, 0.4808);
+  assert.equal(result.deductionMinutes, 30);
+  assert.equal(result.deductionAmount, 14.42);
+});
+
+test("minute rate rejects a zero effective scheduled-minute denominator", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 3000,
+    existingBonus: 0,
+    policy: {
+      workDaysPerMonth: 26,
+      dailyWorkMinutes: 480,
+      dayOffPayAmount: 0,
+      overtimeMultiplier: 1.5,
+      scheduledMinutes: 0
+    },
+    days: []
+  }), /Invalid scheduled payroll minutes/);
+});
