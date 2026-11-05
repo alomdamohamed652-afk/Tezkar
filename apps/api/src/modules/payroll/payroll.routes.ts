@@ -423,7 +423,15 @@ export async function payrollRoutes(app: FastifyInstance) {
           COALESCE(overtime_multiplier,1.5)::numeric AS overtime_multiplier
           FROM employee_payroll_attendance_policies WHERE employee_id=$1`,[item.employee_id]);
         const rawPolicy=policyResult.rows[0]??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
-        const employeeDays=snapshot.filter(row=>row.employeeId===item.employee_id) as unknown as PayrollAttendanceDay[];
+        const rawEmployeeDays=snapshot.filter(row=>row.employeeId===item.employee_id) as unknown as PayrollAttendanceDay[];
+        const activeProfiles=await client.query("SELECT effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=$1 AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[item.employee_id,monthEnd,monthStart]);
+        const employeeDays=rawEmployeeDays.map(day=>{
+          const salaryActive=activeProfiles.rows.some(profile=>day.date>=String(profile.effective_from).slice(0,10)&&(profile.effective_to===null||day.date<=String(profile.effective_to).slice(0,10)));
+          if(salaryActive)return day;
+          if(day.status==="NO_SCHEDULE_WITH_PUNCH"||day.status==="MISSING_PUNCH"||day.needsReview||Number(day.workedMinutes??0)>0)
+            throw new AppError("PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE","يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
+          return {...day,status:"NOT_STARTED",needsReview:false,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,isDayOff:false};
+        });
         let calculation;
         try {
           calculation=calculatePayrollAttendance({
@@ -437,6 +445,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           if(code==="ATTENDANCE_REVIEW_REQUIRED")throw new AppError(code,"لا يمكن احتساب المرتب قبل مراجعة أيام الحضور التي عليها ملاحظات.",409);
           if(code==="ATTENDANCE_MISSING_PUNCH")throw new AppError(code,"يوجد يوم ببصمة ناقصة؛ صحح البصمة أو سوِّ اليوم يدويًا قبل اعتماد المسير.",409);
           if(code==="ATTENDANCE_SCHEDULE_REQUIRED")throw new AppError(code,"يوجد يوم في الشهر بلا جدول وردية مضبوط؛ حدّد أيام العمل والراحة لكل موظف قبل اعتماد المسير.",409);
+          if(code==="PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE")throw new AppError(code,"يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
           if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر يوم الراحة لهذا الموظف.",409);
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
