@@ -146,7 +146,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    let status:string|null=null,at:string|null=null,decision:string;
    if(d.decision==="KEEP_ORIGINAL"){decision="KEPT_ORIGINAL";}
    else if(d.decision==="APPLY_SUGGESTION"){
-    if(!d.suggestedStatus||d.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","نوع التصحيح المقترح غير صالح",422);
+    if(!["IN","OUT"].includes(old.status)||!d.suggestedStatus||d.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","نوع التصحيح المقترح غير صالح",422);
     status=d.suggestedStatus;decision="APPLIED";
    }else{
     status=d.correctedStatus??old.status;at=d.correctedPunchAt??null;
