@@ -54,3 +54,39 @@ test("next-day punches are not assigned to a same-day shift", () => {
     scheduledEndMinute: 23 * 60,
   }), false);
 });
+
+
+test("an unmatched overtime entry blocks payroll and remains visible for correction", () => {
+  const result = selectAttendanceDayEvents([
+    event("regular-in", "IN", 8),
+    event("regular-out", "OUT", 16),
+    event("overtime-in", "OVERTIME_IN", 17),
+  ]);
+  assert.equal(result.needsReview, true);
+  assert.deepEqual(result.unpairedPunchIds, ["overtime-in"]);
+  assert.deepEqual(result.reviewPunchIds, ["overtime-in"]);
+  assert.deepEqual(result.countedEvents, []);
+});
+
+test("complete regular and overtime pairs remain payable without a review flag", () => {
+  const result = selectAttendanceDayEvents([
+    event("regular-in", "IN", 8),
+    event("regular-out", "OUT", 16),
+    event("overtime-in", "OVERTIME_IN", 17),
+    event("overtime-out", "OVERTIME_OUT", 19),
+  ]);
+  assert.equal(result.needsReview, false);
+  assert.deepEqual(result.unpairedPunchIds, []);
+  assert.equal(result.countedEvents.length, 4);
+});
+
+test("an approved but unmatched punch remains a correction candidate", () => {
+  const approved = { ...event("approved-overtime-in", "OVERTIME_IN", 17), review_status: "APPROVED" };
+  const result = selectAttendanceDayEvents([
+    event("regular-in", "IN", 8),
+    event("regular-out", "OUT", 16),
+    approved,
+  ]);
+  assert.equal(result.needsReview, true);
+  assert.deepEqual(result.reviewPunchIds, ["approved-overtime-in"]);
+});
