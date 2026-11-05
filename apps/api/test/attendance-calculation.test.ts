@@ -199,6 +199,24 @@ test("worked hours include completed overtime pairs and ignore incomplete pairs"
 });
 
 
+test("overlapping regular and overtime intervals are not double-counted as worked time", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "IN", punch_at: "2026-10-15T06:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-15T15:00:00.000Z" },
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T14:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T16:00:00.000Z" },
+  ]), 600, "overlapping punches must count the 8:00-18:00 union once, not 11 hours");
+});
+
+test("overtime minutes sum separate completed intervals without counting breaks", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T16:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T17:00:00.000Z" },
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T19:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T20:30:00.000Z" },
+  ]), 150);
+});
+
 test("effective-dated weekly schedules switch exactly on their boundary dates", () => {
   const schedules: EffectiveAttendanceSchedule[] = [
     { employee_id: "employee-1", weekday: 4, effective_from: "1900-01-01", effective_to: "2026-10-21", starts_at: "08:00", ends_at: "16:00", is_day_off: false },
@@ -220,4 +238,54 @@ test("effective-dated schedule lookup does not leak across employees or weekdays
   assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-2", 4, "2026-10-22"), null);
   assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 5, "2026-10-22"), null);
   assert.equal(findEffectiveAttendanceSchedule(schedules, "employee-1", 4, "2026-10-15"), null);
+});
+
+test("unreviewed repeated clock-ins cannot inflate a continuous shift's payable hours", () => {
+  const unresolved = selectAttendanceDayEvents([
+    punch("first-in", "IN", 8 * 60),
+    punch("second-in", "IN", 16 * 60),
+    punch("last-out", "OUT", 20 * 60),
+  ]);
+  assert.equal(unresolved.needsReview, true);
+  assert.deepEqual(unresolved.countedEvents, []);
+  assert.equal(calculateWorkedMinutes(unresolved.countedEvents), 0);
+
+  const reviewed = selectAttendanceDayEvents([
+    punch("first-in", "IN", 8 * 60),
+    punch("second-in", "IN", 16 * 60, { review_status: "APPROVED" }),
+    punch("last-out", "OUT", 20 * 60),
+  ]);
+  assert.equal(reviewed.needsReview, false);
+  assert.equal(reviewed.countedEvents.length, 3);
+});
+
+test("pending and rejected punches remain auditable but never contribute to worked time", () => {
+  const pending = selectAttendanceDayEvents([
+    punch("pending-in", "IN", 8 * 60, { review_status: "PENDING", suspicious: true }),
+    punch("accepted-out", "OUT", 17 * 60),
+  ]);
+  assert.equal(pending.needsReview, true);
+  assert.deepEqual(pending.reviewPunchIds, ["pending-in"]);
+  assert.equal(pending.inPunch, null);
+  assert.equal(pending.outPunch?.id, "accepted-out");
+  assert.deepEqual(pending.countedEvents.map(event => event.id), ["accepted-out"]);
+  assert.equal(calculateWorkedMinutes(pending.countedEvents), 0);
+
+  const rejected = selectAttendanceDayEvents([
+    punch("accepted-in", "IN", 8 * 60),
+    punch("rejected-out", "OUT", 17 * 60, { review_status: "REJECTED" }),
+  ]);
+  assert.equal(rejected.outPunch, null);
+  assert.deepEqual(rejected.countedEvents.map(event => event.id), ["accepted-in"]);
+  assert.equal(calculateWorkedMinutes(rejected.countedEvents), 0);
+});
+
+test("approved suspicious punches become countable only after explicit review", () => {
+  const result = selectAttendanceDayEvents([
+    punch("approved-in", "IN", 8 * 60, { review_status: "APPROVED", suspicious: true }),
+    punch("approved-out", "OUT", 17 * 60, { review_status: "APPROVED", suspicious: true }),
+  ]);
+  assert.equal(result.needsReview, false);
+  assert.equal(result.countedEvents.length, 2);
+  assert.equal(calculateWorkedMinutes(result.countedEvents), 9 * 60);
 });

@@ -58,7 +58,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { userRoutes }, { accountRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
@@ -67,6 +67,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         import("../src/modules/operations-master/operations-master.routes.js"),
         import("../src/modules/advances/advances.routes.js"),
         import("../src/modules/accounting/accounting.routes.js"),
+        import("../src/modules/employees/employees.routes.js"),
+        import("../src/modules/users/users.routes.js"),
+        import("../src/modules/auth/account.routes.js"),
         import("../src/modules/auth/auth.service.js"),
         import("../src/modules/auth/auth.middleware.js"),
         import("../src/db/pool.js")
@@ -84,6 +87,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     await app.register(operationsMasterRoutes);
     await app.register(advanceRoutes);
     await app.register(accountingRoutes);
+    await app.register(employeeRoutes);
+    await app.register(userRoutes);
+    await app.register(accountRoutes);
 
     let invalidSessionHandlerExecuted = false;
     app.get("/test/auth-only", { preHandler: [authenticateRequest] }, async () => {
@@ -135,6 +141,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(secondSetCookie, "reviewer login must issue a session cookie");
       const secondCookieHeader = (Array.isArray(secondSetCookie) ? secondSetCookie[0] : secondSetCookie).split(";")[0];
 
+
+
+
       const login = await app.inject({
         method: "POST",
         url: "/api/auth/login",
@@ -144,6 +153,228 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const setCookie = login.headers["set-cookie"];
       assert.ok(setCookie, "login must issue a session cookie");
       const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
+
+      const passwordResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Password Reset Integration Employee') RETURNING id");
+      const passwordResetUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        ["password-reset-"+randomBytes(5).toString("hex"),hashPassword(password),passwordResetEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[passwordResetUser.rows[0].id]);
+      const oldSession=await apiPool.query(
+        "INSERT INTO user_sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day') RETURNING id",
+        [passwordResetUser.rows[0].id,randomBytes(32).toString("hex")]
+      );
+      const nonAdminUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,TRUE,FALSE,FALSE) RETURNING id,username",
+        ["password-reset-denied-"+randomBytes(5).toString("hex"),hashPassword(password)]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[nonAdminUser.rows[0].id]);
+      // Give this non-admin role the route permission so the request reaches the explicit system-manager guard.
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='users.edit' WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      const nonAdminLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:nonAdminUser.rows[0].username,password}});
+      assert.equal(nonAdminLogin.statusCode,200,nonAdminLogin.body);
+      const nonAdminSetCookie=nonAdminLogin.headers["set-cookie"];
+      assert.ok(nonAdminSetCookie,"non-admin login must issue a session cookie");
+      const nonAdminCookie=(Array.isArray(nonAdminSetCookie)?nonAdminSetCookie[0]:nonAdminSetCookie).split(";")[0];
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code IN ('users.create','employees.create','employees.edit') WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      const deniedEmployeeRoleChange=await app.inject({
+        method:"PATCH",url:`/api/employees/${passwordResetEmployee.rows[0].id}`,headers:{cookie:nonAdminCookie},
+        payload:{roleCode:"manager"}
+      });
+      assert.equal(deniedEmployeeRoleChange.statusCode,403,deniedEmployeeRoleChange.body);
+      assert.equal(deniedEmployeeRoleChange.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal((await apiPool.query(
+        "SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1",
+        [passwordResetUser.rows[0].id]
+      )).rows[0].code,"worker","employee editing must not bypass privileged role assignment protection");
+
+      const attemptedManagerUsername="privilege-escalation-"+randomBytes(5).toString("hex");
+      const deniedManagerCreation=await app.inject({
+        method:"POST",url:"/api/users",headers:{cookie:nonAdminCookie},
+        payload:{username:attemptedManagerUsername,password:"Test-Only-Password-2026!",roleCode:"manager"}
+      });
+      assert.equal(deniedManagerCreation.statusCode,403,deniedManagerCreation.body);
+      assert.equal(deniedManagerCreation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM users WHERE username=$1",[attemptedManagerUsername])).rows[0].count),0,
+        "non-admin account creators must not be able to assign the system manager role through the API");
+      const attemptedShiftLeaderUsername="privileged-role-escalation-"+randomBytes(5).toString("hex");
+      const deniedShiftLeaderCreation=await app.inject({
+        method:"POST",url:"/api/users",headers:{cookie:nonAdminCookie},
+        payload:{username:attemptedShiftLeaderUsername,password:"Test-Only-Password-2026!",roleCode:"shift_leader"}
+      });
+      assert.equal(deniedShiftLeaderCreation.statusCode,403,deniedShiftLeaderCreation.body);
+      assert.equal(deniedShiftLeaderCreation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM users WHERE username=$1",[attemptedShiftLeaderUsername])).rows[0].count),0,
+        "non-admin account creators must not assign privileged system operational roles either");
+      await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code='employees.create' WHERE r.code='worker' ON CONFLICT DO NOTHING");
+      const attemptedPrivilegedEmployeeName="Privilege escalation employee "+randomBytes(5).toString("hex");
+      const deniedPrivilegedEmployee=await app.inject({
+        method:"POST",url:"/api/employees",headers:{cookie:nonAdminCookie},
+        payload:{fullName:attemptedPrivilegedEmployeeName,roleCode:"manager"}
+      });
+      assert.equal(deniedPrivilegedEmployee.statusCode,403,deniedPrivilegedEmployee.body);
+      assert.equal(deniedPrivilegedEmployee.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employees WHERE full_name=$1",[attemptedPrivilegedEmployeeName])).rows[0].count),0,
+        "employee creation must not bypass privileged role assignment protection");
+
+      const deactivationEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Session Revocation On Employee Deactivation') RETURNING id");
+      const deactivationUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id,username",
+        ["deactivate-session-"+randomBytes(5).toString("hex"),hashPassword(password),deactivationEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[deactivationUser.rows[0].id]);
+      const deactivationLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:deactivationUser.rows[0].username,password}});
+      assert.equal(deactivationLogin.statusCode,200,deactivationLogin.body);
+      const deactivationSetCookie=deactivationLogin.headers["set-cookie"];
+      assert.ok(deactivationSetCookie,"employee login must issue a session cookie");
+      const deactivationCookie=(Array.isArray(deactivationSetCookie)?deactivationSetCookie[0]:deactivationSetCookie).split(";")[0];
+      const deactivationSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL",[deactivationUser.rows[0].id]);
+      assert.equal(deactivationSession.rowCount,1);
+      const employeeDeactivated=await app.inject({method:"DELETE",url:"/api/employees/"+deactivationEmployee.rows[0].id,headers:{cookie:cookieHeader}});
+      assert.equal(employeeDeactivated.statusCode,200,employeeDeactivated.body);
+      assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[deactivationSession.rows[0].id])).rows[0].revoked_at,
+        "deactivating an employee must revoke every existing login session");
+      // Simulate legacy inconsistent data from before session revocation existed.
+      await apiPool.query("UPDATE users SET is_active=TRUE WHERE id=$1",[deactivationUser.rows[0].id]);
+      await apiPool.query("UPDATE user_sessions SET revoked_at=NULL WHERE id=$1",[deactivationSession.rows[0].id]);
+      const legacyInactiveEmployeeLogin=await app.inject({
+        method:"POST",url:"/api/auth/login",payload:{username:deactivationUser.rows[0].username,password}
+      });
+      assert.equal(legacyInactiveEmployeeLogin.statusCode,401,
+        "an active login account must still be rejected when its linked employee is inactive");
+      const legacyInactiveEmployeeSession=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:deactivationCookie}});
+      assert.equal(legacyInactiveEmployeeSession.statusCode,401,
+        "legacy sessions must remain invalid while the linked employee is inactive");
+      await apiPool.query("UPDATE user_sessions SET revoked_at=now() WHERE id=$1",[deactivationSession.rows[0].id]);
+      await apiPool.query("UPDATE users SET is_active=FALSE WHERE id=$1",[deactivationUser.rows[0].id]);
+      const blockedAccountReactivation=await app.inject({
+        method:"PATCH",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader},payload:{isActive:true}
+      });
+      assert.equal(blockedAccountReactivation.statusCode,409,blockedAccountReactivation.body);
+      assert.equal(blockedAccountReactivation.json().error.code,"EMPLOYEE_INACTIVE",
+        "account management must not reactivate an account while its employee record is inactive");
+      const employeeReactivated=await app.inject({method:"POST",url:"/api/employees/"+deactivationEmployee.rows[0].id+"/activate",headers:{cookie:cookieHeader}});
+      assert.equal(employeeReactivated.statusCode,200,employeeReactivated.body);
+      const oldSessionAfterReactivation=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:deactivationCookie}});
+      assert.equal(oldSessionAfterReactivation.statusCode,401,oldSessionAfterReactivation.body,
+        "reactivating an employee must never restore a session revoked during deactivation");
+      const reactivatedLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:deactivationUser.rows[0].username,password}});
+      assert.equal(reactivatedLogin.statusCode,200,reactivatedLogin.body);
+      const reactivatedSetCookie=reactivatedLogin.headers["set-cookie"];
+      const reactivatedCookie=(Array.isArray(reactivatedSetCookie)?reactivatedSetCookie[0]:reactivatedSetCookie).split(";")[0];
+      const reactivatedSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[deactivationUser.rows[0].id]);
+      const accountDeactivated=await app.inject({method:"DELETE",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader}});
+      assert.equal(accountDeactivated.statusCode,200,accountDeactivated.body);
+      assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[reactivatedSession.rows[0].id])).rows[0].revoked_at,
+        "deactivating an account from account management must revoke all sessions");
+      const accountReactivated=await app.inject({method:"PATCH",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader},payload:{isActive:true}});
+      assert.equal(accountReactivated.statusCode,200,accountReactivated.body);
+      const oldAccountSession=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:reactivatedCookie}});
+      assert.equal(oldAccountSession.statusCode,401,oldAccountSession.body,
+        "reactivating an account must not revive its revoked sessions");
+
+      const privilegedInactiveEmployee=await apiPool.query("INSERT INTO employees(full_name,is_active) VALUES('Inactive Privileged Account Employee',TRUE) RETURNING id");
+      const privilegedInactiveUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,FALSE,FALSE,FALSE) RETURNING id",
+        ["inactive-privileged-"+randomBytes(5).toString("hex"),hashPassword(password),privilegedInactiveEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='manager'",[privilegedInactiveUser.rows[0].id]);
+      const deniedPrivilegedAccountActivation=await app.inject({
+        method:"PATCH",url:"/api/users/"+privilegedInactiveUser.rows[0].id,headers:{cookie:nonAdminCookie},payload:{isActive:true}
+      });
+      assert.equal(deniedPrivilegedAccountActivation.statusCode,403,deniedPrivilegedAccountActivation.body);
+      assert.equal(deniedPrivilegedAccountActivation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      const deniedPrivilegedEmployeeActivation=await app.inject({
+        method:"POST",url:"/api/employees/"+privilegedInactiveEmployee.rows[0].id+"/activate",headers:{cookie:nonAdminCookie}
+      });
+      assert.equal(deniedPrivilegedEmployeeActivation.statusCode,403,deniedPrivilegedEmployeeActivation.body);
+      assert.equal(deniedPrivilegedEmployeeActivation.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal((await apiPool.query("SELECT is_active FROM users WHERE id=$1",[privilegedInactiveUser.rows[0].id])).rows[0].is_active,false);
+      assert.equal((await apiPool.query("SELECT is_active FROM employees WHERE id=$1",[privilegedInactiveEmployee.rows[0].id])).rows[0].is_active,true);
+
+      const accountResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Account Settings Password Reset Employee') RETURNING id");
+      const accountResetUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+        ["account-password-reset-"+randomBytes(5).toString("hex"),hashPassword(password),accountResetEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[accountResetUser.rows[0].id]);
+      const accountOldSession=await apiPool.query(
+        "INSERT INTO user_sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day') RETURNING id",
+        [accountResetUser.rows[0].id,randomBytes(32).toString("hex")]
+      );
+      const deniedAccountReset=await app.inject({
+        method:"POST",url:"/api/users/"+accountResetUser.rows[0].id+"/reset-password",
+        headers:{cookie:nonAdminCookie}
+      });
+      assert.equal(deniedAccountReset.statusCode,403,deniedAccountReset.body);
+      assert.equal(deniedAccountReset.json().error.code,"RBAC_ADMIN_REQUIRED");
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[accountResetUser.rows[0].id])).rows[0].must_change_password,false);
+      const accountResetResponse=await app.inject({
+        method:"POST",url:"/api/users/"+accountResetUser.rows[0].id+"/reset-password",
+        headers:{cookie:cookieHeader}
+      });
+      assert.equal(accountResetResponse.statusCode,200,accountResetResponse.body);
+      assert.ok(accountResetResponse.json().data.temporaryPassword.length>=20);
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[accountResetUser.rows[0].id])).rows[0].must_change_password,true);
+      assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[accountOldSession.rows[0].id])).rows[0].revoked_at);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET'",[accountResetUser.rows[0].id])).rows[0].count,1);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM audit_log WHERE entity_type='user' AND entity_id=$1 AND action='reset_password'",[accountResetUser.rows[0].id])).rows[0].count,1);
+      const deniedReset=await app.inject({
+        method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
+        headers:{cookie:nonAdminCookie}
+      });
+      assert.equal(deniedReset.statusCode,403,deniedReset.body);
+      assert.equal(deniedReset.json().error.code,"RBAC_ADMIN_REQUIRED",deniedReset.body,
+        "a non-manager who has users.edit must still be blocked by the explicit system-manager check");
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[passwordResetUser.rows[0].id])).rows[0].must_change_password,false,
+        "denied password reset must not mutate the target account");
+
+      const resetEmployeeResponse=await app.inject({
+        method:"POST",url:`/api/employees/${passwordResetEmployee.rows[0].id}/reset-password`,
+        headers:{cookie:cookieHeader}
+      });
+      assert.equal(resetEmployeeResponse.statusCode,200,resetEmployeeResponse.body);
+      assert.equal(resetEmployeeResponse.json().data.username,(await apiPool.query("SELECT username FROM users WHERE id=$1",[passwordResetUser.rows[0].id])).rows[0].username);
+      assert.ok(resetEmployeeResponse.json().data.temporaryPassword.length>=20);
+      const resetUserState=await apiPool.query("SELECT must_change_password,password_hash FROM users WHERE id=$1",[passwordResetUser.rows[0].id]);
+      assert.equal(resetUserState.rows[0].must_change_password,true);
+      assert.notEqual(resetUserState.rows[0].password_hash,hashPassword(password));
+      assert.equal((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[oldSession.rows[0].id])).rows[0].revoked_at!==null,true);
+      const forcedChangeLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:resetEmployeeResponse.json().data.username,password:resetEmployeeResponse.json().data.temporaryPassword}});
+      assert.equal(forcedChangeLogin.statusCode,200,forcedChangeLogin.body);
+      const forcedChangeSetCookie=forcedChangeLogin.headers["set-cookie"];
+      assert.ok(forcedChangeSetCookie,"temporary-password login must create a session limited to password change");
+      const forcedChangeCookie=(Array.isArray(forcedChangeSetCookie)?forcedChangeSetCookie[0]:forcedChangeSetCookie).split(";")[0];
+      const blockedUntilPasswordChange=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:forcedChangeCookie}});
+      assert.equal(blockedUntilPasswordChange.statusCode,403,blockedUntilPasswordChange.body);
+      assert.equal(blockedUntilPasswordChange.json().error.code,"PASSWORD_CHANGE_REQUIRED",
+        "a temporary password must not grant access to normal protected API routes");
+
+      const changedTemporaryPassword=await app.inject({
+        method:"POST",url:"/api/account/change-password",headers:{cookie:forcedChangeCookie},
+        payload:{currentPassword:resetEmployeeResponse.json().data.temporaryPassword,newPassword:"New-Password-2026!",confirmPassword:"New-Password-2026!"}
+      });
+      assert.equal(changedTemporaryPassword.statusCode,200,changedTemporaryPassword.body);
+      assert.equal((await apiPool.query("SELECT must_change_password FROM users WHERE id=$1",[passwordResetUser.rows[0].id])).rows[0].must_change_password,false,
+        "changing the temporary password must clear the forced-change flag");
+      const newPasswordLogin=await app.inject({
+        method:"POST",url:"/api/auth/login",
+        payload:{username:resetEmployeeResponse.json().data.username,password:"New-Password-2026!"}
+      });
+      assert.equal(newPasswordLogin.statusCode,200,newPasswordLogin.body);
+      const newPasswordCookieHeader=newPasswordLogin.headers["set-cookie"];
+      assert.ok(newPasswordCookieHeader,"new password login must issue a fresh session");
+      const newPasswordCookie=(Array.isArray(newPasswordCookieHeader)?newPasswordCookieHeader[0]:newPasswordCookieHeader).split(";")[0];
+      const allowedAfterChange=await app.inject({method:"GET",url:"/test/auth-only",headers:{cookie:newPasswordCookie}});
+      assert.equal(allowedAfterChange.statusCode,200,allowedAfterChange.body,
+        "the account must regain normal protected API access after changing the temporary password");
+      invalidSessionHandlerExecuted=false;
+      const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
+      assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
+      assert.equal(resetNotification.rows[0].entity_type,"user");
+      assert.equal(resetNotification.rows[0].entity_id,passwordResetUser.rows[0].id);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM audit_log WHERE entity_type='employee' AND entity_id=$1 AND action='reset_password'",[passwordResetEmployee.rows[0].id])).rows[0].count,1,
+        "successful password reset must be audited");
 
       const unauthenticated = await app.inject({
         method: "POST", url: "/api/payroll/periods/00000000-0000-0000-0000-000000000000/approve"
@@ -250,6 +481,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         method: "POST", url: "/api/advances/" + salaryAdvanceId + "/approve", headers: { cookie: secondCookieHeader }
       });
       assert.equal(salaryAdvanceApproved.statusCode, 200, salaryAdvanceApproved.body);
+      const insufficientAdvancePay=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/pay",headers:{cookie:secondCookieHeader}
+      });
+      assert.equal(insufficientAdvancePay.statusCode,409,insufficientAdvancePay.body);
+      assert.equal(insufficientAdvancePay.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      assert.equal((await apiPool.query("SELECT status FROM advance_requests WHERE id=$1",[salaryAdvanceId])).rows[0].status,"APPROVED",
+        "insufficient custody must leave the approved advance unpaid");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ADVANCE_PAYOUT' AND source_id=$1",[salaryAdvanceId])).rows[0].count),0);
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening custody for advance payout',$2)",
+        [employeeB.rows[0].id,secondUserId]
+      );
       const salaryAdvancePaid = await app.inject({
         method: "POST", url: "/api/advances/" + salaryAdvanceId + "/pay", headers: { cookie: secondCookieHeader }
       });
@@ -265,16 +508,43 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(advanceCustodyOut.rowCount,1);
       assert.equal(advanceCustodyOut.rows[0].direction,"OUT");
       assert.equal(Number(advanceCustodyOut.rows[0].amount),250);
+      const repaymentKey=randomUUID();
+      const repaymentPayload={amount:50,repaymentType:"CUSTOM" as const,notes:"early repayment integration test",idempotencyKey:repaymentKey};
       const earlyRepayment=await app.inject({
         method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
-        payload:{amount:50,repaymentType:"CUSTOM",notes:"early repayment integration test"}
+        payload:repaymentPayload
       });
       assert.equal(earlyRepayment.statusCode,201,earlyRepayment.body);
       assert.equal(Number(earlyRepayment.json().data.remaining),200);
+      const replayedRepayment=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:repaymentPayload
+      });
+      assert.equal(replayedRepayment.statusCode,200,replayedRepayment.body);
+      assert.equal(replayedRepayment.json().data.repayment.id,earlyRepayment.json().data.repayment.id,
+        "retrying the same advance repayment must replay the original repayment");
+      const changedRepaymentPayload=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:{...repaymentPayload,amount:75}
+      });
+      assert.equal(changedRepaymentPayload.statusCode,409,changedRepaymentPayload.body);
+      assert.equal(changedRepaymentPayload.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const concurrentRepaymentKey=randomUUID();
+      const concurrentRepaymentPayload={amount:25,repaymentType:"CUSTOM" as const,notes:"concurrent repayment retry",idempotencyKey:concurrentRepaymentKey};
+      const concurrentRepayments=await Promise.all([1,2].map(()=>app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:concurrentRepaymentPayload
+      })));
+      assert.deepEqual(concurrentRepayments.map(x=>x.statusCode).sort(),[200,201]);
+      assert.equal(concurrentRepayments[0].json().data.repayment.id,concurrentRepayments[1].json().data.repayment.id);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE idempotency_key=$1",[concurrentRepaymentKey])).rows[0].count),1);
       const advanceCustodyIn=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[earlyRepayment.json().data.repayment.id]);
       assert.equal(advanceCustodyIn.rowCount,1);
       assert.equal(advanceCustodyIn.rows[0].direction,"IN");
       assert.equal(Number(advanceCustodyIn.rows[0].amount),50);
+      const concurrentRepayment=await apiPool.query("SELECT id FROM advance_repayments WHERE idempotency_key=$1",[concurrentRepaymentKey]);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_ledger WHERE advance_repayment_id=$1",[concurrentRepayment.rows[0].id])).rows[0].count),1);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[concurrentRepayment.rows[0].id])).rows[0].count),1);
 
       // A paid, still-open advance must not block another advance; payroll can repay both.
       const secondSalaryAdvanceCreated = await app.inject({
@@ -338,6 +608,45 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(adjustmentLines.rowCount,4);
 
+      // Exercise named adjustment CRUD through the HTTP API, not only fixture SQL.
+      const listedAdjustments = await app.inject({
+        method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments`, headers: { cookie: cookieHeader }
+      });
+      assert.equal(listedAdjustments.statusCode, 200, listedAdjustments.body);
+      assert.equal(listedAdjustments.json().data.length, 2);
+      const bonusLineId = adjustmentLines.rows[0].id;
+      const editBonus = await app.inject({
+        method: "PATCH", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${bonusLineId}`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "BONUS", description: "Edited test bonus", amount: 125, notes: "API edit test" }
+      });
+      assert.equal(editBonus.statusCode, 200, editBonus.body);
+      assert.equal(Number(editBonus.json().data.amount), 125);
+      const restoreBonus = await app.inject({
+        method: "PATCH", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${bonusLineId}`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "BONUS", description: "Test bonus", amount: 100 }
+      });
+      assert.equal(restoreBonus.statusCode, 200, restoreBonus.body);
+      const temporaryAdjustment = await app.inject({
+        method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "DEDUCTION", description: "Temporary API test deduction", amount: 10 }
+      });
+      assert.equal(temporaryAdjustment.statusCode, 201, temporaryAdjustment.body);
+      const deleteTemporaryAdjustment = await app.inject({
+        method: "DELETE",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader }
+      });
+      assert.equal(deleteTemporaryAdjustment.statusCode, 200, deleteTemporaryAdjustment.body);
+      assert.equal(deleteTemporaryAdjustment.json().data.deleted, true);
+      const afterAdjustmentCrud = await apiPool.query(
+        "SELECT bonus_amount,deduction_amount FROM payroll_items WHERE id=$1", [itemA.rows[0].id]
+      );
+      assert.equal(Number(afterAdjustmentCrud.rows[0].bonus_amount), 100);
+      assert.equal(Number(afterAdjustmentCrud.rows[0].deduction_amount), 100);
+
       const beforeApproval = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
         headers: { cookie: cookieHeader }, payload: { idempotencyKey: randomUUID(), amount: 100 }
@@ -366,6 +675,24 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
       assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
+      const missingAttendanceSnapshot=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers:{cookie:cookieHeader},payload:{}
+      });
+      assert.equal(missingAttendanceSnapshot.statusCode,422,missingAttendanceSnapshot.body);
+      assert.equal(missingAttendanceSnapshot.json().error.code,"ATTENDANCE_SNAPSHOT_REQUIRED");
+      const pendingPayrollPunch=await apiPool.query(
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE','2099-01-15T08:00:00Z','IN','FINGERPRINT',TRUE,'PENDING',$2) RETURNING id",
+        [employeeA.rows[0].id,randomBytes(32).toString("hex")]
+      );
+      const blockedByPendingAttendance=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/approve`,
+        headers:{cookie:cookieHeader},payload:{attendanceSnapshot}
+      });
+      assert.equal(blockedByPendingAttendance.statusCode,409,blockedByPendingAttendance.body);
+      assert.equal(blockedByPendingAttendance.json().error.code,"ATTENDANCE_REVIEW_REQUIRED");
+      await apiPool.query("UPDATE attendance_punches SET review_status='APPROVED',reviewed_by=$2,reviewed_at=now() WHERE id=$1",
+        [pendingPayrollPunch.rows[0].id,userId]);
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader },
@@ -471,9 +798,30 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "approving payroll must not repay an advance before the salary is paid");
       assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[salaryPercentageAdvance.rows[0].id])).rows[0].count,0);
 
+      const limitedCustodyHolder=await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Limited Payroll Custody Holder') RETURNING id"
+      );
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',999,'limited payroll custody test balance',$2)",
+        [limitedCustodyHolder.rows[0].id,userId]
+      );
+      const februaryPaymentPayload={idempotencyKey:randomUUID(),amount:600,paymentMethod:"CASH",fromCustody:true,custodyEmployeeId:limitedCustodyHolder.rows[0].id};
+      const insufficientPayrollCustody=await app.inject({
+        method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
+        headers:{cookie:cookieHeader},payload:februaryPaymentPayload
+      });
+      assert.equal(insufficientPayrollCustody.statusCode,409,insufficientPayrollCustody.body);
+      assert.equal(insufficientPayrollCustody.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE",
+        "cash payroll must reserve the cash payment plus the advance-repayment offset");
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM payroll_payments WHERE payroll_item_id=$1",[februaryItem.id])).rows[0].count,0,
+        "insufficient custody must roll back the payroll payment and advance repayments");
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1,'complete payroll custody test balance',$2)",
+        [limitedCustodyHolder.rows[0].id,userId]
+      );
       const februaryPayment=await app.inject({
         method:"POST",url:`/api/payroll/items/${februaryItem.id}/payments`,
-        headers:{cookie:cookieHeader},payload:{idempotencyKey:randomUUID(),amount:600,paymentMethod:"TEST"}
+        headers:{cookie:cookieHeader},payload:februaryPaymentPayload
       });
       assert.equal(februaryPayment.statusCode,201,februaryPayment.body);
       assert.equal(februaryPayment.json().data.status,"PAID");
@@ -551,7 +899,62 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT direction,SUM(amount) AS amount FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1 GROUP BY direction",
         [februaryPayment.json().data.payment.id]
       );
-      assert.equal(custodySummary.rowCount,0,"non-cash payroll payments must not create cash-custody movements");
+      assert.equal(custodySummary.rowCount,2,"cash payroll must record both the full custody outflow and the advance-repayment offset");
+      assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="OUT").amount),1000,
+        "custody outflow must include the 600 cash paid plus 400 advance repayment");
+      assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="IN").amount),400,
+        "advance repayment must be returned to the cash custody balance");
+      const februaryEmployeeB=februaryData.json().data.items.find((row:any)=>row.employee_id===employeeB.rows[0].id);
+      assert.ok(februaryEmployeeB,"second employee should have a February payroll item");
+      const previousCustodyPayment=await app.inject({
+        method:"POST",url:`/api/payroll/items/${februaryEmployeeB.id}/payments`,
+        headers:{cookie:cookieHeader},
+        payload:{idempotencyKey:randomUUID(),amount:Number(februaryEmployeeB.net_amount),paymentMethod:"CASH",settlementSource:"PREVIOUS_CUSTODY"}
+      });
+      assert.equal(previousCustodyPayment.statusCode,201,previousCustodyPayment.body,
+        "historical cash payout must be recordable without selecting or debiting a current custodian");
+      const previousCustodyMovements=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET') AND source_id=$1",
+        [previousCustodyPayment.json().data.payment.id]
+      );
+      assert.equal(previousCustodyMovements.rows[0].count,0,
+        "previous-custody payroll settlement must not debit a custody balance twice");
+
+      const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',100,'concurrent payroll custody opening',$2)",
+        [concurrentCustodyHolder.rows[0].id,userId]
+      );
+      const concurrentPeriod=await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-03-01','APPROVED',$1,$1,now()) RETURNING id",
+        [userId]
+      );
+      const concurrentEmployees=await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Concurrent Payroll Employee C'),('Concurrent Payroll Employee D') RETURNING id"
+      );
+      const concurrentItems=await Promise.all(concurrentEmployees.rows.map(employee=>
+        apiPool.query(
+          "INSERT INTO payroll_items(period_id,employee_id,base_salary,status) VALUES($1,$2,80,'UNPAID') RETURNING id",
+          [concurrentPeriod.rows[0].id,employee.id]
+        )
+      ));
+      const concurrentCustodyPayments=await Promise.all(concurrentItems.map(item=>app.inject({
+        method:"POST",url:`/api/payroll/items/${item.rows[0].id}/payments`,
+        headers:{cookie:cookieHeader},
+        payload:{idempotencyKey:randomUUID(),amount:80,paymentMethod:"CASH",fromCustody:true,custodyEmployeeId:concurrentCustodyHolder.rows[0].id}
+      })));
+      assert.equal(concurrentCustodyPayments.filter(response=>response.statusCode===201).length,1,
+        concurrentCustodyPayments.map(response=>`${response.statusCode}: ${response.body}`).join("\n"));
+      assert.equal(concurrentCustodyPayments.filter(response=>response.statusCode===409&&response.json().error.code==="INSUFFICIENT_CASH_CUSTODY_BALANCE").length,1,
+        "simultaneous payments must serialize against the same cash-custody holder balance");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [concurrentCustodyHolder.rows[0].id]
+      )).rows[0].balance),20,"concurrent payroll payments must not overdraw the shared custody balance");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int count FROM cash_custody_transactions WHERE employee_id=$1 AND source_type='PAYROLL_PAYMENT' AND direction='OUT'",
+        [concurrentCustodyHolder.rows[0].id]
+      )).rows[0].count),1,"only one concurrent payroll cash-out may be committed");
       const duplicateFebruaryApproval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${februaryData.json().data.period.id}/approve`,
         headers: { cookie: cookieHeader }

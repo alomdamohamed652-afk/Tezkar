@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculatePayrollDeduction } from "../src/modules/payroll/payroll-calculation.js";
+import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "../src/modules/payroll/payroll-calculation.js";
 
 test("fixed deduction rounds the payable amount to two decimal places", () => {
   const result = calculatePayrollDeduction({
@@ -38,4 +38,10 @@ test("percentage deduction rejects missing, zero, negative and over-100 values",
       percentage, fixedAmount: 0
     }), RangeError);
   }
+});
+
+
+test("salary expense reconciliation adds advance repayment back to take-home pay", () => {
+  assert.equal(calculatePayrollExpenseAmount(5700, 300), 6000);
+  assert.equal(calculatePayrollExpenseAmount(0, 6000), 6000);
 });

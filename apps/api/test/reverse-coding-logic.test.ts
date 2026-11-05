@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { classifyReverseCodeScan, splitReverseCodeQuantities } from "../src/modules/reverse-coding/reverse-coding.logic.js";
+import { reverseScanRequestSchema } from "../src/modules/reverse-coding/reverse-coding.schemas.js";
 
 test("splits a full batch evenly into package codes", () => {
   assert.deepEqual(splitReverseCodeQuantities(600, 50), Array(12).fill(50));
@@ -24,4 +25,12 @@ test("classifies known, unknown, voided and repeated request values", () => {
   assert.equal(classifyReverseCodeScan({duplicateInRequest:false,alreadyScannedInSession:false,codeStatus:null}), "UNKNOWN");
   assert.equal(classifyReverseCodeScan({duplicateInRequest:false,alreadyScannedInSession:false,codeStatus:"VOIDED"}), "VOIDED");
   assert.equal(classifyReverseCodeScan({duplicateInRequest:true,alreadyScannedInSession:false,codeStatus:"ACTIVE"}), "DUPLICATE");
+});
+
+test("reverse-code scan requires a valid session ID so duplicate protection cannot be bypassed", () => {
+  const sessionId="3f8d8c3e-0e2d-4d1a-9f1e-4e9b6d8a7c01";
+  assert.equal(reverseScanRequestSchema.safeParse({values:["RVC-26-00000001"],sessionId}).success,true);
+  assert.equal(reverseScanRequestSchema.safeParse({values:["RVC-26-00000001"]}).success,false);
+  assert.equal(reverseScanRequestSchema.safeParse({values:["RVC-26-00000001"],sessionId:null}).success,false);
+  assert.equal(reverseScanRequestSchema.safeParse({values:["RVC-26-00000001"],sessionId:"not-a-uuid"}).success,false);
 });

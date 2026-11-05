@@ -13,7 +13,15 @@ type Company={companyName?:string;address?:string|null;phone?:string|null;logoUr
 type LabelLayout={width:number;height:number;margin:number};
 type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;display_product_name?:string|null;order_code?:string;weight_min_kg?:string|null;weight_max_kg?:string|null})|null;carton?:any};
 type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
-const createScanSession=()=>typeof crypto!=="undefined"&&"randomUUID"in crypto?crypto.randomUUID():"session-"+Date.now()+"-"+Math.random().toString(36).slice(2);
+const createScanSession=()=>{
+ try{return crypto.randomUUID();}catch{}
+ const bytes=new Uint8Array(16);
+ try{crypto.getRandomValues(bytes);}
+ catch{for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256);}
+ bytes[6]=(bytes[6]&0x0f)|0x40;bytes[8]=(bytes[8]&0x3f)|0x80;
+ const hex=Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+ return hex.slice(0,8)+"-"+hex.slice(8,12)+"-"+hex.slice(12,16)+"-"+hex.slice(16,20)+"-"+hex.slice(20);
+};
 const resultLabels:Record<string,string>={FOUND:"كود معروف",UNKNOWN:"كود غير موجود",DUPLICATE:"تم مسحه قبل كده",VOIDED:"كود غير نشط"};
 const number=(v:number)=>new Intl.NumberFormat("en-US").format(v);
 type EmployeeSelectProps={employees:Item[];value:string;onChange:(id:string)=>void;placeholder:string;inputStyle:CSSProperties;disabled?:boolean};

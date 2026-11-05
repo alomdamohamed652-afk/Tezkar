@@ -62,7 +62,7 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
      LEFT JOIN employees e ON e.id = u.employee_id
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      LEFT JOIN roles r ON r.id = ur.role_id
-     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active = TRUE
+     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active = TRUE AND (u.employee_id IS NULL OR e.is_active=TRUE)
      GROUP BY u.id, u.employee_id, u.username, e.full_name, u.is_bootstrap, u.must_complete_setup, u.must_change_password`,
     [tokenHash]
   );

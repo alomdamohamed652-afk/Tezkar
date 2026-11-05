@@ -57,6 +57,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       { default: cookie },
       { authRoutes },
       { warehouseRoutes },
+      { receiptRoutes },
       { hashPassword },
       poolModule
     ] = await Promise.all([
@@ -64,6 +65,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       import("@fastify/cookie"),
       import("../src/modules/auth/auth.routes.js"),
       import("../src/modules/warehouse/warehouse.routes.js"),
+      import("../src/modules/warehouse/receipts.routes.js"),
       import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
@@ -77,6 +79,7 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     });
     await app.register(authRoutes);
     await app.register(warehouseRoutes);
+    await app.register(receiptRoutes);
 
     const employee = await apiPool.query(
       "INSERT INTO employees(full_name) VALUES ('Warehouse concurrency test') RETURNING id"
@@ -104,6 +107,20 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     const setCookie = login.headers["set-cookie"];
     assert.ok(setCookie, "login must issue a session cookie");
     const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
+
+    const shiftLeaderEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES ('Warehouse cost visibility shift leader') RETURNING id");
+    const shiftLeaderUsername="warehouse-shift-leader-"+randomBytes(5).toString("hex");
+    const shiftLeaderUser=await apiPool.query(
+      "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
+      [shiftLeaderUsername,hashPassword(password),shiftLeaderEmployee.rows[0].id]
+    );
+    await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='shift_leader'",[shiftLeaderUser.rows[0].id]);
+    await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r JOIN permissions p ON p.code IN ('warehouse.view','warehouse.dashboard') WHERE r.code='shift_leader' ON CONFLICT DO NOTHING");
+    const shiftLeaderLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:shiftLeaderUsername,password}});
+    assert.equal(shiftLeaderLogin.statusCode,200,shiftLeaderLogin.body);
+    const shiftLeaderSetCookie=shiftLeaderLogin.headers["set-cookie"];
+    assert.ok(shiftLeaderSetCookie,"shift leader login must issue a session cookie");
+    const shiftLeaderCookie=(Array.isArray(shiftLeaderSetCookie)?shiftLeaderSetCookie[0]:shiftLeaderSetCookie).split(";")[0];
     const unit = await apiPool.query("SELECT id FROM units WHERE code='PCS' LIMIT 1");
     assert.ok(unit.rowCount, "migrations should seed the PCS unit");
     const product = await apiPool.query(
@@ -120,6 +137,167 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
       "INSERT INTO warehouse_locations(warehouse_id,code,name) VALUES ($1,'B','Target') RETURNING id",
       [targetWarehouse.rows[0].id]
     );
+
+    const receipt=await apiPool.query("INSERT INTO warehouse_receipts(source,created_by) VALUES('Receipt cost visibility test',$1) RETURNING id",[user.rows[0].id]);
+    await apiPool.query(
+      "INSERT INTO warehouse_receipt_lines(receipt_id,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost) VALUES($1,$2,$3,$4,2,$5,17.5)",
+      [receipt.rows[0].id,product.rows[0].id,sourceWarehouse.rows[0].id,sourceLocation.rows[0].id,unit.rows[0].id]
+    );
+    const managerReceiptList=await app.inject({method:"GET",url:"/api/warehouse/receipts",headers:{cookie:cookieHeader}});
+    assert.equal(managerReceiptList.statusCode,200,managerReceiptList.body);
+    assert.equal(Number(managerReceiptList.json().data[0].total_cost),35,"manager should see receipt cost");
+    const shiftLeaderReceiptList=await app.inject({method:"GET",url:"/api/warehouse/receipts",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderReceiptList.statusCode,200,shiftLeaderReceiptList.body);
+    assert.equal(shiftLeaderReceiptList.json().data[0].total_cost,null,"shift leader must not receive receipt cost through the list API");
+    const shiftLeaderReceiptDetail=await app.inject({method:"GET",url:"/api/warehouse/receipts/"+receipt.rows[0].id,headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderReceiptDetail.statusCode,200,shiftLeaderReceiptDetail.body);
+    assert.equal(shiftLeaderReceiptDetail.json().data.lines[0].unit_cost,null,"shift leader must not receive receipt unit cost through the detail API");
+
+    const receiptCountBeforeDeniedCost=Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM warehouse_receipts")).rows[0].count);
+    const deniedReceiptCost=await app.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:shiftLeaderCookie},
+      payload:{source:"Shift leader must not set receipt costs",lines:[{productId:product.rows[0].id,warehouseId:sourceWarehouse.rows[0].id,locationId:sourceLocation.rows[0].id,quantity:1,unitCost:99}]}
+    });
+    assert.equal(deniedReceiptCost.statusCode,403,deniedReceiptCost.body);
+    assert.equal(deniedReceiptCost.json().error.code,"WAREHOUSE_COST_PERMISSION_REQUIRED");
+    assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM warehouse_receipts")).rows[0].count),receiptCountBeforeDeniedCost,
+      "a denied cost-bearing receipt must not create a receipt or stock movement");
+
+    const receiptRaceProduct=await apiPool.query(
+      "INSERT INTO products(name,product_type,unit_id,track_inventory,is_active) VALUES($1,'FINISHED_GOOD',$2,TRUE,TRUE) RETURNING id",
+      ["Concurrent receipt API "+randomBytes(4).toString("hex"),unit.rows[0].id]
+    );
+    const receiptRaceWarehouse=await apiPool.query("INSERT INTO warehouses(name) VALUES('Concurrent receipt API warehouse') RETURNING id");
+    const receiptRaceLocation=await apiPool.query(
+      "INSERT INTO warehouse_locations(warehouse_id,code,name) VALUES($1,'R','Receipt race') RETURNING id",
+      [receiptRaceWarehouse.rows[0].id]
+    );
+    const createReceipt=(quantity:number,unitCost:number)=>app!.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:cookieHeader},
+      payload:{source:"Concurrent first balance receipt",lines:[{
+        productId:receiptRaceProduct.rows[0].id,warehouseId:receiptRaceWarehouse.rows[0].id,
+        locationId:receiptRaceLocation.rows[0].id,quantity,unitCost
+      }]}
+    });
+    const concurrentReceiptCreates=await Promise.all([createReceipt(5,2),createReceipt(7,3)]);
+    assert.deepEqual(concurrentReceiptCreates.map(response=>response.statusCode),[201,201],
+      concurrentReceiptCreates.map(response=>`${response.statusCode}: ${response.body}`).join("\\n"));
+    const receiptRaceBalance=await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [receiptRaceProduct.rows[0].id,receiptRaceWarehouse.rows[0].id,receiptRaceLocation.rows[0].id]
+    );
+    assert.equal(receiptRaceBalance.rowCount,1,"concurrent receipt APIs must initialize one stock balance");
+    assert.equal(Number(receiptRaceBalance.rows[0].quantity),12);
+    assert.equal(Number(receiptRaceBalance.rows[0].inventory_value),31);
+    const shiftLeaderStock=await app.inject({method:"GET",url:"/api/warehouse/stock",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderStock.statusCode,200,shiftLeaderStock.body);
+    const shiftLeaderStockRow=shiftLeaderStock.json().data.find((row:{product_id:string;warehouse_id:string;location_id:string})=>
+      row.product_id===receiptRaceProduct.rows[0].id&&row.warehouse_id===receiptRaceWarehouse.rows[0].id&&row.location_id===receiptRaceLocation.rows[0].id);
+    assert.ok(shiftLeaderStockRow,"shift leader should retain stock quantity visibility");
+    assert.equal(Object.hasOwn(shiftLeaderStockRow,"avg_unit_cost"),false);
+    assert.equal(Object.hasOwn(shiftLeaderStockRow,"inventory_value"),false);
+    const shiftLeaderLots=await app.inject({method:"GET",url:"/api/warehouse/lots",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderLots.statusCode,200,shiftLeaderLots.body);
+    const shiftLeaderLot=shiftLeaderLots.json().data[0];
+    assert.ok(shiftLeaderLot,"shift leader should retain lot quantity visibility");
+    assert.ok(Object.hasOwn(shiftLeaderLot,"remaining_quantity"),"shift leader should retain remaining lot quantities");
+    assert.equal(Object.hasOwn(shiftLeaderLot,"unit_cost"),false);
+    const shiftLeaderMovements=await app.inject({method:"GET",url:"/api/warehouse/movements",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderMovements.statusCode,200,shiftLeaderMovements.body);
+    const shiftLeaderMovement=shiftLeaderMovements.json().data.find((row:{reference_type:string})=>
+      row.reference_type==="RECEIPT");
+    assert.ok(shiftLeaderMovement,"shift leader should retain warehouse movement visibility");
+    assert.equal(Object.hasOwn(shiftLeaderMovement,"unit_cost"),false);
+    assert.equal(Object.hasOwn(shiftLeaderMovement,"total_cost"),false);
+    const shiftLeaderDashboard=await app.inject({method:"GET",url:"/api/warehouse/dashboard",headers:{cookie:shiftLeaderCookie}});
+    assert.equal(shiftLeaderDashboard.statusCode,403,shiftLeaderDashboard.body);
+
+    const pendingProduct=await apiPool.query(
+      "INSERT INTO products(name,product_type,unit_id,track_inventory,is_active) VALUES($1,'FINISHED_GOOD',$2,TRUE,TRUE) RETURNING id",
+      ["Pending receipt cost "+randomBytes(4).toString("hex"),unit.rows[0].id]
+    );
+    const pendingWarehouse=await apiPool.query("INSERT INTO warehouses(name) VALUES('Pending cost warehouse') RETURNING id");
+    const pendingLocation=await apiPool.query(
+      "INSERT INTO warehouse_locations(warehouse_id,code,name) VALUES($1,'P','Pending cost') RETURNING id",
+      [pendingWarehouse.rows[0].id]
+    );
+    const pendingReceiptResponse=await app.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:shiftLeaderCookie},
+      payload:{source:"Shift leader quantity-only receipt",lines:[{
+        productId:pendingProduct.rows[0].id,warehouseId:pendingWarehouse.rows[0].id,
+        locationId:pendingLocation.rows[0].id,quantity:3
+      }]}
+    });
+    assert.equal(pendingReceiptResponse.statusCode,201,pendingReceiptResponse.body);
+    const pendingReceiptId=pendingReceiptResponse.json().data.id as string;
+    const pendingLine=await apiPool.query(
+      "SELECT id FROM warehouse_receipt_lines WHERE receipt_id=$1",
+      [pendingReceiptId]
+    );
+    const pendingLot=await apiPool.query(
+      "SELECT id,remaining_quantity,unit_cost,cost_confirmed,stock_movement_id FROM inventory_lots WHERE receipt_line_id=$1",
+      [pendingLine.rows[0].id]
+    );
+    assert.equal(pendingLot.rowCount,1,"quantity-only receipt must create a linked inventory lot");
+    assert.equal(pendingLot.rows[0].cost_confirmed,false,"quantity-only receipt must remain cost-pending");
+    assert.equal(Number(pendingLot.rows[0].unit_cost),0);
+    const pendingBalance=await apiPool.query(
+      "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(pendingBalance.rows[0].quantity),3);
+    assert.equal(Number(pendingBalance.rows[0].inventory_value),0);
+    const deniedCostConfirmation=await app.inject({
+      method:"PATCH",url:"/api/warehouse/lots/"+pendingLot.rows[0].id+"/cost",
+      headers:{cookie:shiftLeaderCookie},payload:{unitCost:12.5}
+    });
+    assert.equal(deniedCostConfirmation.statusCode,403,deniedCostConfirmation.body);
+    const deniedPendingLotWithdrawal=await app.inject({
+      method:"POST",url:"/api/warehouse/movements",headers:{cookie:cookieHeader},
+      payload:{movementType:"OUT",productId:pendingProduct.rows[0].id,warehouseId:pendingWarehouse.rows[0].id,
+        locationId:pendingLocation.rows[0].id,quantity:1,notes:"Must not consume unpriced stock"}
+    });
+    assert.equal(deniedPendingLotWithdrawal.statusCode,409,deniedPendingLotWithdrawal.body,
+      "FIFO withdrawal must reject inventory whose receipt cost is pending");
+    const pendingBalanceAfterDenied=await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(pendingBalanceAfterDenied.rows[0].quantity),3,"failed pending-cost withdrawal must roll back quantity");
+    const confirmedCost=await app.inject({
+      method:"PATCH",url:"/api/warehouse/lots/"+pendingLot.rows[0].id+"/cost",
+      headers:{cookie:cookieHeader},payload:{unitCost:12.5}
+    });
+    assert.equal(confirmedCost.statusCode,200,confirmedCost.body);
+    const confirmedLot=await apiPool.query(
+      "SELECT unit_cost,cost_confirmed FROM inventory_lots WHERE id=$1",[pendingLot.rows[0].id]
+    );
+    assert.equal(confirmedLot.rows[0].cost_confirmed,true);
+    assert.equal(Number(confirmedLot.rows[0].unit_cost),12.5);
+    const confirmedBalance=await apiPool.query(
+      "SELECT quantity,inventory_value,avg_unit_cost FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(confirmedBalance.rows[0].quantity),3);
+    assert.equal(Number(confirmedBalance.rows[0].inventory_value),37.5);
+    assert.equal(Number(confirmedBalance.rows[0].avg_unit_cost),12.5);
+    const confirmedMovement=await apiPool.query(
+      "SELECT unit_cost,total_cost FROM stock_movements WHERE id=$1",[pendingLot.rows[0].stock_movement_id]
+    );
+    assert.equal(Number(confirmedMovement.rows[0].unit_cost),12.5);
+    assert.equal(Number(confirmedMovement.rows[0].total_cost),37.5);
+    const allowedPricedWithdrawal=await app.inject({
+      method:"POST",url:"/api/warehouse/movements",headers:{cookie:cookieHeader},
+      payload:{movementType:"OUT",productId:pendingProduct.rows[0].id,warehouseId:pendingWarehouse.rows[0].id,
+        locationId:pendingLocation.rows[0].id,quantity:1,notes:"Consume after cost approval"}
+    });
+    assert.equal(allowedPricedWithdrawal.statusCode,201,allowedPricedWithdrawal.body);
+    const finalPendingBalance=await apiPool.query(
+      "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+      [pendingProduct.rows[0].id,pendingWarehouse.rows[0].id,pendingLocation.rows[0].id]
+    );
+    assert.equal(Number(finalPendingBalance.rows[0].quantity),2);
+    assert.equal(Number(finalPendingBalance.rows[0].inventory_value),25);
 
     const receive = (warehouseId: string, locationId: string, quantity: number, unitCost: number) =>
       app!.inject({

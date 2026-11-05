@@ -32,6 +32,20 @@ async function assertSystemPermissionAdmin(userId: string) {
  if(!result.rows[0]?.allowed)throw new AppError("RBAC_ADMIN_REQUIRED","إدارة الصلاحيات متاحة لمدير النظام فقط",403);
 }
 
+async function assertCanReactivatePrivilegedUser(client: import("pg").PoolClient, actorUserId: string, targetUserId: string) {
+ const roles=await client.query(
+  `SELECT r.code,r.is_system,
+          EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                  WHERE rp.role_id=r.id AND p.code IN ('rbac.manage','users.manage_roles')) AS manages_rbac
+     FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+    WHERE ur.user_id=$1`,
+  [targetUserId]
+ );
+ for(const role of roles.rows){
+  if(String(role.code).toLowerCase()!=="worker"||role.manages_rbac)await assertSystemPermissionAdmin(actorUserId);
+ }
+}
+
 export async function userRoutes(app: FastifyInstance){
  app.get("/api/users",{preHandler:[authenticateRequest,requirePermission("users.view")]},async()=>{
   const result=await pool.query("SELECT u.id,u.code,u.username,u.employee_id,e.code AS employee_code,COALESCE(u.full_name,e.full_name) AS full_name, u.is_active,u.is_bootstrap,u.must_complete_setup,u.last_login_at,COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}') AS role_codes FROM users u LEFT JOIN employees e ON e.id=u.employee_id LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles r ON r.id=ur.role_id GROUP BY u.id,e.code,e.full_name ORDER BY u.code");
@@ -83,8 +97,16 @@ export async function userRoutes(app: FastifyInstance){
   const parsed=createUserSchema.safeParse(request.body);
   if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المستخدم غير صحيحة",422);
   const row=await withTransaction(async client=>{
-   const role=await client.query("SELECT id FROM roles WHERE code=$1 AND is_active=TRUE",[parsed.data.roleCode]);
+   const role=await client.query(
+    `SELECT r.id,r.code,r.is_system,
+            EXISTS(SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+                    WHERE rp.role_id=r.id AND p.code IN ('rbac.manage','users.manage_roles')) AS manages_rbac
+       FROM roles r WHERE r.code=$1 AND r.is_active=TRUE`,
+    [parsed.data.roleCode]
+   );
    if(!role.rowCount) throw new AppError("ROLE_NOT_FOUND","الدور غير موجود أو غير نشط",422);
+   if(String(role.rows[0].code).toLowerCase()!=="worker"||role.rows[0].manages_rbac)
+     await assertSystemPermissionAdmin(request.user!.userId);
    if(parsed.data.employeeId){const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);}
    try{
     const user=await client.query("INSERT INTO users(username,password_hash,employee_id) VALUES($1,$2,$3) RETURNING id,code,username,employee_id,is_active,created_at",[parsed.data.username,hashPassword(parsed.data.password),parsed.data.employeeId??null]);
@@ -121,6 +143,7 @@ export async function userRoutes(app: FastifyInstance){
    if(!before.rowCount)throw new AppError("USER_NOT_FOUND","المستخدم غير موجود",404);
    if(before.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","حساب الإعداد الأولي لا يمكن تعطيله",409);
    const after=await client.query("UPDATE users SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING id,code,username,employee_id,is_active,is_bootstrap",[id]);
+   await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"iam",entityType:"user",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return after.rows[0];
   });
@@ -173,7 +196,19 @@ export async function userRoutes(app: FastifyInstance){
    if(before.rows[0].is_bootstrap)throw new AppError("BOOTSTRAP_LOCKED","حساب الإعداد الأولي لا يمكن إدارته من هنا",409);
    if(parsed.data.roleCode){await assertSystemPermissionAdmin(request.user!.userId);const role=await client.query("SELECT id,code FROM roles WHERE code=$1 AND is_active=TRUE",[parsed.data.roleCode]);if(!role.rowCount)throw new AppError("ROLE_NOT_FOUND","الدور غير موجود أو غير نشط",422);await client.query("DELETE FROM user_roles WHERE user_id=$1",[id]);await client.query("INSERT INTO user_roles(user_id,role_id) VALUES($1,$2)",[id,role.rows[0].id]);}
    if(parsed.data.employeeId!==undefined){if(parsed.data.employeeId){const emp=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[parsed.data.employeeId]);if(!emp.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",422);}await client.query("UPDATE users SET employee_id=$1,updated_at=now() WHERE id=$2",[parsed.data.employeeId,id]);}
-   if(parsed.data.isActive!==undefined)await client.query("UPDATE users SET is_active=$1,updated_at=now() WHERE id=$2",[parsed.data.isActive,id]);
+   if(parsed.data.isActive!==undefined){
+    if(parsed.data.isActive){
+      const effectiveEmployeeId=parsed.data.employeeId!==undefined?parsed.data.employeeId:before.rows[0].employee_id;
+      if(effectiveEmployeeId){
+        const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE",[effectiveEmployeeId]);
+        if(!employee.rowCount)throw new AppError("EMPLOYEE_INACTIVE","لا يمكن تفعيل حساب مرتبط بموظف غير نشط؛ فعّل ملف الموظف أولًا",409);
+      }
+      if(!before.rows[0].is_active)await assertCanReactivatePrivilegedUser(client,request.user!.userId,id);
+    }
+    if(parsed.data.isActive&&!before.rows[0].is_active)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
+    await client.query("UPDATE users SET is_active=$1,updated_at=now() WHERE id=$2",[parsed.data.isActive,id]);
+    if(!parsed.data.isActive)await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[id]);
+   }
    const after=await client.query("SELECT id,code,username,employee_id,is_active,is_bootstrap FROM users WHERE id=$1",[id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"iam",entityType:"user",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return after.rows[0];

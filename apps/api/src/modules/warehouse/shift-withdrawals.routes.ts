@@ -31,7 +31,7 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
   const lots=await client.query(`
     SELECT id,location_id,remaining_quantity,unit_cost
       FROM inventory_lots
-     WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0
+     WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0 AND cost_confirmed=TRUE
      ORDER BY created_at ASC,id ASC
      FOR UPDATE`,
     [input.productId,input.warehouseId]
@@ -152,6 +152,14 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
   const result=await withTransaction(async client=>{
    const withdrawalDate=p.data.withdrawalDate??new Date().toISOString().slice(0,10);
    await assertAccountingPeriodOpen(client,withdrawalDate);
+   // Use the same product-first lock order as warehouse receipts/movements.
+   // Lock all products in a deterministic order before locking FIFO lots or balances.
+   const productIds=[...new Set(p.data.lines.map(item=>item.productId))].sort();
+   const lockedProducts=await client.query(
+     "SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",
+     [productIds]
+   );
+   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
    const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[p.data.shiftId]);
    if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
 
@@ -195,7 +203,7 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
     // A stage withdrawal represents consumed inputs, not the stage output. Input
     // products must be allowed to differ from order_stages.output_product_id.
     const available=await client.query(
-      "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0",
+      "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0 AND cost_confirmed=TRUE",
       [item.productId,item.warehouseId]
     );
     if(Number(available.rows[0].quantity)<item.quantity)throw new AppError("INSUFFICIENT_STOCK","الكمية المطلوبة أكبر من رصيد الصنف في المخزن",409);

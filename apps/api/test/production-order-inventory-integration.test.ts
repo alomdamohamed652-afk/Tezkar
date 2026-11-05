@@ -583,15 +583,6 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(approvedScrapReplay.statusCode, 200, approvedScrapReplay.body);
     assert.equal(approvedScrapReplay.json().data.stock_movement_id, approvedScrap.json().data.stock_movement_id);
     assert.equal(approvedScrapReplay.json().data.source_stock_movement_id, approvedScrap.json().data.source_stock_movement_id);
-    const reverseScrappedProduction = await app.inject({
-      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
-      headers: { cookie: submitter.cookie },
-      payload: { password: "Test-only-password-2026!", reason: "Must not reverse scrap-linked stock" }
-    });
-    assert.equal(reverseScrappedProduction.statusCode, 409, reverseScrappedProduction.body);
-    assert.equal(reverseScrappedProduction.json().error.code, "PRODUCTION_HAS_SCRAP",
-      "reversal must not silently restore the gross quantity after scrap has been transferred");
-
     // Consume an intermediate-stage product as an input to the final stage.
     // This intentionally differs from the final stage's output product.
     const withdrawal = await app.inject({
@@ -603,6 +594,28 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       }
     });
     assert.equal(withdrawal.statusCode, 201, withdrawal.body);
+    // Scrap linked to an approved production entry can be reversed when its
+    // dedicated scrap stock and source output lots are still fully available.
+    const reverseScrappedProduction = await app.inject({
+      method: "POST", url: "/api/production/" + postApprovalEntryId + "/reverse",
+      headers: { cookie: submitter.cookie },
+      payload: { password: "Test-only-password-2026!", reason: "Integration: reverse approved production and its scrap" }
+    });
+    assert.equal(reverseScrappedProduction.statusCode, 200, reverseScrappedProduction.body);
+    assert.equal(reverseScrappedProduction.json().data.status, "CANCELLED");
+    const reversedScrapMovements=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
+      [postApprovalEntryId]
+    );
+    assert.equal(reversedScrapMovements.rows[0].count, 1,
+      "reversal must create a compensating OUT movement from the scrap warehouse");
+    const reversedSourceMovements=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM stock_movements WHERE reference_type='PRODUCTION_SCRAP_SOURCE_REVERSAL' AND reference_id IN (SELECT id FROM production_scrap_records WHERE production_entry_id=$1)",
+      [postApprovalEntryId]
+    );
+    assert.equal(reversedSourceMovements.rows[0].count, 1,
+      "reversal must restore source-product stock with a separate transfer-in movement");
+
     const withdrawalListPage = await app.inject({
       method: "GET", url: "/api/shift-withdrawals?limit=1&offset=0", headers: { cookie: submitter.cookie }
     });
@@ -1016,13 +1029,21 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(cartonAfterRelease.rows[0].status, "PARTIAL");
     assert.equal(cartonAfterRelease.rows[0].barcode, carton.barcode);
     const cartonMovement = await apiPool.query(
-      "SELECT movement_type,quantity,carton_code,reference_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
+      "SELECT id,movement_type,quantity,unit_cost,total_cost,carton_code,reference_id FROM stock_movements WHERE reference_type='DELIVERY' AND reference_id=$1",
       [cartonDeliveryId]
     );
     assert.equal(cartonMovement.rowCount, 1);
     assert.equal(cartonMovement.rows[0].movement_type, "OUT");
     assert.equal(Number(cartonMovement.rows[0].quantity), 2);
     assert.equal(cartonMovement.rows[0].carton_code, carton.barcode);
+    const cartonFifoAllocations=await apiPool.query(
+      "SELECT COALESCE(SUM(quantity),0) AS quantity,COALESCE(SUM(total_cost),0) AS total_cost,COUNT(*)::int AS lot_count FROM stock_movement_lots WHERE movement_id=$1",
+      [cartonMovement.rows[0].id]
+    );
+    assert.ok(cartonFifoAllocations.rows[0].lot_count>0,"carton delivery must consume and record FIFO inventory-lot allocations");
+    assert.equal(Number(cartonFifoAllocations.rows[0].quantity),2,"FIFO allocations must match the released carton quantity");
+    assert.equal(Number(cartonFifoAllocations.rows[0].total_cost),Number(cartonMovement.rows[0].total_cost),
+      "delivery movement cost must equal the sum of its FIFO lot allocations");
     const stockAfterCartonDelivery = await apiPool.query(
       "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
       [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
@@ -1278,9 +1299,19 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
     );
     assert.equal(Number(stockBeforeGuardTest.rows[0].quantity), 3);
+    const eligibleLotsBeforeGuardTest = await apiPool.query(
+      "SELECT id,remaining_quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND cost_confirmed=TRUE AND remaining_quantity>0 ORDER BY created_at,id FOR UPDATE",
+      [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+    );
+    assert.ok(eligibleLotsBeforeGuardTest.rows.length>0,"the finished stock must have at least one confirmed inventory lot");
+    assert.ok(eligibleLotsBeforeGuardTest.rows.reduce((sum,lot)=>sum+Number(lot.remaining_quantity),0)>=2,
+      "the initial confirmed lots must cover the scanned carton before the low-stock scenario");
     try {
+      // READY validates confirmed FIFO lots, not the aggregate stock_balances row.
+      // Make the actual eligible-lot quantity insufficient while preserving the
+      // original stock ledger for exact restoration below.
       await apiPool.query(
-        "UPDATE stock_balances SET quantity=1 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+        "UPDATE inventory_lots SET remaining_quantity=0 WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND cost_confirmed=TRUE",
         [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
       );
       const rejectLowStock = await app.inject({
@@ -1289,12 +1320,18 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       });
       assert.equal(rejectLowStock.statusCode, 409, rejectLowStock.body);
       assert.equal(rejectLowStock.json().error.code, "DELIVERY_EXCEEDS_STOCK");
-    } finally {
-      await apiPool.query(
-        "UPDATE stock_balances SET quantity=$1,inventory_value=$2 WHERE product_id=$3 AND warehouse_id=$4 AND location_id=$5",
-        [stockBeforeGuardTest.rows[0].quantity, stockBeforeGuardTest.rows[0].inventory_value,
-          finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
+      const stockAfterRejection = await apiPool.query(
+        "SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",
+        [finalStage.output_product_id, expectedFinished.id, finalSaved.rows[0].location_id]
       );
+      assert.equal(Number(stockAfterRejection.rows[0].quantity),Number(stockBeforeGuardTest.rows[0].quantity),
+        "a rejected READY transition must not change aggregate stock quantity");
+      assert.equal(Number(stockAfterRejection.rows[0].inventory_value),Number(stockBeforeGuardTest.rows[0].inventory_value),
+        "a rejected READY transition must not change aggregate stock value");
+    } finally {
+      for(const lot of eligibleLotsBeforeGuardTest.rows){
+        await apiPool.query("UPDATE inventory_lots SET remaining_quantity=$1 WHERE id=$2",[lot.remaining_quantity,lot.id]);
+      }
     }
     const cancelLowStockDraft = await app.inject({
       method: "POST", url: "/api/delivery-permissions/" + lowStockDraftId + "/cancel-draft",
@@ -1466,6 +1503,99 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     assert.equal(leaderOrderDetail.statusCode, 200, leaderOrderDetail.body);
     assert.equal(Object.hasOwn(leaderOrderDetail.json().data, "contract_value"), false,
       "shift leaders must not receive contract value from order detail API either");
+    assert.equal(Object.hasOwn(leaderOrderDetail.json().data.stages[0], "stage_rate"), false,
+      "shift leaders must not receive stage rates from nested order detail data");
+    const deniedLeaderOrderDashboard=await app.inject({
+      method:"GET",url:"/api/orders/"+orderValueTestId+"/dashboard",headers:{cookie:leader.cookie}
+    });
+    assert.equal(deniedLeaderOrderDashboard.statusCode,403,deniedLeaderOrderDashboard.body,
+      "shift leaders must not access the broader order dashboard");
+    const leaderOrderStages=await app.inject({
+      method:"GET",url:"/api/order-stages",headers:{cookie:leader.cookie}
+    });
+    assert.equal(leaderOrderStages.statusCode,200,leaderOrderStages.body);
+    const leaderStageRow=leaderOrderStages.json().data.find((x:{order_id:string})=>x.order_id===orderValueTestId);
+    assert.ok(leaderStageRow,"shift leaders must retain operational stage visibility");
+    assert.equal(Object.hasOwn(leaderStageRow,"stage_rate"),false,
+      "shift leaders must not receive stage rates from the order stages API");
+    const leaderPriceChanges=await app.inject({
+      method:"GET",url:"/api/orders/"+orderValueTestId+"/price-changes",headers:{cookie:leader.cookie}
+    });
+    assert.equal(leaderPriceChanges.statusCode,403,leaderPriceChanges.body,
+      "shift leaders must not receive historical or current order pricing changes");
+    for(const url of [
+      "/api/production/earnings/settlement-eligible",
+      "/api/production/earnings/order-summary",
+      "/api/production/earnings/settlements"
+    ]){
+      const deniedEarnings=await app.inject({method:"GET",url,headers:{cookie:leader.cookie}});
+      assert.equal(deniedEarnings.statusCode,403,deniedEarnings.body,
+        "shift leaders must not read financial production endpoint "+url);
+    }
+
+    const supervisor=await makeUser("order-dashboard-supervisor",true);
+    await apiPool.query("DELETE FROM user_roles WHERE user_id=$1",[supervisor.userId]);
+    await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supervisor'",[supervisor.userId]);
+    const supervisorLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:(await apiPool.query("SELECT username FROM users WHERE id=$1",[supervisor.userId])).rows[0].username,password:"Test-only-password-2026!"}});
+    assert.equal(supervisorLogin.statusCode,200,supervisorLogin.body);
+    const supervisorCookieValue=supervisorLogin.headers["set-cookie"];
+    assert.ok(supervisorCookieValue);
+    const supervisorCookie=(Array.isArray(supervisorCookieValue)?supervisorCookieValue[0]:supervisorCookieValue).split(";")[0];
+    const supervisorDashboard=await app.inject({method:"GET",url:"/api/orders/"+orderValueTestId+"/dashboard",headers:{cookie:supervisorCookie}});
+    assert.equal(supervisorDashboard.statusCode,200,supervisorDashboard.body);
+    assert.equal(Object.hasOwn(supervisorDashboard.json().data.order,"contract_value"),false,
+      "operational order dashboard must redact contract values from supervisors");
+    assert.equal(Object.hasOwn(supervisorDashboard.json().data.stages[0],"stage_rate"),false,
+      "operational order dashboard must redact stage rates from supervisors");
+    assert.equal(Object.hasOwn(supervisorDashboard.json().data.stages[0],"stage_expense_cost"),false,
+      "operational order dashboard must redact stage expenses from supervisors");
+    assert.equal(supervisorDashboard.json().data.totals,null,
+      "operational order dashboard must not return financial totals to supervisors");
+    const supervisorReconciliation=await app.inject({method:"GET",url:"/api/orders/"+orderValueTestId+"/reconciliation",headers:{cookie:supervisorCookie}});
+    assert.equal(supervisorReconciliation.statusCode,200,supervisorReconciliation.body,
+      "supervisors should retain operational order reconciliation access");
+    const deniedContractEdit=await app.inject({method:"PATCH",url:"/api/orders/"+orderValueTestId,headers:{cookie:supervisorCookie},payload:{contractValue:99999}});
+    assert.equal(deniedContractEdit.statusCode,403,deniedContractEdit.body);
+    const deniedContractCreate=await app.inject({method:"POST",url:"/api/orders",headers:{cookie:supervisorCookie},payload:{orderName:"Unauthorized contract value create",contractValue:99999,orderDate:"2099-01-09"}});
+    assert.equal(deniedContractCreate.statusCode,403,deniedContractCreate.body);
+    const deniedStagePriceOnOrderCreate=await app.inject({method:"POST",url:"/api/orders",headers:{cookie:supervisorCookie},payload:{orderName:"Unauthorized stage price create",orderDate:"2099-01-10",stages:[{stageName:"Unauthorized stage",sequenceNo:1,stageRate:9,stageRateMethod:"PER_PIECE"}]}});
+    assert.equal(deniedStagePriceOnOrderCreate.statusCode,403,deniedStagePriceOnOrderCreate.body);
+    const operationalOrderCreate=await app.inject({method:"POST",url:"/api/orders",headers:{cookie:supervisorCookie},payload:{orderName:"Operational order without pricing",orderDate:"2099-01-11",stages:[{stageName:"Operational stage without price",sequenceNo:1,outputProductName:"Operational final product without price",plannedQuantity:1,isFinalProduct:true}]}});
+    assert.equal(operationalOrderCreate.statusCode,201,operationalOrderCreate.body,
+      "operational roles can create an order without financial values or explicit stage arrays");
+    const deniedStagePriceCreate=await app.inject({method:"POST",url:"/api/orders/"+orderValueTestId+"/stages",headers:{cookie:supervisorCookie},payload:{stageName:"Unauthorized priced stage",sequenceNo:2,stageRate:9,stageRateMethod:"PER_PIECE"}});
+    assert.equal(deniedStagePriceCreate.statusCode,403,deniedStagePriceCreate.body);
+    const deniedStagePriceEdit=await app.inject({method:"PATCH",url:"/api/order-stages/"+supervisorDashboard.json().data.stages[0].id,headers:{cookie:supervisorCookie},payload:{stageRate:9}});
+    assert.equal(deniedStagePriceEdit.statusCode,403,deniedStagePriceEdit.body);
+    const deniedStagePriceChange=await app.inject({method:"POST",url:"/api/orders/"+orderValueTestId+"/price-changes",headers:{cookie:supervisorCookie},payload:{orderStageId:supervisorDashboard.json().data.stages[0].id,newRate:9,scope:"NEW_ONLY",reason:"Unauthorized financial change"}});
+    assert.equal(deniedStagePriceChange.statusCode,403,deniedStagePriceChange.body);
+
+    const managerDeliveryDraft=await app.inject({
+      method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:submitter.cookie},
+      payload:{orderId:orderValueTestId,destination:"Financial visibility draft",deliveryValue:9876}
+    });
+    assert.equal(managerDeliveryDraft.statusCode,201,managerDeliveryDraft.body);
+    const leaderDeliveryList=await app.inject({
+      method:"GET",url:"/api/delivery-permissions",headers:{cookie:leader.cookie}
+    });
+    assert.equal(leaderDeliveryList.statusCode,200,leaderDeliveryList.body);
+    const leaderDeliveryRow=leaderDeliveryList.json().data.find((x:{id:string})=>x.id===managerDeliveryDraft.json().data.id);
+    assert.ok(leaderDeliveryRow,"shift leaders may see operational delivery records");
+    assert.equal(Object.hasOwn(leaderDeliveryRow,"delivery_value"),false,
+      "shift leaders must not receive delivery financial values from the list API");
+    const deniedLeaderDeliveryDraft=await app.inject({
+      method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:leader.cookie},
+      payload:{orderId:orderValueTestId,destination:"Unauthorized value entry",deliveryValue:9876}
+    });
+    assert.equal(deniedLeaderDeliveryDraft.statusCode,403,deniedLeaderDeliveryDraft.body);
+    assert.equal(deniedLeaderDeliveryDraft.json().error.code,"FINANCIAL_PERMISSION_REQUIRED");
+    const deniedLeaderDirectDelivery=await app.inject({
+      method:"POST",url:"/api/delivery-permissions",headers:{cookie:leader.cookie},
+      payload:{orderId:orderValueTestId,destination:"Unauthorized direct value",deliveryValue:9876,
+        lines:[{productId:concurrentProductId,warehouseId:expectedFinished.id,locationId:finalSaved.rows[0].location_id,quantity:1}]}
+    });
+    assert.equal(deniedLeaderDirectDelivery.statusCode,403,deniedLeaderDirectDelivery.body);
+    assert.equal(deniedLeaderDirectDelivery.json().error.code,"FINANCIAL_PERMISSION_REQUIRED");
 
     // A pending production row can be cancelled only after password confirmation.
     const pendingOrder = await app.inject({
@@ -1693,6 +1823,29 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       "the full 580 EGP price reduction must be deducted from the worker's ledger balance");
     assert.ok(Number(negativeDueBalance.rows[0].remaining) < 0,
       "overpayment must remain as a negative worker due balance instead of blocking the price change");
+    const allocationsBeforeProductionReverse=await apiPool.query(
+      "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+      [paidWorkerPaymentId]
+    );
+    const reversePaidProduction=await app.inject({
+      method:"POST",url:"/api/production/"+priceProductionId+"/reverse",
+      headers:{cookie:submitter.cookie},
+      payload:{password:"Test-only-password-2026!",reason:"Integration: reset worker account after recorded payout"}
+    });
+    assert.equal(reversePaidProduction.statusCode,200,reversePaidProduction.body,
+      "an existing payment allocation must not block an audited production reversal");
+    assert.equal(reversePaidProduction.json().data.status,"CANCELLED");
+    const allocationsAfterProductionReverse=await apiPool.query(
+      "SELECT COUNT(*)::int AS count,COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocations WHERE worker_payment_id=$1",
+      [paidWorkerPaymentId]
+    );
+    assert.equal(Number(allocationsAfterProductionReverse.rows[0].count),Number(allocationsBeforeProductionReverse.rows[0].count),
+      "reversal must preserve the original payment allocation history");
+    assert.equal(Number(allocationsAfterProductionReverse.rows[0].amount),Number(allocationsBeforeProductionReverse.rows[0].amount));
+    const preservedPayment=await apiPool.query("SELECT gross_amount FROM worker_payments WHERE id=$1",[paidWorkerPaymentId]);
+    assert.equal(Number(preservedPayment.rows[0].gross_amount),500,
+      "reversal must not alter or recreate the original worker payment");
+
     const overpaidHistory = await app.inject({
       method: "GET", url: "/api/orders/" + priceOrderId + "/price-changes",
       headers: { cookie: submitter.cookie }

@@ -67,7 +67,13 @@ function collapseNearDuplicateEvents(events: readonly AttendancePunchEvent[]) {
 }
 
 export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent[]) {
-  const collapsed = collapseNearDuplicateEvents(ordered);
+  // Pending, rejected and suspicious-unreviewed punches remain in the raw
+  // attendance history, but cannot contribute to payable worked time.
+  const eligible = ordered.filter((event) =>
+    event.review_status === "APPROVED"
+    || (event.review_status === "AUTO_ACCEPTED" && !event.suspicious)
+  );
+  const collapsed = collapseNearDuplicateEvents(eligible);
   const usable = collapsed.accepted;
   const normalIns = usable.filter((p) => p.status === "IN");
   const normalOuts = usable.filter((p) => p.status === "OUT");
@@ -80,10 +86,15 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     ...overtimeIns.slice(1),
     ...overtimeOuts.slice(0, -1),
   ];
+  const unresolvedRepeatedEvents = extraSameType.filter((event) => event.review_status !== "APPROVED");
+  // A repeated same-type event can make a missing checkout look like a long
+  // continuous shift. Freeze the day's payable minutes until a reviewer approves
+  // the extra punches or corrects their event types.
+  const countedEvents = unresolvedRepeatedEvents.length ? [] : usable;
   const candidateIds = new Set([
     ...collapsed.duplicateIds,
     ...extraSameType.map((event) => event.id),
-    ...usable.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
+    ...ordered.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
   ]);
   // A second same-type punch is a review candidate, not automatically an error:
   // employees may legitimately have multiple shifts. Once a manager reviews it,
@@ -102,6 +113,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     outPunch: normalOuts.at(-1) ?? null,
     otIn: overtimeIns[0] ?? null,
     otOut: overtimeOuts.at(-1) ?? null,
+    countedEvents,
     duplicateIds: collapsed.duplicateIds,
     duplicatePunchCount: collapsed.duplicateIds.length,
     reviewPunchIds,
@@ -122,7 +134,7 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
  */
 export function calculateWorkedMinutes(events: readonly { status: string; punch_at: string }[]): number {
   const sorted = [...events].sort((a, b) => new Date(a.punch_at).getTime() - new Date(b.punch_at).getTime());
-  let total = 0;
+  const intervals: Array<{start:number;end:number}> = [];
   for (const [inStatus, outStatus] of [["IN", "OUT"], ["OVERTIME_IN", "OVERTIME_OUT"]] as const) {
     let openAt: number | null = null;
     for (const event of sorted) {
@@ -130,12 +142,23 @@ export function calculateWorkedMinutes(events: readonly { status: string; punch_
       if (event.status === inStatus) {
         if (openAt === null) openAt = at;
       } else if (event.status === outStatus && openAt !== null && at >= openAt) {
-        total += Math.floor((at - openAt) / 60000);
+        intervals.push({start:openAt,end:at});
         openAt = null;
       }
     }
   }
-  return total;
+
+  // Regular and overtime punches are separate event types, but overlapping
+  // intervals still represent the same real-world minutes. Merge them before
+  // summing so an overtime punch cannot inflate payable worked hours twice.
+  intervals.sort((a,b)=>a.start-b.start);
+  const merged: Array<{start:number;end:number}> = [];
+  for(const interval of intervals){
+    const previous=merged.at(-1);
+    if(previous&&interval.start<=previous.end)previous.end=Math.max(previous.end,interval.end);
+    else merged.push({...interval});
+  }
+  return merged.reduce((total,interval)=>total+Math.floor((interval.end-interval.start)/60000),0);
 }
 
 

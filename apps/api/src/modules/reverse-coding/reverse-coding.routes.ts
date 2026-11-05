@@ -7,6 +7,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { classifyReverseCodeScan } from "./reverse-coding.logic.js";
+import { reverseScanRequestSchema } from "./reverse-coding.schemas.js";
 
 const createSchema=z.object({packagingType:z.string().trim().min(2).max(100),productId:z.string().uuid(),displayProductName:z.string().trim().min(1).max(180).nullable().optional(),codeCount:z.number().int().positive().max(5000),piecesPerCode:z.number().int().positive().max(1000000),weightMinKg:z.number().nonnegative().max(100000).nullable().optional(),weightMaxKg:z.number().nonnegative().max(100000).nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).refine(v=>v.weightMinKg==null||v.weightMaxKg==null||v.weightMinKg<=v.weightMaxKg,{message:'الحد الأدنى للوزن يجب ألا يتجاوز الحد الأقصى'}).refine(v=>v.codeCount*v.piecesPerCode<=10000000,{message:'إجمالي القطع يتجاوز الحد المسموح'});
 async function audit(client:any,request:any,action:string,type:string,id:string|null,beforeData?:unknown,afterData?:unknown){
@@ -131,11 +132,12 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
  app.post("/api/reverse-coding/scan",{preHandler:[authenticateRequest,requirePermission("reverse_coding.scan")]},async request=>{
-  const p=z.object({values:z.array(z.string().trim().min(1).max(200)).min(1).max(200),sessionId:z.string().uuid().nullable().optional()}).safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المسح غير صحيحة",422);
+  const p=reverseScanRequestSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات المسح غير صحيحة",422);
   return withTransaction(async c=>{const seen=new Set<string>(),out=[];for(const value of p.data.values){const duplicate=seen.has(value);seen.add(value);
    const f=await c.query(`SELECT c.id,c.code,c.quantity,c.weight_grams,c.status,c.first_printed_at,c.created_at,g.id group_id,g.name,g.packaging_type,g.product_id,g.order_id,g.notes,g.display_product_name,g.weight_min_kg,g.weight_max_kg,p.name product_name,p.code product_code,o.code order_code,o.order_name
     FROM reverse_codes c JOIN reverse_code_groups g ON g.id=c.group_id LEFT JOIN products p ON p.id=g.product_id LEFT JOIN production_orders o ON o.id=g.order_id WHERE c.code=$1 LIMIT 1`,[value]),row=f.rows[0]??null;
-   const alreadyScanned=Boolean(!duplicate&&p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount);
+   if(!duplicate&&p.data.sessionId){await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[p.data.sessionId+":"+value]);}
+    const alreadyScanned=Boolean(!duplicate&&p.data.sessionId&&(await c.query("SELECT 1 FROM reverse_code_scan_logs WHERE session_id=$1 AND scanned_value=$2 LIMIT 1",[p.data.sessionId,value])).rowCount);
    const result=classifyReverseCodeScan({duplicateInRequest:duplicate,alreadyScannedInSession:alreadyScanned,codeStatus:row?.status??null});
    await c.query("INSERT INTO reverse_code_scan_logs(code_id,scanned_value,session_id,result,scanned_by) VALUES($1,$2,$3,$4,$5)",[row?.id??null,value,p.data.sessionId??null,result,request.user!.userId]);const carton=row?await c.query("SELECT * FROM reverse_code_carton_records WHERE code_id=$1",[row.id]):{rows:[]};out.push({value,result,code:row,carton:carton.rows[0]??null});}return {data:out};});
  });

@@ -94,11 +94,11 @@ export async function attendanceRoutes(app:FastifyInstance){
    for(const r of rows){
     if((await client.query("SELECT id FROM attendance_punches WHERE external_key=$1",[r.key])).rowCount){duplicates++;continue;}
     const mapping=await client.query("SELECT employee_id FROM attendance_employee_settings WHERE device_code=$1",[r.code]);const employeeId=mapping.rows[0]?.employee_id??null;
-    const near=await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString(),r.state]);
+    const near=await client.query("SELECT id FROM attendance_punches WHERE (device_code=$1 OR ($4::uuid IS NOT NULL AND employee_id=$4)) AND status=$3 AND review_status<>'REJECTED' AND punch_at BETWEEN $2::timestamptz-interval '2 minutes' AND $2::timestamptz+interval '2 minutes' ORDER BY abs(extract(epoch from(punch_at-$2::timestamptz))) LIMIT 1",[r.code,r.at.toISOString(),r.state,employeeId]);
     // A second same-type punch on the same Cairo calendar date is ambiguous even when hours apart
     // (for example IN at 15:00 and IN at 23:00 on a 15:00–23:00 shift). Preserve both and require review.
     const repeatedSameDay = ["IN","OUT","OVERTIME_IN","OVERTIME_OUT"].includes(r.state)
-      ? await client.query("SELECT id FROM attendance_punches WHERE device_code=$1 AND status=$3 AND (punch_at AT TIME ZONE 'Africa/Cairo')::date = ($2::timestamptz AT TIME ZONE 'Africa/Cairo')::date",[r.code,r.at.toISOString(),r.state])
+      ? await client.query("SELECT id FROM attendance_punches WHERE (device_code=$1 OR ($4::uuid IS NOT NULL AND employee_id=$4)) AND status=$3 AND review_status<>'REJECTED' AND (punch_at AT TIME ZONE 'Africa/Cairo')::date = ($2::timestamptz AT TIME ZONE 'Africa/Cairo')::date",[r.code,r.at.toISOString(),r.state,employeeId])
       : { rows: [], rowCount: 0 };
     if(repeatedSameDay.rowCount){
       await client.query("UPDATE attendance_punches SET suspicious=TRUE,review_status='PENDING' WHERE id = ANY($1::uuid[]) AND review_status <> 'REJECTED'",[repeatedSameDay.rows.map((row:{id:string})=>row.id)]);
@@ -200,11 +200,12 @@ export async function attendanceRoutes(app:FastifyInstance){
   return {ok:true};
  });
  app.get("/api/attendance/report",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
-  const q=request.query as {from?:string;to?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
+  const q=request.query as {from?:string;to?:string;includeInactive?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
   if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
   const first=new Date(dates.data.from+"T00:00:00Z"),last=new Date(dates.data.to+"T00:00:00Z");const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
   if(daysCount>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
-  const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE e.is_active=TRUE ORDER BY e.code`)).rows;
+  const includeInactive=q.includeInactive==="true";
+  const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE ($1::boolean=TRUE OR e.is_active=TRUE) ORDER BY e.code`,[includeInactive])).rows;
   const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$1::date) ORDER BY employee_id,weekday,effective_from",[dates.data.from,dates.data.to])).rows;
   const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
   // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
@@ -229,17 +230,16 @@ export async function attendanceRoutes(app:FastifyInstance){
     const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime()).map(p=>({...p,status:p.corrected_status??p.status}));
     const selectedEvents=selectAttendanceDayEvents(ordered);
     const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
-    const otIn=selectedEvents.otIn;const otOut=selectedEvents.otOut;
     let inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
     const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
     const expectedEnd=end===null?null:(overnight?end+1440:end);
     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
-    const workedMinutes=calculateWorkedMinutes(ordered.filter(p=>!selectedEvents.duplicateIds.includes(p.id)).map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
-    let overtimeMinutes=0;if(otIn&&otOut){let om=otOut.minute;if(overnight&&otOut.localDate===addDateKey(date,1))om+=1440;let im=otIn.minute;if(overnight&&otIn.localDate===addDateKey(date,1))im+=1440;overtimeMinutes=Math.max(0,om-im);}
+    const workedMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
+    const overtimeMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.filter(p=>p.status==="OVERTIME_IN"||p.status==="OVERTIME_OUT").map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
     const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0;
     let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
     const correctionHistory=assigned.filter(p=>p.correction_decision).map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,decision:p.correction_decision}));
-    report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,correctionHistory,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length});
+    report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,correctionHistory,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length,punchTimeline:assigned.map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,verifyMethod:p.verify_method,suspicious:p.suspicious,reviewStatus:p.review_status,correctionDecision:p.correction_decision??null,isNearDuplicate:selectedEvents.duplicateIds.includes(p.id)})).sort((a,b)=>new Date(a.punchAt).getTime()-new Date(b.punchAt).getTime())});
    }
   }
   const overrides=(await pool.query(`SELECT employee_id,attendance_date::text,status,first_in::text,last_out::text,worked_minutes,late_minutes,early_minutes,note,updated_at,updated_by FROM attendance_day_overrides WHERE attendance_date BETWEEN $1::date AND $2::date`,[dates.data.from,dates.data.to])).rows;

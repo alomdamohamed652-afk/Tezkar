@@ -1886,6 +1886,92 @@ export async function paymentsRoutes(app:FastifyInstance){
           await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
           amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
         }
+        // Final invariant: allocations from different payment records must never
+        // push a production entry above its approved earning. Prefer the canonical
+        // settlement allocation for a payment; otherwise prefer order allocations;
+        // use legacy direct allocations only when neither canonical source exists.
+        // This check runs inside the same transaction, so any conflict rolls back
+        // the payment, settlement, custody and expense writes together.
+        const overallocatedProduction = await client.query(`
+          SELECT p.code,
+                 COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned,
+                 COALESCE((
+                   SELECT SUM(c.amount) FROM (
+                     SELECT esa.production_entry_id,esa.amount
+                       FROM employee_earnings_settlement_allocations esa
+                       JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
+                      WHERE esa.production_entry_id=p.id
+                     UNION ALL
+                     SELECT owa.production_entry_id,owa.amount
+                       FROM worker_payment_order_allocations owa
+                      WHERE owa.production_entry_id=p.id
+                        AND NOT EXISTS (
+                          SELECT 1 FROM employee_earnings_settlements es
+                          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                          WHERE es.worker_payment_id=owa.worker_payment_id
+                        )
+                     UNION ALL
+                     SELECT wpa.production_entry_id,wpa.amount
+                       FROM worker_payment_allocations wpa
+                      WHERE wpa.production_entry_id=p.id
+                        AND NOT EXISTS (
+                          SELECT 1 FROM employee_earnings_settlements es
+                          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                          WHERE es.worker_payment_id=wpa.worker_payment_id
+                        )
+                        AND NOT EXISTS (
+                          SELECT 1 FROM worker_payment_order_allocations owa
+                          WHERE owa.worker_payment_id=wpa.worker_payment_id
+                        )
+                     UNION ALL
+                     SELECT hm.production_entry_id,hm.amount_snapshot
+                       FROM historical_production_settlement_marks hm
+                      WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'
+                   ) c
+                 ),0) AS paid
+            FROM production_entries p
+           WHERE p.id=ANY($1::uuid[])
+             AND COALESCE((
+               SELECT SUM(c.amount) FROM (
+                 SELECT esa.production_entry_id,esa.amount
+                   FROM employee_earnings_settlement_allocations esa
+                   JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
+                  WHERE esa.production_entry_id=p.id
+                 UNION ALL
+                 SELECT owa.production_entry_id,owa.amount
+                   FROM worker_payment_order_allocations owa
+                  WHERE owa.production_entry_id=p.id
+                    AND NOT EXISTS (
+                      SELECT 1 FROM employee_earnings_settlements es
+                      JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                      WHERE es.worker_payment_id=owa.worker_payment_id
+                    )
+                 UNION ALL
+                 SELECT wpa.production_entry_id,wpa.amount
+                   FROM worker_payment_allocations wpa
+                  WHERE wpa.production_entry_id=p.id
+                    AND NOT EXISTS (
+                      SELECT 1 FROM employee_earnings_settlements es
+                      JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                      WHERE es.worker_payment_id=wpa.worker_payment_id
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM worker_payment_order_allocations owa
+                      WHERE owa.worker_payment_id=wpa.worker_payment_id
+                    )
+                 UNION ALL
+                 SELECT hm.production_entry_id,hm.amount_snapshot
+                   FROM historical_production_settlement_marks hm
+                  WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'
+               ) c
+             ),0) > COALESCE(p.total_earning_amount,p.earning_amount,0)+0.009
+           LIMIT 1
+        `,[productionRows.rows.map((row:any)=>row.id)]);
+        if(overallocatedProduction.rowCount){
+          const conflict=overallocatedProduction.rows[0];
+          throw new AppError("PRODUCTION_ALREADY_SETTLED",
+            `تم إيقاف التسوية: سجل الإنتاج ${conflict.code} وصل إلى ${Number(conflict.paid).toFixed(2)} ج.م من أصل ${Number(conflict.earned).toFixed(2)} ج.م بعد جمع كل الدفعات؛ راجع توزيع الدفعات القديمة.`,409);
+        }
         if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0 && !parsed.data.allowOverpayment)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
         const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
         await client.query(

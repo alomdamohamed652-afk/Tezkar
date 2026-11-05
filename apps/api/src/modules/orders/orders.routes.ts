@@ -204,11 +204,11 @@ const machineProductionSchema = z.object({
   notes: z.string().trim().max(500).optional()
 });
 
-async function canViewOrderFinancials(userId: string): Promise<boolean> {
+export async function canViewOrderFinancials(userId: string): Promise<boolean> {
   const client = await pool.connect();
   try {
     return (await hasPermission(client, userId, "finance.profitability.view"))
-      || (await hasPermission(client, userId, "orders.dashboard"));
+      || (await hasPermission(client, userId, "worker_payments.pay"));
   } finally {
     client.release();
   }
@@ -240,13 +240,15 @@ export async function orderRoutes(app: FastifyInstance) {
     const params:unknown[]=[]; const where:string[]=["os.status <> 'CANCELLED'","o.status NOT IN ('COMPLETED','CANCELLED')"];
     if(q.data.orderId){params.push(q.data.orderId);where.push("os.order_id=$"+params.length);}
     const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id,os.production_type_id,os.is_final_product FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
-    return {data:r.rows};
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    const data=canViewFinancials?r.rows:r.rows.map(({stage_rate,stage_rate_method,stage_rate_unit_id,...safe})=>safe);
+    return {data};
   });
 
   app.get("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
     const id = (request.params as { id: string }).id;
     const order = await pool.query(
-      `SELECT o.*,
+      `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,o.contract_value,o.created_at,o.updated_at,
               COALESCE(json_agg(DISTINCT jsonb_build_object('id',ol.id,'product_id',ol.product_id,'product_name',p.name,'product_code',p.code,'quantity',ol.quantity,'unit_id',ol.unit_id,'unit_name',u.name,'notes',ol.notes)) FILTER (WHERE ol.id IS NOT NULL),'[]') AS lines,
               COALESCE((SELECT json_agg(jsonb_build_object('id',os.id,'stage_id',os.stage_id,'stage_name',s.name,'stage_code',s.code,'sequence_no',os.sequence_no,'status',os.status,'planned_quantity',os.planned_quantity,'completed_quantity',os.completed_quantity,'output_product_id',os.output_product_id,'output_product_name',op.name,'stage_rate',os.stage_rate,'stage_rate_method',os.stage_rate_method,'stage_rate_unit_id',os.stage_rate_unit_id,'production_type_id',os.production_type_id,'is_final_product',os.is_final_product,'notes',os.notes) ORDER BY os.sequence_no) FROM order_stages os JOIN stages s ON s.id=os.stage_id LEFT JOIN products op ON op.id=os.output_product_id WHERE os.order_id=o.id),'[]') AS stages
          FROM production_orders o
@@ -257,13 +259,20 @@ export async function orderRoutes(app: FastifyInstance) {
         GROUP BY o.id`, [id]);
     if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    if(!canViewFinancials){const {contract_value,...safeOrder}=order.rows[0];return {data:safeOrder};}
+    if(!canViewFinancials){
+      const {contract_value,...safeOrder}=order.rows[0];
+      safeOrder.stages=(safeOrder.stages??[]).map(({stage_rate,stage_rate_method,stage_rate_unit_id,...stage}:Record<string,unknown>)=>stage);
+      return {data:safeOrder};
+    }
     return { data: order.rows[0] };
   });
 
   app.post("/api/orders", { preHandler: [authenticateRequest, requirePermission("orders.create")] }, async (request, reply) => {
     const parsed = orderSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات الطلب غير صحيحة",422);
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    if(!canViewFinancials&&(Number(parsed.data.contractValue??0)>0||(parsed.data.stages??[]).some(stage=>stage.stageRate!==undefined&&stage.stageRate!==null||stage.stageRateMethod!==undefined&&stage.stageRateMethod!==null)))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","إدخال قيمة التعاقد وأسعار مراحل الإنتاج متاح للمخولين ماليًا فقط",403);
     const row = await withTransaction(async (client) => {
       const created = await client.query(
         `INSERT INTO production_orders(order_name,customer_name,order_date,delivery_start_date,due_date,last_delivery_date,notes,created_by,status,contract_value)
@@ -374,6 +383,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({orderName:z.string().trim().min(2).max(200).optional(),contractValue:z.number().nonnegative().refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"قيمة الطلبية بحد أقصى منزلتين عشريتين"}).optional(),status:z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),customerName:z.string().trim().max(200).nullable().optional(),deliveryStartDate:z.string().date().nullable().optional(),dueDate:z.string().date().nullable().optional(),lastDeliveryDate:z.string().date().nullable().optional(),notes:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل الطلب غير صحيحة",422);
+    if(parsed.data.contractValue!==undefined&&!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تعديل قيمة التعاقد متاح للمخولين ماليًا فقط",403);
     const p=parsed.data;
     const result=await withTransaction(async client=>{
       const current=await client.query("SELECT * FROM production_orders WHERE id=$1 FOR UPDATE",[id]);
@@ -455,6 +466,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const orderId=(request.params as {id:string}).id;
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive(),plannedQuantity:z.number().nonnegative().optional(),notes:z.string().trim().max(500).optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional().default(false)}).refine(x=>Boolean(x.stageId||x.stageName),{message:"اسم المرحلة أو معرف المرحلة مطلوب"}).refine(x=>!x.isFinalProduct||Boolean((x.outputProductId||x.outputProductName)&&x.plannedQuantity!=null&&x.plannedQuantity>0),{message:"المنتج النهائي وكمية المرحلة مطلوبان"}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات المرحلة غير صحيحة",422);
+    if((parsed.data.stageRate!==undefined||parsed.data.stageRateMethod!==undefined)&&!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تحديد سعر المرحلة وطريقة احتسابه متاح للمخولين ماليًا فقط",403);
     const r=await withTransaction(async client=>{
       const order=await client.query("SELECT id,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
@@ -502,6 +515,8 @@ export async function orderRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل المرحلة غير صحيحة",422);
+    if((parsed.data.stageRate!==undefined||parsed.data.stageRateMethod!==undefined)&&!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تعديل سعر المرحلة وطريقة احتسابه متاح للمخولين ماليًا فقط",403);
     const p=parsed.data;
     const r=await withTransaction(async client=>{
       const stageRef=await client.query("SELECT order_id FROM order_stages WHERE id=$1",[id]);
@@ -544,6 +559,8 @@ export async function orderRoutes(app: FastifyInstance) {
       reason:z.string().trim().min(2).max(500)
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تغيير سعر الطلبية غير صحيحة",422);
+    if(!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تغيير أسعار المراحل وإعادة احتساب المستحقات متاح للمخولين ماليًا فقط",403);
     const result=await withTransaction(async client=>{
       const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -624,6 +641,8 @@ export async function orderRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/orders/:id/price-changes", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
+    if(!await canViewOrderFinancials(request.user!.userId))
+      throw new AppError("FORBIDDEN","عرض تغييرات أسعار الطلبات متاح للمخولين ماليًا فقط",403);
     const orderId=(request.params as {id:string}).id;
     const result=await pool.query(
       `SELECT pc.id,pc.code,pc.order_stage_id,pc.previous_rate,pc.new_rate,pc.new_rate_method,pc.scope,pc.reason,pc.affected_entries,pc.total_delta,pc.created_at,
@@ -666,7 +685,16 @@ export async function orderRoutes(app: FastifyInstance) {
       paid_amount:paidMap.get(x.id)??0,
       remaining_amount:Math.max(0,Number(x.total_earning_amount??x.earning_amount)+Number(x.price_adjustment_amount??0)-Number(paidMap.get(x.id)??0))
     }));
-    return {data:{order:order.rows[0],finalProduct:orderLines.rows.length===1?orderLines.rows[0]:null,finalProducts:orderLines.rows,stages:stages.rows,production:productionWithPayments,machineProduction:machineProduction.rows,scrapRecords:scrapRecords.rows,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]}};
+    const dashboardData={order:order.rows[0],finalProduct:orderLines.rows.length===1?orderLines.rows[0]:null,finalProducts:orderLines.rows,stages:stages.rows,production:productionWithPayments,machineProduction:machineProduction.rows,scrapRecords:scrapRecords.rows,movements:movements.rows,deliveries:deliveries.rows,totals:totals.rows[0]};
+    const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
+    if(!canViewFinancials){
+      const {contract_value:_contractValue,...safeOrder}=dashboardData.order;
+      const safeStages=dashboardData.stages.map(({stage_rate,stage_rate_method,stage_expense_cost,...stage}:Record<string,unknown>)=>stage);
+      const safeProduction=dashboardData.production.map(({earning_amount,bonus_amount,deduction_amount,total_earning_amount,price_adjustment_amount,paid_amount,remaining_amount,...entry}:Record<string,unknown>)=>entry);
+      const safeMovements=dashboardData.movements.map(({unit_cost,total_cost,...movement}:Record<string,unknown>)=>movement);
+      return {data:{...dashboardData,order:safeOrder,stages:safeStages,production:safeProduction,movements:safeMovements,totals:null}};
+    }
+    return {data:dashboardData};
   });
 
   app.get("/api/machines", { preHandler: [authenticateRequest, requirePermission("machines.view")] }, async () => {
