@@ -681,6 +681,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(blockedByPendingAttendance.json().error.code,"ATTENDANCE_REVIEW_REQUIRED");
       await apiPool.query("UPDATE attendance_punches SET review_status='APPROVED',reviewed_by=$2,reviewed_at=now() WHERE id=$1",
         [pendingPayrollPunch.rows[0].id,userId]);
+      await apiPool.query(
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE',TIMESTAMP '2099-01-15 16:00:00' AT TIME ZONE 'Africa/Cairo','OUT','FINGERPRINT',FALSE,'AUTO_ACCEPTED',$2)",
+        [employeeA.rows[0].id,randomBytes(32).toString("hex")]
+      );
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader },
@@ -688,6 +692,13 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
+      const authoritativeDay=(await apiPool.query(
+        "SELECT snapshot_data FROM payroll_attendance_snapshots WHERE payroll_item_id=(SELECT id FROM payroll_items WHERE period_id=$1 AND employee_id=$2) AND attendance_date='2099-01-15'",
+        [period.rows[0].id,employeeA.rows[0].id]
+      )).rows[0].snapshot_data;
+      assert.equal(authoritativeDay.status,"PRESENT","approval must derive the day from persisted punch records");
+      assert.equal(Number(authoritativeDay.workedMinutes),480,"client-supplied zero minutes must not override the actual punch pair");
+      assert.equal(Number(authoritativeDay.lateMinutes),0,"the persisted shift boundary should determine lateness");
       const reconciliation = await app.inject({
         method: "GET", url: "/api/accounting/reconciliation/payroll", headers: { cookie: cookieHeader }
       });
