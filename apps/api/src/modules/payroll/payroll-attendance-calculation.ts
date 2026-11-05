@@ -62,6 +62,7 @@ export function calculatePayrollAttendance(input: {
     unpaidPermissionMinutes += minutes(day.unpaidPermissionMinutes);
     overtimeMinutes += minutes(day.overtimeMinutes);
   }
+  if (dayOffWorkedMinutes > 0 && policy.dayOffPayAmount <= 0) throw new Error("DAY_OFF_RATE_REQUIRED");
   const deductionMinutes = lateMinutes + earlyMinutes + unpaidPermissionMinutes + absenceMinutes;
   const deductionAmount = money(deductionMinutes * minuteRate);
   const overtimeBonus = money(overtimeMinutes * minuteRate * policy.overtimeMultiplier);
