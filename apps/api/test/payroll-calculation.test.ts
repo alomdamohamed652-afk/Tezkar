@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "../src/modules/payroll/payroll-calculation.js";
+import { calculatePayrollAttendance } from "../src/modules/payroll/payroll-attendance-calculation.js";
 
 test("fixed deduction rounds the payable amount to two decimal places", () => {
   const result = calculatePayrollDeduction({
@@ -44,4 +45,38 @@ test("percentage deduction rejects missing, zero, negative and over-100 values",
 test("salary expense reconciliation adds advance repayment back to take-home pay", () => {
   assert.equal(calculatePayrollExpenseAmount(5700, 300), 6000);
   assert.equal(calculatePayrollExpenseAmount(0, 6000), 6000);
+});
+
+
+test("minute-based attendance payroll uses 26 days x 8 hours and prices all deduction minutes", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [
+      { date: "2026-11-02", status: "PRESENT", lateMinutes: 30, earlyMinutes: 15, unpaidPermissionMinutes: 60 },
+      { date: "2026-11-03", status: "ABSENT" },
+      { date: "2026-11-04", status: "PRESENT", overtimeMinutes: 120 },
+      { date: "2026-11-05", status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 480 }
+    ]
+  });
+  assert.equal(result.scheduledMinutes, 12480);
+  assert.equal(result.minuteRate, 0.48);
+  assert.equal(result.deductionMinutes, 585);
+  assert.equal(result.deductionAmount, 280.8);
+  assert.equal(result.overtimeBonus, 86.4);
+  assert.equal(result.dayOffBonus, 200);
+  assert.equal(result.totalBonus, 286.4);
+});
+
+test("minute-based attendance payroll refuses unresolved and missing-punch days", () => {
+  const policy = { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 };
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000, existingBonus: 0, policy,
+    days: [{ date: "2026-11-02", status: "PRESENT", needsReview: true }]
+  }), /ATTENDANCE_REVIEW_REQUIRED/);
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000, existingBonus: 0, policy,
+    days: [{ date: "2026-11-02", status: "MISSING_PUNCH" }]
+  }), /ATTENDANCE_MISSING_PUNCH/);
 });
