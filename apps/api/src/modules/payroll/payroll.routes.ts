@@ -334,8 +334,11 @@ export async function payrollRoutes(app: FastifyInstance) {
     const id=(request.params as {id:string}).id;
     const item=await pool.query("SELECT i.id,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1",[id]);
     if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
-    const rows=await pool.query('SELECT attendance_date::text AS date,snapshot_data AS "snapshotData",captured_at AS "capturedAt" FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 ORDER BY attendance_date',[id]);
-    return {data:rows.rows, frozen:rows.rows.length>0, periodStatus:item.rows[0].period_status};
+    const [rows,calculation]=await Promise.all([
+      pool.query('SELECT attendance_date::text AS date,snapshot_data AS "snapshotData",captured_at AS "capturedAt" FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 ORDER BY attendance_date',[id]),
+      pool.query("SELECT calculation_data FROM payroll_attendance_calculations WHERE payroll_item_id=$1",[id])
+    ]);
+    return {data:rows.rows, frozen:rows.rows.length>0, periodStatus:item.rows[0].period_status, calculation:calculation.rows[0]?.calculation_data??null};
   });
 
   app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
