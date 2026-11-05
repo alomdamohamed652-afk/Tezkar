@@ -243,6 +243,17 @@ export async function attendanceRoutes(app:FastifyInstance){
    }
   }
   const overrides=(await pool.query(`SELECT employee_id,attendance_date::text,status,first_in::text,last_out::text,worked_minutes,late_minutes,early_minutes,note,updated_at,updated_by FROM attendance_day_overrides WHERE attendance_date BETWEEN $1::date AND $2::date`,[dates.data.from,dates.data.to])).rows;
+  const approvedPermissions=(await pool.query(`SELECT employee_id,permission_date::text,permission_type,duration_minutes,starts_at::text,ends_at::text
+    FROM attendance_permission_requests WHERE status='APPROVED' AND permission_date BETWEEN $1::date AND $2::date`,[dates.data.from,dates.data.to])).rows;
+  const permissionMap=new Map<string,{paid:number;unpaid:number;items:Array<{type:string;minutes:number;startsAt:string;endsAt:string}>}>();
+  for(const permission of approvedPermissions){
+    const key=permission.employee_id+"|"+String(permission.permission_date).slice(0,10);
+    const current=permissionMap.get(key)??{paid:0,unpaid:0,items:[]};
+    const minutes=Number(permission.duration_minutes);
+    if(permission.permission_type==="PAID")current.paid+=minutes;else current.unpaid+=minutes;
+    current.items.push({type:permission.permission_type,minutes,startsAt:String(permission.starts_at).slice(0,5),endsAt:String(permission.ends_at).slice(0,5)});
+    permissionMap.set(key,current);
+  }
   const overrideMap=new Map(overrides.map(o=>[o.employee_id+"|"+String(o.attendance_date).slice(0,10),o]));
   for(let index=0;index<report.length;index++){
     const row=report[index] as Record<string,unknown>;
@@ -252,7 +263,13 @@ export async function attendanceRoutes(app:FastifyInstance){
     const lastOut=override.last_out?String(row.date)+"T"+String(override.last_out).slice(0,8):null;
     report[index]={...row,firstIn,lastOut,workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
   }
-  const totals={rows:report.length,totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
+  for(let index=0;index<report.length;index++){
+    const row=report[index] as Record<string,unknown>;
+    const permissions=permissionMap.get(String(row.employeeId)+"|"+String(row.date))??{paid:0,unpaid:0,items:[]};
+    const worked=Number(row.workedMinutes??0);
+    report[index]={...row,permissionMinutes:permissions.paid+permissions.unpaid,paidPermissionMinutes:permissions.paid,unpaidPermissionMinutes:permissions.unpaid,permissionDetails:permissions.items,payableWorkedMinutes:worked+permissions.paid};
+  }
+  const totals={rows:report.length,totalPaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.paidPermissionMinutes??0),0),totalUnpaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.unpaidPermissionMinutes??0),0),totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
   return {data:report,summary:totals};
  });
 
