@@ -24,5 +24,8 @@ CREATE TABLE IF NOT EXISTS payroll_attendance_calculations (
   captured_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE employee_payroll_attendance_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_attendance_calculations ENABLE ROW LEVEL SECURITY;
+
 INSERT INTO schema_migrations(version) VALUES ('2026110601_payroll_minute_attendance_calculation')
 ON CONFLICT(version) DO NOTHING;
