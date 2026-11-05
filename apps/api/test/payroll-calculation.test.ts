@@ -102,3 +102,13 @@ test("paid permission time is credited against a full-day absence before deducti
   assert.equal(result.absenceMinutes, 360);
   assert.equal(result.deductionAmount, 173.08);
 });
+
+
+test("minute-based payroll blocks worked days without a schedule classification", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-08", status: "NO_SCHEDULE_WITH_PUNCH", workedMinutes: 240 }]
+  }), /ATTENDANCE_SCHEDULE_REQUIRED/);
+});
