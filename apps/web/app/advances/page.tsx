@@ -68,11 +68,13 @@ export default function AdvancesPage(){
   const raw=window.prompt("مبلغ السداد — المتبقي "+remaining);if(raw===null)return;
   const amountValue=Number(normalizeNumber(raw));if(!Number.isFinite(amountValue)||amountValue<=0){setError("مبلغ السداد غير صحيح");return}
   const fingerprint=id+":"+amountValue;
-  let idempotencyKey=repaymentKeys.current.get(fingerprint);
-  if(!idempotencyKey){idempotencyKey=crypto.randomUUID();repaymentKeys.current.set(fingerprint,idempotencyKey);}
+  const storageKey="tezkar:advance-repayment:"+fingerprint;
+  let idempotencyKey=repaymentKeys.current.get(fingerprint)??window.sessionStorage.getItem(storageKey)??undefined;
+  if(!idempotencyKey){idempotencyKey=crypto.randomUUID();repaymentKeys.current.set(fingerprint,idempotencyKey);window.sessionStorage.setItem(storageKey,idempotencyKey);}
   try{
    await api("/api/advances/"+id+"/repayments",{method:"POST",body:JSON.stringify({amount:amountValue,repaymentType:"CUSTOM",idempotencyKey})});
    repaymentKeys.current.delete(fingerprint);
+   window.sessionStorage.removeItem(storageKey);
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل السداد")}
  }
