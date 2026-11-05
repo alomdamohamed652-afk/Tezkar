@@ -435,6 +435,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           const code=error instanceof Error?error.message:"ATTENDANCE_CALCULATION_INVALID";
           if(code==="ATTENDANCE_REVIEW_REQUIRED")throw new AppError(code,"لا يمكن احتساب المرتب قبل مراجعة أيام الحضور التي عليها ملاحظات.",409);
           if(code==="ATTENDANCE_MISSING_PUNCH")throw new AppError(code,"يوجد يوم ببصمة ناقصة؛ صحح البصمة أو سوِّ اليوم يدويًا قبل اعتماد المسير.",409);
+          if(code==="ATTENDANCE_SCHEDULE_REQUIRED")throw new AppError(code,"يوجد يوم عليه بصمات دون جدول وردية؛ حدّد هل هو يوم عمل أم يوم راحة قبل اعتماد المسير.",409);
           if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر يوم الراحة لهذا الموظف.",409);
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
