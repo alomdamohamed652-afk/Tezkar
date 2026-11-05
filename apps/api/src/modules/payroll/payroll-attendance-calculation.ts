@@ -6,6 +6,7 @@ export interface PayrollAttendanceDay {
   lateMinutes?: number;
   earlyMinutes?: number;
   overtimeMinutes?: number;
+  paidPermissionMinutes?: number;
   unpaidPermissionMinutes?: number;
   needsReview?: boolean;
 }
@@ -54,7 +55,7 @@ export function calculatePayrollAttendance(input: {
     }
     if (day.status === "MISSING_PUNCH") throw new Error("ATTENDANCE_MISSING_PUNCH");
     if (day.status === "ABSENT") {
-      absenceMinutes += policy.dailyWorkMinutes;
+      absenceMinutes += Math.max(0, policy.dailyWorkMinutes - minutes(day.paidPermissionMinutes));
       continue;
     }
     lateMinutes += minutes(day.lateMinutes);
