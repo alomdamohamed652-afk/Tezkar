@@ -481,6 +481,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         method: "POST", url: "/api/advances/" + salaryAdvanceId + "/approve", headers: { cookie: secondCookieHeader }
       });
       assert.equal(salaryAdvanceApproved.statusCode, 200, salaryAdvanceApproved.body);
+      const insufficientAdvancePay=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/pay",headers:{cookie:secondCookieHeader}
+      });
+      assert.equal(insufficientAdvancePay.statusCode,409,insufficientAdvancePay.body);
+      assert.equal(insufficientAdvancePay.json().error.code,"INSUFFICIENT_CASH_CUSTODY_BALANCE");
+      assert.equal((await apiPool.query("SELECT status FROM advance_requests WHERE id=$1",[salaryAdvanceId])).rows[0].status,"APPROVED",
+        "insufficient custody must leave the approved advance unpaid");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ADVANCE_PAYOUT' AND source_id=$1",[salaryAdvanceId])).rows[0].count),0);
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'test opening custody for advance payout',$2)",
+        [employeeB.rows[0].id,secondUserId]
+      );
       const salaryAdvancePaid = await app.inject({
         method: "POST", url: "/api/advances/" + salaryAdvanceId + "/pay", headers: { cookie: secondCookieHeader }
       });
@@ -496,16 +508,43 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(advanceCustodyOut.rowCount,1);
       assert.equal(advanceCustodyOut.rows[0].direction,"OUT");
       assert.equal(Number(advanceCustodyOut.rows[0].amount),250);
+      const repaymentKey=randomUUID();
+      const repaymentPayload={amount:50,repaymentType:"CUSTOM" as const,notes:"early repayment integration test",idempotencyKey:repaymentKey};
       const earlyRepayment=await app.inject({
         method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
-        payload:{amount:50,repaymentType:"CUSTOM",notes:"early repayment integration test"}
+        payload:repaymentPayload
       });
       assert.equal(earlyRepayment.statusCode,201,earlyRepayment.body);
       assert.equal(Number(earlyRepayment.json().data.remaining),200);
+      const replayedRepayment=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:repaymentPayload
+      });
+      assert.equal(replayedRepayment.statusCode,200,replayedRepayment.body);
+      assert.equal(replayedRepayment.json().data.repayment.id,earlyRepayment.json().data.repayment.id,
+        "retrying the same advance repayment must replay the original repayment");
+      const changedRepaymentPayload=await app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:{...repaymentPayload,amount:75}
+      });
+      assert.equal(changedRepaymentPayload.statusCode,409,changedRepaymentPayload.body);
+      assert.equal(changedRepaymentPayload.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      const concurrentRepaymentKey=randomUUID();
+      const concurrentRepaymentPayload={amount:25,repaymentType:"CUSTOM" as const,notes:"concurrent repayment retry",idempotencyKey:concurrentRepaymentKey};
+      const concurrentRepayments=await Promise.all([1,2].map(()=>app.inject({
+        method:"POST",url:"/api/advances/"+salaryAdvanceId+"/repayments",headers:{cookie:secondCookieHeader},
+        payload:concurrentRepaymentPayload
+      })));
+      assert.deepEqual(concurrentRepayments.map(x=>x.statusCode).sort(),[200,201]);
+      assert.equal(concurrentRepayments[0].json().data.repayment.id,concurrentRepayments[1].json().data.repayment.id);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE idempotency_key=$1",[concurrentRepaymentKey])).rows[0].count),1);
       const advanceCustodyIn=await apiPool.query("SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[earlyRepayment.json().data.repayment.id]);
       assert.equal(advanceCustodyIn.rowCount,1);
       assert.equal(advanceCustodyIn.rows[0].direction,"IN");
       assert.equal(Number(advanceCustodyIn.rows[0].amount),50);
+      const concurrentRepayment=await apiPool.query("SELECT id FROM advance_repayments WHERE idempotency_key=$1",[concurrentRepaymentKey]);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_ledger WHERE advance_repayment_id=$1",[concurrentRepayment.rows[0].id])).rows[0].count),1);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[concurrentRepayment.rows[0].id])).rows[0].count),1);
 
       // A paid, still-open advance must not block another advance; payroll can repay both.
       const secondSalaryAdvanceCreated = await app.inject({
