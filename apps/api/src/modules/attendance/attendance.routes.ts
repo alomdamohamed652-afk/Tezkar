@@ -256,4 +256,72 @@ export async function attendanceRoutes(app:FastifyInstance){
   return {data:report,summary:totals};
  });
 
+
+ app.post("/api/attendance/permissions",{preHandler:[authenticateRequest,requirePermission("attendance.permission.request","own")]},async(request,reply)=>{
+  const parsed=z.object({date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),type:z.enum(["PAID","UNPAID"]),reason:z.string().trim().min(2).max(500)}).safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات طلب الإذن غير صحيحة؛ يجب تحديد التاريخ والوقت والسبب",422);
+  const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
+  const d=parsed.data;const start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
+  if(start===null||end===null||end<=start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يكون بعد بدايته في نفس اليوم",422);
+  const duration=end-start;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
+  const saved=await withTransaction(async client=>{
+   await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[employeeId,d.date]);
+   const overlap=await client.query(`SELECT id FROM attendance_permission_requests
+    WHERE employee_id=$1 AND permission_date=$2::date AND status IN ('PENDING','APPROVED')
+      AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[employeeId,d.date,d.startsAt,d.endsAt]);
+   if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد طلب إذن آخر متداخل في نفس اليوم",409);
+   const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,requested_by)
+    VALUES($1,$2::date,$3::time,$4::time,$5,$6,$7,$8) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.type,d.reason,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"create_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return result.rows[0];
+  });
+  return reply.code(201).send({data:saved});
+ });
+ app.get("/api/attendance/permissions/my",{preHandler:[authenticateRequest,requirePermission("attendance.permission.view_own","own")]},async request=>{
+  const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
+  const result=await pool.query("SELECT * FROM attendance_permission_requests WHERE employee_id=$1 ORDER BY permission_date DESC,starts_at DESC LIMIT 300",[employeeId]);
+  return {data:result.rows};
+ });
+ app.get("/api/attendance/permissions",{preHandler:[authenticateRequest,requirePermission("attendance.permission.view")]},async request=>{
+  const q=z.object({from:z.string().date().optional(),to:z.string().date().optional(),employeeId:z.string().uuid().optional(),status:z.enum(["PENDING","APPROVED","REJECTED","CANCELLED"]).optional()}).safeParse(request.query);
+  if(!q.success||(q.data.from&&q.data.to&&q.data.to<q.data.from))throw new AppError("VALIDATION_ERROR","فترة البحث غير صحيحة",422);
+  const d=q.data,args:unknown[]=[];const where:string[]=[];
+  if(d.from){args.push(d.from);where.push("r.permission_date >= $"+args.length+"::date");}
+  if(d.to){args.push(d.to);where.push("r.permission_date <= $"+args.length+"::date");}
+  if(d.employeeId){args.push(d.employeeId);where.push("r.employee_id = $"+args.length);}
+  if(d.status){args.push(d.status);where.push("r.status = $"+args.length);}
+  const result=await pool.query(`SELECT r.*,e.code AS employee_code,e.full_name AS employee_name,
+    requester.username AS requester_username,reviewer.username AS reviewer_username
+    FROM attendance_permission_requests r JOIN employees e ON e.id=r.employee_id
+    LEFT JOIN users requester ON requester.id=r.requested_by LEFT JOIN users reviewer ON reviewer.id=r.reviewed_by
+    ${where.length?"WHERE "+where.join(" AND "):""}
+    ORDER BY r.permission_date DESC,r.starts_at DESC LIMIT 1000`,args);
+  return {data:result.rows};
+ });
+ app.post("/api/attendance/permissions/:id/review",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async request=>{
+  const params=z.object({id:z.string().uuid()}).safeParse(request.params);
+  const parsed=z.object({decision:z.enum(["APPROVED","REJECTED"]),note:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
+  if(!params.success||!parsed.success)throw new AppError("VALIDATION_ERROR","قرار مراجعة الإذن غير صحيح",422);
+  return withTransaction(async client=>{
+   const before=await client.query("SELECT * FROM attendance_permission_requests WHERE id=$1 FOR UPDATE",[params.data.id]);
+   if(!before.rowCount)throw new AppError("PERMISSION_NOT_FOUND","طلب الإذن غير موجود",404);
+   if(before.rows[0].status!=="PENDING")throw new AppError("PERMISSION_ALREADY_REVIEWED","لا يمكن مراجعة طلب ليس قيد الانتظار",409);
+   const result=await client.query(`UPDATE attendance_permission_requests SET status=$1,reviewed_by=$2,reviewed_at=now(),review_note=$3,updated_at=now() WHERE id=$4 RETURNING *`,[parsed.data.decision,request.user!.userId,parsed.data.note??null,params.data.id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPROVED"?"approve_attendance_permission":"reject_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:params.data.id,beforeData:before.rows[0],afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {data:result.rows[0]};
+  });
+ });
+ app.post("/api/attendance/permissions/:id/cancel",{preHandler:[authenticateRequest,requirePermission("attendance.permission.request","own")]},async request=>{
+  const params=z.object({id:z.string().uuid()}).safeParse(request.params);if(!params.success)throw new AppError("VALIDATION_ERROR","رقم طلب الإذن غير صحيح",422);
+  const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
+  return withTransaction(async client=>{
+   const before=await client.query("SELECT * FROM attendance_permission_requests WHERE id=$1 AND employee_id=$2 FOR UPDATE",[params.data.id,employeeId]);
+   if(!before.rowCount)throw new AppError("PERMISSION_NOT_FOUND","طلب الإذن غير موجود",404);
+   if(before.rows[0].status!=="PENDING")throw new AppError("PERMISSION_CANNOT_CANCEL","يمكن إلغاء الطلب قبل اعتماده أو رفضه فقط",409);
+   const result=await client.query("UPDATE attendance_permission_requests SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,params.data.id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"cancel_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:params.data.id,beforeData:before.rows[0],afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {data:result.rows[0]};
+  });
+ });
+
 }
