@@ -747,7 +747,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         payrollPaymentMismatches:0,
         advanceDeductionMismatches:0,
         paidPayrollMissingAdvanceRepayments:0,
-        expensesMissingCustodyLink:0
+        expensesMissingCustodyLink:0,
+        advanceRepaymentsMissingCustodyIn:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
@@ -1096,6 +1097,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "UPDATE employee_earnings_ledger SET employee_id=$1,credit_amount=99 WHERE payroll_adjustment_line_id=$2",
         [employeeB.rows[0].id,januaryBonusLineId]
       );
+      // A direct advance repayment must have one matching cash-custody IN movement.
+      await apiPool.query(
+        "UPDATE cash_custody_transactions SET amount=49 WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",
+        [earlyRepayment.json().data.repayment.id]
+      );
 
       // A cash payment must be reconciled against the exact custody OUT amount.
       const itemBPayment = await apiPool.query(
@@ -1149,6 +1155,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "integrity overview must detect a paid payroll deduction without its advance repayment ledger row");
       assert.ok(findingData.counts.expensesMissingCustodyLink>=1,
         "integrity overview must detect an explicitly linked custody movement with a different employee and amount");
+      assert.ok(findingData.counts.advanceRepaymentsMissingCustodyIn>=1,
+        "integrity overview must detect a manual advance repayment whose custody receipt is missing or has a different amount");
+      assert.ok(findingData.issues.advanceRepaymentsMissingCustodyIn.some((row:{repayment_id:string;amount:string;custody_amount:string}) =>
+        row.repayment_id===earlyRepayment.json().data.repayment.id && Number(row.custody_amount)!==Number(row.amount)),
+        "integrity overview must identify the mismatched manual advance repayment receipt");
       assert.ok(findingData.counts.missingAdjustmentLedgerEntries>=1,
         "integrity overview must detect a source-linked adjustment with the wrong employee and amount");
       assert.ok(findingData.counts.cashPaymentsMissingCustodyOut>=1,
