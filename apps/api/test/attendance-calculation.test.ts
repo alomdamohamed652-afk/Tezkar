@@ -199,6 +199,15 @@ test("worked hours include completed overtime pairs and ignore incomplete pairs"
 });
 
 
+test("overlapping regular and overtime intervals are not double-counted as worked time", () => {
+  assert.equal(calculateWorkedMinutes([
+    { status: "IN", punch_at: "2026-10-15T06:00:00.000Z" },
+    { status: "OUT", punch_at: "2026-10-15T15:00:00.000Z" },
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T14:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T16:00:00.000Z" },
+  ]), 600, "overlapping punches must count the 8:00-18:00 union once, not 11 hours");
+});
+
 test("overtime minutes sum separate completed intervals without counting breaks", () => {
   assert.equal(calculateWorkedMinutes([
     { status: "OVERTIME_IN", punch_at: "2026-10-15T16:00:00.000Z" },
