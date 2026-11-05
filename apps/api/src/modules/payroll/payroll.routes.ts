@@ -8,6 +8,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
 import { calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
+import { buildAttendanceReport } from "../attendance/attendance-report.service.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -344,17 +345,10 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
     const id = (request.params as {id:string}).id;
-    const body=z.object({
-      attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid(),status:z.string().min(1),workedMinutes:z.number().int().min(0),lateMinutes:z.number().int().min(0),earlyMinutes:z.number().int().min(0),overtimeMinutes:z.number().int().min(0),paidPermissionMinutes:z.number().int().min(0),unpaidPermissionMinutes:z.number().int().min(0),isDayOff:z.boolean(),needsReview:z.boolean()}).passthrough()).max(10000).optional()
-    }).safeParse(request.body??{});
     const result = await withTransaction(async client => {
       const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
       if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
-      if(!body.success)throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","بيانات سجل الحضور المرسلة غير صحيحة",422);
-      const snapshot=body.data.attendanceSnapshot;
-      if(!snapshot || snapshot.length===0)
-        throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لا يمكن اعتماد مسير المرتبات قبل إرفاق سجل الحضور الكامل للشهر",422);
       const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,accountingDate);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
@@ -366,52 +360,36 @@ export async function payrollRoutes(app: FastifyInstance) {
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
       const daysInMonth=monthEndDate.getUTCDate();
-      const unresolvedAttendance=await client.query(
-        `SELECT COUNT(*)::int AS count
-           FROM attendance_punches p
-           JOIN payroll_items i ON i.employee_id=p.employee_id
-          WHERE i.period_id=$1
-            AND (p.punch_at AT TIME ZONE 'Africa/Cairo')::date BETWEEN $2::date AND $3::date
-            AND p.review_status NOT IN ('APPROVED','REJECTED')
-            AND NOT EXISTS (
-              SELECT 1 FROM attendance_day_overrides o
-               WHERE o.employee_id=p.employee_id
-                 AND o.attendance_date=(p.punch_at AT TIME ZONE 'Africa/Cairo')::date
-            )
-            AND (
-              p.review_status='PENDING' OR p.suspicious=TRUE
-              OR (p.status IN ('IN','OUT','OVERTIME_IN','OVERTIME_OUT') AND EXISTS (
-                SELECT 1 FROM attendance_punches other
-                 WHERE other.employee_id=p.employee_id
-                   AND other.status=p.status
-                   AND other.id<>p.id
-                   AND (other.punch_at AT TIME ZONE 'Africa/Cairo')::date=(p.punch_at AT TIME ZONE 'Africa/Cairo')::date
-                   AND other.review_status<>'REJECTED'
-              ))
-            )`,
-        [id,monthStart,monthEnd]
-      );
-      if(Number(unresolvedAttendance.rows[0]?.count??0)>0)
-        throw new AppError("ATTENDANCE_REVIEW_REQUIRED","لا يمكن اعتماد مسير المرتبات قبل مراجعة البصمات المعلقة أو المتكررة لكل موظفي المسير، أو تسوية اليوم يدويًا.",409);
       const salaryItems = await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
+      // Rebuild the full month from persisted punches, schedules, corrections, overrides and approved permissions.
+      // Never accept client-supplied minutes as a source of payroll truth.
+      const attendanceReport=await buildAttendanceReport(client,monthStart,monthEnd,true);
+      const payrollEmployeeIds=new Set<string>(salaryItems.rows.map(item=>String(item.employee_id)));
+      const snapshot=attendanceReport.data
+        .filter(row=>payrollEmployeeIds.has(String(row.employeeId)))
+        .map(row=>({
+          date:String(row.date),employeeId:String(row.employeeId),status:String(row.status),
+          workedMinutes:Number(row.workedMinutes??0),lateMinutes:Number(row.lateMinutes??0),
+          earlyMinutes:Number(row.earlyMinutes??0),overtimeMinutes:Number(row.overtimeMinutes??0),
+          paidPermissionMinutes:Number(row.paidPermissionMinutes??0),
+          unpaidPermissionMinutes:Number(row.unpaidPermissionMinutes??0),
+          isDayOff:Boolean(row.isDayOff),needsReview:Boolean(row.needsReview)
+        }));
+
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
-      if(expectedKeys.size>0&&!snapshot)
-        throw new AppError("ATTENDANCE_SNAPSHOT_REQUIRED","لا يمكن اعتماد مسير المرتبات دون إرفاق سجل الحضور الكامل لكل موظف وأيام الشهر.",422);
-      if(snapshot){
-        const suppliedKeys=new Set<string>();
-        for(const row of snapshot){
-          const key=row.employeeId+"|"+row.date;
-          if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
-            throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","سجل الحضور يحتوي تاريخًا خارج الشهر أو موظفًا غير موجود أو يومًا مكررًا",422);
-          suppliedKeys.add(key);
-        }
-        if(suppliedKeys.size!==expectedKeys.size)
-          throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور المرفق غير مكتمل؛ لازم يحتوي على سجل لكل موظف ولكل يوم في الشهر قبل اعتماد المسير.",422);
-        for(const row of snapshot){
-          const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
-          await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
-        }
+      const suppliedKeys=new Set<string>();
+      for(const row of snapshot){
+        const key=row.employeeId+"|"+row.date;
+        if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
+          throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","تعذر تكوين سجل حضور كامل من قاعدة البيانات؛ راجع الموظفين وتواريخ المسير.",409);
+        suppliedKeys.add(key);
+      }
+      if(suppliedKeys.size!==expectedKeys.size)
+        throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور المحسوب من قاعدة البيانات غير مكتمل لكل موظفي المسير وأيام الشهر.",409);
+      for(const row of snapshot){
+        const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
+        await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
       }
       // Convert reviewed attendance minutes into auditable payroll lines. Policy defaults
       // are 26 workdays x 8 hours; each employee can override the work pattern and rest-day rate.
