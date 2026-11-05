@@ -718,6 +718,22 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         {code:"55000"},
         "approved attendance calculation policy must remain frozen"
       );
+      const overtimePunch=(await apiPool.query(
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE',TIMESTAMP '2099-01-16 17:00:00' AT TIME ZONE 'Africa/Cairo','OVERTIME_IN','FINGERPRINT',FALSE,'AUTO_ACCEPTED',$2) RETURNING id",
+        [employeeA.rows[0].id,randomBytes(32).toString("hex")]
+      )).rows[0];
+      const correctedOvertime=await app.inject({
+        method:"POST",url:`/api/attendance/punches/${overtimePunch.id}/correction`,
+        headers:{cookie:cookieHeader},
+        payload:{decision:"APPLY_MANUAL",correctedStatus:"OVERTIME_OUT",correctedPunchAt:"2099-01-16T17:00:00+02:00",reason:"تصحيح نوع حركة إضافي في اختبار التكامل"}
+      });
+      assert.equal(correctedOvertime.statusCode,200,correctedOvertime.body);
+      assert.equal(correctedOvertime.json().data.corrected_status,"OVERTIME_OUT");
+      const frozenNextDay=(await apiPool.query(
+        "SELECT snapshot_data FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 AND attendance_date='2099-01-16'",
+        [approvedPayrollItemId]
+      )).rows[0].snapshot_data;
+      assert.equal(Number(frozenNextDay.workedMinutes),0,"post-approval punch corrections must not rewrite the frozen payroll snapshot");
       const reconciliation = await app.inject({
         method: "GET", url: "/api/accounting/reconciliation/payroll", headers: { cookie: cookieHeader }
       });
