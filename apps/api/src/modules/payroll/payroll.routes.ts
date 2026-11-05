@@ -443,15 +443,15 @@ export async function payrollRoutes(app: FastifyInstance) {
         if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب',$2,$3,$4,'attendance:deduction')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
-          [item.id,calculation.deductionAmount,JSON.stringify({lateMinutes:calculation.lateMinutes,earlyMinutes:calculation.earlyMinutes,unpaidPermissionMinutes:calculation.unpaidPermissionMinutes,absenceMinutes:calculation.absenceMinutes,minuteRate:calculation.minuteRate}),request.user!.userId]);
+          [item.id,calculation.deductionAmount,`سعر الدقيقة ${calculation.minuteRate.toFixed(4)} ج.م؛ التأخير ${calculation.lateMinutes} د، الانصراف المبكر ${calculation.earlyMinutes} د، الإذن غير المدفوع ${calculation.unpaidPermissionMinutes} د، الغياب ${calculation.absenceMinutes} د.`,request.user!.userId]);
         if(calculation.overtimeBonus>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'BONUS','مقابل الوقت الإضافي',$2,$3,$4,'attendance:overtime')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
-          [item.id,calculation.overtimeBonus,JSON.stringify({overtimeMinutes:calculation.overtimeMinutes,minuteRate:calculation.minuteRate,overtimeMultiplier:policySnapshot.overtimeMultiplier}),request.user!.userId]);
+          [item.id,calculation.overtimeBonus,`${calculation.overtimeMinutes} دقيقة × ${calculation.minuteRate.toFixed(4)} ج.م × معامل ${policySnapshot.overtimeMultiplier}.`,request.user!.userId]);
         if(calculation.dayOffBonus>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'BONUS','مقابل العمل في أيام الراحة والإجازات',$2,$3,$4,'attendance:day-off')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
-          [item.id,calculation.dayOffBonus,JSON.stringify({dayOffWorkedMinutes:calculation.dayOffWorkedMinutes,dayOffPayAmount:policySnapshot.dayOffPayAmount,dailyWorkMinutes:policySnapshot.dailyWorkMinutes}),request.user!.userId]);
+          [item.id,calculation.dayOffBonus,`${calculation.dayOffWorkedMinutes} دقيقة عمل؛ أجر اليوم الكامل ${policySnapshot.dayOffPayAmount} ج.م على أساس ${policySnapshot.dailyWorkMinutes} دقيقة.`,request.user!.userId]);
         const totals=await client.query(`SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
           COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
           FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[item.id]);
