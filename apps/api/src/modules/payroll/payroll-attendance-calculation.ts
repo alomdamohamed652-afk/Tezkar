@@ -62,7 +62,7 @@ export function calculatePayrollAttendance(input: {
   const overtimeBonus = money(overtimeMinutes * minuteRate * policy.overtimeMultiplier);
   const dayOffBonus = money((dayOffWorkedMinutes / policy.dailyWorkMinutes) * policy.dayOffPayAmount);
   return {
-    scheduledMinutes, minuteRate: money(minuteRate),
+    scheduledMinutes, minuteRate: Math.round((minuteRate + Number.EPSILON) * 10000) / 10000,
     lateMinutes, earlyMinutes, unpaidPermissionMinutes, absenceMinutes,
     deductionMinutes, overtimeMinutes, dayOffWorkedMinutes,
     deductionAmount, overtimeBonus, dayOffBonus,
