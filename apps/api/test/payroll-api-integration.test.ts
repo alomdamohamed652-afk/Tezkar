@@ -704,7 +704,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [period.rows[0].id,employeeA.rows[0].id]
       )).rows[0].id;
       await assert.rejects(
-        apiPool.query("UPDATE payroll_attendance_snapshots SET snapshot_data=snapshot_data || '{\\"workedMinutes\\":0}'::jsonb WHERE payroll_item_id=$1 AND attendance_date='2099-01-15'",[approvedPayrollItemId]),
+        apiPool.query("UPDATE payroll_attendance_snapshots SET snapshot_data=snapshot_data || jsonb_build_object('workedMinutes',0) WHERE payroll_item_id=$1 AND attendance_date='2099-01-15'",[approvedPayrollItemId]),
         {code:"55000"},
         "approved attendance snapshots must not be editable"
       );
@@ -714,7 +714,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "approved attendance snapshots must not be deletable"
       );
       await assert.rejects(
-        apiPool.query("UPDATE payroll_attendance_calculations SET calculation_data=calculation_data || '{\\"minuteRate\\":0}'::jsonb WHERE payroll_item_id=$1",[approvedPayrollItemId]),
+        apiPool.query("UPDATE payroll_attendance_calculations SET calculation_data=calculation_data || jsonb_build_object('minuteRate',0) WHERE payroll_item_id=$1",[approvedPayrollItemId]),
         {code:"55000"},
         "approved attendance calculation policy must remain frozen"
       );
