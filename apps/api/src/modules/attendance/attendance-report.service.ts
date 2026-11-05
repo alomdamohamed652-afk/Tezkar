@@ -47,9 +47,6 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      const assigned=punches.filter(p=>{
       if(p.employee_id!==employee.id||used.has(p.id))return false;
       if(belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.corrected_status??p.status,shiftDate:date,overnight,scheduledEndMinute:end}))return true;
-      // A next-day IN near an overnight shift's end is considered only when the same shift
-      // also has a punch near its start; this avoids stealing unrelated next-day check-ins.
-      return overnight&&p.localDate===addDateKey(date,1)&&(p.corrected_status??p.status)==="IN"&&end!==null&&start!==null&&Math.abs(p.minute-end)<=240&&punches.some(other=>other.employee_id===employee.id&&other.localDate===date&&Math.abs(other.minute-start)<=240&&other.id!==p.id);
      });
      assigned.forEach(p=>used.add(p.id));
      const correctionSuggestions=(!dayOff&&start!==null&&end!==null)?suggestBoundaryPunchCorrections({punches:assigned,shiftDate:date,startMinute:start,endMinute:end,overnight}):[];
