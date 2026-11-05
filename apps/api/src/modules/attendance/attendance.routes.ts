@@ -131,20 +131,41 @@ export async function attendanceRoutes(app:FastifyInstance){
 
  app.post("/api/attendance/punches/:id/correction",{preHandler:[authenticateRequest,requirePermission("attendance.review")]},async request=>{
   const id=(request.params as {id:string}).id;
-  const parsed=z.object({decision:z.enum(["APPLY_SUGGESTION","KEEP_ORIGINAL"]),suggestedStatus:z.enum(["IN","OUT"])}).safeParse(request.body);
-  if(!z.string().uuid().safeParse(id).success||!parsed.success)throw new AppError("VALIDATION_ERROR","قرار تصحيح البصمة غير صحيح",422);
+  const parsed=z.object({
+   decision:z.enum(["APPLY_SUGGESTION","KEEP_ORIGINAL","APPLY_MANUAL"]),
+   suggestedStatus:z.enum(["IN","OUT"]).optional(),
+   correctedStatus:z.enum(["IN","OUT"]).optional(),
+   correctedPunchAt:z.string().datetime({offset:true}).optional(),
+   reason:z.string().trim().min(2).max(500).optional()
+  }).safeParse(request.body);
+  if(!z.string().uuid().safeParse(id).success||!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تصحيح البصمة غير صحيحة",422);
   const result=await withTransaction(async client=>{
-   const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,correction_decision FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
+   const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,corrected_punch_at,correction_decision,correction_note,review_status FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
    if(!before.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","حركة البصمة غير موجودة",404);
-   const old=before.rows[0];
+   const old=before.rows[0],d=parsed.data;
    if(old.correction_decision)throw new AppError("ATTENDANCE_CORRECTION_ALREADY_REVIEWED","تم حسم تصحيح هذه البصمة بالفعل. راجع سجل التدقيق قبل أي تعديل جديد.",409);
-   if(!["IN","OUT"].includes(old.status)||parsed.data.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","التصحيح المقترح يجب أن يعكس دخولًا إلى خروج أو العكس.",422);
-   const corrected=parsed.data.decision==="APPLY_SUGGESTION"?parsed.data.suggestedStatus:null;
-   const updated=await client.query(
-    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_reviewed_by=$4,correction_reviewed_at=now(),review_status=CASE WHEN review_status='PENDING' THEN 'APPROVED' ELSE review_status END,reviewed_by=COALESCE(reviewed_by,$4),reviewed_at=COALESCE(reviewed_at,now()) WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at,review_status,reviewed_by,reviewed_at",
-    [id,corrected,parsed.data.decision==="APPLY_SUGGESTION"?"APPLIED":"KEPT_ORIGINAL",request.user!.userId]
-   );
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPLY_SUGGESTION"?"apply_attendance_correction":"keep_original_attendance_punch",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:old,afterData:updated.rows[0],metadata:{decision:parsed.data.decision,suggestedStatus:parsed.data.suggestedStatus,originalStatus:old.status},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   if(!["IN","OUT"].includes(old.status))throw new AppError("INVALID_ATTENDANCE_CORRECTION","تصحيح النوع متاح لحركات الدخول والخروج فقط",422);
+   let status:string|null=null,at:string|null=null,decision:string;
+   if(d.decision==="KEEP_ORIGINAL"){decision="KEPT_ORIGINAL";}
+   else if(d.decision==="APPLY_SUGGESTION"){
+    if(!d.suggestedStatus||d.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","نوع التصحيح المقترح غير صالح",422);
+    status=d.suggestedStatus;decision="APPLIED";
+   }else{
+    status=d.correctedStatus??old.status;at=d.correctedPunchAt??null;
+    if(status===old.status&&!at)throw new AppError("EMPTY_ATTENDANCE_CORRECTION","اختر نوع حركة مختلفًا أو وقتًا مصححًا",422);
+    if(at){
+     const correctedDate=new Date(at),originalDate=new Date(old.punch_at);
+     if(Math.abs(correctedDate.getTime()-originalDate.getTime())>24*60*60*1000)throw new AppError("CORRECTION_TIME_OUT_OF_RANGE","وقت التصحيح يجب ألا يبتعد أكثر من 24 ساعة عن وقت البصمة الأصلية",422);
+    }
+    if(!d.reason)throw new AppError("CORRECTION_REASON_REQUIRED","اكتب سبب تعديل البصمة",422);
+    decision="MANUAL_APPLIED";
+   }
+   const correctedStatus=d.decision==="KEEP_ORIGINAL"?null:status;
+   const correctedAt=d.decision==="APPLY_MANUAL"?at:null;
+   const note=d.decision==="APPLY_MANUAL"?d.reason??null:null;
+   const updated=await client.query(`UPDATE attendance_punches SET corrected_status=$2,corrected_punch_at=$3::timestamptz,correction_note=$4,correction_decision=$5,correction_reviewed_by=$6,correction_reviewed_at=now(),review_status=CASE WHEN review_status='PENDING' THEN 'APPROVED' ELSE review_status END,reviewed_by=COALESCE(reviewed_by,$6),reviewed_at=COALESCE(reviewed_at,now()) WHERE id=$1 RETURNING id,status,corrected_status,corrected_punch_at,correction_note,correction_decision,correction_reviewed_by,correction_reviewed_at,review_status,reviewed_by,reviewed_at`,
+    [id,correctedStatus,correctedAt,note,decision,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:decision==="MANUAL_APPLIED"?"manually_correct_attendance_punch":decision==="APPLIED"?"apply_attendance_correction":"keep_original_attendance_punch",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:old,afterData:updated.rows[0],metadata:{decision,reason:d.reason??null,originalStatus:old.status,originalPunchAt:old.punch_at},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
   return {data:result};
@@ -290,6 +311,26 @@ export async function attendanceRoutes(app:FastifyInstance){
    const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,requested_by)
     VALUES($1,$2::date,$3::time,$4::time,$5,$6,$7,$8) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.type,d.reason,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"create_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return result.rows[0];
+  });
+  return reply.code(201).send({data:saved});
+ });
+ app.post("/api/attendance/permissions/admin",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async(request,reply)=>{
+  const parsed=z.object({employeeId:z.string().uuid(),date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),type:z.enum(["PAID","UNPAID"]),reason:z.string().trim().min(2).max(500)}).safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الإذن الإداري غير صحيحة",422);
+  const d=parsed.data,start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
+  if(start===null||end===null||end<=start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يكون بعد بدايته في نفس اليوم",422);
+  const duration=end-start;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
+  const saved=await withTransaction(async client=>{
+   await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[d.employeeId,d.date]);
+   if(!(await client.query("SELECT id FROM employees WHERE id=$1",[d.employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+   const overlap=await client.query(`SELECT id FROM attendance_permission_requests WHERE employee_id=$1 AND permission_date=$2::date
+    AND status IN ('PENDING','APPROVED') AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[d.employeeId,d.date,d.startsAt,d.endsAt]);
+   if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد إذن آخر متداخل مع الفترة المحددة",409);
+   const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,status,requested_by,reviewed_by,reviewed_at,review_note)
+    VALUES($1,$2::date,$3::time,$4::time,$5,$6,$7,'APPROVED',$8,$8,now(),'تم الإنشاء والاعتماد مباشرة بواسطة مسؤول الحضور') RETURNING *`,
+    [d.employeeId,d.date,d.startsAt,d.endsAt,duration,d.type,d.reason,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"admin_create_approved_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],metadata:{createdByAdmin:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return result.rows[0];
   });
   return reply.code(201).send({data:saved});
