@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
+import { calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -67,6 +68,43 @@ export async function payrollRoutes(app: FastifyInstance) {
       LEFT JOIN employee_salary_profiles p ON p.employee_id=e.id AND p.effective_to IS NULL
       ORDER BY e.is_active DESC,e.full_name`);
     return { data: r.rows };
+  });
+
+  app.get("/api/payroll/employees/:employeeId/attendance-policy", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
+    const employeeId=(request.params as {employeeId:string}).employeeId;
+    if(!z.string().uuid().safeParse(employeeId).success)throw new AppError("VALIDATION_ERROR","معرف الموظف غير صحيح",422);
+    const result=await pool.query(`SELECT e.id AS employee_id,
+      COALESCE(p.work_days_per_month,26)::int AS work_days_per_month,
+      COALESCE(p.daily_work_minutes,480)::int AS daily_work_minutes,
+      COALESCE(p.day_off_pay_amount,0)::numeric AS day_off_pay_amount,
+      COALESCE(p.overtime_multiplier,1.5)::numeric AS overtime_multiplier
+      FROM employees e LEFT JOIN employee_payroll_attendance_policies p ON p.employee_id=e.id
+      WHERE e.id=$1`,[employeeId]);
+    if(!result.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+    return {data:result.rows[0]};
+  });
+
+  app.put("/api/payroll/employees/:employeeId/attendance-policy", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
+    const employeeId=(request.params as {employeeId:string}).employeeId;
+    const parsed=z.object({
+      workDaysPerMonth:z.number().int().min(1).max(31),
+      dailyWorkMinutes:z.number().int().min(1).max(1440),
+      dayOffPayAmount:z.number().min(0).max(100000000),
+      overtimeMultiplier:z.number().min(0).max(5)
+    }).safeParse(request.body);
+    if(!z.string().uuid().safeParse(employeeId).success||!parsed.success)throw new AppError("VALIDATION_ERROR","إعدادات احتساب الأجر غير صحيحة",422);
+    const saved=await withTransaction(async client=>{
+      const result=await client.query(`INSERT INTO employee_payroll_attendance_policies(employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,updated_by)
+        VALUES($1,$2,$3,$4,$5,$6)
+        ON CONFLICT(employee_id) DO UPDATE SET work_days_per_month=EXCLUDED.work_days_per_month,
+          daily_work_minutes=EXCLUDED.daily_work_minutes,day_off_pay_amount=EXCLUDED.day_off_pay_amount,
+          overtime_multiplier=EXCLUDED.overtime_multiplier,updated_by=EXCLUDED.updated_by,updated_at=now()
+        RETURNING employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier`,
+        [employeeId,parsed.data.workDaysPerMonth,parsed.data.dailyWorkMinutes,parsed.data.dayOffPayAmount,parsed.data.overtimeMultiplier,request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_attendance_pay_policy",module:"payroll",entityType:"employee_payroll_attendance_policy",entityId:employeeId,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return result.rows[0];
+    });
+    return {data:saved};
   });
 
   app.post("/api/payroll/salary-profiles", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async (request, reply) => {
@@ -371,6 +409,57 @@ export async function payrollRoutes(app: FastifyInstance) {
           await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
         }
       }
+      // Convert reviewed attendance minutes into auditable payroll lines. Policy defaults
+      // are 26 workdays x 8 hours; each employee can override the work pattern and rest-day rate.
+      for (const item of salaryItems.rows) {
+        const itemBefore=await client.query("SELECT base_salary,bonus_amount,deduction_amount,advance_repayment_amount FROM payroll_items WHERE id=$1 FOR UPDATE",[item.id]);
+        const policyResult=await client.query(`SELECT COALESCE(work_days_per_month,26)::int AS work_days_per_month,
+          COALESCE(daily_work_minutes,480)::int AS daily_work_minutes,
+          COALESCE(day_off_pay_amount,0)::numeric AS day_off_pay_amount,
+          COALESCE(overtime_multiplier,1.5)::numeric AS overtime_multiplier
+          FROM employee_payroll_attendance_policies WHERE employee_id=$1`,[item.employee_id]);
+        const rawPolicy=policyResult.rows[0]??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
+        const employeeDays=snapshot.filter(row=>row.employeeId===item.employee_id) as unknown as PayrollAttendanceDay[];
+        let calculation;
+        try {
+          calculation=calculatePayrollAttendance({
+            baseSalary:Number(itemBefore.rows[0].base_salary),
+            existingBonus:Number(itemBefore.rows[0].bonus_amount),
+            policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier)},
+            days:employeeDays
+          });
+        } catch(error) {
+          const code=error instanceof Error?error.message:"ATTENDANCE_CALCULATION_INVALID";
+          if(code==="ATTENDANCE_REVIEW_REQUIRED")throw new AppError(code,"لا يمكن احتساب المرتب قبل مراجعة أيام الحضور التي عليها ملاحظات.",409);
+          if(code==="ATTENDANCE_MISSING_PUNCH")throw new AppError(code,"يوجد يوم ببصمة ناقصة؛ صحح البصمة أو سوِّ اليوم يدويًا قبل اعتماد المسير.",409);
+          throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
+        }
+        const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier)};
+        if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
+          VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب',$2,$3,$4,'attendance:deduction')
+          ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
+          [item.id,calculation.deductionAmount,JSON.stringify({lateMinutes:calculation.lateMinutes,earlyMinutes:calculation.earlyMinutes,unpaidPermissionMinutes:calculation.unpaidPermissionMinutes,absenceMinutes:calculation.absenceMinutes,minuteRate:calculation.minuteRate}),request.user!.userId]);
+        if(calculation.overtimeBonus>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
+          VALUES($1,'BONUS','مقابل الوقت الإضافي',$2,$3,$4,'attendance:overtime')
+          ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
+          [item.id,calculation.overtimeBonus,JSON.stringify({overtimeMinutes:calculation.overtimeMinutes,minuteRate:calculation.minuteRate,overtimeMultiplier:policySnapshot.overtimeMultiplier}),request.user!.userId]);
+        if(calculation.dayOffBonus>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
+          VALUES($1,'BONUS','مقابل العمل في أيام الراحة والإجازات',$2,$3,$4,'attendance:day-off')
+          ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
+          [item.id,calculation.dayOffBonus,JSON.stringify({dayOffWorkedMinutes:calculation.dayOffWorkedMinutes,dayOffPayAmount:policySnapshot.dayOffPayAmount,dailyWorkMinutes:policySnapshot.dailyWorkMinutes}),request.user!.userId]);
+        const totals=await client.query(`SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
+          COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
+          FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[item.id]);
+        const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
+        if(Number(itemBefore.rows[0].base_salary)+bonus<deduction+Number(itemBefore.rows[0].advance_repayment_amount??0))
+          throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الحضور والبنود الأخرى أكبر من إجمالي المستحقات؛ راجع المسير قبل الاعتماد.",409);
+        await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,item.id]);
+        await client.query(`INSERT INTO payroll_attendance_calculations(payroll_item_id,calculation_data,captured_by)
+          VALUES($1,$2::jsonb,$3) ON CONFLICT(payroll_item_id) DO NOTHING`,
+          [item.id,JSON.stringify({month:monthLabel,policy:policySnapshot,...calculation}),request.user!.userId]);
+        await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"calculate_attendance_pay",module:"payroll",entityType:"payroll_item",entityId:item.id,afterData:{policy:policySnapshot,...calculation},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      }
+
       const salaryItemsForPosting = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
           (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
