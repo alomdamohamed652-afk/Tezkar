@@ -288,22 +288,27 @@ export async function attendanceRoutes(app:FastifyInstance){
     const permissions=permissionMap.get(String(row.employeeId)+"|"+String(row.date))??{paid:0,unpaid:0,items:[]};
     const worked=Number(row.workedMinutes??0);
     const overlap=(a:number,b:number,c:number,d:number)=>Math.max(0,Math.min(b,d)-Math.max(a,c));
-    let latePermissionOverlapMinutes=0,earlyPermissionOverlapMinutes=0;
+    let latePermissionOverlapMinutes=0,earlyPermissionOverlapMinutes=0,paidMinutes=0,unpaidMinutes=0;
     const scheduledStartMinute=typeof row.scheduledStartMinute==="number"?row.scheduledStartMinute:null;
     const scheduledEndMinute=typeof row.scheduledEndMinute==="number"?row.scheduledEndMinute:null;
     const firstInMinute=typeof row.firstInMinute==="number"?row.firstInMinute:null;
     const lastOutMinute=typeof row.lastOutMinute==="number"?row.lastOutMinute:null;
     const lateStart=scheduledStartMinute===null?null:scheduledStartMinute+Number(row.lateGraceMinutes??0);
     const earlyEnd=scheduledEndMinute===null?null:scheduledEndMinute-Number(row.earlyGraceMinutes??0);
+    const effectivePermissionItems:Array<{type:string;minutes:number;startsAt:string;endsAt:string}>=[];
     for(const permission of permissions.items){
       const permissionStart=minutesOfTime(permission.startsAt),permissionEnd=minutesOfTime(permission.endsAt);
-      if(permissionStart===null||permissionEnd===null)continue;
+      if(permissionStart===null||permissionEnd===null||scheduledStartMinute===null||scheduledEndMinute===null||Boolean(row.isDayOff))continue;
+      const coveredMinutes=overlap(scheduledStartMinute,scheduledEndMinute,permissionStart,permissionEnd);
+      if(coveredMinutes<=0)continue;
+      if(permission.type==="PAID")paidMinutes+=coveredMinutes;else unpaidMinutes+=coveredMinutes;
+      effectivePermissionItems.push({...permission,minutes:coveredMinutes});
       if(lateStart!==null&&firstInMinute!==null)latePermissionOverlapMinutes+=overlap(lateStart,firstInMinute,permissionStart,permissionEnd);
       if(lastOutMinute!==null&&earlyEnd!==null)earlyPermissionOverlapMinutes+=overlap(lastOutMinute,earlyEnd,permissionStart,permissionEnd);
     }
     const adjustedLate=Math.max(0,Number(row.lateMinutes??0)-latePermissionOverlapMinutes);
     const adjustedEarly=Math.max(0,Number(row.earlyMinutes??0)-earlyPermissionOverlapMinutes);
-    report[index]={...row,lateMinutes:adjustedLate,earlyMinutes:adjustedEarly,latePermissionOverlapMinutes,earlyPermissionOverlapMinutes,permissionMinutes:permissions.paid+permissions.unpaid,paidPermissionMinutes:permissions.paid,unpaidPermissionMinutes:permissions.unpaid,permissionDetails:permissions.items,payableWorkedMinutes:worked+permissions.paid};
+    report[index]={...row,lateMinutes:adjustedLate,earlyMinutes:adjustedEarly,latePermissionOverlapMinutes,earlyPermissionOverlapMinutes,permissionMinutes:paidMinutes+unpaidMinutes,paidPermissionMinutes:paidMinutes,unpaidPermissionMinutes:unpaidMinutes,permissionDetails:effectivePermissionItems,payableWorkedMinutes:worked+paidMinutes};
   }
   const totals={rows:report.length,totalPaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.paidPermissionMinutes??0),0),totalUnpaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.unpaidPermissionMinutes??0),0),totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
   return {data:report,summary:totals};
