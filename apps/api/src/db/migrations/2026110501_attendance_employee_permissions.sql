@@ -39,7 +39,7 @@ ON CONFLICT(code) DO NOTHING;
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id
 FROM roles r CROSS JOIN permissions p
-WHERE r.code IN ('worker','employee')
+WHERE r.code IN ('worker','employee','shift_leader')
   AND p.code IN ('attendance.permission.request','attendance.permission.view_own')
 ON CONFLICT DO NOTHING;
 
