@@ -99,6 +99,7 @@ test("paid permission time is credited against a full-day absence before deducti
     policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
     days: [{ date: "2026-11-07", status: "ABSENT", paidPermissionMinutes: 120 }]
   });
+  assert.equal(result.paidPermissionMinutes, 120);
   assert.equal(result.absenceMinutes, 360);
   assert.equal(result.deductionAmount, 173.08);
 });
