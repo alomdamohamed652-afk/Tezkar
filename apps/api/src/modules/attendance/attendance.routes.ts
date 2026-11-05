@@ -143,7 +143,6 @@ export async function attendanceRoutes(app:FastifyInstance){
    const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,corrected_punch_at,correction_decision,correction_note,review_status FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
    if(!before.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","حركة البصمة غير موجودة",404);
    const old=before.rows[0],d=parsed.data;
-   if(old.correction_decision)throw new AppError("ATTENDANCE_CORRECTION_ALREADY_REVIEWED","تم حسم تصحيح هذه البصمة بالفعل. راجع سجل التدقيق قبل أي تعديل جديد.",409);
    if(!["IN","OUT"].includes(old.status))throw new AppError("INVALID_ATTENDANCE_CORRECTION","تصحيح النوع متاح لحركات الدخول والخروج فقط",422);
    let status:string|null=null,at:string|null=null,decision:string;
    if(d.decision==="KEEP_ORIGINAL"){decision="KEPT_ORIGINAL";}
