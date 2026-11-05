@@ -200,6 +200,7 @@ export async function accountingRoutes(app:FastifyInstance){
    pool.query(`
     SELECT ar.id AS repayment_id,ar.advance_id,a.code AS advance_code,
            a.employee_id,emp.full_name AS employee_name,
+           creator.employee_id AS expected_custody_holder_id,
            ar.amount,ar.payment_date::text AS payment_date,
            movements.movement_count AS custody_movement_count,
            movements.movement_amount AS custody_amount,
@@ -208,6 +209,7 @@ export async function accountingRoutes(app:FastifyInstance){
       FROM advance_repayments ar
       JOIN advance_requests a ON a.id=ar.advance_id
       JOIN employees emp ON emp.id=a.employee_id
+      LEFT JOIN users creator ON creator.id=ar.created_by
       LEFT JOIN LATERAL (
         SELECT COUNT(*)::int AS movement_count,
                COALESCE(SUM(c.amount),0) AS movement_amount,
@@ -220,6 +222,7 @@ export async function accountingRoutes(app:FastifyInstance){
      WHERE ar.source_payroll_item_id IS NULL
        AND (movements.movement_count<>1
             OR movements.holder_count<>1
+            OR movements.holder_id IS DISTINCT FROM creator.employee_id::text
             OR ROUND(movements.movement_amount::numeric,2)<>ROUND(ar.amount::numeric,2))
      ORDER BY ar.payment_date DESC,emp.full_name`)
   ]);
