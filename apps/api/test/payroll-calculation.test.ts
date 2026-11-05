@@ -113,3 +113,13 @@ test("minute-based payroll blocks worked days without a schedule classification"
     days: [{ date: "2026-11-08", status: "NO_SCHEDULE_WITH_PUNCH", workedMinutes: 240 }]
   }), /ATTENDANCE_SCHEDULE_REQUIRED/);
 });
+
+
+test("minute-based payroll requires a schedule for every attendance day", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-09", status: "NO_SCHEDULE", workedMinutes: 0 }]
+  }), /ATTENDANCE_SCHEDULE_REQUIRED/);
+});
