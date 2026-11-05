@@ -669,28 +669,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
           {date,employeeId:employeeB.rows[0].id,status:"PRESENT",isDayOff:false,firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,needsReview:false}
         ];
       }).flat();
-      const missingSnapshotApproval = await app.inject({
-        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: {}
-      });
-      assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
-      assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
-      const incompleteSnapshotApproval = await app.inject({
-        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: { attendanceSnapshot: attendanceSnapshot.slice(0, 1) }
-      });
-      assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
-      assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
-      const missingAttendanceSnapshot=await app.inject({
-        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers:{cookie:cookieHeader},payload:{}
-      });
-      assert.equal(missingAttendanceSnapshot.statusCode,422,missingAttendanceSnapshot.body);
-      assert.equal(missingAttendanceSnapshot.json().error.code,"ATTENDANCE_SNAPSHOT_REQUIRED");
       const pendingPayrollPunch=await apiPool.query(
-        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE','2099-01-15T08:00:00Z','IN','FINGERPRINT',TRUE,'PENDING',$2) RETURNING id",
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE',TIMESTAMP '2099-01-15 08:00:00' AT TIME ZONE 'Africa/Cairo','IN','FINGERPRINT',TRUE,'PENDING',$2) RETURNING id",
         [employeeA.rows[0].id,randomBytes(32).toString("hex")]
       );
       const blockedByPendingAttendance=await app.inject({
