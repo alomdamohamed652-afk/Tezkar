@@ -66,6 +66,21 @@ function collapseNearDuplicateEvents(events: readonly AttendancePunchEvent[]) {
   return { accepted, duplicateIds };
 }
 
+function findUnpairedPunchIds(events:readonly AttendancePunchEvent[],inStatus:string,outStatus:string):string[] {
+  const relevant=[...events].filter(event=>event.status===inStatus||event.status===outStatus)
+    .sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
+  const unpaired=new Set<string>();let open:AttendancePunchEvent|null=null;
+  for(const event of relevant){
+    if(event.status===inStatus){
+      if(open){unpaired.add(open.id);unpaired.add(event.id);}
+      else open=event;
+    }else if(!open){unpaired.add(event.id);}
+    else open=null;
+  }
+  if(open)unpaired.add(open.id);
+  return [...unpaired];
+}
+
 export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent[]) {
   // Pending, rejected and suspicious-unreviewed punches remain in the raw
   // attendance history, but cannot contribute to payable worked time.
@@ -90,10 +105,15 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   // A repeated same-type event can make a missing checkout look like a long
   // continuous shift. Freeze the day's payable minutes until a reviewer approves
   // the extra punches or corrects their event types.
-  const countedEvents = unresolvedRepeatedEvents.length ? [] : usable;
+  const unpairedPunchIds=[
+    ...findUnpairedPunchIds(usable,"IN","OUT"),
+    ...findUnpairedPunchIds(usable,"OVERTIME_IN","OVERTIME_OUT"),
+  ];
+  const countedEvents = unresolvedRepeatedEvents.length || unpairedPunchIds.length ? [] : usable;
   const candidateIds = new Set([
     ...collapsed.duplicateIds,
     ...extraSameType.map((event) => event.id),
+    ...unpairedPunchIds,
     ...ordered.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
   ]);
   // A second same-type punch is a review candidate, not automatically an error:
@@ -102,7 +122,10 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   const reviewPunches = [...candidateIds]
     .map((id) => ordered.find((candidate) => candidate.id === id))
     .filter((event): event is AttendancePunchEvent =>
-      event !== undefined && event.review_status !== "APPROVED" && event.review_status !== "REJECTED"
+      event !== undefined && (
+        (event.review_status !== "APPROVED" && event.review_status !== "REJECTED")
+        || unpairedPunchIds.includes(event.id)
+      )
     )
     .map((event) => ({ id: event.id, status: event.status, punch_at: event.punch_at }));
   const reviewPunchIds = reviewPunches.map((event) => event.id);
@@ -118,7 +141,8 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     duplicatePunchCount: collapsed.duplicateIds.length,
     reviewPunchIds,
     reviewPunches,
-    needsReview: reviewPunchIds.length > 0,
+    needsReview: reviewPunchIds.length > 0 || unpairedPunchIds.length > 0,
+    unpairedPunchIds,
     multipleNormalIns: normalIns.length > 1,
     multipleNormalOuts: normalOuts.length > 1,
     multipleOvertimeIns: overtimeIns.length > 1,
