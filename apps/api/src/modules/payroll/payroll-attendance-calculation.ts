@@ -18,6 +18,11 @@ export interface PayrollAttendancePolicy {
 }
 
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const minutes = (value: number | undefined) => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100000) throw new RangeError("Invalid attendance minutes.");
+  return Math.trunc(parsed);
+};
 
 /** Spread monthly salary over the configured monthly working minutes. */
 export function calculatePayrollAttendance(input: {
@@ -42,7 +47,7 @@ export function calculatePayrollAttendance(input: {
   let absenceMinutes = 0, overtimeMinutes = 0, dayOffWorkedMinutes = 0;
   for (const day of days) {
     if (day.needsReview) throw new Error("ATTENDANCE_REVIEW_REQUIRED");
-    const worked = Math.max(0, Math.trunc(Number(day.workedMinutes ?? 0)));
+    const worked = minutes(day.workedMinutes);
     if (day.isDayOff || day.status === "DAY_OFF" || day.status === "DAY_OFF_WITH_PUNCH") {
       dayOffWorkedMinutes += worked;
       continue;
@@ -52,10 +57,10 @@ export function calculatePayrollAttendance(input: {
       absenceMinutes += policy.dailyWorkMinutes;
       continue;
     }
-    lateMinutes += Math.max(0, Math.trunc(Number(day.lateMinutes ?? 0)));
-    earlyMinutes += Math.max(0, Math.trunc(Number(day.earlyMinutes ?? 0)));
-    unpaidPermissionMinutes += Math.max(0, Math.trunc(Number(day.unpaidPermissionMinutes ?? 0)));
-    overtimeMinutes += Math.max(0, Math.trunc(Number(day.overtimeMinutes ?? 0)));
+    lateMinutes += minutes(day.lateMinutes);
+    earlyMinutes += minutes(day.earlyMinutes);
+    unpaidPermissionMinutes += minutes(day.unpaidPermissionMinutes);
+    overtimeMinutes += minutes(day.overtimeMinutes);
   }
   const deductionMinutes = lateMinutes + earlyMinutes + unpaidPermissionMinutes + absenceMinutes;
   const deductionAmount = money(deductionMinutes * minuteRate);
