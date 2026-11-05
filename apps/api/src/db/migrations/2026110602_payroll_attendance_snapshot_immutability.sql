@@ -3,37 +3,31 @@ CREATE OR REPLACE FUNCTION prevent_approved_payroll_attendance_snapshot_mutation
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
-DECLARE
-  target_item_id UUID;
-  target_status TEXT;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    target_item_id := NEW.payroll_item_id;
-    SELECT p.status INTO target_status
-      FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
-      WHERE i.id=target_item_id;
-    IF target_status IN ('APPROVED','CLOSED') THEN
+    IF EXISTS (
+      SELECT 1 FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+      WHERE i.id=NEW.payroll_item_id AND p.status IN ('APPROVED','CLOSED')
+    ) THEN
       RAISE EXCEPTION 'Approved payroll attendance snapshots are immutable'
         USING ERRCODE='55000';
     END IF;
     RETURN NEW;
   ELSIF TG_OP = 'DELETE' THEN
-    target_item_id := OLD.payroll_item_id;
-    SELECT p.status INTO target_status
-      FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
-      WHERE i.id=target_item_id;
-    IF target_status IN ('APPROVED','CLOSED') THEN
+    IF EXISTS (
+      SELECT 1 FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+      WHERE i.id=OLD.payroll_item_id AND p.status IN ('APPROVED','CLOSED')
+    ) THEN
       RAISE EXCEPTION 'Approved payroll attendance snapshots are immutable'
         USING ERRCODE='55000';
     END IF;
     RETURN OLD;
   ELSE
-    SELECT p.status INTO target_status
-      FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+    IF EXISTS (
+      SELECT 1 FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
       WHERE i.id IN (OLD.payroll_item_id,NEW.payroll_item_id)
         AND p.status IN ('APPROVED','CLOSED')
-      LIMIT 1;
-    IF target_status IN ('APPROVED','CLOSED') THEN
+    ) THEN
       RAISE EXCEPTION 'Approved payroll attendance snapshots are immutable'
         USING ERRCODE='55000';
     END IF;
