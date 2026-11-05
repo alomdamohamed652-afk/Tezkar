@@ -346,6 +346,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
     const id = (request.params as {id:string}).id;
     const result = await withTransaction(async client => {
+      // Keep punches, schedules, overrides and permissions on one serializable read snapshot.
+      // A concurrent attendance edit must abort approval rather than produce a mixed calculation.
+      await client.query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
       const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
       if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
