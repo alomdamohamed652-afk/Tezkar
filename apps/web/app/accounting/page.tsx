@@ -35,7 +35,7 @@ const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل 
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"admin-expenses"|"profitability"|"periods"|"orders"|"custody">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
@@ -274,9 +274,7 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
-      {has("finance.expenses.view")&&<button className={"tab "+(tab==="admin-expenses"?"active":"")} onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE"}));setTab("admin-expenses")}}>المصروفات الإدارية</button>}
-      <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبات</button>
-      {has("finance.profitability.view")&&<button className={"tab "+(tab==="orders"?"active":"")} onClick={()=>{setTab("orders");void loadPeriods()}}>كل الطلبيات والتحليل</button>}
+      <button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبيات</button>
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
       {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
      </div>
@@ -376,18 +374,8 @@ export default function AccountingPage() {
       <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={7}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
      </section>}
 
-     {tab==="admin-expenses"&&has("finance.expenses.view")&&<section className="card">
+     {tab==="out"&&has("finance.expenses.view")&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">المصروفات الإدارية</h2><div className="form-hint">سجل كل مصروف ببيان مستقل. عند تصفية الفترة يوزع النظام الإجمالي افتراضيًا على الطلبيات حسب تكلفة كل طلبية، ويمكن تعديل الأنصبة قبل الإقفال.</div></div><span className="count-badge">{expenses.filter(x=>x.expense_type==="ADMINISTRATIVE").length}</span></div>
-      {has("finance.expenses.create")&&<div className="card-body">
-       <div className="form-grid finance-four-grid">
-        <label>التصنيف<select value={eForm.category} onChange={e=>setEForm({...eForm,category:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})}><option value="بوفيه">بوفيه</option><option value="كهرباء">كهرباء</option><option value="صيانة وتكاليف ماكينات">صيانة وتكاليف ماكينات</option><option value="تلفيات وإهلاك">تلفيات وإهلاك</option><option value="مصاريف لخدمة المصنع">مصاريف لخدمة المصنع</option><option value="نقل - بنزين">نقل — بنزين</option><option value="نقل - كارتة">نقل — كارتة</option><option value="نقل - أجرة تحميل وتنزيل">نقل — أجرة تحميل وتنزيل</option><option value="نقل - صيانة سيارات">نقل — صيانة سيارات</option><option value="نقل - أخرى">نقل — أخرى</option><option value="مياه">مياه</option><option value="إنترنت واتصالات">إنترنت واتصالات</option><option value="نظافة">نظافة</option><option value="إيجار">إيجار</option><option value="أخرى">أخرى</option></select></label>
-        <label>البيان التفصيلي<input required value={eForm.description} onChange={e=>setEForm({...eForm,description:e.target.value,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""})} placeholder="مثال: فاتورة كهرباء شهر أكتوبر"/></label>
-        <label>تاريخ المصروف<input type="date" value={eForm.expenseDate} onChange={e=>setEForm({...eForm,expenseDate:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
-        <label>المبلغ<input required type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value,expenseType:"ADMINISTRATIVE"})}/></label>
-        <label>مصدر المصروف <select value={eForm.paidFromEmployeeId} onChange={e=>setEForm({...eForm,paidFromEmployeeId:e.target.value,expenseType:"ADMINISTRATIVE"})}><option value="">مصروف عادي — بدون خصم عهدة</option><option value="HISTORICAL">تسوية سجل قديم — بدون عهدة</option>{employees.map(e=><option key={e.id} value={e.id}>من عهدة: {e.full_name}</option>)}</select></label>{eForm.paidFromEmployeeId==="HISTORICAL"&&<div className="form-hint" style={{gridColumn:"1/-1"}}>تسوية سجل قديم: لازم تاريخ المصروف يقع داخل فترة مالية مفتوحة. سيتم تسجيله في السجلات والتقارير دون إنشاء حركة خصم من عهدة أي موظف.</div>}
-       </div>
-       <div className="form-actions"><button className="primary-button" onClick={()=>{setEForm(v=>({...v,expenseType:"ADMINISTRATIVE",orderId:"",orderStageId:""}));void addExpense()}} disabled={!eForm.description.trim()||!eForm.amount||Number(eForm.amount)<=0}>تسجيل المصروف الإداري</button></div>
-      </div>}
       <div className="card-body">
        <h3 className="card-title">فلاتر المصروفات</h3>
        <div className="form-grid finance-four-grid">
@@ -434,7 +422,7 @@ export default function AccountingPage() {
      </section>}
      {periodDetail?.period.status==="CLOSED"&&has("finance.period_close.reopen")&&<section className="card"><div className="form-actions"><button className="secondary-button" disabled={periodSaving} onClick={reopenPeriod}>إعادة فتح الفترة (صلاحية خاصة)</button><button className="secondary-button" onClick={async()=>{try{const r=await api<{data:{report:unknown;report_sha256:string;snapshot_no:number;integrityVerified:boolean}}>("/api/accounting/periods/"+selectedPeriodId+"/report");window.alert(JSON.stringify(r.data.report,null,2));setMessage("تقرير الإقفال رقم "+r.data.snapshot_no+" — "+(r.data.integrityVerified?"تم التحقق من سلامة البصمة":"تحذير: فشل التحقق من سلامة التقرير")+". SHA-256: "+r.data.report_sha256);setError("")}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل تقرير الإقفال")}}}>عرض بيانات تقرير الإقفال</button></div></section>}
      {periodDetail&&(periodDetail.period.status==="UNDER_REVIEW"&&has("finance.period_close.review")||periodDetail.period.status==="READY_FOR_APPROVAL"&&has("finance.period_close.approve"))&&<section className="card"><div className="form-actions"><button className="primary-button" disabled={periodSaving} onClick={closePeriod}>{periodDetail.period.status==="UNDER_REVIEW"?"اعتماد المراجعة المحاسبية":"الإقفال النهائي"}</button>{has("finance.period_close.review")&&<button className="secondary-button" disabled={periodSaving} onClick={returnPeriodForCorrections}>إعادة للتعديل مع توثيق السبب</button>}</div></section>}
-     {tab==="orders"&&has("finance.profitability.view")&&<section className="card">
+     {tab==="profitability"&&has("finance.profitability.view")&&<section className="card">
       <div className="card-header"><div><h2 className="card-title">لوحة كل الطلبيات</h2><div className="form-hint">الإيرادات والتكاليف المباشرة والإدارية وتكلفة المخزون وأجور الإنتاج وصافي الربح لكل طلبية. التحصيل النقدي لا يُضاف مرة ثانية للإيرادات.{dashboardPeriodId?" التقرير يعرض الحركات والتكاليف المؤرخة داخل الفترة المختارة؛ قيمة العقد المعروضة إجمالية للطلبية وليست إيرادًا محققًا داخل الفترة.":" قيمة العقد تمثل الإيراد المستحق تعاقديًا، بينما الإيراد المسجل هو ما تم تسجيله فعليًا."}</div></div><button className="secondary-button" onClick={()=>void load()}>تحديث البيانات</button></div>
       <div className="stats finance-stats">
        <article className="card stat"><div className="stat-label">عدد الطلبيات</div><div className="stat-value">{orderFinance.length}</div></article>
