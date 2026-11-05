@@ -699,6 +699,25 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(authoritativeDay.status,"PRESENT","approval must derive the day from persisted punch records");
       assert.equal(Number(authoritativeDay.workedMinutes),480,"client-supplied zero minutes must not override the actual punch pair");
       assert.equal(Number(authoritativeDay.lateMinutes),0,"the persisted shift boundary should determine lateness");
+      const approvedPayrollItemId=(await apiPool.query(
+        "SELECT id FROM payroll_items WHERE period_id=$1 AND employee_id=$2",
+        [period.rows[0].id,employeeA.rows[0].id]
+      )).rows[0].id;
+      await assert.rejects(
+        apiPool.query("UPDATE payroll_attendance_snapshots SET snapshot_data=snapshot_data || '{\\"workedMinutes\\":0}'::jsonb WHERE payroll_item_id=$1 AND attendance_date='2099-01-15'",[approvedPayrollItemId]),
+        {code:"55000"},
+        "approved attendance snapshots must not be editable"
+      );
+      await assert.rejects(
+        apiPool.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 AND attendance_date='2099-01-15'",[approvedPayrollItemId]),
+        {code:"55000"},
+        "approved attendance snapshots must not be deletable"
+      );
+      await assert.rejects(
+        apiPool.query("UPDATE payroll_attendance_calculations SET calculation_data=calculation_data || '{\\"minuteRate\\":0}'::jsonb WHERE payroll_item_id=$1",[approvedPayrollItemId]),
+        {code:"55000"},
+        "approved attendance calculation policy must remain frozen"
+      );
       const reconciliation = await app.inject({
         method: "GET", url: "/api/accounting/reconciliation/payroll", headers: { cookie: cookieHeader }
       });
