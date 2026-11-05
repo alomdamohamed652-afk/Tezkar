@@ -133,7 +133,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   const parsed=z.object({
    decision:z.enum(["APPLY_SUGGESTION","KEEP_ORIGINAL","APPLY_MANUAL"]),
    suggestedStatus:z.enum(["IN","OUT"]).optional(),
-   correctedStatus:z.enum(["IN","OUT"]).optional(),
+   correctedStatus:z.enum(["IN","OUT","OVERTIME_IN","OVERTIME_OUT"]).optional(),
    correctedPunchAt:z.string().datetime({offset:true}).optional(),
    reason:z.string().trim().min(2).max(500).optional()
   }).safeParse(request.body);
@@ -142,7 +142,7 @@ export async function attendanceRoutes(app:FastifyInstance){
    const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,corrected_punch_at,correction_decision,correction_note,review_status FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
    if(!before.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","حركة البصمة غير موجودة",404);
    const old=before.rows[0],d=parsed.data;
-   if(!["IN","OUT"].includes(old.status))throw new AppError("INVALID_ATTENDANCE_CORRECTION","تصحيح النوع متاح لحركات الدخول والخروج فقط",422);
+   if(!["IN","OUT","OVERTIME_IN","OVERTIME_OUT"].includes(old.status))throw new AppError("INVALID_ATTENDANCE_CORRECTION","تصحيح النوع متاح لحركات الدخول والخروج والإضافي فقط",422);
    let status:string|null=null,at:string|null=null,decision:string;
    if(d.decision==="KEEP_ORIGINAL"){decision="KEPT_ORIGINAL";}
    else if(d.decision==="APPLY_SUGGESTION"){
