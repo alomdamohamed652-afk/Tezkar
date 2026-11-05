@@ -110,6 +110,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         ["payroll-api-" + randomBytes(5).toString("hex"), hashPassword(password), employeeA.rows[0].id]
       );
       const userId = userResult.rows[0].id;
+      for (const employeeId of [employeeA.rows[0].id, employeeB.rows[0].id]) {
+        for (let weekday = 0; weekday < 7; weekday++) {
+          await apiPool.query(
+            "INSERT INTO attendance_weekly_schedule_versions(employee_id,weekday,starts_at,ends_at,is_day_off,effective_from,created_by) VALUES($1,$2,'08:00','16:00',FALSE,'2099-01-01',$3)",
+            [employeeId, weekday, userId]
+          );
+        }
+      }
       const secondUserResult = await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES ($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
         ["payroll-api-reviewer-" + randomBytes(5).toString("hex"), hashPassword(password), employeeB.rows[0].id]
