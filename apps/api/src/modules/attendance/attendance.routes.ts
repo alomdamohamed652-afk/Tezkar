@@ -222,6 +222,8 @@ export async function attendanceRoutes(app:FastifyInstance){
   const q=request.query as {from?:string;to?:string;includeInactive?:string};
   const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
   if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
+  const reportDays=(new Date(dates.data.to+"T00:00:00Z").getTime()-new Date(dates.data.from+"T00:00:00Z").getTime())/86400000+1;
+  if(reportDays>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
   return buildAttendanceReport(pool,dates.data.from,dates.data.to,q.includeInactive==="true");
  });
 
