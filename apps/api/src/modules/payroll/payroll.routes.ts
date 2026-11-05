@@ -94,6 +94,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     }).safeParse(request.body);
     if(!z.string().uuid().safeParse(employeeId).success||!parsed.success)throw new AppError("VALIDATION_ERROR","إعدادات احتساب الأجر غير صحيحة",422);
     const saved=await withTransaction(async client=>{
+      if(!(await client.query("SELECT id FROM employees WHERE id=$1",[employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
       const result=await client.query(`INSERT INTO employee_payroll_attendance_policies(employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,updated_by)
         VALUES($1,$2,$3,$4,$5,$6)
         ON CONFLICT(employee_id) DO UPDATE SET work_days_per_month=EXCLUDED.work_days_per_month,
@@ -344,7 +345,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
     const id = (request.params as {id:string}).id;
     const body=z.object({
-      attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid()}).passthrough()).max(10000).optional()
+      attendanceSnapshot:z.array(z.object({date:z.string().date(),employeeId:z.string().uuid(),status:z.string().min(1),workedMinutes:z.number().int().min(0),lateMinutes:z.number().int().min(0),earlyMinutes:z.number().int().min(0),overtimeMinutes:z.number().int().min(0),paidPermissionMinutes:z.number().int().min(0),unpaidPermissionMinutes:z.number().int().min(0),isDayOff:z.boolean(),needsReview:z.boolean()}).passthrough()).max(10000).optional()
     }).safeParse(request.body??{});
     const result = await withTransaction(async client => {
       const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
