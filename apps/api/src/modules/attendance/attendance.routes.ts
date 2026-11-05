@@ -28,10 +28,10 @@ function minutesOfTime(value:string|null|undefined):number|null{if(!value)return
 export async function attendanceRoutes(app:FastifyInstance){
  app.get("/api/attendance",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
   const q=request.query as {from?:string;to?:string;review?:string};const args:unknown[]=[];const where:string[]=[];
-  if(q.from){args.push(q.from);where.push(`(p.punch_at AT TIME ZONE 'Africa/Cairo')::date >= ${args.length}::date`);}
-  if(q.to){args.push(q.to);where.push(`(p.punch_at AT TIME ZONE 'Africa/Cairo')::date <= ${args.length}::date`);}
+  if(q.from){args.push(q.from);where.push(`(COALESCE(p.corrected_punch_at,p.punch_at) AT TIME ZONE 'Africa/Cairo')::date >= ${args.length}::date`);}
+  if(q.to){args.push(q.to);where.push(`(COALESCE(p.corrected_punch_at,p.punch_at) AT TIME ZONE 'Africa/Cairo')::date <= ${args.length}::date`);}
   if(q.review&&["PENDING","AUTO_ACCEPTED","APPROVED","REJECTED"].includes(q.review)){args.push(q.review);where.push(`p.review_status=$${args.length}`);}
-  const rows=await pool.query(`SELECT p.id,p.device_code,p.punch_at,p.corrected_punch_at,p.status,p.verify_method,p.suspicious,p.duplicate_of,p.review_status,p.corrected_status,p.correction_decision,p.correction_note,p.correction_reviewed_at,p.location_id,p.card_no,p.id_number,e.id employee_id,e.full_name employee_name,e.code employee_code,b.source_name FROM attendance_punches p LEFT JOIN employees e ON e.id=p.employee_id LEFT JOIN attendance_import_batches b ON b.id=p.batch_id ${where.length?"WHERE "+where.join(" AND"):""} ORDER BY p.punch_at DESC LIMIT 1000`,args);
+  const rows=await pool.query(`SELECT p.id,p.device_code,p.punch_at,p.corrected_punch_at,p.status,p.verify_method,p.suspicious,p.duplicate_of,p.review_status,p.corrected_status,p.correction_decision,p.correction_note,p.correction_reviewed_at,p.location_id,p.card_no,p.id_number,e.id employee_id,e.full_name employee_name,e.code employee_code,b.source_name FROM attendance_punches p LEFT JOIN employees e ON e.id=p.employee_id LEFT JOIN attendance_import_batches b ON b.id=p.batch_id ${where.length?"WHERE "+where.join(" AND"):""} ORDER BY COALESCE(p.corrected_punch_at,p.punch_at) DESC LIMIT 1000`,args);
   const summary=await pool.query("SELECT count(*)::int total,count(*) FILTER(WHERE review_status='PENDING')::int pending,count(*) FILTER(WHERE suspicious)::int suspicious,count(*) FILTER(WHERE employee_id IS NULL)::int unknown FROM attendance_punches");
   const batches=await pool.query("SELECT id,source_name,total_rows,inserted_rows,duplicate_rows,suspicious_rows,unknown_rows,created_at FROM attendance_import_batches ORDER BY created_at DESC LIMIT 20");
   return {data:rows.rows,summary:summary.rows[0],batches:batches.rows};
@@ -337,6 +337,10 @@ export async function attendanceRoutes(app:FastifyInstance){
  app.get("/api/attendance/permissions/my",{preHandler:[authenticateRequest,requirePermission("attendance.permission.view_own","own")]},async request=>{
   const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
   const result=await pool.query("SELECT * FROM attendance_permission_requests WHERE employee_id=$1 ORDER BY permission_date DESC,starts_at DESC LIMIT 300",[employeeId]);
+  return {data:result.rows};
+ });
+ app.get("/api/attendance/permissions/employees",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async()=>{
+  const result=await pool.query("SELECT id,code,full_name,is_active,NULL::text AS device_code,10::int AS late_grace_minutes,5::int AS early_grace_minutes FROM employees ORDER BY is_active DESC,code");
   return {data:result.rows};
  });
  app.get("/api/attendance/permissions",{preHandler:[authenticateRequest,requirePermission("attendance.permission.view")]},async request=>{
