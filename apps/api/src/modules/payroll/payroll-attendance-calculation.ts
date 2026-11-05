@@ -16,6 +16,8 @@ export interface PayrollAttendancePolicy {
   dailyWorkMinutes: number;
   dayOffPayAmount: number;
   overtimeMultiplier: number;
+  /** Effective scheduled minutes for employees whose salary is active for only part of the month. */
+  scheduledMinutes?: number;
 }
 
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -42,7 +44,10 @@ export function calculatePayrollAttendance(input: {
     || !Number.isFinite(policy.overtimeMultiplier) || policy.overtimeMultiplier < 0 || policy.overtimeMultiplier > 5) {
     throw new RangeError("Invalid payroll attendance policy.");
   }
-  const scheduledMinutes = policy.workDaysPerMonth * policy.dailyWorkMinutes;
+  const scheduledMinutes = policy.scheduledMinutes ?? policy.workDaysPerMonth * policy.dailyWorkMinutes;
+  if (!Number.isFinite(scheduledMinutes) || scheduledMinutes <= 0) {
+    throw new RangeError("Invalid scheduled payroll minutes.");
+  }
   const minuteRate = (baseSalary + existingBonus) / scheduledMinutes;
   let lateMinutes = 0, earlyMinutes = 0, paidPermissionMinutes = 0, unpaidPermissionMinutes = 0;
   let absenceMinutes = 0, overtimeMinutes = 0, dayOffWorkedMinutes = 0;
