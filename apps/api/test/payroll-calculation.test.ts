@@ -90,3 +90,15 @@ test("minute-based payroll requires a configured rest-day rate when a rest day w
     days: [{ date: "2026-11-06", status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 240 }]
   }), /DAY_OFF_RATE_REQUIRED/);
 });
+
+
+test("paid permission time is credited against a full-day absence before deduction", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-07", status: "ABSENT", paidPermissionMinutes: 120 }]
+  });
+  assert.equal(result.absenceMinutes, 360);
+  assert.equal(result.deductionAmount, 173.08);
+});
