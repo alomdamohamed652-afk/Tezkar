@@ -43,7 +43,7 @@ export function calculatePayrollAttendance(input: {
   for (const day of days) {
     if (day.needsReview) throw new Error("ATTENDANCE_REVIEW_REQUIRED");
     const worked = Math.max(0, Math.trunc(Number(day.workedMinutes ?? 0)));
-    if (day.isDayOff) {
+    if (day.isDayOff || day.status === "DAY_OFF" || day.status === "DAY_OFF_WITH_PUNCH") {
       dayOffWorkedMinutes += worked;
       continue;
     }
