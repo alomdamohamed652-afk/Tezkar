@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS attendance_permission_requests (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (ends_at > starts_at),
-  CHECK (status <> 'APPROVED' OR permission_type IS NOT NULL),
+  CHECK (
+    (status = 'APPROVED' AND permission_type IS NOT NULL)
+    OR (status <> 'APPROVED' AND permission_type IS NULL)
+  ),
   CHECK (
     (status = 'PENDING' AND reviewed_by IS NULL AND reviewed_at IS NULL)
     OR status <> 'PENDING'
