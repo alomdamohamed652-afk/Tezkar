@@ -1046,6 +1046,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "custody outflow must include the 600 cash paid plus 400 advance repayment");
       assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="IN").amount),400,
         "advance repayment must be returned to the cash custody balance");
+      const februaryReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/payroll",headers:{cookie:cookieHeader}
+      });
+      assert.equal(februaryReconciliation.statusCode,200,februaryReconciliation.body);
+      assert.equal(februaryReconciliation.json().data.counts.missingPayrollExpenses,0,
+        "salary expense reconciliation must compare gross salary expense (take-home net plus advance recovery), not cash take-home alone");
       const februaryEmployeeB=februaryData.json().data.items.find((row:any)=>row.employee_id===employeeB.rows[0].id);
       assert.ok(februaryEmployeeB,"second employee should have a February payroll item");
       const previousCustodyPayment=await app.inject({
