@@ -6,7 +6,7 @@ ALTER TABLE payroll_adjustment_lines
   ADD COLUMN IF NOT EXISTS voided_by UUID REFERENCES users(id),
   ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
 
-DO $
+DO $migration$
 BEGIN
   -- PR #233's earlier payroll-time migration may already have installed this
   -- constraint. Check the target table, not only the global constraint name.
@@ -26,7 +26,7 @@ BEGIN
       );
   END IF;
 END
-$;
+$migration$;
 
 CREATE INDEX IF NOT EXISTS idx_payroll_adjustment_active_item
   ON payroll_adjustment_lines(payroll_item_id,status,line_type);
