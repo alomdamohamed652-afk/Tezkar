@@ -105,6 +105,25 @@ test("paid permission time is credited against a full-day absence before deducti
 });
 
 
+test("unpaid permission on a full absence is itemized separately without double deduction", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{
+      date: "2026-11-07",
+      status: "ABSENT",
+      paidPermissionMinutes: 60,
+      unpaidPermissionMinutes: 60
+    }]
+  });
+  assert.equal(result.paidPermissionMinutes, 60);
+  assert.equal(result.unpaidPermissionMinutes, 60);
+  assert.equal(result.absenceMinutes, 360);
+  assert.equal(result.deductionMinutes, 420);
+  assert.equal(result.deductionAmount, 201.92);
+});
+
 test("minute-based payroll blocks worked days without a schedule classification", () => {
   assert.throws(() => calculatePayrollAttendance({
     baseSalary: 6000,
