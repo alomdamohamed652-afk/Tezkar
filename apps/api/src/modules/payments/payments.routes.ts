@@ -342,6 +342,25 @@ export async function paymentsRoutes(app:FastifyInstance){
     const r=await pool.query("INSERT INTO payment_methods(code,name,sort_order) VALUES($1,$2,$3) RETURNING *",[parsed.data.code,parsed.data.name,parsed.data.sortOrder]);
     return reply.code(201).send({data:r.rows[0]});
   });
+  app.get("/api/payment-requests/pending-count", {
+    preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
+  }, async request => {
+    const user=await isWorker(request.user!.userId);
+    const params:unknown[]=[];
+    let scope="";
+    if(user?.is_worker){
+      if(!user.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(user.employee_id);
+      scope=" AND employee_id=$1";
+    }
+    const result=await pool.query(
+      `SELECT COUNT(*)::int AS count FROM payment_requests
+       WHERE status IN ('PENDING','APPROVED')${scope}`,
+      params
+    );
+    return {data:{count:Number(result.rows[0]?.count??0)}};
+  });
+
   app.get("/api/payment-requests",{
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   },async(request)=>{
