@@ -2,33 +2,98 @@ import { API_BASE } from "./api-base";
 
 export const API_URL = API_BASE;
 
-// A tiny in-memory cache avoids refetching the same read-only data while navigating
-// between pages. Mutations invalidate it immediately; the HTTP cache stays disabled.
-const GET_CACHE_TTL_MS = 1_500;
+// Cache only explicitly approved reads for longer than the short default.
+// Sensitive and rapidly changing domains always bypass the response cache.
+const DEFAULT_GET_CACHE_TTL_MS = 1_500;
 const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
 const MAX_GET_CACHE_ENTRIES = 100;
-const getCache = new Map<string, { expiresAt: number; value: unknown }>();
+
+type CacheEntry = { expiresAt: number; value: unknown };
+const getCache = new Map<string, CacheEntry>();
 const pendingGets = new Map<string, Promise<unknown>>();
 let cacheGeneration = 0;
 
+const REFERENCE_DATA_PATHS = new Set([
+  "/api/products",
+  "/api/stages",
+  "/api/rates",
+  "/api/shifts",
+  "/api/shifts/rate-groups",
+  "/api/machines"
+]);
+
+const NEVER_CACHE_PATH_PREFIXES = [
+  "/api/auth",
+  "/api/payroll",
+  "/api/accounting",
+  "/api/finance",
+  "/api/custody",
+  "/api/advances",
+  "/api/attendance",
+  "/api/warehouse",
+  "/api/production",
+  "/api/notifications",
+  "/api/tasks",
+  "/api/payment-requests",
+  "/api/orders",
+  "/api/deliveries",
+  "/api/employees",
+  "/api/earnings"
+];
+
 function getCacheTtl(path: string): number {
-  // Keep the default short for user-specific or frequently changing records.
-  // Only low-volatility reference lists receive a longer in-memory cache.
-  const pathname = path.split("?")[0];
-  const referenceDataPaths = new Set([
-    "/api/products",
-    "/api/stages",
-    "/api/rates",
-    "/api/shifts",
-    "/api/shifts/rate-groups",
-    "/api/machines"
-  ]);
-  return referenceDataPaths.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : GET_CACHE_TTL_MS;
+  const pathname = path.split("?")[0] ?? path;
+  if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
+  return REFERENCE_DATA_PATHS.has(pathname)
+    ? REFERENCE_DATA_CACHE_TTL_MS
+    : DEFAULT_GET_CACHE_TTL_MS;
 }
 
-function storeGetCache(key: string, value: unknown, ttlMs: number) {
-  // Bound memory usage on long-lived tabs. Refreshing an existing key moves it
-  // to the newest position so the oldest entries are evicted first.
+function makeGetCacheKey(path: string, headers?: HeadersInit): string {
+  const normalizedHeaders = new Headers(headers);
+  const headerEntries = Array.from(normalizedHeaders.entries()).sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify([cacheGeneration, path, headerEntries]);
+}
+
+export function clearApiCache(): void {
+  cacheGeneration += 1;
+  getCache.clear();
+  pendingGets.clear();
+}
+
+// Call after a successful login/account switch and before logout navigation.
+// Broadcast only a lifecycle signal; never put identity or session data in it.
+export function notifyApiSessionChanged(): void {
+  clearApiCache();
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event("tezkar:session-changed"));
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel("tezkar-session-lifecycle");
+      channel.postMessage({ type: "session-changed" });
+      channel.close();
+    }
+  } catch {
+    // Cross-tab notification is best-effort; same-tab cache clearing is immediate.
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("tezkar:session-changed", clearApiCache);
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel("tezkar-session-lifecycle");
+      channel.onmessage = event => {
+        if (event.data?.type === "session-changed") clearApiCache();
+      };
+    }
+  } catch {
+    // Browsers without BroadcastChannel still get same-tab lifecycle protection.
+  }
+}
+
+function storeGetCache(key: string, value: unknown, ttlMs: number): void {
+  if (ttlMs <= 0) return;
   getCache.delete(key);
   while (getCache.size >= MAX_GET_CACHE_ENTRIES) {
     const oldestKey = getCache.keys().next().value;
@@ -36,12 +101,6 @@ function storeGetCache(key: string, value: unknown, ttlMs: number) {
     getCache.delete(oldestKey);
   }
   getCache.set(key, { value, expiresAt: Date.now() + ttlMs });
-}
-
-function invalidateGetCache() {
-  cacheGeneration += 1;
-  getCache.clear();
-  pendingGets.clear();
 }
 
 export class ApiError extends Error {
@@ -57,19 +116,19 @@ export async function api<T>(
 ): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase();
   const canCache = method === "GET";
-  const key = path;
-  const cacheTtlMs = getCacheTtl(path);
+  const cacheTtlMs = canCache ? getCacheTtl(path) : 0;
+  const key = makeGetCacheKey(path, options.headers);
   const now = Date.now();
 
-  if (canCache) {
+  if (canCache && cacheTtlMs > 0) {
     const cached = getCache.get(key);
     if (cached && cached.expiresAt > now) return cached.value as T;
     if (cached) getCache.delete(key);
     const pending = pendingGets.get(key);
     if (pending) return pending as Promise<T>;
-  } else {
-    // Any write may affect any page's totals or badges, so prefer correctness.
-    invalidateGetCache();
+  } else if (!canCache) {
+    // A write can affect any view; invalidate before issuing it.
+    clearApiCache();
   }
 
   const requestGeneration = cacheGeneration;
@@ -87,6 +146,9 @@ export async function api<T>(
     const body = await response.json().catch(() => null);
 
     if (!response.ok) {
+      // A 401 means the browser's authentication context is no longer valid.
+      // Drop all cached reads immediately so they cannot survive session expiry.
+      if (response.status === 401) clearApiCache();
       const message = body?.error?.message ?? "حدث خطأ أثناء الاتصال بالنظام";
       throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
     }
@@ -117,13 +179,13 @@ export async function api<T>(
       window.dispatchEvent(new CustomEvent("tezkar:mutation-success", { detail: { title, message } }));
     }
 
-    if (canCache && requestGeneration === cacheGeneration) {
+    if (canCache && cacheTtlMs > 0 && requestGeneration === cacheGeneration) {
       storeGetCache(key, body, cacheTtlMs);
     }
     return body as T;
   })();
 
-  if (canCache) pendingGets.set(key, request);
+  if (canCache && cacheTtlMs > 0) pendingGets.set(key, request);
   try {
     return await request;
   } finally {
