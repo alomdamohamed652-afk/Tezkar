@@ -166,7 +166,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
    {loading?<div className="empty">جارٍ تحميل مسير الرواتب...</div>:!payroll.period?<div className="empty">لا يوجد مسير لهذا الشهر. اضغط «تجهيز المسير من الرواتب السارية» بعد تعريف الرواتب الأساسية.</div>:!payroll.items.length?<div className="empty">لا توجد بنود رواتب في هذه الفترة.</div>:<div className="table-wrap"><table><thead><tr><th>الموظف</th><th>الأساسي</th><th>مكافأة</th><th>خصم</th><th>سداد السلفة</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>{payroll.items.map((i) => {
         return (
       <tr key={i.id}>
-        <td><div className="strong">{i.employee_name}</div><div className="form-hint">{i.employee_code} · {i.department_name || "بدون قسم"}</div></td>
+        <td><div className="strong">{i.employee_name}</div><div className="form-hint">{i.employee_code} · {i.department_name || "بدون قسم"} · معرّف البند: <code>{i.id}</code></div></td>
         <td>{money(i.base_salary)}</td>
         <td>{money(i.bonus_amount)}</td>
         <td>{money(i.deduction_amount)}</td>
