@@ -177,7 +177,7 @@ export async function accountingRoutes(app:FastifyInstance){
         WHERE rl.source_type='PAYROLL_PAYMENT' AND pp.payroll_item_id=i.id),0) AS effective_paid
       FROM payroll_items i WHERE i.id=$1`,[payrollItemId]);
     const paid=Number(totals.rows[0].effective_paid),net=Number(totals.rows[0].net_amount);
-    await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2",[net<=0.0001||paid>=net-0.0001?"PAID":paid>0.0001?"PARTIAL":"APPROVED",payrollItemId]);
+    await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2",[net<=0.0001||paid>=net-0.0001?"PAID":paid>0.0001?"PARTIAL":"UNPAID",payrollItemId]);
    }
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {replayed:false,reversal:header.rows[0],lines};
