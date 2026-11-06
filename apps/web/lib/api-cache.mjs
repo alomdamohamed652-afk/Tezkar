@@ -1,4 +1,3 @@
-const DEFAULT_GET_CACHE_TTL_MS = 1_500;
 const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
 const MAX_GET_CACHE_ENTRIES = 100;
 
@@ -22,9 +21,7 @@ const NEVER_CACHE_PATH_PREFIXES = [
 export function getApiCacheTtl(path) {
   const pathname = path.split("?")[0] ?? path;
   if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
-  return REFERENCE_DATA_PATHS.has(pathname)
-    ? REFERENCE_DATA_CACHE_TTL_MS
-    : DEFAULT_GET_CACHE_TTL_MS;
+  return REFERENCE_DATA_PATHS.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : 0;
 }
 
 export function createGetCacheKey(path, headers, generation = 0) {
