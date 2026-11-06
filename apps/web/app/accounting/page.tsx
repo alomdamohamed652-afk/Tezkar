@@ -75,6 +75,11 @@ export default function AccountingPage() {
   const [payrollReconciliation,setPayrollReconciliation]=useState<PayrollReconciliation|null>(null);
   const [reconciliationLoading,setReconciliationLoading]=useState(false);
 
+  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT",sourceId:"",amount:"",reason:""});
+  const [reversalSaving,setReversalSaving]=useState(false);
+  const [reversals,setReversals]=useState<Array<{id:string;code:string;reason:string;reversal_date:string;created_at:string;created_by_username:string;source_type:string;source_id:string;amount:string|number}>>([]);
+
+
   async function load() {
     setError("");
     try {
@@ -89,6 +94,7 @@ export default function AccountingPage() {
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
+  useEffect(()=>{void loadReversals()},[has]);
   useEffect(()=>{
     let active=true;
     if(!eForm.orderId||eForm.expenseType!=="DIRECT"){setExpenseStages([]);return;}
@@ -103,6 +109,26 @@ export default function AccountingPage() {
     if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
     return()=>{active=false};
   },[has]);
+  async function loadReversals(){
+    if(!has("finance.expenses.view"))return;
+    try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
+  }
+  async function submitReversal(){
+    setError("");setMessage("");
+    if(!reversalForm.sourceId.trim()||!reversalForm.amount||!reversalForm.reason.trim()){setError("أدخل معرّف الحركة والمبلغ وسبب العكس");return;}
+    setReversalSaving(true);
+    try{
+      await api("/api/accounting/reversals",{method:"POST",body:JSON.stringify({
+        sourceType:reversalForm.sourceType,sourceId:reversalForm.sourceId.trim(),amount:Number(reversalForm.amount),
+        reason:reversalForm.reason.trim(),idempotencyKey:crypto.randomUUID()
+      })});
+      setReversalForm(v=>({...v,sourceId:"",amount:"",reason:""}));
+      await loadReversals();
+      setMessage("تم تسجيل العكس المحاسبي مع الاحتفاظ بالحركة الأصلية.");
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل العكس المحاسبي");}
+    finally{setReversalSaving(false);}
+  }
+
   async function runPayrollReconciliation(){
     if(!has("finance.expenses.view"))return;
     setReconciliationLoading(true);setError("");setMessage("");
@@ -276,6 +302,18 @@ export default function AccountingPage() {
     <section className="content">
      {error&&<div className="alert error">{error}</div>}
      {message&&<div className="success-box">{message}</div>}
+
+     {has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
+      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس أثر دفعة راتب أو سداد سلفة دون حذف الحركة الأصلية. أقساط السلف المرتبطة بدفعة راتب تُعكس معها تلقائيًا.</div></div></div>
+      <div className="form-grid" style={{padding:"0 16px 16px"}}>
+       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option></select></label>
+       <label>معرّف الحركة الأصلية (UUID)<input value={reversalForm.sourceId} onChange={e=>setReversalForm(v=>({...v,sourceId:e.target.value}))} placeholder="الصق معرّف الحركة"/></label>
+       <label>مبلغ العكس (ج.م)<input type="number" min="0.01" step="0.01" value={reversalForm.amount} onChange={e=>setReversalForm(v=>({...v,amount:e.target.value}))}/></label>
+       <label style={{gridColumn:"1 / -1"}}>سبب العكس<textarea rows={2} value={reversalForm.reason} onChange={e=>setReversalForm(v=>({...v,reason:e.target.value}))} placeholder="اكتب سبب التصحيح بالتفصيل"/></label>
+       <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" type="button" disabled={reversalSaving} onClick={()=>void submitReversal()}>{reversalSaving?"جارٍ التسجيل...":"تسجيل العكس"}</button></div>
+      </div>
+      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
+     </section>}
 
      <div className="tabs finance-tabs">
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
