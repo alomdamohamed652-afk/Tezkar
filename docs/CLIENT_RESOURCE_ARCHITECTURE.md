@@ -116,6 +116,7 @@ The initial implementation uses a 30-second in-memory TTL for a narrow reference
 
 ## Current implementation status
 
-- PR #255 contains the first server-side request reductions (count endpoints, consolidated auth read, session activity write throttling, and attendance report grouping).
-- PR #256 begins the browser-side layer with bounded in-memory GET caching and a narrow reference-data TTL allowlist.
+- PR #255 contains the first server-side request reductions: compact permission-scoped Sidebar count endpoints, a consolidated `/api/auth/me` read, throttled session activity writes, and attendance report indexing by employee plus Cairo-local date. Overnight shifts retain the next-day OUT-punch rule; regression coverage checks that the next shift's punches are not stolen.
+- PR #256 begins the browser-side layer with bounded, tab-local in-memory GET caching and a short reference-data TTL. Its stacked follow-up PR #257 tightens the allowlist to products, stages, shift rate-group names, and machine reference data; wage rates and shifts with dynamic employee counts are excluded.
+- Latest verified PR #255 head: `f4fe6eb5d0cc1722c4053df8463521c40eb9c191` (Install, Lint, Typecheck, Tests, Build all pass). The PR remains open and unmerged.
 - IndexedDB, Service Worker API caching, offline writes, and Web Workers are **not** implemented. They require separate profiling, threat review, and tests before adoption.
