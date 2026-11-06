@@ -755,12 +755,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // Settlement allocation is canonical for that payment and must not be added
       // on top of its duplicate order allocation when computing the order balance.
       const orderStageForDualAllocation=(await apiPool.query(
-        "SELECT id FROM order_stages WHERE order_id=$1 LIMIT 1",[hamzaOrder.json().data.id]
+        "SELECT id,stage_id FROM order_stages WHERE order_id=$1 LIMIT 1",[hamzaOrder.json().data.id]
       )).rows[0];
       assert.ok(orderStageForDualAllocation,"the test order must have at least one order stage");
       const dualAllocationEmployee=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
         ["Dual Allocation Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const dualAllocationRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,100,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id`,
+        [hamzaProducts.rows[0].product_id,orderStageForDualAllocation.stage_id,bonusRateGroup.id,
+         perPieceWageType.id,bonusProduct.unit_id,manager.id]
       )).rows[0];
       const dualAllocationProduction=(await apiPool.query(
         `INSERT INTO production_entries(
@@ -770,8 +777,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())
          RETURNING id,total_earning_amount`,
-        [dualAllocationEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,orderStageForDualAllocation.id,
-         bonusShift.id,bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+        [dualAllocationEmployee.id,hamzaProducts.rows[0].product_id,orderStageForDualAllocation.stage_id,orderStageForDualAllocation.id,
+         bonusShift.id,bonusProduct.unit_id,dualAllocationRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(dualAllocationProduction.total_earning_amount),100);
       const dualAllocationPayout=await app.inject({
