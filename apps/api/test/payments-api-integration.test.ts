@@ -36,9 +36,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{historicalProductionSettlementRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{historicalProductionSettlementRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{taskRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/payments/historical-production-settlements.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/payments/historical-production-settlements.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),import("../src/modules/tasks/tasks.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -57,6 +57,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     await app.register(warehouseRoutes);
     await app.register(orderRoutes);
     await app.register(productionRoutes);
+    await app.register(taskRoutes);
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
       const workerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Payout Worker') RETURNING id")).rows[0];
@@ -95,6 +96,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
       const accountantCookie=await login(accountantUsername,accountantPassword);
+      const assignedWorkerTask=(await apiPool.query(
+        "INSERT INTO tasks(title,created_by) VALUES('Worker badge count test task',$1) RETURNING id",[manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)",
+        [assignedWorkerTask.id,workerEmployee.id,manager.id]
+      );
+      await apiPool.query("INSERT INTO tasks(title,created_by) VALUES('Manager-only badge count test task',$1)",[manager.id]);
+      const workerTaskCount=await app.inject({method:"GET",url:"/api/tasks/pending-count",headers:{cookie:workerCookie}});
+      assert.equal(workerTaskCount.statusCode,200,workerTaskCount.body);
+      assert.equal(workerTaskCount.json().data.count,1,"worker task badge must count only tasks assigned to that employee");
+      const managerTaskCount=await app.inject({method:"GET",url:"/api/tasks/pending-count",headers:{cookie:managerCookie}});
+      assert.equal(managerTaskCount.statusCode,200,managerTaskCount.body);
+      assert.equal(managerTaskCount.json().data.count,2,"manager task badge must count all open tasks within the manager all scope");
       const integrityOverview=await app.inject({
         method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
       });
