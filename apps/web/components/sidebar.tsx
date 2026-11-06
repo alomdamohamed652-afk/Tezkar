@@ -131,6 +131,7 @@ export function Sidebar({active}:{active:string}){
     .catch(()=>{if(alive)setUnreadNotificationCount(0)});
   };
   const handleVisibility=()=>{if(document.visibilityState==="visible")refreshCounts()};
+  lastBadgeRefresh.current=0;
   refreshCounts();
   window.addEventListener("focus",refreshCounts);
   document.addEventListener("visibilitychange",handleVisibility);
