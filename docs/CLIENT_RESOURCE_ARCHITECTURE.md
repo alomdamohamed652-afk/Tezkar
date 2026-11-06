@@ -118,7 +118,8 @@ The initial implementation uses a 30-second in-memory TTL only for a narrow refe
 
 ## Current implementation status
 
-- PR #255 contains the first server-side request reductions (count endpoints, consolidated auth read, session activity write throttling, and attendance report grouping).
-- PR #256 begins the browser-side layer with bounded in-memory GET caching; PR #257 tightens it to a reviewed metadata allowlist, session-safe invalidation, and post-mutation cross-tab invalidation.
+- PR #255 contains compact permission-scoped Sidebar count endpoints, a consolidated `/api/auth/me` read, throttled session activity writes, and attendance report indexing by employee plus Cairo-local date. Overnight shifts retain the next-day OUT-punch rule, with regression coverage to protect the next shift's punches.
+- PR #256 begins the browser-side layer with bounded in-memory GET caching; PR #257 tightens it to a reviewed metadata allowlist, session-safe invalidation, and post-mutation cross-tab invalidation. Wage rates and shifts with dynamic employee counts are excluded from the final allowlist.
 - Sidebar task/payment/notification badges use count-only endpoints and a throttled focus refresh; existing task, payment-request, and notification indexes support the relevant count predicates.
+- PR #255 latest verified head is `f4fe6eb5d0cc1722c4053df8463521c40eb9c191`; Install, Lint, Typecheck, Tests, and Build all pass. PR #255 remains open and unmerged.
 - IndexedDB, Service Worker API caching, offline writes, and Web Workers are **not** implemented. They require separate profiling, threat review, and tests before adoption.
