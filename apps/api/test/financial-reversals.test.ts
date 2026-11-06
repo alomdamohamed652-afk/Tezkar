@@ -47,7 +47,7 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
     "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-06-01','APPROVED',$1,$1,now()) RETURNING id",[user]
   )).rows[0].id;
   const payrollItem=(await db.query(
-    "INSERT INTO payroll_items(period_id,employee_id,base_salary,net_amount,status) VALUES($1,$2,100,100,'PAID') RETURNING id",
+    "INSERT INTO payroll_items(period_id,employee_id,base_salary,status) VALUES($1,$2,100,'PAID') RETURNING id",
     [payrollPeriod,emp]
   )).rows[0].id;
   const payrollPayment=(await db.query(
