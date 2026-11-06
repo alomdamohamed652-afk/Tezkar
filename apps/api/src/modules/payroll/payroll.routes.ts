@@ -399,9 +399,6 @@ export async function payrollRoutes(app: FastifyInstance) {
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
       const suppliedKeys=new Set<string>();
-      const salaryItemsByEmployee=new Map<string,(typeof salaryItems.rows)[number]>(
-        salaryItems.rows.map(item=>[String(item.employee_id),item])
-      );
       const daysByEmployee=new Map<string,typeof snapshot>();
       for(const row of snapshot){
         const key=row.employeeId+"|"+row.date;
