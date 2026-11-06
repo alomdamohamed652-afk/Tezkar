@@ -77,6 +77,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setReady(true);
         return;
       }
+      setSession(null);
       setReady(false);
       void refreshSession(true);
     };
@@ -91,6 +92,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     const refreshIfStale = () => {
       if (
+        ready &&
+        session &&
         document.visibilityState === "visible" &&
         Date.now() - lastRefreshAt.current >= 120_000
       ) {
@@ -109,7 +112,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", refreshIfStale);
       document.removeEventListener("visibilitychange", refreshIfStale);
     };
-  }, [refreshSession]);
+  }, [refreshSession, ready, session]);
 
   const permissions = session?.permissions ?? null;
   const has = useCallback(
