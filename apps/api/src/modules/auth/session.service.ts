@@ -76,7 +76,7 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
   const lastSeenAt = new Date(row.last_seen_at).getTime();
   if (!Number.isFinite(lastSeenAt) || Date.now() - lastSeenAt >= 60_000) {
     await client.query(
-      "UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1 AND last_seen_at < now() - interval '1 minute'",
+      "UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute')",
       [tokenHash]
     );
   }
