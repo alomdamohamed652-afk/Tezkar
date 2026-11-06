@@ -247,16 +247,16 @@ export async function accountingRoutes(app:FastifyInstance){
      ORDER BY pp.payment_date,emp.full_name`),
    pool.query(`
     SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
-           i.status,i.net_amount,COALESCE(SUM(pp.amount),0) AS paid_amount
+           i.status,i.net_amount,COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0) AS paid_amount
       FROM payroll_items i
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
       LEFT JOIN payroll_payments pp ON pp.payroll_item_id=i.id
      WHERE p.status IN ('APPROVED','CLOSED')
      GROUP BY i.id,emp.full_name,p.period_month
-    HAVING COALESCE(SUM(pp.amount),0)>i.net_amount+0.01
-        OR (i.status='PAID' AND COALESCE(SUM(pp.amount),0)<i.net_amount-0.01)
-        OR (i.status='PARTIAL' AND (COALESCE(SUM(pp.amount),0)<=0.01 OR COALESCE(SUM(pp.amount),0)>=i.net_amount-0.01))
+    HAVING COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)>i.net_amount+0.01
+        OR (i.status='PAID' AND COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)<i.net_amount-0.01)
+        OR (i.status='PARTIAL' AND (COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)<=0.01 OR COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)>=i.net_amount-0.01))
      ORDER BY p.period_month,emp.full_name`),
    pool.query(`
     SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
@@ -348,7 +348,7 @@ export async function accountingRoutes(app:FastifyInstance){
       LEFT JOIN employee_earnings_ledger offset_entry
         ON offset_entry.payroll_advance_offset_item_id=i.id
       LEFT JOIN LATERAL (
-        SELECT SUM(ar.amount) AS amount
+        SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) AS amount
           FROM advance_repayments ar
          WHERE ar.source_payroll_item_id=i.id
       ) repayments ON TRUE
@@ -785,7 +785,7 @@ export async function accountingRoutes(app:FastifyInstance){
     client.query("SELECT l.id,l.code,l.employee_id,e.code AS employee_code,e.full_name,l.entry_type,l.credit_amount,l.debit_amount,l.notes,l.created_at FROM employee_earnings_ledger l JOIN employees e ON e.id=l.employee_id WHERE l.entry_type='ADJUSTMENT' AND l.created_at::date BETWEEN $1::date AND $2::date ORDER BY l.created_at,l.id",[start,end]),
     client.query("SELECT s.id,s.employee_id,e.code AS employee_code,e.full_name,s.gross_amount,s.cash_paid_amount,s.advance_repayment_amount,s.settlement_date,s.notes FROM employee_earnings_settlements s JOIN employees e ON e.id=s.employee_id WHERE s.settlement_date BETWEEN $1::date AND $2::date ORDER BY s.settlement_date,s.created_at",[start,end]),
     client.query("SELECT pp.id,pp.payroll_item_id,pi.employee_id,e.code AS employee_code,e.full_name,pp.amount,pp.payment_date,pp.payment_method,pp.reference,pp.notes FROM payroll_payments pp JOIN payroll_items pi ON pi.id=pp.payroll_item_id JOIN employees e ON e.id=pi.employee_id WHERE pp.payment_date BETWEEN $1::date AND $2::date ORDER BY pp.payment_date,pp.created_at",[start,end]),
-    client.query("SELECT a.id,a.code,a.employee_id,e.code AS employee_code,e.full_name,a.amount,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id AND ar.payment_date<=$1::date),0),0) AS remaining FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.status='PAID' AND a.paid_at::date<=$1::date ORDER BY e.code,a.code",[end]),
+    client.query("SELECT a.id,a.code,a.employee_id,e.code AS employee_code,e.full_name,a.amount,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id AND ar.payment_date<=$1::date),0),0) AS remaining FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.status='PAID' AND a.paid_at::date<=$1::date ORDER BY e.code,a.code",[end]),
     client.query("SELECT sm.product_id,sm.warehouse_id,sm.location_id,COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') OR (sm.movement_type='ADJUSTMENT' AND sm.reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN sm.quantity ELSE -sm.quantity END),0) AS quantity,COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') OR (sm.movement_type='ADJUSTMENT' AND sm.reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN sm.total_cost ELSE -sm.total_cost END),0) AS inventory_value FROM stock_movements sm WHERE sm.created_at::date<=$1::date GROUP BY sm.product_id,sm.warehouse_id,sm.location_id HAVING ABS(COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') OR (sm.movement_type='ADJUSTMENT' AND sm.reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN sm.quantity ELSE -sm.quantity END),0))>0.000001 ORDER BY sm.product_id,sm.warehouse_id,sm.location_id",[end]),
     client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE revenue_date BETWEEN $1::date AND $2::date AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[start,end]),
     client.query("SELECT COALESCE(SUM(amount),0) AS total FROM accounting_expenses WHERE expense_date BETWEEN $1::date AND $2::date",[start,end]),
