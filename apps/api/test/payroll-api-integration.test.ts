@@ -848,6 +848,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.deepEqual(reconciliation.json().data.counts,{
         missingPayrollExpenses:0,
         missingAdjustmentLedgerEntries:0,
+        zeroNetPayrollSettlementMismatches:0,
         cashPaymentsMissingCustodyOut:0,
         payrollPaymentMismatches:0,
         advanceDeductionMismatches:0,
@@ -1137,7 +1138,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [concurrentCustodyHolder.rows[0].id,userId]
       );
       const concurrentPeriod=await apiPool.query(
-        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-03-01','APPROVED',$1,$1,now()) RETURNING id",
+        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-04-01','APPROVED',$1,$1,now()) RETURNING id",
         [userId]
       );
       const concurrentEmployees=await apiPool.query(
