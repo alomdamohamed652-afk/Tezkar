@@ -256,32 +256,33 @@ export async function accountingRoutes(app:FastifyInstance){
        )
      ORDER BY p.period_month,emp.full_name`),
    pool.query(`
-    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
-           d.advance_id,a.code AS advance_code,d.amount AS expected_repayment_amount,
-           ar.id AS repayment_id,ar.amount AS repayment_amount,
-           el.id AS ledger_entry_id,el.employee_id AS ledger_employee_id,
-           el.credit_amount,el.debit_amount
-      FROM payroll_items i
-      JOIN payroll_periods p ON p.id=i.period_id
-      JOIN employees emp ON emp.id=i.employee_id
-      JOIN payroll_advance_deductions d ON d.payroll_item_id=i.id
-      JOIN advance_requests a ON a.id=d.advance_id
-      LEFT JOIN advance_repayments ar
-        ON ar.source_payroll_item_id=i.id AND ar.advance_id=d.advance_id
+    SELECT ar.id AS repayment_id,ar.source_payroll_item_id AS payroll_item_id,
+           emp.full_name,COALESCE(p.period_month::text,'سداد يدوي') AS period_month,
+           a.code AS advance_code,COALESCE(d.amount,ar.amount) AS expected_repayment_amount,
+           ar.amount AS repayment_amount,el.id AS ledger_entry_id,
+           el.employee_id AS ledger_employee_id,el.credit_amount,el.debit_amount
+      FROM advance_repayments ar
+      JOIN advance_requests a ON a.id=ar.advance_id
+      JOIN employees emp ON emp.id=a.employee_id
+      LEFT JOIN payroll_items i ON i.id=ar.source_payroll_item_id
+      LEFT JOIN payroll_periods p ON p.id=i.period_id
+      LEFT JOIN payroll_advance_deductions d
+        ON d.payroll_item_id=ar.source_payroll_item_id AND d.advance_id=ar.advance_id
       LEFT JOIN employee_earnings_ledger el
         ON el.advance_repayment_id=ar.id
-     WHERE p.status IN ('APPROVED','CLOSED')
-       AND i.status='PAID' AND i.advance_repayment_amount>0.01
-       AND (
-         ar.id IS NULL
-         OR ROUND(ar.amount::numeric,2)<>ROUND(d.amount::numeric,2)
-         OR a.employee_id IS DISTINCT FROM i.employee_id
-         OR el.id IS NULL
-         OR el.employee_id IS DISTINCT FROM i.employee_id
-         OR ROUND(el.credit_amount::numeric,2)<>ROUND(ar.amount::numeric,2)
-         OR el.debit_amount<>0
-       )
-     ORDER BY p.period_month,emp.full_name,a.code`)
+     WHERE (
+       el.id IS NULL
+       OR el.employee_id IS DISTINCT FROM a.employee_id
+       OR ROUND(el.credit_amount::numeric,2)<>ROUND(ar.amount::numeric,2)
+       OR el.debit_amount<>0
+       OR (ar.source_payroll_item_id IS NOT NULL AND (
+         i.id IS NULL OR i.status<>'PAID'
+         OR i.employee_id IS DISTINCT FROM a.employee_id
+         OR d.id IS NULL
+         OR ROUND(d.amount::numeric,2)<>ROUND(ar.amount::numeric,2)
+       ))
+     )
+     ORDER BY ar.payment_date,emp.full_name,a.code`)
   ]);
   return {
    checkedAt:new Date().toISOString(),
