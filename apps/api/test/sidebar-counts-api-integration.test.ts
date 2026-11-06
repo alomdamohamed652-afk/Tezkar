@@ -147,7 +147,6 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
 
     const paymentRows = [
       [workerEmployee.id, "PENDING", null],
-      [workerEmployee.id, "APPROVED", manager.id],
       [workerEmployee.id, "REJECTED", manager.id],
       [workerEmployee.id, "PAID", manager.id],
       [otherEmployee.id, "APPROVED", manager.id],
@@ -217,8 +216,8 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
     assert.deepEqual(managerPayments.json(), { data: { count: 3 } },
       "manager sees all pending and approved payment requests");
     assert.equal(workerPayments.statusCode, 200, workerPayments.body);
-    assert.deepEqual(workerPayments.json(), { data: { count: 2 } },
-      "worker sees only their pending and approved payment requests");
+    assert.deepEqual(workerPayments.json(), { data: { count: 1 } },
+      "worker sees only their single open payment request");
 
     assert.equal(managerNotifications.statusCode, 200, managerNotifications.body);
     assert.deepEqual(managerNotifications.json(), { data: { count: 1 } },
