@@ -1266,9 +1266,19 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
          RETURNING id`,
         [employeeA.rows[0].id,userId]
       );
+      // Use a separate approved period with an unpaid item: the February item above
+      // has already been fully paid, so it must not be treated as a live reservation.
+      const reservationPeriod=await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-05-01','APPROVED',$1,$1,now()) RETURNING id",
+        [userId]
+      );
+      const reservationItem=await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,status) VALUES($1,$2,100,'UNPAID') RETURNING id",
+        [reservationPeriod.rows[0].id,employeeA.rows[0].id]
+      );
       await apiPool.query(
         "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,10,'FIXED_INSTALLMENT')",
-        [februaryItem.id,diagnosticAdvance.rows[0].id]
+        [reservationItem.rows[0].id,diagnosticAdvance.rows[0].id]
       );
       const reservedManualRepayment=await app.inject({
         method:"POST",url:`/api/advances/${diagnosticAdvance.rows[0].id}/repayments`,
