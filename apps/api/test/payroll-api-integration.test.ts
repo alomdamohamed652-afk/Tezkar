@@ -377,7 +377,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(reactivatedLogin.statusCode,200,reactivatedLogin.body);
       const reactivatedSetCookie=reactivatedLogin.headers["set-cookie"];
       const reactivatedCookie=(Array.isArray(reactivatedSetCookie)?reactivatedSetCookie[0]:reactivatedSetCookie).split(";")[0];
-      const reactivatedSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[deactivationUser.rows[0].id]);
+      const reactivatedSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL LIMIT 1",[deactivationUser.rows[0].id]);
       const accountDeactivated=await app.inject({method:"DELETE",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader}});
       assert.equal(accountDeactivated.statusCode,200,accountDeactivated.body);
       assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[reactivatedSession.rows[0].id])).rows[0].revoked_at,
