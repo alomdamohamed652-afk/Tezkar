@@ -62,7 +62,9 @@ export function calculatePayrollAttendance(input: {
     if (day.status === "MISSING_PUNCH") throw new Error("ATTENDANCE_MISSING_PUNCH");
     if (day.status === "NO_SCHEDULE" || day.status === "NO_SCHEDULE_WITH_PUNCH") throw new Error("ATTENDANCE_SCHEDULE_REQUIRED");
     if (day.status === "ABSENT") {
-      absenceMinutes += Math.max(0, policy.dailyWorkMinutes - minutes(day.paidPermissionMinutes));
+      const unpaidPermission = minutes(day.unpaidPermissionMinutes);
+      unpaidPermissionMinutes += unpaidPermission;
+      absenceMinutes += Math.max(0, policy.dailyWorkMinutes - minutes(day.paidPermissionMinutes) - unpaidPermission);
       continue;
     }
     lateMinutes += minutes(day.lateMinutes);
