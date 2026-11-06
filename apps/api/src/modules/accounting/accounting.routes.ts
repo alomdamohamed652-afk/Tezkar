@@ -54,7 +54,7 @@ async function assertAccountingDateOpen(client:import("pg").PoolClient,date:stri
 export async function accountingRoutes(app:FastifyInstance){
 
  const reversalSchema=z.object({
-  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT"]),
+  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT","ZERO_NET_PAYROLL_SETTLEMENT"]),
   sourceId:z.string().uuid(),
   amount:z.number().positive().max(100000000).refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   reason:z.string().trim().min(2).max(500),
@@ -80,6 +80,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const ledgerMoves:Array<{employeeId:string;credit:number;debit:number;notes:string}>=[];
    const custodyMoves:Array<{employeeId:string;direction:"IN"|"OUT";amount:number;description:string}>=[];
    let payrollItemId:string|null=null;
+   let zeroNetPayrollItemId:string|null=null;
    const advanceIds=new Set<string>();
    if(input.sourceType==="PAYROLL_PAYMENT"){
     const q=await client.query(`SELECT pp.*,i.employee_id,i.net_amount,p.status AS period_status
@@ -150,6 +151,67 @@ export async function accountingRoutes(app:FastifyInstance){
      custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"IN",amount:input.amount+linkedAmount,description:"استرداد عكس صرف راتب "+input.sourceId});
      if(linkedAmount>0.0001)custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"OUT",amount:linkedAmount,description:"عكس استرداد أقساط السلف من الراتب "+input.sourceId});
     }else if(offset.rowCount)throw new AppError("REVERSAL_CUSTODY_INCOMPLETE","يوجد استرداد عهدة دون حركة الصرف المقابلة؛ راجع المطابقة قبل العكس",409);
+   }else if(input.sourceType==="ZERO_NET_PAYROLL_SETTLEMENT"){
+    const itemResult=await client.query(
+     `SELECT i.*,p.status AS period_status
+        FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+       WHERE i.id=$1 FOR UPDATE OF i,p`,[input.sourceId]);
+    if(!itemResult.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","بند تسوية الراتب غير موجود",404);
+    const item=itemResult.rows[0];
+    if(item.period_status==="DRAFT")throw new AppError("PAYROLL_NOT_APPROVED","لا يمكن عكس تسوية مرتبطة بمسير غير معتمد",409);
+    if(item.status!=="PAID"||Number(item.net_amount)>0.01||Number(item.advance_repayment_amount)<=0.01)
+     throw new AppError("ZERO_NET_SETTLEMENT_NOT_REVERSIBLE","بند الراتب ليس تسوية سلف بصافي صفر قابلة للعكس",409);
+    const grossSalary=Number(item.base_salary)+Number(item.bonus_amount)-Number(item.deduction_amount);
+    const advanceAmount=Number(item.advance_repayment_amount);
+    if(grossSalary<=0.01||Math.abs(grossSalary-advanceAmount)>0.01||Math.abs(input.amount-grossSalary)>0.01)
+     throw new AppError("ZERO_NET_SETTLEMENT_AMOUNT_MISMATCH","مبلغ العكس يجب أن يساوي كامل قيمة تسوية الراتب غير النقدية",409);
+    const priorSettlement=await client.query(
+     "SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ZERO_NET_PAYROLL_SETTLEMENT' AND source_id=$1",
+     [item.id]);
+    if(Number(priorSettlement.rows[0].amount)>0.01)
+     throw new AppError("ZERO_NET_SETTLEMENT_ALREADY_REVERSED","تم عكس تسوية هذا الراتب من قبل",409);
+    const offset=await client.query(
+     "SELECT employee_id,debit_amount,credit_amount FROM employee_earnings_ledger WHERE payroll_advance_offset_item_id=$1 FOR UPDATE",
+     [item.id]);
+    if(offset.rowCount!==1||offset.rows[0].employee_id!==item.employee_id||
+       Math.abs(Number(offset.rows[0].debit_amount)-grossSalary)>0.01||Number(offset.rows[0].credit_amount)!==0)
+     throw new AppError("ZERO_NET_OFFSET_LEDGER_MISMATCH","قيد تسوية الراتب غير موجود أو لا يطابق الموظف والمبلغ؛ أوقفنا العكس لحماية دفتر الموظف",409);
+    const repayments=await client.query(
+     `SELECT ar.id,ar.advance_id,ar.amount,a.employee_id,a.code
+        FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
+       WHERE ar.source_payroll_item_id=$1 AND ar.source_payroll_payment_id IS NULL
+       ORDER BY ar.id FOR UPDATE OF ar,a`,[item.id]);
+    if(!repayments.rowCount)throw new AppError("ZERO_NET_REPAYMENTS_MISSING","لا توجد أقساط سلف مرتبطة بتسوية الراتب؛ أوقفنا العكس",409);
+    const deductions=await client.query(
+     "SELECT advance_id,amount FROM payroll_advance_deductions WHERE payroll_item_id=$1 FOR UPDATE",[item.id]);
+    const repaymentByAdvance=new Map<string,number>();
+    const deductionByAdvance=new Map<string,number>();
+    for(const ar of repayments.rows)repaymentByAdvance.set(ar.advance_id,(repaymentByAdvance.get(ar.advance_id)??0)+Number(ar.amount));
+    for(const row of deductions.rows)deductionByAdvance.set(row.advance_id,(deductionByAdvance.get(row.advance_id)??0)+Number(row.amount));
+    const repaymentTotal=repayments.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+    if(Math.abs(repaymentTotal-advanceAmount)>0.01||deductionByAdvance.size!==repaymentByAdvance.size||
+       [...deductionByAdvance].some(([advanceId,amount])=>Math.abs(amount-(repaymentByAdvance.get(advanceId)??0))>0.01))
+     throw new AppError("ZERO_NET_ADVANCE_ALLOCATION_MISMATCH","أقساط السلف المرتبطة لا تطابق تفاصيل المسير؛ أوقفنا العكس لحماية الأرصدة",409);
+    for(const ar of repayments.rows){
+     const repaymentLedger=await client.query(
+      "SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE advance_repayment_id=$1 FOR UPDATE",[ar.id]);
+     if(repaymentLedger.rowCount!==1||repaymentLedger.rows[0].employee_id!==ar.employee_id||
+        Math.abs(Number(repaymentLedger.rows[0].credit_amount)-Number(ar.amount))>0.01||
+        Number(repaymentLedger.rows[0].debit_amount)!==0)
+      throw new AppError("REVERSAL_ADVANCE_LEDGER_MISMATCH","قيد أحد أقساط السلف غير موجود أو لا يطابق الموظف والمبلغ؛ أوقفنا العكس",409);
+     const prior=await client.query(
+      "SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",
+      [ar.id]);
+     const remaining=Number(ar.amount)-Number(prior.rows[0].amount);
+     if(remaining<=0.0001||Math.abs(remaining-Number(ar.amount))>0.01)
+      throw new AppError("ZERO_NET_ADVANCE_ALREADY_REVERSED","يوجد قسط سلفة مرتبط سبق عكسه أو عُكس جزئيًا؛ راجع التسوية قبل المتابعة",409);
+     lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount:remaining});
+     advanceIds.add(ar.advance_id);
+     ledgerMoves.push({employeeId:ar.employee_id,credit:0,debit:remaining,notes:"عكس سداد سلفة "+ar.code+" / "+ar.id});
+    }
+    lines.push({source_type:"ZERO_NET_PAYROLL_SETTLEMENT",source_id:item.id,amount:grossSalary});
+    ledgerMoves.push({employeeId:item.employee_id,credit:grossSalary,debit:0,notes:"عكس تسوية راتب بصافي صفر "+item.id});
+    zeroNetPayrollItemId=item.id;
    }else{
     const q=await client.query(`SELECT ar.*,a.employee_id,a.code FROM advance_repayments ar
       JOIN advance_requests a ON a.id=ar.advance_id WHERE ar.id=$1 FOR UPDATE OF ar,a`,[input.sourceId]);
@@ -177,6 +239,7 @@ export async function accountingRoutes(app:FastifyInstance){
    for(const advanceId of advanceIds)await client.query(`UPDATE advance_requests a SET repayment_status=CASE WHEN a.amount<=COALESCE((
      SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0))
      FROM advance_repayments ar WHERE ar.advance_id=a.id),0)+0.0001 THEN 'SETTLED' ELSE 'OPEN' END,updated_at=now() WHERE a.id=$1`,[advanceId]);
+   if(zeroNetPayrollItemId)await client.query("UPDATE payroll_items SET status='REVERSED' WHERE id=$1",[zeroNetPayrollItemId]);
    if(payrollItemId){
     const totals=await client.query(`SELECT i.net_amount,COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0)
       -COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl JOIN payroll_payments pp ON pp.id=rl.source_id
