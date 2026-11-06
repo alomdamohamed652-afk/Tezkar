@@ -227,7 +227,7 @@ export async function accountingRoutes(app:FastifyInstance){
             OR movements.holder_count<>1
             OR movements.holder_id IS DISTINCT FROM creator.employee_id::text
             OR ROUND(movements.movement_amount::numeric,2)<>ROUND(ar.amount::numeric,2))
-     ORDER BY ar.payment_date DESC,emp.full_name`)
+     ORDER BY ar.payment_date DESC,emp.full_name`),
    pool.query(`
     SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
            i.base_salary,i.bonus_amount,i.deduction_amount,i.advance_repayment_amount,
