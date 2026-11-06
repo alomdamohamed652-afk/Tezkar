@@ -1,59 +1,11 @@
 import { API_BASE } from "./api-base";
+import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, getApiCacheTtl } from "./api-cache.mjs";
 
 export const API_URL = API_BASE;
 
-// Cache only explicitly approved reads for longer than the short default.
-// Sensitive and rapidly changing domains always bypass the response cache.
-const DEFAULT_GET_CACHE_TTL_MS = 1_500;
-const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
-const MAX_GET_CACHE_ENTRIES = 100;
-
-type CacheEntry = { expiresAt: number; value: unknown };
-const getCache = new Map<string, CacheEntry>();
-const pendingGets = new Map<string, Promise<unknown>>();
+const getCache = createMemoryGetCache({ maxEntries: 100 });
+const pendingGets = createPendingGetRegistry();
 let cacheGeneration = 0;
-
-const REFERENCE_DATA_PATHS = new Set([
-  "/api/products",
-  "/api/stages",
-  "/api/rates",
-  "/api/shifts",
-  "/api/shifts/rate-groups",
-  "/api/machines"
-]);
-
-const NEVER_CACHE_PATH_PREFIXES = [
-  "/api/auth",
-  "/api/payroll",
-  "/api/accounting",
-  "/api/finance",
-  "/api/custody",
-  "/api/advances",
-  "/api/attendance",
-  "/api/warehouse",
-  "/api/production",
-  "/api/notifications",
-  "/api/tasks",
-  "/api/payment-requests",
-  "/api/orders",
-  "/api/deliveries",
-  "/api/employees",
-  "/api/earnings"
-];
-
-function getCacheTtl(path: string): number {
-  const pathname = path.split("?")[0] ?? path;
-  if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
-  return REFERENCE_DATA_PATHS.has(pathname)
-    ? REFERENCE_DATA_CACHE_TTL_MS
-    : DEFAULT_GET_CACHE_TTL_MS;
-}
-
-function makeGetCacheKey(path: string, headers?: HeadersInit): string {
-  const normalizedHeaders = new Headers(headers);
-  const headerEntries = Array.from(normalizedHeaders.entries()).sort(([a], [b]) => a.localeCompare(b));
-  return JSON.stringify([cacheGeneration, path, headerEntries]);
-}
 
 export function clearApiCache(): void {
   cacheGeneration += 1;
@@ -116,14 +68,12 @@ export async function api<T>(
 ): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase();
   const canCache = method === "GET";
-  const cacheTtlMs = canCache ? getCacheTtl(path) : 0;
-  const key = makeGetCacheKey(path, options.headers);
-  const now = Date.now();
+  const cacheTtlMs = canCache ? getApiCacheTtl(path) : 0;
+  const key = createGetCacheKey(path, options.headers, cacheGeneration);
 
   if (canCache && cacheTtlMs > 0) {
     const cached = getCache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value as T;
-    if (cached) getCache.delete(key);
+    if (cached !== undefined) return cached as T;
     const pending = pendingGets.get(key);
     if (pending) return pending as Promise<T>;
   } else if (!canCache) {
@@ -180,7 +130,7 @@ export async function api<T>(
     }
 
     if (canCache && cacheTtlMs > 0 && requestGeneration === cacheGeneration) {
-      storeGetCache(key, body, cacheTtlMs);
+      getCache.set(key, body, cacheTtlMs);
     }
     return body as T;
   })();
