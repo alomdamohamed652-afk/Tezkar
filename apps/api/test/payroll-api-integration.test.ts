@@ -1067,6 +1067,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(previousCustodyMovements.rows[0].count,0,
         "previous-custody payroll settlement must not debit a custody balance twice");
+      const previousCustodyReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/payroll",headers:{cookie:cookieHeader}
+      });
+      assert.equal(previousCustodyReconciliation.statusCode,200,previousCustodyReconciliation.body);
+      assert.equal(previousCustodyReconciliation.json().data.counts.cashPaymentsMissingCustodyOut,0,
+        "a documented previous-custody settlement must not be flagged for lacking a second current-custody outflow");
 
       const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
       await apiPool.query(
