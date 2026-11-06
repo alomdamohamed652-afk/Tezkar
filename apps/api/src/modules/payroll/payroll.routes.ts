@@ -371,6 +371,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const snapshot=attendanceReport.data
         .filter(row=>payrollEmployeeIds.has(String(row.employeeId)))
         .map(row=>({
+          ...row,
           date:String(row.date),employeeId:String(row.employeeId),status:String(row.status),
           workedMinutes:Number(row.workedMinutes??0),lateMinutes:Number(row.lateMinutes??0),
           earlyMinutes:Number(row.earlyMinutes??0),overtimeMinutes:Number(row.overtimeMinutes??0),
