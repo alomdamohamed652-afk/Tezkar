@@ -18,7 +18,7 @@ UPDATE advance_repayments ar
 
 -- A payroll item can be paid again after its previous payment is reversed.
 -- Scope uniqueness to the actual payment, not the payroll item, so the new settlement is append-only.
-DROP INDEX IF EXISTS uq_advance_repayments_source_payroll_advance;
+DROP INDEX IF EXISTS uq_advance_repayments_source_payroll_item_advance;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_advance_repayments_source_payment_advance
   ON advance_repayments(source_payroll_payment_id,advance_id)
   WHERE source_payroll_payment_id IS NOT NULL;
