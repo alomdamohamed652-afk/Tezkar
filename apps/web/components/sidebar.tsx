@@ -105,7 +105,25 @@ export function Sidebar({active}:{active:string}){
  function toggleSidebar(){
   setSidebarPreferences(current=>({...current,collapsed:!current.collapsed}));
  }
- useEffect(()=>{let alive=true;if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own"))api<{data:{status:string}[]}>("/api/tasks").then(r=>{if(alive)setPendingTaskCount(r.data.filter(t=>t.status!=="COMPLETED"&&t.status!=="CANCELLED").length)}).catch(()=>{if(alive)setPendingTaskCount(0)});if(permissions?.some(p=>p==="payment_requests.view"||p==="worker_payments.view"))api<{data:{status:string}[]}>("/api/payment-requests").then(r=>{if(alive)setPendingPaymentCount(r.data.filter(x=>x.status==="PENDING"||x.status==="APPROVED").length)}).catch(()=>{if(alive)setPendingPaymentCount(0)});if(permissions!==null)api<{unreadCount:number}>("/api/notifications").then(r=>{if(alive)setUnreadNotificationCount(r.unreadCount)}).catch(()=>{if(alive)setUnreadNotificationCount(0)});return()=>{alive=false}},[permissions]);
+ useEffect(()=>{
+  let alive=true;
+  if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own")){
+   api<{data:{count:number}}>("/api/tasks/pending-count")
+    .then(r=>{if(alive)setPendingTaskCount(r.data.count)})
+    .catch(()=>{if(alive)setPendingTaskCount(0)});
+  }else setPendingTaskCount(0);
+  if(permissions?.includes("payment_requests.view")){
+   api<{data:{count:number}}>("/api/payment-requests/pending-count")
+    .then(r=>{if(alive)setPendingPaymentCount(r.data.count)})
+    .catch(()=>{if(alive)setPendingPaymentCount(0)});
+  }else setPendingPaymentCount(0);
+  if(permissions!==null){
+   api<{data:{count:number}}>("/api/notifications/unread-count")
+    .then(r=>{if(alive)setUnreadNotificationCount(r.data.count)})
+    .catch(()=>{if(alive)setUnreadNotificationCount(0)});
+  }else setUnreadNotificationCount(0);
+  return()=>{alive=false};
+ },[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null)return false;
    if(item.href==="/admin/security"&&!session?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))return false;
