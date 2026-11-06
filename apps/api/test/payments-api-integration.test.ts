@@ -750,6 +750,54 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(bonusProduction.total_earning_amount),130);
+
+      // A single payout can have historical rows in both allocation tables.
+      // Settlement allocation is canonical for that payment and must not be added
+      // on top of its duplicate order allocation when computing the order balance.
+      const orderStageForDualAllocation=(await apiPool.query(
+        "SELECT id FROM order_stages WHERE order_id=$1 LIMIT 1",[hamzaOrder.json().data.id]
+      )).rows[0];
+      assert.ok(orderStageForDualAllocation,"the test order must have at least one order stage");
+      const dualAllocationProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,order_stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [previousCustodyEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,orderStageForDualAllocation.id,
+         bonusShift.id,bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(dualAllocationProduction.total_earning_amount),100);
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,'dual allocation regression earnings')",
+        [previousCustodyEmployee.id,manager.id]
+      );
+      const dualAllocationPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:previousCustodyEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:100,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(dualAllocationPayout.statusCode,201,dualAllocationPayout.body);
+      const dualPaymentId=dualAllocationPayout.json().data.payment.id;
+      const dualSettlement=(await apiPool.query(
+        "SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1",[dualPaymentId]
+      )).rows[0];
+      assert.ok(dualSettlement,"the payout must have its linked settlement");
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,100)",
+        [dualSettlement.id,dualAllocationProduction.id]
+      );
+      const dualAllocationSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${previousCustodyEmployee.id}&orderId=${hamzaOrder.json().data.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(dualAllocationSummary.statusCode,200,dualAllocationSummary.body);
+      assert.equal(Number(dualAllocationSummary.json().data.orderAccount.paid),100,
+        "settlement allocation must take precedence over duplicate order allocation for the same payment");
+      assert.equal(Number(dualAllocationSummary.json().data.orderAccount.remaining),0,
+        "duplicate allocation rows must not double-consume the production entitlement");
+
       const bonusAwarePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:130,method:"CASH",idempotencyKey:randomUUID()}
