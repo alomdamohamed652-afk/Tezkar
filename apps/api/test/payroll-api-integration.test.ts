@@ -1270,6 +1270,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,10,'FIXED_INSTALLMENT')",
         [februaryItem.id,diagnosticAdvance.rows[0].id]
       );
+      const reservedManualRepayment=await app.inject({
+        method:"POST",url:`/api/advances/${diagnosticAdvance.rows[0].id}/repayments`,
+        headers:{cookie:secondCookieHeader},
+        payload:{amount:10,repaymentType:"CUSTOM",idempotencyKey:randomUUID()}
+      });
+      assert.equal(reservedManualRepayment.statusCode,409,reservedManualRepayment.body);
+      assert.equal(reservedManualRepayment.json().error.code,"ADVANCE_INSTALLMENT_RESERVED",
+        "manual collection must not consume an installment already reserved by an approved unpaid payroll item");
       await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=411 WHERE id=$1",[februaryItem.id]);
       await apiPool.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[itemB.rows[0].id]);
       const diagnosticExpense = await apiPool.query(
