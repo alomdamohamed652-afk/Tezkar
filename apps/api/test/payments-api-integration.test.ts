@@ -785,6 +785,57 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.ledgerOnlyAdjustmentsNet),0);
       assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.calculatedAvailable),130,
         "the diagnostic total must not double-count production-linked bonus or deduction");
+
+      // Payroll is a separate employee entitlement and must never become production dues
+      // through the ledger-only fallback for an employee without approved production.
+      const payrollOnlyEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Payroll Only Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const payrollOnlyPeriod=(await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,generated_by) VALUES('2099-11-01',$1) RETURNING id",
+        [manager.id]
+      )).rows[0];
+      const payrollOnlyItem=(await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,bonus_amount,deduction_amount) VALUES($1,$2,1000,200,0) RETURNING id",
+        [payrollOnlyPeriod.id,payrollOnlyEmployee.id]
+      )).rows[0];
+      const payrollOnlyBonus=(await apiPool.query(
+        "INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,created_by) VALUES($1,'BONUS','Payroll-only bonus regression',200,$2) RETURNING id",
+        [payrollOnlyItem.id,manager.id]
+      )).rows[0];
+      const payrollOnlyPayment=(await apiPool.query(
+        "INSERT INTO payroll_payments(payroll_item_id,amount,paid_by) VALUES($1,300,$2) RETURNING id",
+        [payrollOnlyItem.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_item_id) VALUES($1,'ADJUSTMENT',1000,$2,'payroll-only base',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyItem.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,payroll_adjustment_line_id) VALUES($1,'ADJUSTMENT',200,$2,'payroll-only bonus',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyBonus.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',300,$2,'payroll-only partial payment',$3)",
+        [payrollOnlyEmployee.id,manager.id,payrollOnlyPayment.id]
+      );
+      const payrollOnlyPreview=await app.inject({
+        method:"GET",url:`/api/worker-payments/preview?employeeId=${payrollOnlyEmployee.id}&cashCustodyEmployeeId=${managerEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(payrollOnlyPreview.statusCode,200,payrollOnlyPreview.body);
+      assert.equal(Number(payrollOnlyPreview.json().data.availableEarnings),0,
+        "salary accrual, payroll bonus, and payroll payout must not be offered as production dues");
+      const payrollOnlySummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${payrollOnlyEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(payrollOnlySummary.statusCode,200,payrollOnlySummary.body);
+      assert.equal(Number(payrollOnlySummary.json().data.availableForSettlement),0);
+      assert.equal(Number(payrollOnlySummary.json().data.availableBreakdown.ledgerOnlyAdjustmentsNet),0,
+        "the finance diagnostic must apply the same payroll exclusion as the payout calculation");
+
       const unpaidProductionBeforePayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
