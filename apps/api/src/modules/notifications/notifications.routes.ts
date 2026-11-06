@@ -5,6 +5,14 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 
 export async function notificationRoutes(app: FastifyInstance) {
+  app.get("/api/notifications/unread-count", { preHandler: [authenticateRequest] }, async request => {
+    const result = await pool.query(
+      "SELECT count(*)::int AS count FROM user_notifications WHERE user_id=$1 AND read_at IS NULL",
+      [request.user!.userId]
+    );
+    return { data: { count: Number(result.rows[0]?.count ?? 0) } };
+  });
+
   app.get("/api/notifications", { preHandler: [authenticateRequest] }, async request => {
     const result = await pool.query(
       "SELECT id,type,title,message,entity_type,entity_id,created_at,read_at FROM user_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100",
