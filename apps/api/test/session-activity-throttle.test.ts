@@ -34,6 +34,7 @@ test("session authentication does not write last_seen_at on every request", asyn
 
   assert.equal(user?.userId, "user-1");
   assert.deepEqual(user?.roleCodes, ["worker"]);
+  assert.match(client.calls[0].sql, /r\.is_active = TRUE/);
   assert.equal(client.calls.length, 1);
 });
 
