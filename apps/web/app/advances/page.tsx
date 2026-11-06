@@ -17,6 +17,9 @@ export default function AdvancesPage(){
  const {has,permissions}=usePermissions();
  const [items,setItems]=useState<Advance[]>([]),[employees,setEmployees]=useState<Employee[]>([]),[employeeId,setEmployeeId]=useState(""),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[method,setMethod]=useState("CUSTOM"),[installment,setInstallment]=useState(""),[salaryPercentage,setSalaryPercentage]=useState(""),[percentage,setPercentage]=useState(""),[productionPeriodDays,setProductionPeriodDays]=useState("15"),[productionMinimumEarning,setProductionMinimumEarning]=useState(""),[productionInstallmentAmount,setProductionInstallmentAmount]=useState(""),[error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [settleEmployeeId,setSettleEmployeeId]=useState(""),[settleGrossAmount,setSettleGrossAmount]=useState(""),[settleAdvanceId,setSettleAdvanceId]=useState(""),[settleRepaymentAmount,setSettleRepaymentAmount]=useState(""),[settleNotes,setSettleNotes]=useState(""),[settleAdvances,setSettleAdvances]=useState<Advance[]>([]),[settling,setSettling]=useState(false),[settlementResult,setSettlementResult]=useState<SettlementResult|null>(null),[myAccount,setMyAccount]=useState<MyAccount|null>(null);
+ const [repaymentHistoryTarget,setRepaymentHistoryTarget]=useState<Advance|null>(null);
+ const [repaymentHistory,setRepaymentHistory]=useState<Array<{id:string;amount:string|number;payment_date:string;notes:string|null;created_by_username:string;source_payroll_item_id:string|null;source_payroll_payment_id?:string|null}>>([]);
+ const [repaymentHistoryLoading,setRepaymentHistoryLoading]=useState(false);
  const repaymentKeys=useRef(new Map<string,string>());
  async function load(){
   try{
@@ -77,6 +80,12 @@ export default function AdvancesPage(){
    window.sessionStorage.removeItem(storageKey);
    await load();
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل السداد")}
+ }
+ async function openRepaymentHistory(advance:Advance){
+  setRepaymentHistoryTarget(advance);setRepaymentHistory([]);setRepaymentHistoryLoading(true);
+  try{setRepaymentHistory((await api<{data:typeof repaymentHistory}>("/api/advances/"+advance.id+"/repayments")).data)}
+  catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل السداد")}
+  finally{setRepaymentHistoryLoading(false)}
  }
  async function settleProduction(e:FormEvent){
   e.preventDefault();setSettling(true);setError("");setSettlementResult(null);
@@ -143,8 +152,11 @@ export default function AdvancesPage(){
    {x.status==="PENDING"&&<div className="row-actions">{has("advances.approve")&&<button className="approve-button" onClick={()=>action(x.id,"approve")}>اعتماد</button>}{has("advances.reject")&&<button className="reject-button" onClick={()=>action(x.id,"reject")}>رفض</button>}</div>}
    {x.status==="APPROVED"&&has("advances.pay")&&<button className="approve-button" onClick={()=>action(x.id,"pay")}>صرف السلفة</button>}
    {x.status==="PAID"&&x.repayment_status==="OPEN"&&has("advances.repay")&&<button className="secondary-btn" onClick={()=>repay(x.id,Number(x.remaining_amount))}>تسجيل سداد</button>}
+   {has("advances.view")&&x.status==="PAID"&&<button className="secondary-btn" onClick={()=>void openRepaymentHistory(x)}>سجل السداد</button>}
   </td></tr>)}
   {!items.length&&<tr><td colSpan={10}>لا توجد سلف.</td></tr>}</tbody></table></div>
+  {repaymentHistoryTarget&&<div className="modal-backdrop" onClick={()=>setRepaymentHistoryTarget(null)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="card-header"><div><h2 className="card-title">سجل سداد السلفة</h2><div className="form-hint">{repaymentHistoryTarget.code} · {repaymentHistoryTarget.employee_name}</div></div><button className="secondary-btn" onClick={()=>setRepaymentHistoryTarget(null)}>إغلاق</button></div>{repaymentHistoryLoading?<div className="empty">جارٍ تحميل السجل...</div>:!repaymentHistory.length?<div className="empty">لا توجد عمليات سداد.</div>:<div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>المبلغ</th><th>معرّف السداد (للعكس)</th><th>نوع السداد</th><th>المسجل</th><th>ملاحظات</th></tr></thead><tbody>{repaymentHistory.map(x=><tr key={x.id}><td>{String(x.payment_date).slice(0,10)}</td><td>{formatMoney(Number(x.amount))} ج.م</td><td><code>{x.id}</code></td><td>{x.source_payroll_payment_id?"خصم من الراتب":x.source_payroll_item_id?"تسوية راتب":"سداد يدوي"}</td><td>{x.created_by_username}</td><td>{x.notes||"—"}</td></tr>)}</tbody></table></div>}</div></div>}
+
  </section>
  </section></main></div>
 }
