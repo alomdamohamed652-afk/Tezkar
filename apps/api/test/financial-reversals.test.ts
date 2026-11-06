@@ -40,5 +40,79 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   const check=await db.query("SELECT (SELECT COUNT(*) FROM advance_repayments WHERE id=$1) AS source_count,(SELECT SUM(amount) FROM financial_reversal_lines WHERE source_id=$1) AS reversed,(SELECT SUM(debit_amount) FROM employee_earnings_ledger WHERE employee_id=$2 AND notes LIKE '%عكس سداد سلفة%') AS debit,(SELECT SUM(amount) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='OUT') AS custody,(SELECT repayment_status FROM advance_requests WHERE id=$4) AS status",[rep,emp,response.json().data.reversal.id,adv]);
   assert.equal(Number(check.rows[0].source_count),1);assert.equal(Number(check.rows[0].reversed),20);assert.equal(Number(check.rows[0].debit),20);assert.equal(Number(check.rows[0].custody),20);assert.equal(check.rows[0].status,"OPEN");
   assert.equal((await server.inject({method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload})).statusCode,200);
+
+  // Payroll reversal must validate every linked advance ledger posting before
+  // writing any reversal rows, then reverse the complete payroll/advance bundle.
+  const payrollPeriod=(await db.query(
+    "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-06-01','APPROVED',$1,$1,now()) RETURNING id",[user]
+  )).rows[0].id;
+  const payrollItem=(await db.query(
+    "INSERT INTO payroll_items(period_id,employee_id,base_salary,net_amount,status) VALUES($1,$2,100,100,'PAID') RETURNING id",
+    [payrollPeriod,emp]
+  )).rows[0].id;
+  const payrollPayment=(await db.query(
+    "INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,settlement_source,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,100,'2099-06-30','CASH','CURRENT_CUSTODY',$2,$3,'reversal-test') RETURNING id",
+    [payrollItem,user,randomUUID()]
+  )).rows[0].id;
+  const payrollAdvance=(await db.query(
+    "INSERT INTO advance_requests(employee_id,amount,reason,requested_by,status,paid_by,paid_at,repayment_status) VALUES($1,20,'payroll reversal test',$2,'PAID',$2,now(),'SETTLED') RETURNING id",
+    [emp,user]
+  )).rows[0].id;
+  const payrollRepayment=(await db.query(
+    "INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,created_by,source_payroll_item_id,source_payroll_payment_id) VALUES($1,20,'FIXED_INSTALLMENT','2099-06-30',$2,$3,$4) RETURNING id",
+    [payrollAdvance,user,payrollItem,payrollPayment]
+  )).rows[0].id;
+  await db.query(
+    "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,20,'FIXED_INSTALLMENT')",
+    [payrollItem,payrollAdvance]
+  );
+  await db.query(
+    "INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_payment_id) VALUES($1,'ADJUSTMENT',120,$2,'payroll plus advance offset',$3)",
+    [emp,user,payrollPayment]
+  );
+  await db.query(
+    "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes,advance_repayment_id) VALUES($1,'ADJUSTMENT',20,$2,'advance repayment',$3)",
+    [emp,user,payrollRepayment]
+  );
+  await db.query(
+    "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id) VALUES($1,'IN',20,'2099-06-30','advance offset',$2,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$3)",
+    [emp,user,payrollPayment]
+  );
+  await db.query(
+    "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id) VALUES($1,'OUT',120,'2099-06-30','payroll cash out',$2,'PAYROLL_PAYMENT',$3)",
+    [emp,user,payrollPayment]
+  );
+  // A bad linked repayment ledger must abort atomically and leave no reversal header.
+  await db.query("UPDATE employee_earnings_ledger SET credit_amount=19 WHERE advance_repayment_id=$1",[payrollRepayment]);
+  const rejectedPayrollReversal=await server.inject({
+    method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},
+    payload:{sourceType:"PAYROLL_PAYMENT",sourceId:payrollPayment,amount:100,reason:"عكس راتب اختباري",idempotencyKey:randomUUID()}
+  });
+  assert.equal(rejectedPayrollReversal.statusCode,409,rejectedPayrollReversal.body);
+  assert.equal(rejectedPayrollReversal.json().error.code,"REVERSAL_ADVANCE_LEDGER_MISMATCH");
+  assert.equal(Number((await db.query("SELECT COUNT(*)::int AS count FROM financial_reversals")).rows[0].count),1,
+    "a failed payroll reversal must not leave a partial reversal header");
+  await db.query("UPDATE employee_earnings_ledger SET credit_amount=20 WHERE advance_repayment_id=$1",[payrollRepayment]);
+  const payrollReversalPayload={sourceType:"PAYROLL_PAYMENT",sourceId:payrollPayment,amount:100,reason:"عكس راتب اختباري",idempotencyKey:randomUUID()};
+  const payrollReversal=await server.inject({
+    method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:payrollReversalPayload
+  });
+  assert.equal(payrollReversal.statusCode,201,payrollReversal.body);
+  assert.equal(payrollReversal.json().data.lines.length,2,"payroll and its linked repayment must reverse as one bundle");
+  const payrollReversalState=await db.query(
+    `SELECT
+      (SELECT COUNT(*)::int FROM payroll_payments WHERE id=$1) AS payment_count,
+      (SELECT COUNT(*)::int FROM advance_repayments WHERE id=$2) AS repayment_count,
+      (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$3) AS line_count,
+      (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status,
+      (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3) AS reversal_custody_count`,
+    [payrollPayment,payrollRepayment,payrollReversal.json().data.reversal.id,payrollAdvance]
+  );
+  assert.equal(Number(payrollReversalState.rows[0].payment_count),1,"original payroll payment must remain immutable");
+  assert.equal(Number(payrollReversalState.rows[0].repayment_count),1,"original advance repayment must remain immutable");
+  assert.equal(Number(payrollReversalState.rows[0].line_count),2);
+  assert.equal(payrollReversalState.rows[0].advance_status,"OPEN","reversing payroll must restore the advance balance");
+  assert.equal(Number(payrollReversalState.rows[0].reversal_custody_count),2,
+    "cash reversal must separately restore payroll cash and undo the advance offset");
  }finally{if(app)await app.close();if(db)await db.end();const c=new pg.Client({connectionString:adminUrl});await c.connect();try{await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)}finally{await c.end()}}
 });
