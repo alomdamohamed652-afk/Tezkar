@@ -758,6 +758,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT id FROM order_stages WHERE order_id=$1 LIMIT 1",[hamzaOrder.json().data.id]
       )).rows[0];
       assert.ok(orderStageForDualAllocation,"the test order must have at least one order stage");
+      const dualAllocationEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Dual Allocation Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
       const dualAllocationProduction=(await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,product_id,stage_id,order_stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
@@ -766,13 +770,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())
          RETURNING id,total_earning_amount`,
-        [previousCustodyEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,orderStageForDualAllocation.id,
+        [dualAllocationEmployee.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,orderStageForDualAllocation.id,
          bonusShift.id,bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(dualAllocationProduction.total_earning_amount),100);
       const dualAllocationPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:previousCustodyEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:100,method:"CASH",idempotencyKey:randomUUID()}
+        payload:{employeeId:dualAllocationEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:100,method:"CASH",idempotencyKey:randomUUID()}
       });
       assert.equal(dualAllocationPayout.statusCode,201,dualAllocationPayout.body);
       const dualPaymentId=dualAllocationPayout.json().data.payment.id;
@@ -785,7 +789,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [dualSettlement.id,dualAllocationProduction.id]
       );
       const dualAllocationSummary=await app.inject({
-        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${previousCustodyEmployee.id}&orderId=${hamzaOrder.json().data.id}`,
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${dualAllocationEmployee.id}&orderId=${hamzaOrder.json().data.id}`,
         headers:{cookie:managerCookie}
       });
       assert.equal(dualAllocationSummary.statusCode,200,dualAllocationSummary.body);
@@ -795,7 +799,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "duplicate allocation rows must not double-consume the production entitlement");
       const duplicatePayoutAttempt=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:previousCustodyEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:1,method:"CASH",idempotencyKey:randomUUID()}
+        payload:{employeeId:dualAllocationEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:1,method:"CASH",idempotencyKey:randomUUID()}
       });
       assert.equal(duplicatePayoutAttempt.statusCode,409,duplicatePayoutAttempt.body,
         "a second payout must be rejected after the canonical settlement allocation consumes the production row");
