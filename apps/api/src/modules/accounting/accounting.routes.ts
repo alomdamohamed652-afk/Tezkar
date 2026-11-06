@@ -95,7 +95,9 @@ export async function accountingRoutes(app:FastifyInstance){
       FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
       WHERE ar.source_payroll_payment_id=$1 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId]);
     let linkedAmount=0;
+    let linkedOriginalAmount=0;
     for(const ar of linked.rows){
+     linkedOriginalAmount+=Number(ar.amount);
      const rev=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[ar.id]);
      linkedAmount+=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
     }
@@ -107,13 +109,19 @@ export async function accountingRoutes(app:FastifyInstance){
      const amount=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
      if(amount>0.0001){lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount});advanceIds.add(ar.advance_id);}
     }
-    const ledger=await client.query("SELECT employee_id FROM employee_earnings_ledger WHERE payroll_payment_id=$1 FOR UPDATE",[input.sourceId]);
+    const ledger=await client.query("SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1 FOR UPDATE",[input.sourceId]);
     if(!ledger.rowCount)throw new AppError("REVERSAL_LEDGER_MISSING","قيد دفتر الموظف الأصلي غير موجود؛ أوقفنا العكس لحماية الأرصدة",409);
+    if(Number(ledger.rows[0].credit_amount)!==0||Math.abs(Number(ledger.rows[0].debit_amount)-Number(payment.amount)-linkedOriginalAmount)>0.01)
+     throw new AppError("REVERSAL_LEDGER_MISMATCH","قيد الراتب الأصلي لا يطابق مبلغ الدفعة وأقساط السلف المرتبطة؛ أوقفنا العكس لحماية دفتر الموظف",409);
     ledgerMoves.push({employeeId:ledger.rows[0].employee_id,credit:input.amount+linkedAmount,debit:0,notes:"عكس صرف راتب "+input.sourceId});
-    const out=await client.query("SELECT employee_id FROM cash_custody_transactions WHERE source_type='PAYROLL_PAYMENT' AND source_id=$1 AND direction='OUT' FOR UPDATE",[input.sourceId]);
-    const offset=await client.query("SELECT employee_id FROM cash_custody_transactions WHERE source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET' AND source_id=$1 AND direction='IN' FOR UPDATE",[input.sourceId]);
+    const out=await client.query("SELECT employee_id,amount FROM cash_custody_transactions WHERE source_type='PAYROLL_PAYMENT' AND source_id=$1 AND direction='OUT' FOR UPDATE",[input.sourceId]);
+    const offset=await client.query("SELECT employee_id,amount FROM cash_custody_transactions WHERE source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET' AND source_id=$1 AND direction='IN' FOR UPDATE",[input.sourceId]);
     if(Number(out.rowCount??0)>1||Number(offset.rowCount??0)>1)throw new AppError("REVERSAL_CUSTODY_AMBIGUOUS","حركات العهدة المرتبطة بالدفعة غير متطابقة؛ راجع المطابقة قبل العكس",409);
+    if(offset.rowCount&&Math.abs(Number(offset.rows[0].amount)-linkedOriginalAmount)>0.01)
+     throw new AppError("REVERSAL_CUSTODY_OFFSET_MISMATCH","استرداد العهدة الأصلي لا يطابق إجمالي أقساط السلف؛ أوقفنا العكس لحماية رصيد العهدة",409);
     if(out.rowCount){
+     if(Math.abs(Number(out.rows[0].amount)-Number(payment.amount)-linkedOriginalAmount)>0.01)
+      throw new AppError("REVERSAL_CUSTODY_PAYMENT_MISMATCH","حركة خروج العهدة الأصلية لا تطابق صافي الصرف وأقساط السلف؛ أوقفنا العكس لحماية رصيد العهدة",409);
      if(offset.rowCount&&offset.rows[0].employee_id!==out.rows[0].employee_id)throw new AppError("REVERSAL_CUSTODY_HOLDER_MISMATCH","صاحب العهدة مختلف بين حركات الصرف وتسوية السلف",409);
      custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"IN",amount:input.amount+linkedAmount,description:"استرداد عكس صرف راتب "+input.sourceId});
      if(linkedAmount>0.0001)custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"OUT",amount:linkedAmount,description:"عكس استرداد أقساط السلف من الراتب "+input.sourceId});
