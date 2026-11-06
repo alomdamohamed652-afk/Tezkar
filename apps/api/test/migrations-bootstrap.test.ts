@@ -50,6 +50,18 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
         [...protectedAttendanceTables].sort().map(relname=>({relname,relrowsecurity:true})),
         "attendance and payroll attendance records must be protected from direct Supabase Data API access"
       );
+      const permissionTypeColumn = await verification.query(
+        `SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='attendance_permission_requests' AND column_name='permission_type'`
+      );
+      assert.equal(permissionTypeColumn.rows[0]?.is_nullable,"YES",
+        "a pending employee request must not have a pay classification before management reviews it");
+      const approvedTypeConstraint = await verification.query(
+        `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+          WHERE conrelid='public.attendance_permission_requests'::regclass AND contype='c'`
+      );
+      assert.ok(approvedTypeConstraint.rows.some((row:{definition:string})=>/status <> 'APPROVED' OR permission_type IS NOT NULL/.test(row.definition)),
+        "an approved permission must always have an explicit paid/unpaid classification");
       const requiredPermissions = [
         "employees.lookup", "orders.view", "products.view", "shifts.view", "rates.view",
         "machines.view", "machine_production.view", "machine_production.create",
