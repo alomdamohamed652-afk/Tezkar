@@ -479,7 +479,7 @@ export async function accountingRoutes(app:FastifyInstance){
        OR ROUND(el.credit_amount::numeric,2)<>ROUND(ar.amount::numeric,2)
        OR el.debit_amount<>0
        OR (ar.source_payroll_item_id IS NOT NULL AND (
-         i.id IS NULL OR i.status<>'PAID'
+         i.id IS NULL OR i.status NOT IN ('PAID','REVERSED')
          OR i.employee_id IS DISTINCT FROM a.employee_id
          OR d.id IS NULL
          OR ROUND(d.amount::numeric,2)<>ROUND(ar.amount::numeric,2)
