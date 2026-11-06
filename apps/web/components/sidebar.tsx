@@ -97,7 +97,7 @@ export function Sidebar({active}:{active:string}){
  },[preferenceKey]);
  useEffect(()=>{
   if(!preferencesReady||!preferenceKey)return;
-  try{window.localStorage.setItem(preferenceKey,JSON.stringify(sidebarPreferences))}catch{}
+  try{window.localStorage.setItem(preferenceKey,JSON.stringify(sidebarPreferences))}catch{ /* sidebar preferences are optional when browser storage is unavailable */ }
  },[preferencesReady,preferenceKey,sidebarPreferences]);
  function toggleGroup(label:string){
   setSidebarPreferences(current=>({...current,groups:{...current.groups,[label]:!(current.groups[label]??true)}}));
