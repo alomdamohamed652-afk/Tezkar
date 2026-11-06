@@ -57,7 +57,7 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
   const result = await client.query(
     `SELECT u.id AS user_id, u.employee_id, u.username, e.full_name, u.is_bootstrap, u.must_complete_setup, u.must_change_password,
             s.last_seen_at,
-            COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL), '{}') AS role_codes
+            COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL AND r.is_active = TRUE), '{}') AS role_codes
      FROM user_sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN employees e ON e.id = u.employee_id
