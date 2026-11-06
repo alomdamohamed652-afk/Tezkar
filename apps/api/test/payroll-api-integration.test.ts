@@ -785,6 +785,21 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         payload: { lineType: "DEDUCTION", description: "Should not edit voided line", amount: 10 }
       });
       assert.equal(editVoidedLine.statusCode, 409, editVoidedLine.body);
+      const duplicateVoid = await app.inject({
+        method: "DELETE",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader },
+        payload: { reason: "محاولة إلغاء مكرر للاختبار" }
+      });
+      assert.equal(duplicateVoid.statusCode, 409, duplicateVoid.body);
+      const voidAudit = await apiPool.query(
+        "SELECT action,module,entity_type,entity_id,metadata FROM audit_log WHERE entity_id=$1 AND action='void_adjustment_line' ORDER BY created_at DESC LIMIT 1",
+        [temporaryAdjustment.json().data.id]
+      );
+      assert.equal(voidAudit.rowCount, 1, "voiding must create one audit-log record");
+      assert.equal(voidAudit.rows[0].module, "payroll");
+      assert.equal(voidAudit.rows[0].entity_type, "payroll_adjustment_line");
+      assert.equal(voidAudit.rows[0].metadata.reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
       const afterAdjustmentCrud = await apiPool.query(
         "SELECT bonus_amount,deduction_amount FROM payroll_items WHERE id=$1", [itemA.rows[0].id]
       );
