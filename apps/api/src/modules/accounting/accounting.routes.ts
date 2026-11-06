@@ -60,6 +60,7 @@ export async function accountingRoutes(app:FastifyInstance){
   reason:z.string().trim().min(2).max(500),
   idempotencyKey:z.string().uuid()
  });
+ app.get("/api/accounting/reversals",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>{ const result=await pool.query("SELECT r.id,r.code,r.reason,r.reversal_date,r.created_at,u.username AS created_by_username,l.source_type,l.source_id,l.amount FROM financial_reversals r JOIN users u ON u.id=r.created_by JOIN financial_reversal_lines l ON l.reversal_id=r.id ORDER BY r.created_at DESC LIMIT 200"); return {data:result.rows}; });
  app.post("/api/accounting/reversals",{preHandler:[authenticateRequest,requirePermission("finance.reversals.create")]},async(request,reply)=>{
   const parsed=reversalSchema.safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات العكس المحاسبي غير صحيحة",422);
