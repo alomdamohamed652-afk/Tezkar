@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS financial_reversals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL UNIQUE DEFAULT ('REV-' || upper(substr(replace(gen_random_uuid()::text,'-',''),1,12))),
   idempotency_key UUID NOT NULL UNIQUE,
+  request_fingerprint TEXT NOT NULL,
   reason TEXT NOT NULL CHECK (length(btrim(reason)) >= 2),
   reversal_date DATE NOT NULL DEFAULT CURRENT_DATE,
   created_by UUID NOT NULL REFERENCES users(id),
