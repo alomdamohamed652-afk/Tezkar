@@ -1298,6 +1298,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "UPDATE cash_custody_transactions SET amount=49 WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",
         [earlyRepayment.json().data.repayment.id]
       );
+      await apiPool.query(
+        "UPDATE employee_earnings_ledger SET credit_amount=49 WHERE advance_repayment_id=$1",
+        [earlyRepayment.json().data.repayment.id]
+      );
 
       // A cash payment must be reconciled against the exact custody OUT amount.
       const itemBPayment = await apiPool.query(
@@ -1353,6 +1357,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "integrity overview must detect an explicitly linked custody movement with a different employee and amount");
       assert.ok(findingData.counts.advanceRepaymentsMissingCustodyIn>=1,
         "integrity overview must detect a manual advance repayment whose custody receipt is missing or has a different amount");
+      assert.ok(findingData.counts.advanceRepaymentLedgerMismatches>=1,
+        "integrity overview must detect a manual advance repayment with a missing or incorrect employee-ledger credit");
+      assert.ok(findingData.issues.advanceRepaymentLedgerMismatches.some((row:{repayment_id:string;credit_amount:string|number|null})=>
+        row.repayment_id===earlyRepayment.json().data.repayment.id&&Number(row.credit_amount)!==50),
+        "integrity overview must identify the exact manual advance repayment ledger mismatch");
       assert.ok(findingData.issues.advanceRepaymentsMissingCustodyIn.some((row:{repayment_id:string;amount:string;custody_amount:string}) =>
         row.repayment_id===earlyRepayment.json().data.repayment.id && Number(row.custody_amount)!==Number(row.amount)),
         "integrity overview must identify the mismatched manual advance repayment receipt");
