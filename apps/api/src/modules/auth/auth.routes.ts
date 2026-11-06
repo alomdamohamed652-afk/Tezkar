@@ -229,35 +229,37 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/auth/me", { preHandler: authenticateRequest }, async (request) => {
-    const client = await pool.connect();
-    try {
-      const permissions = await client.query(
-        `SELECT DISTINCT p.code
-         FROM user_roles ur
-         JOIN role_permissions rp ON rp.role_id = ur.role_id
-         JOIN permissions p ON p.id = rp.permission_id
-         JOIN roles r ON r.id = ur.role_id
-         WHERE ur.user_id = $1
-           AND r.is_active = TRUE
-         ORDER BY p.code`,
-        [request.user!.userId]
-      );
-      const employeeId=request.user!.employeeId;
-      const activeCustody=employeeId?await client.query("SELECT 1 FROM employee_custodies WHERE employee_id=$1 AND status IN ('ACTIVE','PARTIAL_RETURNED') LIMIT 1",[employeeId]):{rowCount:0};
-      const openAdvance=employeeId?await client.query("SELECT 1 FROM advance_requests WHERE employee_id=$1 AND status='PAID' AND repayment_status='OPEN' LIMIT 1",[employeeId]):{rowCount:0};
-      return {
-        data: {
-          ...request.user,
-          permissions: permissions.rows.map((row) => row.code as string),
-          activeRecords: {
-            custody: Boolean(activeCustody.rowCount),
-            advance: Boolean(openAdvance.rowCount)
-          }
+    const result = await pool.query(
+      `SELECT
+         COALESCE((
+           SELECT array_agg(DISTINCT p.code ORDER BY p.code)
+           FROM user_roles ur
+           JOIN role_permissions rp ON rp.role_id = ur.role_id
+           JOIN permissions p ON p.id = rp.permission_id
+           JOIN roles r ON r.id = ur.role_id
+           WHERE ur.user_id = $1 AND r.is_active = TRUE
+         ), '{}'::text[]) AS permissions,
+         EXISTS (
+           SELECT 1 FROM employee_custodies
+           WHERE employee_id = $2 AND status IN ('ACTIVE','PARTIAL_RETURNED')
+         ) AS has_active_custody,
+         EXISTS (
+           SELECT 1 FROM advance_requests
+           WHERE employee_id = $2 AND status='PAID' AND repayment_status='OPEN'
+         ) AS has_open_advance`,
+      [request.user!.userId, request.user!.employeeId]
+    );
+    const authState = result.rows[0];
+    return {
+      data: {
+        ...request.user,
+        permissions: authState?.permissions ?? [],
+        activeRecords: {
+          custody: Boolean(authState?.has_active_custody),
+          advance: Boolean(authState?.has_open_advance)
         }
-      };
-    } finally {
-      client.release();
-    }
+      }
+    };
   });
   app.get("/api/auth/sessions", { preHandler: authenticateRequest }, async (request) => {
     const token = request.cookies.tezkar_session;
