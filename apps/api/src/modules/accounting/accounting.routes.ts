@@ -758,7 +758,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const amountMinor=toMinorUnits(expense.amount);
     const rawShares=eligibleOrders.map(order=>amountMinor*Number(order.cost||0)/totalCost);
     const shares=rawShares.map(Math.floor);
-    let centsRemaining=amountMinor-shares.reduce((sum,value)=>sum+value,0);
+    const centsRemaining=amountMinor-shares.reduce((sum,value)=>sum+value,0);
     const remainderOrder=rawShares.map((raw,index)=>({index,remainder:raw-(shares[index]??0)})).sort((a,b)=>b.remainder-a.remainder);
     for(let i=0;i<centsRemaining;i++){
      const remainder=remainderOrder[i];
