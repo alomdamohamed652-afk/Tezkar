@@ -819,6 +819,35 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,130)",
         [priorSettlement.id,priorProduction.id]
       );
+      // A second settlement in the same repayment window can allocate production
+      // from before that window; it must not reduce the current period's production base.
+      const outsidePeriodProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE-40,1,$5,$6,50,$7,'PER_PIECE','PER_PIECE',50,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(outsidePeriodProduction.total_earning_amount),50);
+      const outsidePeriodPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,created_at)
+         VALUES($1,50,50,0,'CASH',$2,CURRENT_DATE-2+TIME '12:00') RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
+      const outsidePeriodSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(
+           employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id
+         ) VALUES($1,50,50,0,CURRENT_DATE-2,'Settlement allocated to production before repayment window',$2,$3) RETURNING id`,
+        [productionAdvanceWorker.id,manager.id,outsidePeriodPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,50)",
+        [outsidePeriodSettlement.id,outsidePeriodProduction.id]
+      );
       await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
