@@ -229,7 +229,7 @@ export async function attendanceRoutes(app:FastifyInstance){
 
 
  app.post("/api/attendance/permissions",{preHandler:[authenticateRequest,requirePermission("attendance.permission.request","own")]},async(request,reply)=>{
-  const parsed=z.object({date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),type:z.enum(["PAID","UNPAID"]),reason:z.string().trim().min(2).max(500)}).safeParse(request.body);
+  const parsed=z.object({date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),reason:z.string().trim().min(2).max(500)}).strict().safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات طلب الإذن غير صحيحة؛ يجب تحديد التاريخ والوقت والسبب",422);
   const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
   const d=parsed.data;const start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
@@ -242,7 +242,7 @@ export async function attendanceRoutes(app:FastifyInstance){
       AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[employeeId,d.date,d.startsAt,d.endsAt]);
    if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد طلب إذن آخر متداخل في نفس اليوم",409);
    const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,requested_by)
-    VALUES($1,$2::date,$3::time,$4::time,$5,$6,$7,$8) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.type,d.reason,request.user!.userId]);
+    VALUES($1,$2::date,$3::time,$4::time,$5,'UNPAID',$6,$7) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.reason,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"create_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return result.rows[0];
   });
@@ -295,13 +295,13 @@ export async function attendanceRoutes(app:FastifyInstance){
  });
  app.post("/api/attendance/permissions/:id/review",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async request=>{
   const params=z.object({id:z.string().uuid()}).safeParse(request.params);
-  const parsed=z.object({decision:z.enum(["APPROVED","REJECTED"]),note:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
+  const parsed=z.object({decision:z.enum(["APPROVED","REJECTED"]),permissionType:z.enum(["PAID","UNPAID"]).optional(),note:z.string().trim().max(500).nullable().optional()}).strict().superRefine((value,ctx)=>{if(value.decision==="APPROVED"&&!value.permissionType)ctx.addIssue({code:z.ZodIssueCode.custom,path:["permissionType"],message:"يجب تحديد نوع الإذن عند الموافقة"});if(value.decision==="REJECTED"&&value.permissionType)ctx.addIssue({code:z.ZodIssueCode.custom,path:["permissionType"],message:"لا يتم تحديد نوع مالي عند رفض الطلب"});}).safeParse(request.body);
   if(!params.success||!parsed.success)throw new AppError("VALIDATION_ERROR","قرار مراجعة الإذن غير صحيح",422);
   return withTransaction(async client=>{
    const before=await client.query("SELECT * FROM attendance_permission_requests WHERE id=$1 FOR UPDATE",[params.data.id]);
    if(!before.rowCount)throw new AppError("PERMISSION_NOT_FOUND","طلب الإذن غير موجود",404);
    if(before.rows[0].status!=="PENDING")throw new AppError("PERMISSION_ALREADY_REVIEWED","لا يمكن مراجعة طلب ليس قيد الانتظار",409);
-   const result=await client.query(`UPDATE attendance_permission_requests SET status=$1,reviewed_by=$2,reviewed_at=now(),review_note=$3,updated_at=now() WHERE id=$4 RETURNING *`,[parsed.data.decision,request.user!.userId,parsed.data.note??null,params.data.id]);
+   const result=await client.query(`UPDATE attendance_permission_requests SET status=$1,permission_type=CASE WHEN $1='APPROVED' THEN $2 ELSE permission_type END,reviewed_by=$3,reviewed_at=now(),review_note=$4,updated_at=now() WHERE id=$5 RETURNING *`,[parsed.data.decision,parsed.data.permissionType??null,request.user!.userId,parsed.data.note??null,params.data.id]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPROVED"?"approve_attendance_permission":"reject_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:params.data.id,beforeData:before.rows[0],afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {data:result.rows[0]};
   });
