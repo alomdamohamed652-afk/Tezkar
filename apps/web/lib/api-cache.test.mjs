@@ -81,5 +81,7 @@ test("only reviewed reference endpoints receive the 30-second TTL", () => {
     "/api/shifts", "/api/shifts/rate-groups", "/api/machines"
   ]) assert.equal(getApiCacheTtl(path), 30_000, path);
   assert.equal(getApiCacheTtl("/api/products?page=2"), 30_000);
-  assert.equal(getApiCacheTtl("/api/tasks"), 1_500);
+  assert.equal(getApiCacheTtl("/api/tasks"), 0);
+  assert.equal(getApiCacheTtl("/api/reports/payroll"), 0);
+  assert.equal(getApiCacheTtl("/api/unknown-sensitive-area"), 0);
 });
