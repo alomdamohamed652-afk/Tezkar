@@ -907,6 +907,11 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [itemA.rows[0].id,itemB.rows[0].id]
       );
       assert.equal(linkedAdjustments.rowCount,4);
+      const voidedAdjustmentLedger = await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_ledger WHERE payroll_adjustment_line_id=$1",
+        [temporaryAdjustment.json().data.id]
+      );
+      assert.equal(voidedAdjustmentLedger.rows[0].count,0,"voided payroll adjustments must never post an employee-ledger entry");
       assert.ok(linkedAdjustments.rows.every((row:{line_type:string;credit_amount:string|null;debit_amount:string|null}) =>
         row.line_type==="BONUS" ? Number(row.credit_amount)===100 && Number(row.debit_amount??0)===0
                                 : Number(row.debit_amount)===100 && Number(row.credit_amount??0)===0),
