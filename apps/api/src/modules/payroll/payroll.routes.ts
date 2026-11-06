@@ -438,7 +438,9 @@ export async function payrollRoutes(app: FastifyInstance) {
           WHERE employee_id=ANY($1::uuid[]) AND effective_from<=$2::date
             AND (effective_to IS NULL OR effective_to>=$3::date)`,[employeeIds,monthEnd,monthStart])
       ]);
-      const policiesByEmployee=new Map(policiesResult.rows.map(policy=>[String(policy.employee_id),policy]));
+      const policiesByEmployee=new Map<string,(typeof policiesResult.rows)[number]>(
+        policiesResult.rows.map(policy=>[String(policy.employee_id),policy] as const)
+      );
       const profilesByEmployee=new Map<string,typeof profilesResult.rows>();
       for(const profile of profilesResult.rows){
         const employeeProfiles=profilesByEmployee.get(String(profile.employee_id));
