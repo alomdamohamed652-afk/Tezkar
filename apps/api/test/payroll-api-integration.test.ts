@@ -164,6 +164,94 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.ok(setCookie, "login must issue a session cookie");
       const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
 
+
+      // Employee permission requests: identity and financial classification are server-controlled.
+      const permissionEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES($1) RETURNING id",["Attendance Permission Integration Employee"]);
+      const permissionUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id,username",
+        ["attendance-permission-"+randomBytes(5).toString("hex"),hashPassword(password),permissionEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[permissionUser.rows[0].id]);
+      const permissionLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:permissionUser.rows[0].username,password}});
+      assert.equal(permissionLogin.statusCode,200,permissionLogin.body);
+      const permissionSetCookie=permissionLogin.headers["set-cookie"];
+      assert.ok(permissionSetCookie,"employee permission login must issue a session cookie");
+      const permissionCookie=(Array.isArray(permissionSetCookie)?permissionSetCookie[0]:permissionSetCookie).split(";")[0];
+      const permissionDate="2099-01-15";
+      const permissionRequest=async(startsAt:string,endsAt:string)=>app.inject({
+        method:"POST",url:"/api/attendance/permissions",headers:{cookie:permissionCookie},
+        payload:{date:permissionDate,startsAt,endsAt,reason:"Personal appointment"}
+      });
+
+      const forgedPermission=await app.inject({
+        method:"POST",url:"/api/attendance/permissions",headers:{cookie:permissionCookie},
+        payload:{date:permissionDate,startsAt:"08:00",endsAt:"09:00",reason:"Personal appointment",employeeId:employeeB.rows[0].id,type:"PAID",status:"APPROVED"}
+      });
+      assert.equal(forgedPermission.statusCode,422,"employees must not choose identity, approval status or paid/unpaid classification");
+      const ownPermissionList=await app.inject({method:"GET",url:"/api/attendance/permissions/my",headers:{cookie:permissionCookie}});
+      assert.equal(ownPermissionList.statusCode,200,ownPermissionList.body);
+      assert.equal(ownPermissionList.json().data.length,0);
+      const deniedGlobalPermissionList=await app.inject({method:"GET",url:"/api/attendance/permissions",headers:{cookie:permissionCookie}});
+      assert.equal(deniedGlobalPermissionList.statusCode,403,"employees may only view their own permission requests");
+
+      const paidPermission=await permissionRequest("08:00","09:00");
+      assert.equal(paidPermission.statusCode,201,paidPermission.body);
+      const paidPermissionRow=paidPermission.json().data;
+      assert.equal(paidPermissionRow.employee_id,permissionEmployee.rows[0].id);
+      assert.equal(paidPermissionRow.requested_by,permissionUser.rows[0].id);
+      assert.equal(paidPermissionRow.permission_type,null);
+      assert.equal(paidPermissionRow.status,"PENDING");
+      const paidReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${paidPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"APPROVED",permissionType:"PAID"}
+      });
+      assert.equal(paidReview.statusCode,200,paidReview.body);
+      assert.equal(paidReview.json().data.status,"APPROVED");
+      assert.equal(paidReview.json().data.permission_type,"PAID");
+
+      const unpaidPermission=await permissionRequest("09:00","10:00");
+      assert.equal(unpaidPermission.statusCode,201,unpaidPermission.body);
+      const unpaidPermissionRow=unpaidPermission.json().data;
+      const unpaidReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${unpaidPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"APPROVED",permissionType:"UNPAID"}
+      });
+      assert.equal(unpaidReview.statusCode,200,unpaidReview.body);
+      assert.equal(unpaidReview.json().data.permission_type,"UNPAID");
+
+      const rejectedPermission=await permissionRequest("10:00","11:00");
+      assert.equal(rejectedPermission.statusCode,201,rejectedPermission.body);
+      const rejectedPermissionRow=rejectedPermission.json().data;
+      const invalidRejectedReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${rejectedPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"REJECTED",permissionType:"PAID"}
+      });
+      assert.equal(invalidRejectedReview.statusCode,422,"rejected requests cannot carry a financial classification");
+      const rejectedReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${rejectedPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"REJECTED"}
+      });
+      assert.equal(rejectedReview.statusCode,200,rejectedReview.body);
+      assert.equal(rejectedReview.json().data.status,"REJECTED");
+      assert.equal(rejectedReview.json().data.permission_type,null);
+
+      const cancelledPermission=await permissionRequest("11:00","12:00");
+      assert.equal(cancelledPermission.statusCode,201,cancelledPermission.body);
+      const cancelledPermissionRow=cancelledPermission.json().data;
+      const cancelled=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${cancelledPermissionRow.id}/cancel`,headers:{cookie:permissionCookie}
+      });
+      assert.equal(cancelled.statusCode,200,cancelled.body);
+      assert.equal(cancelled.json().data.status,"CANCELLED");
+      assert.equal(cancelled.json().data.permission_type,null);
+
+      const overlapPermission=await permissionRequest("08:30","09:30");
+      assert.equal(overlapPermission.statusCode,409,"a new request cannot overlap an already approved permission");
+      assert.equal(overlapPermission.json().error.code,"PERMISSION_OVERLAP");
+      const refreshedOwnPermissions=await app.inject({method:"GET",url:"/api/attendance/permissions/my",headers:{cookie:permissionCookie}});
+      assert.equal(refreshedOwnPermissions.statusCode,200,refreshedOwnPermissions.body);
+      assert.equal(refreshedOwnPermissions.json().data.length,4,"employees should see only their own requests across all statuses");
+
       const passwordResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Password Reset Integration Employee') RETURNING id");
       const passwordResetUser=await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
