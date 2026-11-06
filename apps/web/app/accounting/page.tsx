@@ -75,7 +75,7 @@ export default function AccountingPage() {
   const [payrollReconciliation,setPayrollReconciliation]=useState<PayrollReconciliation|null>(null);
   const [reconciliationLoading,setReconciliationLoading]=useState(false);
 
-  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"|"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:"",amount:"",reason:""});
+  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:"",amount:"",reason:""});
   const [reversalSaving,setReversalSaving]=useState(false);
   const [reversals,setReversals]=useState<Array<{id:string;code:string;reason:string;reversal_date:string;created_at:string;created_by_username:string;source_type:string;source_id:string;amount:string|number}>>([]);
 
@@ -304,9 +304,9 @@ export default function AccountingPage() {
      {message&&<div className="success-box">{message}</div>}
 
      {has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
-      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس أثر دفعة راتب أو سداد سلفة دون حذف الحركة الأصلية. أقساط السلف المرتبطة بدفعة راتب تُعكس معها تلقائيًا.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
       <div className="form-grid" style={{padding:"0 16px 16px"}}>
-       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
+       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
        <label>معرّف الحركة الأصلية (UUID)<input value={reversalForm.sourceId} onChange={e=>setReversalForm(v=>({...v,sourceId:e.target.value}))} placeholder="الصق معرّف الحركة"/></label>
        <label>مبلغ العكس (ج.م)<input type="number" min="0.01" step="0.01" value={reversalForm.amount} onChange={e=>setReversalForm(v=>({...v,amount:e.target.value}))}/></label>
        <label style={{gridColumn:"1 / -1"}}>سبب العكس<textarea rows={2} value={reversalForm.reason} onChange={e=>setReversalForm(v=>({...v,reason:e.target.value}))} placeholder="اكتب سبب التصحيح بالتفصيل"/></label>
