@@ -44,17 +44,6 @@ if (typeof window !== "undefined") {
   }
 }
 
-function storeGetCache(key: string, value: unknown, ttlMs: number): void {
-  if (ttlMs <= 0) return;
-  getCache.delete(key);
-  while (getCache.size >= MAX_GET_CACHE_ENTRIES) {
-    const oldestKey = getCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    getCache.delete(oldestKey);
-  }
-  getCache.set(key, { value, expiresAt: Date.now() + ttlMs });
-}
-
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) {
     super(message);
