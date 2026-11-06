@@ -4,8 +4,7 @@ import { getSessionUser } from "../src/modules/auth/session.service.js";
 
 function fakeClient(lastSeenAt: Date) {
   const calls: Array<{ sql: string; values?: unknown[] }> = [];
-  return {
-    calls,
+  const client = {
     async query(sql: string, values?: unknown[]) {
       calls.push({ sql, values });
       if (sql.includes("SELECT u.id AS user_id")) {
@@ -25,12 +24,13 @@ function fakeClient(lastSeenAt: Date) {
       }
       return { rows: [], rowCount: 1 };
     },
-  };
+  } as unknown as import("pg").PoolClient;
+  return { calls, client };
 }
 
 test("session authentication does not write last_seen_at on every request", async () => {
   const client = fakeClient(new Date(Date.now() - 10_000));
-  const user = await getSessionUser(client, "opaque-session-token");
+  const user = await getSessionUser(client.client, "opaque-session-token");
 
   assert.equal(user?.userId, "user-1");
   assert.deepEqual(user?.roleCodes, ["worker"]);
