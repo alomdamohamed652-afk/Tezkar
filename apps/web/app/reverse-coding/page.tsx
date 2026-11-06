@@ -14,7 +14,7 @@ type LabelLayout={width:number;height:number;margin:number};
 type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;display_product_name?:string|null;order_code?:string;weight_min_kg?:string|null;weight_max_kg?:string|null})|null;carton?:any};
 type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
 const createScanSession=()=>{
- try{return crypto.randomUUID();}catch{}
+ try{return crypto.randomUUID();}catch{ /* crypto UUID unavailable; caller handles the missing ID */ }
  const bytes=new Uint8Array(16);
  try{crypto.getRandomValues(bytes);}
  catch{for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256);}
@@ -107,7 +107,7 @@ export default function ReverseCodingPage(){
   if(!scanning)return;
   let active=true;
   const tick=async()=>{if(!active)return;const video=videoRef.current;
-   if(video&&video.readyState>=2&&detectorRef.current&&!scanBusyRef.current){scanBusyRef.current=true;try{const found=await detectorRef.current.detect(video);if(found?.[0]?.rawValue&&found[0].rawValue!==lastDetectedRef.current){lastDetectedRef.current=found[0].rawValue;await submitScan(found[0].rawValue);}}catch{}finally{scanBusyRef.current=false;}}
+   if(video&&video.readyState>=2&&detectorRef.current&&!scanBusyRef.current){scanBusyRef.current=true;try{const found=await detectorRef.current.detect(video);if(found?.[0]?.rawValue&&found[0].rawValue!==lastDetectedRef.current){lastDetectedRef.current=found[0].rawValue;await submitScan(found[0].rawValue);}}catch{ /* barcode frame may not contain a readable code */ }finally{scanBusyRef.current=false;}}
    if(active)frameRef.current=window.requestAnimationFrame(tick);
   };
   frameRef.current=window.requestAnimationFrame(tick);
