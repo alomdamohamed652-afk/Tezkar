@@ -18,6 +18,9 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   assert.equal(migration.status,0,migration.stderr||migration.stdout);
   process.env.DATABASE_URL=target.toString();process.env.WEB_ORIGIN="http://localhost:3000";process.env.SESSION_SECRET="reversal-integration-test-secret-long-enough";process.env.NODE_ENV="test";
   const [{default:Fastify},{default:cookie},{authRoutes},{accountingRoutes},{hashPassword},poolModule]=await Promise.all([import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/auth/auth.service.js"),import("../src/db/pool.js")]);
+  const indexCheck=await poolModule.pool.query("SELECT to_regclass('public.uq_advance_repayments_source_payroll_item_advance') AS old_index,to_regclass('public.uq_advance_repayments_source_payment_advance') AS new_index");
+  assert.equal(indexCheck.rows[0].old_index,null,"legacy payroll-item uniqueness must be removed to permit re-settlement");
+  assert.ok(indexCheck.rows[0].new_index,"repayments must be unique per actual payroll payment and advance");
   db=poolModule.pool;const server=Fastify();app=server;await server.register(cookie,{secret:process.env.SESSION_SECRET});
   server.setErrorHandler((e,_q,reply)=>reply.code(typeof e.statusCode==="number"&&e.statusCode<500?e.statusCode:500).send({error:{code:e.code??"ERROR",message:e.message}}));
   await server.register(authRoutes);await server.register(accountingRoutes);
