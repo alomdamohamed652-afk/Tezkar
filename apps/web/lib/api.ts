@@ -13,30 +13,48 @@ export function clearApiCache(): void {
   pendingGets.clear();
 }
 
-// Call after a successful login/account switch and before logout navigation.
-// Broadcast only a lifecycle signal; never put identity or session data in it.
+// Broadcast lifecycle signals only; never include identity or session data.
 let sessionChannel: BroadcastChannel | null = null;
+
+function dispatchSessionChanged(action: "login" | "logout" | "changed"): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("tezkar:session-changed", { detail: { action } }));
+  }
+}
+
+function dispatchSessionExpired(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("tezkar:session-expired"));
+  }
+}
 
 if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
   try {
     sessionChannel = new BroadcastChannel("tezkar-session-lifecycle");
     sessionChannel.onmessage = event => {
-      if (event.data?.type === "session-changed" || event.data?.type === "cache-invalidated") clearApiCache();
+      if (event.data?.type === "session-changed") {
+        clearApiCache();
+        dispatchSessionChanged(event.data.action === "login" || event.data.action === "logout" ? event.data.action : "changed");
+      } else if (event.data?.type === "session-expired") {
+        clearApiCache();
+        dispatchSessionExpired();
+      } else if (event.data?.type === "cache-invalidated") {
+        clearApiCache();
+      }
     };
   } catch {
-    // Same-tab cache clearing remains available if cross-tab messaging is unavailable.
+    // Same-tab lifecycle handling remains available if cross-tab messaging is unavailable.
     sessionChannel = null;
   }
 }
 
-// Call after a successful login/account switch and before logout navigation.
-// Broadcast only a lifecycle signal; never put identity or session data in it.
-export function notifyApiSessionChanged(): void {
+export function notifyApiSessionChanged(action: "login" | "logout" | "changed" = "changed"): void {
   clearApiCache();
+  dispatchSessionChanged(action);
   try {
-    sessionChannel?.postMessage({ type: "session-changed" });
+    sessionChannel?.postMessage({ type: "session-changed", action });
   } catch {
-    // Same-tab cache clearing is immediate; cross-tab notification is best-effort.
+    // Same-tab notification is immediate; cross-tab notification is best-effort.
   }
 }
 
@@ -85,7 +103,13 @@ export async function api<T>(
     if (!response.ok) {
       // A 401 means the browser's authentication context is no longer valid.
       // Drop all cached reads immediately so they cannot survive session expiry.
-      if (response.status === 401) clearApiCache();
+      if (response.status === 401) {
+        clearApiCache();
+        dispatchSessionExpired();
+        try { sessionChannel?.postMessage({ type: "session-expired" }); } catch {
+          // Cross-tab expiry notification is best-effort.
+        }
+      }
       const message = body?.error?.message ?? "حدث خطأ أثناء الاتصال بالنظام";
       throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
     }
@@ -117,6 +141,7 @@ export async function api<T>(
       else if (cleanPath === "/api/employees" && method === "POST") { title = "تمت إضافة الموظف"; message = "تم حفظ بيانات الموظف بنجاح."; }
       else if (cleanPath.includes("/production/scrap") && method === "POST") { title = "تم تسجيل الهالك"; message = "تم حفظ سجل الهالك بنجاح."; }
       else if (cleanPath.includes("/accounting/expenses") && method === "POST") { title = "تم تسجيل المصروف"; message = "تم حفظ المصروف وربطه بالقيد المحدد."; }
+      else if (cleanPath.includes("/api/payroll/items/") && cleanPath.includes("/adjustments/") && method === "DELETE") { title = "تم إلغاء بند المرتب"; message = "تم الاحتفاظ بالبند وسبب الإلغاء في سجل المراجعة."; }
       else if (cleanPath === "/api/tasks" && method === "POST") { title = "تمت إضافة المهمة"; message = "تم حفظ المهمة بنجاح."; }
       else if (cleanPath === "/api/custody" && method === "POST") { title = "تم تسجيل حركة العهدة"; message = "تم حفظ حركة العهدة بنجاح."; }
       else if (method === "POST") { title = "تمت الإضافة بنجاح"; message = "تم تنفيذ الإضافة المطلوبة."; }

@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api, notifyApiSessionChanged } from "../lib/api";
+import { usePermissions } from "./session-provider";
+export { usePermissions } from "./session-provider";
 
-type Session={permissions:string[];username?:string;fullName?:string|null;employeeId?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 type NavGroup={label:string;items:NavItem[]};
 
@@ -51,14 +52,6 @@ const groups:NavGroup[]=[
   {icon:"◉",label:"أمان الحسابات وسجل النشاط",href:"/admin/security",permissions:["users.view"]}
  ]}
 ];
-
-export function usePermissions(){
- const [session,setSession]=useState<Session|null>(null);
- useEffect(()=>{api<{data:Session}>("/api/auth/me").then(r=>setSession(r.data)).catch(()=>setSession(null));},[]);
- const permissions=session?.permissions??null;
- const has=useCallback((code:string)=>permissions?.includes(code)??false,[permissions]);
- return {permissions,session,has};
-}
 
 type SidebarPreferences={collapsed:boolean;groups:Record<string,boolean>};
 const defaultSidebarPreferences:SidebarPreferences={collapsed:false,groups:{}};
@@ -149,7 +142,7 @@ export function Sidebar({active}:{active:string}){
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
- async function logout(){notifyApiSessionChanged();await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
+ async function logout(){notifyApiSessionChanged("logout");await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
  return <aside className={"sidebar"+(!isMobile&&sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
    <div className="brand">
     <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
