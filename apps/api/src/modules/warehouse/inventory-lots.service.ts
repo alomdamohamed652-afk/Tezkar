@@ -3,12 +3,12 @@ import { AppError } from "../../http/errors.js";
 
 export async function createInventoryLot(client: PoolClient, input: {
   productId:string; warehouseId:string; locationId:string; quantity:number; unitCost:number;
-  batchCode?:string|null; sourceType:string; sourceId?:string|null;
+  batchCode?:string|null; sourceType:string; sourceId?:string|null; costConfirmed?:boolean; receiptLineId?:string|null; stockMovementId?:string|null;
 }) {
   const r=await client.query(
-    `INSERT INTO inventory_lots(product_id,warehouse_id,location_id,batch_code,unit_cost,original_quantity,remaining_quantity,source_type,source_id)
-     VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8) RETURNING *`,
-    [input.productId,input.warehouseId,input.locationId,input.batchCode??null,input.unitCost,input.quantity,input.sourceType,input.sourceId??null]
+    `INSERT INTO inventory_lots(product_id,warehouse_id,location_id,batch_code,unit_cost,original_quantity,remaining_quantity,source_type,source_id,cost_confirmed,receipt_line_id,stock_movement_id)
+     VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [input.productId,input.warehouseId,input.locationId,input.batchCode??null,input.unitCost,input.quantity,input.sourceType,input.sourceId??null,input.costConfirmed??true,input.receiptLineId??null,input.stockMovementId??null]
   );
   return r.rows[0];
 }
@@ -22,7 +22,7 @@ export async function consumeInventoryLots(client: PoolClient, input: {
   const lots=await client.query(
     `SELECT id,remaining_quantity,unit_cost
        FROM inventory_lots
-      WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0
+      WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 AND cost_confirmed=TRUE
       ORDER BY created_at ASC,id ASC
       FOR UPDATE`,
     [input.productId,input.warehouseId,input.locationId]

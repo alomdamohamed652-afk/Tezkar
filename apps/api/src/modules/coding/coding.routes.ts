@@ -3,7 +3,7 @@ import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 const createSchema = z.object({
@@ -173,7 +173,7 @@ export async function codingRoutes(app: FastifyInstance) {
     return {data:r.rows.map(x=>({...x,remaining_quantity:Number(x.quantity)-Number(x.coded_quantity)}))};
   });
 
-  app.post("/api/coding/units",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request,reply)=>{
+  app.post("/api/coding/units",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])]},async(request,reply)=>{
     const parsed=createSchema.safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات التكويد غير صحيحة",422);
 
@@ -266,7 +266,7 @@ export async function codingRoutes(app: FastifyInstance) {
     return reply.code(201).send({data:created});
   });
 
-  app.post("/api/coding/units/:id/print",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request)=>{
+  app.post("/api/coding/units/:id/print",{preHandler:[authenticateRequest,requireAnyPermission(["cartons.manage","all"],["cartons.create","all"])]},async(request)=>{
     const id=String((request.params as {id:string}).id);
     const r=await withTransaction(async(client)=>{
       const unit=await client.query("SELECT * FROM coding_units WHERE id=$1 FOR UPDATE",[id]);

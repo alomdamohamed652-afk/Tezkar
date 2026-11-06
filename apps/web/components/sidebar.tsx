@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { api } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { api, notifyApiSessionChanged } from "../lib/api";
+import { usePermissions } from "./session-provider";
+export { usePermissions } from "./session-provider";
 
-type Session={permissions:string[];username?:string;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 type NavGroup={label:string;items:NavItem[]};
 
@@ -15,66 +17,157 @@ const groups:NavGroup[]=[
   {icon:"◌",label:"رؤساء الورديات",href:"/shift-leaders",permissions:["shifts.view"]},
   {icon:"◫",label:"إنتاج العمال",href:"/production",permissions:["production.view"]},
   {icon:"◉",label:"إنتاجي",href:"/my-production",permissions:["production.view_own"]},
-  {icon:"▰",label:"إنتاج الماكينات",href:"/machine-production",permissions:["machine_production.view"]}
+  {icon:"▰",label:"إنتاج الماكينات",href:"/machine-production",permissions:["machine_production.view"]},
+  {icon:"▧",label:"مكتبة تصميمات الليزر",href:"/laser-designs",permissions:["laser_designs.view"]},
+  {icon:"▦",label:"خطة تصميمات الطلبيات",href:"/order-design-plan",permissions:["laser_designs.order_plan.view"]},
+  {icon:"◷",label:"متابعة تشغيل الماكينات",href:"/machine-operations",permissions:["machine_production.live.view"]}
  ]},
  {label:"المخزون والتسليم",items:[
   {icon:"▥",label:"المخزن",href:"/warehouse",permissions:["warehouse.view"]},
   {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view"]},
   {icon:"↓",label:"مسحوبات الوردية",href:"/shift-withdrawals",permissions:["warehouse.view"]},
   {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
-  {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]}
+  {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]},
+  {icon:"▣",label:"التكويد العكسي",href:"/reverse-coding",permissions:["reverse_coding.view"]}
  ]},
  {label:"المالية",items:[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
-  {icon:"◍",label:"القبض",href:"/payments",permissions:["payment_requests.view","worker_payments.view"]},
-  {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view"]},
+  {icon:"⇄",label:"تصحيح مصروفات الطلبيات القديمة",href:"/finance/worker-settlements",permissions:["finance.expenses.create"]},
+  {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","worker_payments.view","worker_payments.pay"]},
+  {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
-  {icon:"◍",label:"العهد",href:"/custody",permissions:["custody.view","custody.view_own"],conditional:"custody"},
+  {icon:"◍",label:"العهدة النقدية",href:"/custody",permissions:["cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.transfer","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"]},
+  {icon:"▣",label:"العهد العينية وتسويتها",href:"/custody/assets",permissions:["custody.view","custody.view_own","custody.create","custody.settle","custody.transfer"]},
   {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
  ]},
  {label:"الإدارة",items:[
+  {icon:"⌕",label:"البحث المركزي",href:"/search",permissions:["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view","deliveries.view","payroll.view","advances.view","advances.view_own","tasks.view","tasks.view_own","cartons.view","finance.expenses.view","finance.revenues.view","finance.period_close.view"]},
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
+  {icon:"◷",label:"الحضور والبصمة",href:"/attendance",permissions:["attendance.view","attendance.import","attendance.manage","attendance.review"]},
+  {icon:"♙",label:"طلبات الحسابات",href:"/registration-requests",permissions:["users.create"]},
+  {icon:"↻",label:"طلبات إعادة تعيين كلمة المرور",href:"/password-reset-requests",permissions:["users.create"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
-  {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]}
+  {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
+  {icon:"◉",label:"أمان الحسابات وسجل النشاط",href:"/admin/security",permissions:["users.view"]}
  ]}
 ];
 
-export function usePermissions(){
- const [session,setSession]=useState<Session|null>(null);
- useEffect(()=>{api<{data:Session}>("/api/auth/me").then(r=>setSession(r.data)).catch(()=>setSession(null));},[]);
- const permissions=session?.permissions??null;
- return {permissions,session,has:(code:string)=>permissions?.includes(code)??false};
-}
+type SidebarPreferences={collapsed:boolean;groups:Record<string,boolean>};
+const defaultSidebarPreferences:SidebarPreferences={collapsed:false,groups:{}};
 
 export function Sidebar({active}:{active:string}){
  const {permissions,session}=usePermissions();
+ const [pendingTaskCount,setPendingTaskCount]=useState(0);
+ const [pendingPaymentCount,setPendingPaymentCount]=useState(0);
+ const [unreadNotificationCount,setUnreadNotificationCount]=useState(0);
+ const [sidebarPreferences,setSidebarPreferences]=useState<SidebarPreferences>(defaultSidebarPreferences);
+ const [preferencesReady,setPreferencesReady]=useState(false);
+ const [isMobile,setIsMobile]=useState(false);
+ useEffect(()=>{
+  const media=window.matchMedia("(max-width: 820px)");
+  const sync=()=>setIsMobile(media.matches);
+  sync();
+  media.addEventListener("change",sync);
+  return()=>media.removeEventListener("change",sync);
+ },[]);
+ const preferenceIdentity=session?.username?.trim().toLowerCase()||session?.employeeId||"account";
+ const preferenceKey=session? `tezkar_sidebar_state_${preferenceIdentity}`:null;
+ useEffect(()=>{
+  if(!preferenceKey){setPreferencesReady(false);return}
+  setPreferencesReady(false);
+  try{
+   const raw=window.localStorage.getItem(preferenceKey);
+   if(raw){
+    const parsed=JSON.parse(raw) as Partial<SidebarPreferences>;
+    setSidebarPreferences({
+     collapsed:parsed.collapsed===true,
+     groups:parsed.groups&&typeof parsed.groups==="object"?parsed.groups:{}
+    });
+   }else setSidebarPreferences(defaultSidebarPreferences);
+  }catch{setSidebarPreferences(defaultSidebarPreferences)}
+  setPreferencesReady(true);
+ },[preferenceKey]);
+ useEffect(()=>{
+  if(!preferencesReady||!preferenceKey)return;
+  try{window.localStorage.setItem(preferenceKey,JSON.stringify(sidebarPreferences))}catch(error){ if (process.env.NODE_ENV !== "production") console.warn("Unable to persist sidebar preferences", error); }
+ },[preferencesReady,preferenceKey,sidebarPreferences]);
+ function toggleGroup(label:string){
+  setSidebarPreferences(current=>({...current,groups:{...current.groups,[label]:!(current.groups[label]??true)}}));
+ }
+ function toggleSidebar(){
+  setSidebarPreferences(current=>({...current,collapsed:!current.collapsed}));
+ }
+ const lastBadgeRefresh=useRef(0);
+ useEffect(()=>{
+  let alive=true;
+  const refreshCounts=()=>{
+   if(permissions===null){
+    setPendingTaskCount(0);setPendingPaymentCount(0);setUnreadNotificationCount(0);
+    return;
+   }
+   // Avoid repeated count queries when users switch focus between tabs rapidly.
+   if(Date.now()-lastBadgeRefresh.current<30_000)return;
+   lastBadgeRefresh.current=Date.now();
+   if(permissions.some(p=>p==="tasks.view"||p==="tasks.view_own")){
+    api<{data:{count:number}}>("/api/tasks/pending-count")
+     .then(r=>{if(alive)setPendingTaskCount(r.data.count)})
+     .catch(()=>{if(alive)setPendingTaskCount(0)});
+   }else setPendingTaskCount(0);
+   if(permissions.includes("payment_requests.view")){
+    api<{data:{count:number}}>("/api/payment-requests/pending-count")
+     .then(r=>{if(alive)setPendingPaymentCount(r.data.count)})
+     .catch(()=>{if(alive)setPendingPaymentCount(0)});
+   }else setPendingPaymentCount(0);
+   api<{data:{count:number}}>("/api/notifications/unread-count")
+    .then(r=>{if(alive)setUnreadNotificationCount(r.data.count)})
+    .catch(()=>{if(alive)setUnreadNotificationCount(0)});
+  };
+  const handleVisibility=()=>{if(document.visibilityState==="visible")refreshCounts()};
+  lastBadgeRefresh.current=0;
+  refreshCounts();
+  window.addEventListener("focus",refreshCounts);
+  document.addEventListener("visibilitychange",handleVisibility);
+  return()=>{
+   alive=false;
+   window.removeEventListener("focus",refreshCounts);
+   document.removeEventListener("visibilitychange",handleVisibility);
+  };
+ },[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
-   if(permissions===null||!item.permissions?.some(p=>permissions.includes(p)))return false;
+   if(permissions===null)return false;
+   if(item.href==="/admin/security"&&!session?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))return false;
+   if(!item.permissions?.some(p=>permissions.includes(p)))return false;
    if(!item.conditional)return true;
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
-   if(item.conditional==="custody"&&permissions.includes("custody.view"))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
- async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
- return <aside className="sidebar">
+ async function logout(){notifyApiSessionChanged("logout");await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
+ return <aside className={"sidebar"+(!isMobile&&sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
    <div className="brand">
-    <div className="brand-mark"><img src="/tezkar-mark.svg" alt="تذكار" /></div>
+    <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
     <div className="brand-copy"><div className="brand-name">تذكار</div><div className="brand-sub">إدارة وتشغيل المصنع</div></div>
+    {!isMobile&&<button type="button" className="sidebar-collapse-toggle" onClick={toggleSidebar} aria-label={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"} title={sidebarPreferences.collapsed?"توسيع القائمة":"تصغير القائمة"}>{sidebarPreferences.collapsed?"‹":"›"}</button>}
    </div>
    <div className="sidebar-user">
-    <div className="sidebar-avatar">{(session?.username||"م").slice(0,1).toUpperCase()}</div>
-    <div className="sidebar-user-copy"><strong>{session?.username||"حساب المستخدم"}</strong><span>نظام تذكار</span></div>
+    <div className="sidebar-avatar">{(session?.fullName||session?.username||"م").trim().slice(0,1).toUpperCase()}</div>
+    <div className="sidebar-user-copy"><strong>{session?.fullName||session?.username||"حساب المستخدم"}</strong><span>{session?.fullName&&session?.username?("@"+session.username):"نظام تذكار"}</span></div>
     <span className="sidebar-online" title="متصل"></span>
    </div>
    <div className="sidebar-scroll">
-    {visibleGroups.map(group=><div className="nav-group" key={group.label}>
-      <div className="nav-title">{group.label}</div>
-      <nav className="nav">{group.items.map(item=><a className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.label}</span>{active===item.href&&<span className="nav-active-dot"/>}</a>)}</nav>
-    </div>)}
+    {visibleGroups.map(group=>{
+     const expanded=isMobile?true:(sidebarPreferences.groups[group.label]??true);
+     return <div className={"nav-group"+(!expanded?" nav-group-collapsed":"")} key={group.label}>
+      <button type="button" className="nav-title" onClick={()=>{if(!isMobile)toggleGroup(group.label)}} disabled={isMobile} aria-expanded={expanded} title={group.label}>
+       <span>{group.label}</span>{!isMobile&&<span className="nav-group-chevron">{expanded?"−":"+"}</span>}
+      </button>
+      {expanded&&<nav className="nav">{group.items.map(item=><Link className={"nav-item"+(active===item.href?" active":"")} href={item.href} key={item.href} prefetch title={item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}><span className="nav-icon">{item.icon}</span><span className="nav-label">{item.href==="/payroll"?((permissions??[]).includes("payroll.view")?"مرتبات الموظفين":"مرتباتي"):item.label}</span>{item.href==="/tasks"&&pendingTaskCount>0&&<span className="nav-count-badge" aria-label={`${pendingTaskCount} مهام غير مكتملة`}>{pendingTaskCount>99?"99+":pendingTaskCount}</span>}{item.href==="/payments"&&pendingPaymentCount>0&&<span className="nav-count-badge" aria-label={`${pendingPaymentCount} طلبات قبض مفتوحة`}>{pendingPaymentCount>99?"99+":pendingPaymentCount}</span>}{active===item.href&&<span className="nav-active-dot"/>}</Link>)}</nav>}
+     </div>
+    })}
    </div>
    <div className="sidebar-footer">
-    <a className={"nav-item"+(active==="/account"?" active":"")} href="/account"><span className="nav-icon">◉</span><span className="nav-label">حسابي</span></a>
+    <Link className={"nav-item"+(active==="/notifications"?" active":"")} href="/notifications" prefetch><span className="nav-icon">♧</span><span className="nav-label">الإشعارات</span>{unreadNotificationCount>0&&<span className="nav-count-badge" aria-label={`${unreadNotificationCount} إشعارات غير مقروءة`}>{unreadNotificationCount>99?"99+":unreadNotificationCount}</span>}</Link>
+    <Link className={"nav-item"+(active==="/account"?" active":"")} href="/account" prefetch><span className="nav-icon">◉</span><span className="nav-label">حسابي</span></Link>
     <button className="nav-item logout-item" onClick={logout}><span className="nav-icon">↪</span><span className="nav-label">تسجيل الخروج</span></button>
    </div>
  </aside>;

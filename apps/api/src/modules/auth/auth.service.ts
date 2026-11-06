@@ -18,7 +18,7 @@ function verifyPassword(password: string, stored: string): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-export { hashPassword };
+export { hashPassword, verifyPassword };
 
 export async function authenticate(client: pg.PoolClient, username: string, password: string): Promise<SessionUser> {
   const user = await findUserForLogin(client, username);
@@ -32,8 +32,10 @@ export async function authenticate(client: pg.PoolClient, username: string, pass
     userId: user.id,
     employeeId: user.employee_id,
     username: user.username,
+    fullName: user.full_name ?? null,
     roleCodes: user.role_codes ?? [],
     isBootstrap: user.is_bootstrap,
-    mustCompleteSetup: user.must_complete_setup
+    mustCompleteSetup: user.must_complete_setup,
+    mustChangePassword: user.must_change_password
   };
 }
