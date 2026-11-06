@@ -144,11 +144,11 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
 
     const paymentRows = [
       [workerEmployee.id, "PENDING", null],
-      [workerEmployee.id, "APPROVED", manager.id],
       [workerEmployee.id, "REJECTED", manager.id],
-      [workerEmployee.id, "CANCELLED", null],
       [workerEmployee.id, "PAID", manager.id],
-      [otherEmployee.id, "APPROVED", manager.id]
+      [otherEmployee.id, "APPROVED", manager.id],
+      [otherEmployee.id, "CANCELLED", null],
+      [otherEmployee.id, "PENDING", null]
     ] as const;
     for (const [employeeId, status, reviewedBy] of paymentRows) {
       await apiPool.query(
