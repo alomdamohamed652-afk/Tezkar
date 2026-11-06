@@ -45,3 +45,12 @@ test("session activity is touched after the one-minute activity window", async (
   assert.equal(client.calls.length, 2);
   assert.match(client.calls[1].sql, /last_seen_at < now\(\) - interval '1 minute'/);
 });
+
+test("session activity is initialized when last_seen_at is null", async () => {
+  const client = fakeClient(null as unknown as Date);
+  const user = await getSessionUser(client.client, "opaque-session-token");
+
+  assert.equal(user?.userId, "user-1");
+  assert.equal(client.calls.length, 2);
+  assert.match(client.calls[1].sql, /last_seen_at IS NULL/);
+});
