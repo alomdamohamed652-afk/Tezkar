@@ -470,7 +470,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           [item.id,calculation.dayOffBonus,`${calculation.dayOffWorkedMinutes} دقيقة عمل؛ أجر اليوم الكامل ${policySnapshot.dayOffPayAmount} ج.م على أساس ${policySnapshot.dailyWorkMinutes} دقيقة.`,request.user!.userId]);
         const totals=await client.query(`SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
           COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-          FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[item.id]);
+          FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE'`,[item.id]);
         const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
         if(Number(itemBefore.rows[0].base_salary)+bonus<deduction+Number(itemBefore.rows[0].advance_repayment_amount??0))
           throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الحضور والبنود الأخرى أكبر من إجمالي المستحقات؛ راجع المسير قبل الاعتماد.",409);
@@ -507,7 +507,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         }
         const adjustmentLines=await client.query(
           `SELECT id,line_type,description,amount FROM payroll_adjustment_lines
-            WHERE payroll_item_id=$1 ORDER BY created_at,id`,[item.id]
+            WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY created_at,id`,[item.id]
         );
         for(const line of adjustmentLines.rows){
           if(line.line_type==="BONUS"){
@@ -770,8 +770,10 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   app.get("/api/payroll/items/:id/adjustments", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
     const id = (request.params as {id:string}).id;
-    const result = await pool.query(`SELECT l.*,u.username AS created_by_username
-      FROM payroll_adjustment_lines l LEFT JOIN users u ON u.id=l.created_by
+    const result = await pool.query(`SELECT l.*,u.username AS created_by_username,v.username AS voided_by_username
+      FROM payroll_adjustment_lines l
+      LEFT JOIN users u ON u.id=l.created_by
+      LEFT JOIN users v ON v.id=l.voided_by
       WHERE l.payroll_item_id=$1 ORDER BY l.created_at,l.id`,[id]);
     return {data:result.rows};
   });
@@ -798,7 +800,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const totals=await client.query(`SELECT
         COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
         COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[id]);
+        FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE'`,[id]);
       const bonus=Number(totals.rows[0].bonus), deduction=Number(totals.rows[0].deduction);
       if(Number(item.rows[0].base_salary)+bonus < deduction+Number(item.rows[0].advance_repayment_amount??0))
         throw new AppError("PAYROLL_NET_NEGATIVE","إجمالي الخصومات والسلف أكبر من الراتب والمكافآت",422);
@@ -828,12 +830,13 @@ export async function payrollRoutes(app: FastifyInstance) {
       await assertAccountingMonthOpen(client,month);
       const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 FOR UPDATE",[params.lineId,params.id]);
       if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
+      if(before.rows[0].status!=="ACTIVE")throw new AppError("PAYROLL_ADJUSTMENT_VOIDED","لا يمكن تعديل بند تم إلغاؤه؛ أضف بندًا جديدًا إذا لزم الأمر.",409);
       const updated=await client.query(`UPDATE payroll_adjustment_lines SET line_type=$1,description=$2,amount=$3,notes=$4
         WHERE id=$5 AND payroll_item_id=$6 RETURNING *`,[parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,params.lineId,params.id]);
       const totals=await client.query(`SELECT
         COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
         COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[params.id]);
+        FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE'`,[params.id]);
       const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
       if(Number(item.rows[0].base_salary)+bonus<deduction+Number(item.rows[0].advance_repayment_amount??0))
         throw new AppError("PAYROLL_NET_NEGATIVE","تعديل البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
@@ -845,27 +848,35 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   app.delete("/api/payroll/items/:id/adjustments/:lineId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const params=request.params as {id:string;lineId:string};
+    const parsed=z.object({reason:z.string().trim().min(2).max(1000)}).safeParse(request.body??{});
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","اكتب سبب إلغاء البند (حرفان على الأقل).",422);
     return withTransaction(async client=>{
       const item=await client.query(`SELECT i.*,p.status AS period_status,p.period_month
         FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
         WHERE i.id=$1 FOR UPDATE OF i,p`,[params.id]);
       if(!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
-      if(item.rows[0].period_status!=="DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن حذف بنود مسير معتمد",409);
+      if(item.rows[0].period_status!=="DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن إلغاء بنود مسير معتمد؛ استخدم إجراء العكس المحاسبي.",409);
       const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
       await assertAccountingMonthOpen(client,month);
-      const removed=await client.query("DELETE FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 RETURNING *",[params.lineId,params.id]);
-      if(!removed.rowCount) throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
+      const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 FOR UPDATE",[params.lineId,params.id]);
+      if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
+      if(before.rows[0].status!=="ACTIVE")throw new AppError("PAYROLL_ADJUSTMENT_VOIDED","تم إلغاء هذا البند بالفعل.",409);
+      const voided=await client.query(`UPDATE payroll_adjustment_lines
+        SET status='VOIDED',void_reason=$1,voided_by=$2,voided_at=now()
+        WHERE id=$3 AND payroll_item_id=$4 AND status='ACTIVE' RETURNING *`,
+        [parsed.data.reason,request.user!.userId,params.lineId,params.id]);
+      if(!voided.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_VOIDED","تم إلغاء هذا البند بالفعل.",409);
       const totals=await client.query(`SELECT
         COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
         COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
-        FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[params.id]);
+        FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE'`,[params.id]);
       const bonus=Number(totals.rows[0].bonus), deduction=Number(totals.rows[0].deduction);
       const current=await client.query("SELECT base_salary,advance_repayment_amount FROM payroll_items WHERE id=$1",[params.id]);
       if(Number(current.rows[0].base_salary)+bonus < deduction+Number(current.rows[0].advance_repayment_amount??0))
-        throw new AppError("PAYROLL_NET_NEGATIVE","حذف البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
+        throw new AppError("PAYROLL_NET_NEGATIVE","إلغاء البند سيجعل صافي المرتب بالسالب؛ راجع الخصومات والسلف أولًا",422);
       await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,params.id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"remove_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:removed.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return {data:{deleted:true,bonusAmount:bonus,deductionAmount:deduction}};
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"void_adjustment_line",module:"payroll",entityType:"payroll_adjustment_line",entityId:params.lineId,beforeData:before.rows[0],afterData:voided.rows[0],metadata:{reason:parsed.data.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {data:{voided:true,line:voided.rows[0],bonusAmount:bonus,deductionAmount:deduction}};
     });
   });
 
