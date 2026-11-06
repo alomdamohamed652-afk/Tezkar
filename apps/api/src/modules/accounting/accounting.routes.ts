@@ -96,11 +96,29 @@ export async function accountingRoutes(app:FastifyInstance){
       WHERE ar.source_payroll_payment_id=$1 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId]);
     let linkedAmount=0;
     let linkedOriginalAmount=0;
+    const linkedByAdvance=new Map<string,number>();
     for(const ar of linked.rows){
      linkedOriginalAmount+=Number(ar.amount);
+     linkedByAdvance.set(ar.advance_id,(linkedByAdvance.get(ar.advance_id)??0)+Number(ar.amount));
+     // A payroll reversal also reverses every linked advance repayment. Validate each
+     // original repayment posting before creating the bundle; checking only the net
+     // payroll debit would allow a corrupted advance ledger to be reversed silently.
+     const repaymentLedger=await client.query(
+      "SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE advance_repayment_id=$1 FOR UPDATE",[ar.id]);
+     if(repaymentLedger.rowCount!==1||repaymentLedger.rows[0].employee_id!==ar.employee_id||
+        Math.abs(Number(repaymentLedger.rows[0].credit_amount)-Number(ar.amount))>0.01||
+        Number(repaymentLedger.rows[0].debit_amount)!==0)
+      throw new AppError("REVERSAL_ADVANCE_LEDGER_MISMATCH","قيد أحد أقساط السلف المرتبطة بالراتب غير موجود أو لا يطابق الموظف والمبلغ؛ أوقفنا العكس لحماية دفتر الموظف",409);
      const rev=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[ar.id]);
      linkedAmount+=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
     }
+    const deductions=await client.query(
+     "SELECT advance_id,amount FROM payroll_advance_deductions WHERE payroll_item_id=$1 FOR UPDATE",[payment.payroll_item_id]);
+    const deductionByAdvance=new Map<string,number>();
+    for(const row of deductions.rows)deductionByAdvance.set(row.advance_id,(deductionByAdvance.get(row.advance_id)??0)+Number(row.amount));
+    if(deductionByAdvance.size!==linkedByAdvance.size||
+       [...deductionByAdvance].some(([advanceId,amount])=>Math.abs(amount-(linkedByAdvance.get(advanceId)??0))>0.01))
+     throw new AppError("REVERSAL_ADVANCE_ALLOCATION_MISMATCH","أقساط السلف المسجلة في المسير لا تطابق عمليات السداد المرتبطة بدفعة الراتب؛ أوقفنا العكس لحماية الأرصدة",409);
     if(linkedAmount>0.0001&&input.amount<remaining-0.0001)
      throw new AppError("PAYROLL_REVERSAL_BUNDLE_REQUIRED","هذه الدفعة سوّت أقساط سلف؛ يجب عكس المتبقي من الدفعة بالكامل مع تسوية السلف المرتبطة",409);
     lines.push({source_type:"PAYROLL_PAYMENT",source_id:input.sourceId,amount:input.amount});
