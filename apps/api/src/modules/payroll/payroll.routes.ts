@@ -464,7 +464,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"calculate_attendance_pay",module:"payroll",entityType:"payroll_item",entityId:item.id,afterData:{policy:policySnapshot,...calculation},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       }
 
-      const salaryItemsForPosting = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,i.net_amount,
+      const salaryItemsForPosting = await client.query(`SELECT i.id,i.employee_id,i.base_salary,i.bonus_amount,i.deduction_amount,
+          i.advance_repayment_amount,i.net_amount,
           (i.base_salary+i.bonus_amount-i.deduction_amount) AS salary_expense_amount,i.accounting_expense_id,e.full_name
         FROM payroll_items i JOIN employees e ON e.id=i.employee_id WHERE i.period_id=$1 FOR UPDATE OF i`, [id]);
       for (const item of salaryItemsForPosting.rows) {
@@ -508,9 +509,84 @@ export async function payrollRoutes(app: FastifyInstance) {
             );
           }
         }
+
+        // A zero take-home payroll is a non-cash settlement: the salary entitlement
+        // is fully consumed by advance recovery. Commit the advance repayments now,
+        // clear the employee ledger with a source-keyed debit, and never touch cash custody.
+        const netAmount=Number(item.net_amount);
+        const advanceAmount=Number(item.advance_repayment_amount??0);
+        if(netAmount<=0.0001 && advanceAmount>0.0001){
+          if(Math.abs(grossSalary-advanceAmount)>0.01)
+            throw new AppError("ZERO_NET_ADVANCE_RECONCILIATION_MISMATCH","صافي الراتب صفر لكن إجمالي السلف لا يساوي مستحق الراتب بعد الخصومات؛ راجع مفردات المسير قبل الاعتماد.",409);
+          const deductions=await client.query(
+            `SELECT d.*,a.amount AS advance_amount,a.code AS advance_code,a.repayment_status
+               FROM payroll_advance_deductions d
+               JOIN advance_requests a ON a.id=d.advance_id
+              WHERE d.payroll_item_id=$1
+              ORDER BY a.id FOR UPDATE OF a`,[item.id]
+          );
+          const allocated=deductions.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+          if(Math.abs(allocated-advanceAmount)>0.01)
+            throw new AppError("ZERO_NET_ADVANCE_ALLOCATION_MISMATCH","تفاصيل أقساط السلف لا تطابق إجمالي السداد المحسوب؛ لم يتم اعتماد المسير.",409);
+          for(const deduction of deductions.rows){
+            const prior=await client.query("SELECT id,amount FROM advance_repayments WHERE source_payroll_item_id=$1 AND advance_id=$2",[item.id,deduction.advance_id]);
+            if(prior.rowCount){
+              if(Math.abs(Number(prior.rows[0].amount)-Number(deduction.amount))>0.01)
+                throw new AppError("ADVANCE_REPAYMENT_CONFLICT","يوجد سداد سابق مختلف لنفس قسط السلفة؛ راجع الحسابات.",409);
+              continue;
+            }
+            if(deduction.repayment_status!=="OPEN")
+              throw new AppError("ADVANCE_NOT_OPEN","إحدى السلف المحجوزة في المسير لم تعد مفتوحة؛ راجع الحسابات.",409);
+            const repaid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
+            const balance=Number(deduction.advance_amount)-Number(repaid.rows[0].amount);
+            if(Number(deduction.amount)>balance+0.0001)
+              throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد إحدى السلف؛ أعد مراجعة المسير قبل الاعتماد.",409);
+            const repayment=await client.query(
+              `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_payroll_item_id)
+               VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+              [deduction.advance_id,deduction.amount,deduction.repayment_type,monthEnd,
+               `تسوية قسط سلفة ${deduction.advance_code} من راتب بصافي صفر`,request.user!.userId,item.id]
+            );
+            await client.query(
+              `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
+               VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+               ON CONFLICT (advance_repayment_id) WHERE advance_repayment_id IS NOT NULL DO NOTHING`,
+              [item.employee_id,deduction.amount,repayment.rows[0].id,request.user!.userId,
+               `سداد قسط سلفة ${deduction.advance_code} بالتسوية غير النقدية للراتب`]
+            );
+            const nextBalance=balance-Number(deduction.amount);
+            await client.query("UPDATE advance_requests SET repayment_status=$1,updated_at=now() WHERE id=$2",
+              [nextBalance<=0.0001?"SETTLED":"OPEN",deduction.advance_id]);
+            await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+              action:"payroll_zero_net_advance_repayment",module:"advances",entityType:"advance_request",
+              entityId:deduction.advance_id,metadata:{payrollItemId:item.id,amount:Number(deduction.amount),
+                remaining:Math.max(0,nextBalance),settlementType:"ZERO_NET_NON_CASH"},
+              ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+          }
+          await client.query(
+            `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes,payroll_advance_offset_item_id)
+             VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)
+             ON CONFLICT (payroll_advance_offset_item_id) WHERE payroll_advance_offset_item_id IS NOT NULL DO NOTHING`,
+            [item.employee_id,grossSalary,request.user!.userId,
+             `تسوية مستحق راتب شهر ${monthLabel} بالكامل مقابل السلف - دون صرف نقدي`,item.id]
+          );
+          await client.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[item.id]);
+          await client.query(
+            `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
+             SELECT u.id,'PAYROLL_PAYMENT_RECORDED','تمت تسوية راتبك دون صرف نقدي',
+               'تمت تسوية صافي راتب شهر ' || $2::text || ' بالكامل مقابل أقساط السلف المستحقة، دون حركة نقدية.',
+               'payroll_item',$1::uuid
+               FROM users u WHERE u.employee_id=$3 AND u.is_active=TRUE`,
+            [item.id,monthLabel,item.employee_id]
+          );
+          await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+            action:"settle_zero_net_payroll",module:"payroll",entityType:"payroll_item",entityId:item.id,
+            afterData:{status:"PAID",netAmount:0,advanceRepaymentAmount:advanceAmount,
+              grossSalary,settlementType:"ZERO_NET_NON_CASH"},
+            ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+        }
       }
-      // Advance deductions remain reserved on the approved payroll item until the
-      // salary is actually paid. The payment endpoint commits them exactly once.
+      // Positive net balances remain reserved until a real payment is recorded.
       const updated = await client.query("UPDATE payroll_periods SET status='APPROVED',approved_by=$1,approved_at=now() WHERE id=$2 RETURNING *", [request.user!.userId,id]);
       await client.query(
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
