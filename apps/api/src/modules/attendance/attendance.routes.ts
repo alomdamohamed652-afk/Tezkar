@@ -242,7 +242,7 @@ export async function attendanceRoutes(app:FastifyInstance){
       AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[employeeId,d.date,d.startsAt,d.endsAt]);
    if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد طلب إذن آخر متداخل في نفس اليوم",409);
    const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,requested_by)
-    VALUES($1,$2::date,$3::time,$4::time,$5,'UNPAID',$6,$7) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.reason,request.user!.userId]);
+    VALUES($1,$2::date,$3::time,$4::time,$5,NULL,$6,$7) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.reason,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"create_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return result.rows[0];
   });
