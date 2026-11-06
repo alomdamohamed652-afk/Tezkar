@@ -1151,6 +1151,59 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const restoredRepaymentLedger=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
       assert.equal(restoredRepaymentLedger.json().data.counts.advanceRepaymentLedgerMismatches,0);
 
+      // Reversing a zero-net settlement must undo its offset and every linked
+      // advance repayment without inventing any cash-custody movement.
+      const zeroNetSettlementAmount=Number(marchItem.base_salary)+Number(marchItem.bonus_amount)-Number(marchItem.deduction_amount);
+      assert.ok(zeroNetSettlementAmount>0.01);
+      assert.equal(Math.abs(zeroNetSettlementAmount-Number(marchItem.advance_repayment_amount))<0.01,true);
+      const zeroNetReversalPayload={
+        sourceType:"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:marchItem.id,
+        amount:zeroNetSettlementAmount,reason:"عكس تسوية راتب بصافي صفر للاختبار",idempotencyKey:randomUUID()
+      };
+      const zeroNetReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:zeroNetReversalPayload
+      });
+      assert.equal(zeroNetReversal.statusCode,201,zeroNetReversal.body);
+      assert.equal(zeroNetReversal.json().data.lines.length,4,"the settlement and all three advance repayments must be reversed together");
+      const zeroNetReversalReplay=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:zeroNetReversalPayload
+      });
+      assert.equal(zeroNetReversalReplay.statusCode,200,zeroNetReversalReplay.body);
+      const zeroNetReversalId=zeroNetReversal.json().data.reversal.id;
+      const reversedZeroNetState=await apiPool.query(
+        `SELECT i.status,
+          (SELECT COUNT(*)::int FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id) AS original_repayments,
+          (SELECT COUNT(*)::int FROM financial_reversal_lines rl WHERE rl.reversal_id=$2) AS reversal_lines,
+          (SELECT COALESCE(SUM(credit_amount),0) FROM employee_earnings_ledger el
+            WHERE el.employee_id=i.employee_id AND el.notes LIKE '%عكس تسوية راتب بصافي صفر%'
+              AND el.notes LIKE '%' || i.id::text || '%') AS offset_reversal_credit,
+          (SELECT COALESCE(SUM(debit_amount),0) FROM employee_earnings_ledger el
+            WHERE el.employee_id=i.employee_id AND el.notes LIKE '%عكس سداد سلفة%'
+              AND EXISTS (SELECT 1 FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id
+                AND el.notes LIKE '%' || ar.id::text || '%')) AS repayment_reversal_debit,
+          (SELECT COUNT(*)::int FROM advance_requests a
+            WHERE a.id IN (SELECT ar.advance_id FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id)
+              AND a.repayment_status='OPEN') AS reopened_advances,
+          (SELECT COUNT(*)::int FROM cash_custody_transactions c
+            WHERE c.source_type='FINANCIAL_REVERSAL' AND c.source_id=$2) AS custody_movements
+         FROM payroll_items i WHERE i.id=$1`,
+        [marchItem.id,zeroNetReversalId]
+      );
+      assert.equal(reversedZeroNetState.rows[0].status,"REVERSED");
+      assert.equal(Number(reversedZeroNetState.rows[0].original_repayments),3);
+      assert.equal(Number(reversedZeroNetState.rows[0].reversal_lines),4);
+      assert.equal(Number(reversedZeroNetState.rows[0].offset_reversal_credit),zeroNetSettlementAmount);
+      assert.equal(Number(reversedZeroNetState.rows[0].repayment_reversal_debit),zeroNetSettlementAmount);
+      assert.equal(Number(reversedZeroNetState.rows[0].reopened_advances),3);
+      assert.equal(Number(reversedZeroNetState.rows[0].custody_movements),0,
+        "zero-net settlement reversal must not create cash-custody movements");
+      const zeroNetReversalReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}
+      });
+      assert.equal(zeroNetReversalReconciliation.statusCode,200,zeroNetReversalReconciliation.body);
+      assert.equal(zeroNetReversalReconciliation.json().data.counts.zeroNetPayrollSettlementMismatches,0);
+      assert.equal(zeroNetReversalReconciliation.json().data.counts.advanceRepaymentLedgerMismatches,0);
+
       const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
       await apiPool.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',100,'concurrent payroll custody opening',$2)",
