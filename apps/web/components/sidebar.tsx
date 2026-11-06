@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api, notifyApiSessionChanged } from "../lib/api";
 import { usePermissions } from "./session-provider";
+export { usePermissions } from "./session-provider";
 
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 type NavGroup={label:string;items:NavItem[]};
