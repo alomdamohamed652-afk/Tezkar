@@ -2,7 +2,6 @@
 
 import {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -11,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "../lib/api";
+import { createSessionController, type SessionControllerSnapshot } from "./session-controller.mjs";
 
 export type Session = {
   permissions: string[];
@@ -31,73 +31,36 @@ type SessionContextValue = {
 const SessionContext = createContext<SessionContextValue | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [ready, setReady] = useState(false);
-  const lastRefreshAt = useRef(0);
-  const requestGeneration = useRef(0);
-  const inFlight = useRef<Promise<void> | null>(null);
+  const [snapshot, setSnapshot] = useState<SessionControllerSnapshot>({
+    session: null,
+    ready: false,
+  });
+  const controllerRef = useRef<ReturnType<typeof createSessionController> | null>(null);
 
-  const refreshSession = useCallback((force = false): Promise<void> => {
-    if (inFlight.current && !force) return inFlight.current;
-
-    const generation = ++requestGeneration.current;
-    const request = (async () => {
-      try {
+  if (!controllerRef.current) {
+    controllerRef.current = createSessionController(
+      async () => {
         const result = await api<{ data: Session }>("/api/auth/me");
-        if (generation === requestGeneration.current) setSession(result.data);
-      } catch {
-        if (generation === requestGeneration.current) setSession(null);
-      } finally {
-        if (generation === requestGeneration.current) {
-          lastRefreshAt.current = Date.now();
-          inFlight.current = null;
-          setReady(true);
-        }
-      }
-    })();
-
-    inFlight.current = request;
-    return request;
-  }, []);
-
-  const ensureSession = useCallback((): Promise<void> => {
-    if (!ready) return refreshSession();
-    if (Date.now() - lastRefreshAt.current >= 120_000) return refreshSession();
-    return Promise.resolve();
-  }, [ready, refreshSession]);
+        return result.data;
+      },
+      setSnapshot,
+    );
+  }
+  const controller = controllerRef.current;
 
   useEffect(() => {
     const handleSessionChanged = (event: Event) => {
       const action = (event as CustomEvent<{ action?: string }>).detail?.action;
-      if (action === "logout") {
-        requestGeneration.current += 1;
-        inFlight.current = null;
-        lastRefreshAt.current = Date.now();
-        setSession(null);
-        setReady(true);
-        return;
-      }
-      setSession(null);
-      setReady(false);
-      void refreshSession(true);
+      void controller.sessionChanged(action);
     };
-
-    const handleSessionExpired = () => {
-      requestGeneration.current += 1;
-      inFlight.current = null;
-      lastRefreshAt.current = Date.now();
-      setSession(null);
-      setReady(true);
-    };
-
+    const handleSessionExpired = () => controller.sessionExpired();
     const refreshIfStale = () => {
       if (
-        ready &&
-        session &&
-        document.visibilityState === "visible" &&
-        Date.now() - lastRefreshAt.current >= 120_000
+        controller.getSnapshot().ready &&
+        controller.getSnapshot().session &&
+        document.visibilityState === "visible"
       ) {
-        void refreshSession();
+        void controller.ensureSession();
       }
     };
 
@@ -112,16 +75,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", refreshIfStale);
       document.removeEventListener("visibilitychange", refreshIfStale);
     };
-  }, [refreshSession, ready, session]);
+  }, [controller]);
 
-  const permissions = session?.permissions ?? null;
-  const has = useCallback(
-    (code: string) => permissions?.includes(code) ?? false,
+  const permissions = snapshot.session?.permissions ?? null;
+  const has = useMemo(
+    () => (code: string) => permissions?.includes(code) ?? false,
     [permissions],
   );
   const value = useMemo(
-    () => ({ session, permissions, has, ensureSession }),
-    [session, permissions, has, ensureSession],
+    () => ({
+      session: snapshot.session,
+      permissions,
+      has,
+      ensureSession: controller.ensureSession,
+    }),
+    [snapshot.session, permissions, has, controller],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
