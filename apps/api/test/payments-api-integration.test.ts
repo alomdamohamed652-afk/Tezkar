@@ -770,10 +770,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusShift.id,bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(dualAllocationProduction.total_earning_amount),100);
-      await apiPool.query(
-        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',100,$2,'dual allocation regression earnings')",
-        [previousCustodyEmployee.id,manager.id]
-      );
       const dualAllocationPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:previousCustodyEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:100,method:"CASH",idempotencyKey:randomUUID()}
