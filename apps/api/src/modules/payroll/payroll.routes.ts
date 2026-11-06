@@ -343,6 +343,22 @@ export async function payrollRoutes(app: FastifyInstance) {
     return {data:rows.rows, frozen:rows.rows.length>0, periodStatus:item.rows[0].period_status, calculation:calculation.rows[0]?.calculation_data??null};
   });
 
+  app.get("/api/payroll/items/:id/employee-profile", { preHandler: [authenticateRequest, requirePermission("payroll.view")] }, async request => {
+    const id=(request.params as {id:string}).id;
+    const result=await pool.query(`SELECT e.id,e.code,e.full_name,e.phone,e.hired_at,e.is_active,
+        d.name AS department_name,j.name AS job_title_name,u.username
+      FROM payroll_items i
+      JOIN employees e ON e.id=i.employee_id
+      LEFT JOIN departments d ON d.id=e.department_id
+      LEFT JOIN job_titles j ON j.id=e.job_title_id
+      LEFT JOIN users u ON u.employee_id=e.id
+      WHERE i.id=$1
+      ORDER BY u.id
+      LIMIT 1`,[id]);
+    if(!result.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
+    return {data:result.rows[0]};
+  });
+
   app.post("/api/payroll/periods/:id/approve", { preHandler: [authenticateRequest, requirePermission("payroll.approve")] }, async request => {
     const id = (request.params as {id:string}).id;
     const result = await withTransaction(async client => {
@@ -371,6 +387,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const snapshot=attendanceReport.data
         .filter(row=>payrollEmployeeIds.has(String(row.employeeId)))
         .map(row=>({
+          ...row,
           date:String(row.date),employeeId:String(row.employeeId),status:String(row.status),
           workedMinutes:Number(row.workedMinutes??0),lateMinutes:Number(row.lateMinutes??0),
           earlyMinutes:Number(row.earlyMinutes??0),overtimeMinutes:Number(row.overtimeMinutes??0),
