@@ -92,6 +92,9 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
     const otherEmployee = (await apiPool.query(
       "INSERT INTO employees(full_name) VALUES('Sidebar Count Other Worker') RETURNING id"
     )).rows[0];
+    const thirdEmployee = (await apiPool.query(
+      "INSERT INTO employees(full_name) VALUES('Sidebar Count Third Worker') RETURNING id"
+    )).rows[0];
 
     const manager = (await apiPool.query(
       "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
@@ -148,6 +151,7 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
       [workerEmployee.id, "REJECTED", manager.id],
       [workerEmployee.id, "PAID", manager.id],
       [otherEmployee.id, "APPROVED", manager.id],
+      [thirdEmployee.id, "APPROVED", manager.id],
       [otherEmployee.id, "CANCELLED", null],
       [otherEmployee.id, "PAID", manager.id]
     ] as const;
