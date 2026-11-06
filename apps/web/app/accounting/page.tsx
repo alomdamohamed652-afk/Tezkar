@@ -42,7 +42,7 @@ const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل 
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody"|"reversals">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
@@ -303,7 +303,18 @@ export default function AccountingPage() {
      {error&&<div className="alert error">{error}</div>}
      {message&&<div className="success-box">{message}</div>}
 
-     {has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
+<div className="tabs finance-tabs">
+      <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
+      <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
+      <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
+      {has("finance.profitability.view")&&<button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبيات</button>}
+      {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
+      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
+      {has("finance.reversals.create")&&<button className={"tab "+(tab==="reversals"?"active":"")} onClick={()=>setTab("reversals")}>العكس المحاسبي</button>}
+     </div>
+
+     {tab==="reversals"&&has("finance.reversals.create")&&<>
+{has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
       <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
       <div className="form-grid" style={{padding:"0 16px 16px"}}>
        <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
@@ -314,17 +325,9 @@ export default function AccountingPage() {
       </div>
       {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
      </section>}
+      </>}
 
-     <div className="tabs finance-tabs">
-      <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
-      <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
-      <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
-      {has("finance.profitability.view")&&<button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبيات</button>}
-      {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
-      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
-     </div>
-
-     {tab==="dashboard"&&<>
+      {tab==="dashboard"&&<>
       <section className="card" style={{marginBottom:16}}>
        <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));setDashboardTo(localDateInput(new Date()));}}>هذا الشهر</button></div>
        <div className="form-grid finance-four-grid" style={{padding:"0 16px 16px"}}>
