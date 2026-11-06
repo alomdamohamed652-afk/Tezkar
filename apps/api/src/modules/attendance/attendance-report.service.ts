@@ -37,14 +37,40 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      OR (corrected_punch_at IS NOT NULL AND (corrected_punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (corrected_punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2))
    ) AND review_status <> 'REJECTED' ORDER BY COALESCE(corrected_punch_at,punch_at)`,[from,to])).rows;
    const punches=raw.map(p=>{const effectiveAt=p.corrected_punch_at??p.punch_at;return {...p,effectivePunchAt:effectiveAt,localDate:cairoDateKey(new Date(effectiveAt)),minute:cairoMinute(new Date(effectiveAt))};});
+   // Index the report inputs once. The previous nested loop scanned every punch,
+   // schedule and exception for every employee/day pair (O(days × employees × all punches)).
+   // Grouping by employee preserves the SQL ordering and shift-assignment rules while
+   // reducing each day's punch scan to that employee's own records.
+   const punchesByEmployee=new Map<string,typeof punches>();
+   for(const punch of punches){
+    if(!punch.employee_id)continue;
+    const rows=punchesByEmployee.get(punch.employee_id)??[];
+    rows.push(punch);
+    punchesByEmployee.set(punch.employee_id,rows);
+   }
+   const schedulesByEmployee=new Map<string,typeof schedules>();
+   for(const schedule of schedules){
+    const rows=schedulesByEmployee.get(schedule.employee_id)??[];
+    rows.push(schedule);
+    schedulesByEmployee.set(schedule.employee_id,rows);
+   }
+   const exceptionsByEmployee=new Map<string,typeof exceptions>();
+   for(const exception of exceptions){
+    const rows=exceptionsByEmployee.get(exception.employee_id)??[];
+    rows.push(exception);
+    exceptionsByEmployee.set(exception.employee_id,rows);
+   }
    const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
    for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
     const date=addDateKey(from,dayIndex);const weekday=new Date(date+"T00:00:00Z").getUTCDay();
     for(const employee of employees){
-     const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
-     const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:findEffectiveAttendanceSchedule(schedules,employee.id,weekday,date);
+     const employeePunches=punchesByEmployee.get(employee.id)??[];
+     const employeeSchedules=schedulesByEmployee.get(employee.id)??[];
+     const employeeExceptions=exceptionsByEmployee.get(employee.id)??[];
+     const exception=employeeExceptions.find(e=>e.start_date<=date&&e.end_date>=date);
+     const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:findEffectiveAttendanceSchedule(employeeSchedules,employee.id,weekday,date);
      const noSchedule=!schedule;const dayOff=Boolean(schedule?.is_day_off);const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
-     const assigned=punches.filter(p=>{
+     const assigned=employeePunches.filter(p=>{
       if(p.employee_id!==employee.id||used.has(p.id))return false;
       if(belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.corrected_status??p.status,shiftDate:date,overnight,scheduledEndMinute:end}))return true;
      });
