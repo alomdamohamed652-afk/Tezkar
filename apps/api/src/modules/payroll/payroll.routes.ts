@@ -329,9 +329,25 @@ export async function payrollRoutes(app: FastifyInstance) {
         };
       });
       await client.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id=ANY($1::uuid[])",[items.rows.map(item=>item.id)]);
+      // Persist the complete signed snapshot in one set-based insert instead of one
+      // database round-trip per employee/day (up to 31,000 calls for 1,000 employees).
+      const snapshotRows=snapshot.map(row=>({
+        employee_id:row.employeeId,
+        attendance_date:row.date,
+        snapshot_data:row
+      }));
+      await client.query(
+        `INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by)
+         SELECT item.id,source.attendance_date,source.snapshot_data,$2
+           FROM jsonb_to_recordset($1::jsonb) AS source(employee_id uuid,attendance_date date,snapshot_data jsonb)
+           JOIN payroll_items item ON item.period_id=$3 AND item.employee_id=source.employee_id`,
+        [JSON.stringify(snapshotRows),request.user!.userId,id]
+      );
+      const daysByEmployee=new Map<string,typeof snapshot>();
       for(const row of snapshot){
-        const item=items.rows.find(x=>x.employee_id===row.employeeId);
-        await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4)",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
+        const employeeDays=daysByEmployee.get(row.employeeId);
+        if(employeeDays)employeeDays.push(row);
+        else daysByEmployee.set(row.employeeId,[row]);
       }
       const overtimeMultiplier=parsed.data.overtimeMultiplier;
       const replacedLines=await client.query("UPDATE payroll_adjustment_lines SET status='VOIDED',void_reason='تم استبدال البند بعد إعادة احتساب الحضور',voided_by=$1,voided_at=now() WHERE payroll_item_id=ANY($2::uuid[]) AND source_type IN ('ATTENDANCE_TIME_DEDUCTION','ATTENDANCE_OVERTIME') AND status='ACTIVE' RETURNING *",[request.user!.userId,items.rows.map(item=>item.id)]);
@@ -340,7 +356,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const employees=[];
       let totalTimeDeduction=0,totalOvertimeBonus=0,totalOvertimeMinutes=0,totalMissingMinutes=0,totalReviewDays=0;
       for(const item of items.rows){
-        const employeeDays=snapshot.filter(row=>row.employeeId===item.employee_id);
+        const employeeDays=daysByEmployee.get(item.employee_id)??[];
         const time=calculateAttendancePayroll({
           baseSalary:Number(item.base_salary),
           overtimeMultiplier,
