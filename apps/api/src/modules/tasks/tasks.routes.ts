@@ -24,6 +24,21 @@ const updateSchema = z.object({
 });
 
 export async function taskRoutes(app: FastifyInstance) {
+  app.get("/api/tasks/pending-count", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.view","all"],["tasks.view_own","own"])] }, async request => {
+    const all = await hasPermission(pool, request.user!.userId, "tasks.view", "all");
+    if (!all && !request.user!.employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED", "الحساب غير مرتبط بموظف", 403);
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM tasks t
+       WHERE t.status NOT IN ('COMPLETED','CANCELLED')
+         AND ($1::boolean OR EXISTS (
+           SELECT 1 FROM task_assignees ta
+           WHERE ta.task_id=t.id AND ta.employee_id=$2
+         ))`,
+      [all, request.user!.employeeId]
+    );
+    return { data: { count: Number(result.rows[0]?.count ?? 0) } };
+  });
+
   app.get("/api/tasks", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.view","all"],["tasks.view_own","own"])] }, async (request) => {
     const client = await pool.connect();
     try {
