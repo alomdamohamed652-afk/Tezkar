@@ -484,7 +484,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(allowedAfterChange.statusCode,200,allowedAfterChange.body,
         "the account must regain normal protected API access after changing the temporary password");
       invalidSessionHandlerExecuted=false;
-      const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
+      const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' LIMIT 1",[passwordResetUser.rows[0].id]);
       assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
       assert.equal(resetNotification.rows[0].entity_type,"user");
       assert.equal(resetNotification.rows[0].entity_id,passwordResetUser.rows[0].id);
@@ -793,7 +793,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(duplicateVoid.statusCode, 409, duplicateVoid.body);
       const voidAudit = await apiPool.query(
-        "SELECT action,module,entity_type,entity_id,metadata FROM audit_log WHERE entity_id=$1 AND action='void_adjustment_line' ORDER BY created_at DESC LIMIT 1",
+        "SELECT action,module,entity_type,entity_id,metadata FROM audit_log WHERE entity_id=$1 AND action='void_adjustment_line' LIMIT 1",
         [temporaryAdjustment.json().data.id]
       );
       assert.equal(voidAudit.rowCount, 1, "voiding must create one audit-log record");
@@ -1428,7 +1428,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
 
       // A cash payment must be reconciled against the exact custody OUT amount.
       const itemBPayment = await apiPool.query(
-        "SELECT id FROM payroll_payments WHERE payroll_item_id=$1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT id FROM payroll_payments WHERE payroll_item_id=$1 LIMIT 1",
         [itemB.rows[0].id]
       );
       assert.equal(itemBPayment.rowCount,1,"diagnostic cash payment must exist");
