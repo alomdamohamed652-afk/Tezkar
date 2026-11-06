@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents, type AttendancePunchEvent, type EffectiveAttendanceSchedule } from "../src/modules/attendance/attendance-calculation.js";
+import { belongsToAttendanceShift, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents, type AttendancePunchEvent, type EffectiveAttendanceSchedule } from "../src/modules/attendance/attendance-calculation.js";
 import { suggestBoundaryPunchCorrections, type PunchCorrectionCandidate } from "../src/modules/attendance/attendance-corrections.js";
 
 function punch(id: string, status: string, minute: number, extra: Partial<AttendancePunchEvent> = {}): AttendancePunchEvent {
@@ -288,4 +288,49 @@ test("approved suspicious punches become countable only after explicit review", 
   assert.equal(result.needsReview, false);
   assert.equal(result.countedEvents.length, 2);
   assert.equal(calculateWorkedMinutes(result.countedEvents), 9 * 60);
+});
+
+
+test("overnight shift 17:00 to 02:00 assigns next-day 02:00 checkout to prior shift", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 2 * 60,
+    punchStatus: "OUT",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 2 * 60,
+  }), true);
+});
+
+test("overnight shift 23:00 to 07:00 assigns next-day 07:00 checkout to prior shift", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 7 * 60,
+    punchStatus: "OUT",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 7 * 60,
+  }), true);
+});
+
+test("next-day clock-in belongs to its own date, not the previous overnight shift", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 7 * 60,
+    punchStatus: "IN",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 7 * 60,
+  }), false);
+});
+
+test("a next-day checkout is not attached to a non-overnight shift", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 2 * 60,
+    punchStatus: "OUT",
+    shiftDate: "2026-11-05",
+    overnight: false,
+    scheduledEndMinute: 2 * 60,
+  }), false);
 });
