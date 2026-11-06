@@ -64,10 +64,12 @@ export async function accountingRoutes(app:FastifyInstance){
   const parsed=reversalSchema.safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات العكس المحاسبي غير صحيحة",422);
   const input=parsed.data;
+  const requestFingerprint=createHash("sha256").update(JSON.stringify({sourceType:input.sourceType,sourceId:input.sourceId,amountMinor:Math.round(input.amount*100),reason:input.reason})).digest("hex");
   const result=await withTransaction(async client=>{
    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[input.idempotencyKey]);
    const replay=await client.query("SELECT * FROM financial_reversals WHERE idempotency_key=$1 FOR UPDATE",[input.idempotencyKey]);
    if(replay.rowCount){
+    if(replay.rows[0].request_fingerprint!==requestFingerprint)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العكس مستخدم لعملية مختلفة؛ أنشئ مفتاحًا جديدًا",409);
     const lines=await client.query("SELECT source_type,source_id,amount FROM financial_reversal_lines WHERE reversal_id=$1 ORDER BY source_type,source_id",[replay.rows[0].id]);
     return {replayed:true,reversal:replay.rows[0],lines:lines.rows};
    }
@@ -133,7 +135,7 @@ export async function accountingRoutes(app:FastifyInstance){
     ledgerMoves.push({employeeId:ar.employee_id,credit:0,debit:input.amount,notes:"عكس سداد سلفة "+ar.code+" / "+input.sourceId});
     custodyMoves.push({employeeId:cash.rows[0].employee_id,direction:"OUT",amount:input.amount,description:"عكس تحصيل سداد سلفة "+ar.code});
    }
-   const header=await client.query("INSERT INTO financial_reversals(idempotency_key,reason,reversal_date,created_by) VALUES($1,$2,$3,$4) RETURNING *",[input.idempotencyKey,input.reason,reversalDate,request.user!.userId]);
+   const header=await client.query("INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[input.idempotencyKey,requestFingerprint,input.reason,reversalDate,request.user!.userId]);
    for(const line of lines)await client.query("INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount) VALUES($1,$2,$3,$4)",[header.rows[0].id,line.source_type,line.source_id,line.amount]);
    for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes)
      VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code]);
