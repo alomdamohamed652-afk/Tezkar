@@ -758,7 +758,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const amountMinor=toMinorUnits(expense.amount);
     const rawShares=eligibleOrders.map(order=>amountMinor*Number(order.cost||0)/totalCost);
     const shares=rawShares.map(Math.floor);
-    let centsRemaining=amountMinor-shares.reduce((sum,value)=>sum+value,0);
+    const centsRemaining=amountMinor-shares.reduce((sum,value)=>sum+value,0);
     const remainderOrder=rawShares.map((raw,index)=>({index,remainder:raw-(shares[index]??0)})).sort((a,b)=>b.remainder-a.remainder);
     for(let i=0;i<centsRemaining;i++){
      const remainder=remainderOrder[i];
@@ -847,7 +847,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   return {data:await withTransaction(async client=>{
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
-   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if (!period.rowCount) throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="UNDER_REVIEW")throw new AppError("ACCOUNTING_PERIOD_STATE_INVALID","الفترة ليست قيد المراجعة",409);
    const r=await client.query("UPDATE accounting_periods SET status='READY_FOR_APPROVAL',reviewed_by=$2,reviewed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"accounting_review_approved",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -858,7 +858,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   return {data:await withTransaction(async client=>{
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
-   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(!period.rows[0])throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="READY_FOR_APPROVAL")throw new AppError("ACCOUNTING_PERIOD_NOT_APPROVED","يجب اعتماد المراجعة المحاسبية قبل الإقفال النهائي",409);
    if(period.rows[0].reviewed_by===request.user!.userId)throw new AppError("SEPARATION_OF_DUTIES_REQUIRED","يجب أن يكون اعتماد الإقفال النهائي بواسطة مستخدم مختلف عن مراجع الفترة",409);
    // Lock the immediately following period before closing this one. A
