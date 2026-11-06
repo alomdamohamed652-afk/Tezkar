@@ -6,6 +6,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { assertAccountingPeriodOpen } from "./period-lock.service.js";
 
 const expenseSchema=z.object({
   orderId:z.string().uuid().nullable().optional(),
@@ -51,6 +52,110 @@ async function assertAccountingDateOpen(client:import("pg").PoolClient,date:stri
 }
 
 export async function accountingRoutes(app:FastifyInstance){
+
+ const reversalSchema=z.object({
+  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT"]),
+  sourceId:z.string().uuid(),
+  amount:z.number().positive().max(100000000),
+  reason:z.string().trim().min(2).max(500),
+  idempotencyKey:z.string().uuid()
+ });
+ app.post("/api/accounting/reversals",{preHandler:[authenticateRequest,requirePermission("finance.reversals.create")]},async(request,reply)=>{
+  const parsed=reversalSchema.safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات العكس المحاسبي غير صحيحة",422);
+  const input=parsed.data;
+  const result=await withTransaction(async client=>{
+   await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[input.idempotencyKey]);
+   const replay=await client.query("SELECT * FROM financial_reversals WHERE idempotency_key=$1 FOR UPDATE",[input.idempotencyKey]);
+   if(replay.rowCount){
+    const lines=await client.query("SELECT source_type,source_id,amount FROM financial_reversal_lines WHERE reversal_id=$1 ORDER BY source_type,source_id",[replay.rows[0].id]);
+    return {replayed:true,reversal:replay.rows[0],lines:lines.rows};
+   }
+   const reversalDate=new Date().toISOString().slice(0,10);
+   await assertAccountingPeriodOpen(client,reversalDate);
+   const lines:Array<{source_type:string;source_id:string;amount:number}>=[];
+   const ledgerMoves:Array<{employeeId:string;credit:number;debit:number;notes:string}>=[];
+   const custodyMoves:Array<{employeeId:string;direction:"IN"|"OUT";amount:number;description:string}>=[];
+   let payrollItemId:string|null=null;
+   let advanceId:string|null=null;
+   if(input.sourceType==="PAYROLL_PAYMENT"){
+    const q=await client.query(`SELECT pp.*,i.employee_id,i.net_amount,p.status AS period_status
+      FROM payroll_payments pp JOIN payroll_items i ON i.id=pp.payroll_item_id
+      JOIN payroll_periods p ON p.id=i.period_id WHERE pp.id=$1 FOR UPDATE OF pp,i,p`,[input.sourceId]);
+    if(!q.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","دفعة الراتب الأصلية غير موجودة",404);
+    const payment=q.rows[0]; payrollItemId=payment.payroll_item_id;
+    if(payment.period_status==="DRAFT")throw new AppError("PAYROLL_NOT_APPROVED","لا يمكن عكس دفعة مرتبطة بمسير غير معتمد",409);
+    const prior=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='PAYROLL_PAYMENT' AND source_id=$1",[input.sourceId]);
+    const remaining=Number(payment.amount)-Number(prior.rows[0].amount);
+    if(input.amount>remaining+0.0001)throw new AppError("REVERSAL_EXCEEDS_REMAINING","مبلغ العكس أكبر من المتبقي من الحركة الأصلية",409);
+    const linked=await client.query(`SELECT ar.id,ar.advance_id,ar.amount,a.employee_id
+      FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
+      WHERE ar.source_payroll_payment_id=$1 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId]);
+    let linkedAmount=0;
+    for(const ar of linked.rows){
+     const rev=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[ar.id]);
+     linkedAmount+=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
+    }
+    if(linkedAmount>0.0001&&input.amount<remaining-0.0001)
+     throw new AppError("PAYROLL_REVERSAL_BUNDLE_REQUIRED","هذه الدفعة سوّت أقساط سلف؛ يجب عكس المتبقي من الدفعة بالكامل مع تسوية السلف المرتبطة",409);
+    lines.push({source_type:"PAYROLL_PAYMENT",source_id:input.sourceId,amount:input.amount});
+    for(const ar of linked.rows){
+     const rev=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[ar.id]);
+     const amount=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
+     if(amount>0.0001){lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount});advanceId=ar.advance_id;}
+    }
+    const ledger=await client.query("SELECT employee_id FROM employee_earnings_ledger WHERE payroll_payment_id=$1 FOR UPDATE",[input.sourceId]);
+    if(!ledger.rowCount)throw new AppError("REVERSAL_LEDGER_MISSING","قيد دفتر الموظف الأصلي غير موجود؛ أوقفنا العكس لحماية الأرصدة",409);
+    ledgerMoves.push({employeeId:ledger.rows[0].employee_id,credit:input.amount+linkedAmount,debit:0,notes:"عكس صرف راتب "+input.sourceId});
+    const out=await client.query("SELECT employee_id FROM cash_custody_transactions WHERE source_type='PAYROLL_PAYMENT' AND source_id=$1 AND direction='OUT' FOR UPDATE",[input.sourceId]);
+    const offset=await client.query("SELECT employee_id FROM cash_custody_transactions WHERE source_type='PAYROLL_ADVANCE_REPAYMENT_OFFSET' AND source_id=$1 AND direction='IN' FOR UPDATE",[input.sourceId]);
+    if(out.rowCount>1||offset.rowCount>1)throw new AppError("REVERSAL_CUSTODY_AMBIGUOUS","حركات العهدة المرتبطة بالدفعة غير متطابقة؛ راجع المطابقة قبل العكس",409);
+    if(out.rowCount){
+     if(offset.rowCount&&offset.rows[0].employee_id!==out.rows[0].employee_id)throw new AppError("REVERSAL_CUSTODY_HOLDER_MISMATCH","صاحب العهدة مختلف بين حركات الصرف وتسوية السلف",409);
+     custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"IN",amount:input.amount+linkedAmount,description:"استرداد عكس صرف راتب "+input.sourceId});
+     if(linkedAmount>0.0001)custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"OUT",amount:linkedAmount,description:"عكس استرداد أقساط السلف من الراتب "+input.sourceId});
+    }else if(offset.rowCount)throw new AppError("REVERSAL_CUSTODY_INCOMPLETE","يوجد استرداد عهدة دون حركة الصرف المقابلة؛ راجع المطابقة قبل العكس",409);
+   }else{
+    const q=await client.query(`SELECT ar.*,a.employee_id,a.code FROM advance_repayments ar
+      JOIN advance_requests a ON a.id=ar.advance_id WHERE ar.id=$1 FOR UPDATE OF ar,a`,[input.sourceId]);
+    if(!q.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","عملية سداد السلفة الأصلية غير موجودة",404);
+    const ar=q.rows[0];
+    if(ar.source_payroll_item_id||ar.source_payroll_payment_id)throw new AppError("PAYROLL_REPAYMENT_REQUIRES_PAYMENT_REVERSAL","قسط السلفة المسدد من الراتب يُعكس بعكس دفعة الراتب المرتبطة به",409);
+    advanceId=ar.advance_id;
+    const prior=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[input.sourceId]);
+    if(input.amount>Number(ar.amount)-Number(prior.rows[0].amount)+0.0001)throw new AppError("REVERSAL_EXCEEDS_REMAINING","مبلغ العكس أكبر من المتبقي من عملية السداد",409);
+    const ledger=await client.query("SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE advance_repayment_id=$1 FOR UPDATE",[input.sourceId]);
+    if(!ledger.rowCount||ledger.rows[0].employee_id!==ar.employee_id||Math.abs(Number(ledger.rows[0].credit_amount)-Number(ar.amount))>0.01||Number(ledger.rows[0].debit_amount)!==0)
+     throw new AppError("REVERSAL_LEDGER_MISMATCH","قيد سداد السلفة غير مطابق؛ أصلح المطابقة قبل العكس",409);
+    const cash=await client.query("SELECT employee_id,amount FROM cash_custody_transactions WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1 AND direction='IN' FOR UPDATE",[input.sourceId]);
+    if(cash.rowCount!==1||Math.abs(Number(cash.rows[0].amount)-Number(ar.amount))>0.01)throw new AppError("REVERSAL_CUSTODY_MISMATCH","إيصال العهدة الأصلي غير موجود أو غير مطابق؛ أصلح المطابقة قبل العكس",409);
+    lines.push({source_type:"ADVANCE_REPAYMENT",source_id:input.sourceId,amount:input.amount});
+    ledgerMoves.push({employeeId:ar.employee_id,credit:0,debit:input.amount,notes:"عكس سداد سلفة "+ar.code+" / "+input.sourceId});
+    custodyMoves.push({employeeId:cash.rows[0].employee_id,direction:"OUT",amount:input.amount,description:"عكس تحصيل سداد سلفة "+ar.code});
+   }
+   const header=await client.query("INSERT INTO financial_reversals(idempotency_key,reason,reversal_date,created_by) VALUES($1,$2,$3,$4) RETURNING *",[input.idempotencyKey,input.reason,reversalDate,request.user!.userId]);
+   for(const line of lines)await client.query("INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount) VALUES($1,$2,$3,$4)",[header.rows[0].id,line.source_type,line.source_id,line.amount]);
+   for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes)
+     VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code]);
+   for(const move of custodyMoves)await client.query(`INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by)
+     VALUES($1,$2,$3,$4,$5,$6,'FINANCIAL_REVERSAL',$7,$8)`,[move.employeeId,move.direction,move.amount,reversalDate,move.description,"سبب العكس: "+input.reason,header.rows[0].id,request.user!.userId]);
+   if(advanceId)await client.query(`UPDATE advance_requests a SET repayment_status=CASE WHEN a.amount<=COALESCE((
+     SELECT SUM(ar.amount)-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)
+     FROM advance_repayments ar WHERE ar.advance_id=a.id),0)+0.0001 THEN 'SETTLED' ELSE 'OPEN' END,updated_at=now() WHERE a.id=$1`,[advanceId]);
+   if(payrollItemId){
+    const totals=await client.query(`SELECT i.net_amount,COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0)
+      -COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl JOIN payroll_payments pp ON pp.id=rl.source_id
+        WHERE rl.source_type='PAYROLL_PAYMENT' AND pp.payroll_item_id=i.id),0) AS effective_paid
+      FROM payroll_items i WHERE i.id=$1`,[payrollItemId]);
+    const paid=Number(totals.rows[0].effective_paid),net=Number(totals.rows[0].net_amount);
+    await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2",[net<=0.0001||paid>=net-0.0001?"PAID":paid>0.0001?"PARTIAL":"APPROVED",payrollItemId]);
+   }
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {replayed:false,reversal:header.rows[0],lines};
+  });
+  return reply.code(result.replayed?200:201).send({data:{reversal:result.reversal,lines:result.lines}});
+ });
+
  app.get("/api/accounting/historical-expense-orders",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async()=>{
   const result=await pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status<>'CANCELLED' ORDER BY created_at DESC,id");
   return {data:result.rows};
