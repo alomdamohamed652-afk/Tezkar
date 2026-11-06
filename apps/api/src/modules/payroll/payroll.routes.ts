@@ -584,6 +584,9 @@ export async function payrollRoutes(app: FastifyInstance) {
             afterData:{status:"PAID",netAmount:0,advanceRepaymentAmount:advanceAmount,
               grossSalary,settlementType:"ZERO_NET_NON_CASH"},
             ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+        }else if(netAmount<=0.0001){
+          // A zero-net item fully consumed by named payroll deductions is settled as well.
+          await client.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[item.id]);
         }
       }
       // Positive net balances remain reserved until a real payment is recorded.
