@@ -1074,6 +1074,63 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(previousCustodyReconciliation.json().data.counts.cashPaymentsMissingCustodyOut,0,
         "a documented previous-custody settlement must not be flagged for lacking a second current-custody outflow");
 
+      // A payroll whose full net amount is consumed by advance installments must settle
+      // those advances at approval without inventing a zero-value payment or custody movement.
+      const zeroNetAdvance=await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,installment_amount,repayment_status)
+         VALUES($1,600,'Zero-net payroll settlement test','PAID',$2,$2,'2099-02-28T12:00:00Z','FIXED_INSTALLMENT',600,'OPEN')
+         RETURNING id`,
+        [employeeA.rows[0].id,userId]
+      );
+      await apiPool.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
+         VALUES($1,'ADJUSTMENT',600,$2,'صرف سلفة تسوية صافي صفر للاختبار')`,
+        [employeeA.rows[0].id,userId]
+      );
+      const marchGenerate=await app.inject({
+        method:"POST",url:"/api/payroll/generate",headers:{cookie:cookieHeader},payload:{month:"2099-03"}
+      });
+      assert.equal(marchGenerate.statusCode,201,marchGenerate.body);
+      const marchData=await app.inject({method:"GET",url:"/api/payroll?month=2099-03",headers:{cookie:cookieHeader}});
+      assert.equal(marchData.statusCode,200,marchData.body);
+      const marchItem=marchData.json().data.items.find((row:any)=>row.employee_id===employeeA.rows[0].id);
+      assert.ok(marchItem,"employee with a salary profile must be included in March payroll");
+      assert.equal(Number(marchItem.advance_repayment_amount),1000,
+        "the available 1,000 salary must be allocated across the three open advances");
+      assert.equal(Number(marchItem.net_amount),0,"advance installments equal the full take-home salary");
+      const marchApproval=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${marchData.json().data.period.id}/approve`,headers:{cookie:cookieHeader}
+      });
+      assert.equal(marchApproval.statusCode,200,marchApproval.body);
+      const zeroNetState=await apiPool.query(
+        `SELECT i.status,i.net_amount,i.advance_repayment_amount,
+                (SELECT COUNT(*)::int FROM payroll_payments pp WHERE pp.payroll_item_id=i.id) AS payment_count,
+                (SELECT COUNT(*)::int FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id) AS repayment_count,
+                (SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id) AS repaid_amount,
+                (SELECT COUNT(*)::int FROM employee_earnings_ledger el WHERE el.payroll_advance_offset_item_id=i.id) AS offset_ledger_count,
+                (SELECT COALESCE(SUM(c.amount),0) FROM cash_custody_transactions c
+                  WHERE c.source_id=i.id AND c.source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET')) AS custody_amount
+           FROM payroll_items i WHERE i.id=$1`,
+        [marchItem.id]
+      );
+      assert.equal(zeroNetState.rows[0].status,"PAID");
+      assert.equal(Number(zeroNetState.rows[0].net_amount),0);
+      assert.equal(Number(zeroNetState.rows[0].payment_count),0,"zero-net settlement must not fabricate a cash payment");
+      assert.equal(Number(zeroNetState.rows[0].repayment_count),3,"all allocated advances must be repaid exactly once");
+      assert.equal(Number(zeroNetState.rows[0].repaid_amount),1000);
+      assert.equal(Number(zeroNetState.rows[0].offset_ledger_count),1,"employee salary entitlement must be cleared by one source-linked ledger debit");
+      assert.equal(Number(zeroNetState.rows[0].custody_amount),0,"non-cash settlement must not create custody movements");
+      const zeroNetAdvanceStatus=await apiPool.query("SELECT repayment_status FROM advance_requests WHERE id=$1",[zeroNetAdvance.rows[0].id]);
+      assert.equal(zeroNetAdvanceStatus.rows[0].repayment_status,"SETTLED");
+      const repeatedZeroNetRepayments=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM advance_repayments WHERE source_payroll_item_id=$1",[marchItem.id]
+      );
+      assert.equal(repeatedZeroNetRepayments.rows[0].count,3,"approval may not duplicate any advance repayment");
+      const marchReconciliation=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
+      assert.equal(marchReconciliation.statusCode,200,marchReconciliation.body);
+      assert.equal(marchReconciliation.json().data.counts.zeroNetPayrollSettlementMismatches,0,
+        "a correctly posted zero-net non-cash settlement must pass accounting reconciliation");
+
       const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
       await apiPool.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',100,'concurrent payroll custody opening',$2)",
