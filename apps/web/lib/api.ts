@@ -71,12 +71,14 @@ export async function api<T>(
   const cacheTtlMs = canCache ? getApiCacheTtl(path) : 0;
   const key = createGetCacheKey(path, options.headers, cacheGeneration);
 
-  if (canCache && cacheTtlMs > 0) {
-    const cached = getCache.get(key);
-    if (cached !== undefined) return cached as T;
+  if (canCache) {
+    if (cacheTtlMs > 0) {
+      const cached = getCache.get(key);
+      if (cached !== undefined) return cached as T;
+    }
     const pending = pendingGets.get(key);
     if (pending) return pending as Promise<T>;
-  } else if (!canCache) {
+  } else {
     // A write can affect any view; invalidate before issuing it.
     clearApiCache();
   }
@@ -135,7 +137,7 @@ export async function api<T>(
     return body as T;
   })();
 
-  if (canCache && cacheTtlMs > 0) pendingGets.set(key, request);
+  if (canCache) pendingGets.set(key, request);
   try {
     return await request;
   } finally {
