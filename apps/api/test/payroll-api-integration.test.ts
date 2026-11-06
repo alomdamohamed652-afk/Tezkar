@@ -771,6 +771,20 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(voidedRow.rows[0].void_reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
       assert.equal(voidedRow.rows[0].voided_by, userId);
       assert.ok(voidedRow.rows[0].voided_at);
+      const retainedAdjustmentHistory = await app.inject({
+        method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments`, headers: { cookie: cookieHeader }
+      });
+      assert.equal(retainedAdjustmentHistory.statusCode, 200, retainedAdjustmentHistory.body);
+      const retainedVoidedLine = retainedAdjustmentHistory.json().data.find((line: { id: string }) => line.id === temporaryAdjustment.json().data.id);
+      assert.equal(retainedVoidedLine.status, "VOIDED");
+      assert.equal(retainedVoidedLine.void_reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
+      const editVoidedLine = await app.inject({
+        method: "PATCH",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "DEDUCTION", description: "Should not edit voided line", amount: 10 }
+      });
+      assert.equal(editVoidedLine.statusCode, 409, editVoidedLine.body);
       const afterAdjustmentCrud = await apiPool.query(
         "SELECT bonus_amount,deduction_amount FROM payroll_items WHERE id=$1", [itemA.rows[0].id]
       );
