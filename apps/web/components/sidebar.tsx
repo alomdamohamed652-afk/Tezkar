@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api } from "../lib/api";
+import { api, notifyApiSessionChanged } from "../lib/api";
 
 type Session={permissions:string[];username?:string;fullName?:string|null;employeeId?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
@@ -132,7 +132,7 @@ export function Sidebar({active}:{active:string}){
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
- async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
+ async function logout(){notifyApiSessionChanged();await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
  return <aside className={"sidebar"+(!isMobile&&sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
    <div className="brand">
     <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
