@@ -681,7 +681,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       ) : {rows:[] as any[]};
       let committedAdvanceRepayment=0;
       for(const deduction of advanceDeductions.rows){
-        const prior=await client.query("SELECT id FROM advance_repayments WHERE source_payroll_item_id=$1 AND advance_id=$2",[id,deduction.advance_id]);
+        const prior=await client.query("SELECT ar.id FROM advance_repayments ar WHERE ar.source_payroll_item_id=$1 AND ar.advance_id=$2 AND ar.amount>COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)+0.0001",[id,deduction.advance_id]);
         if(prior.rowCount)continue;
         if(deduction.repayment_status!=="OPEN")throw new AppError("ADVANCE_NOT_OPEN","السلفة المرتبطة بالراتب لم تعد مفتوحة؛ راجع المسير قبل الصرف",409);
         const repaid=await client.query("SELECT COALESCE(SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)),0) AS amount FROM advance_repayments ar WHERE ar.advance_id=$1",[deduction.advance_id]);
