@@ -379,7 +379,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
       const daysInMonth=monthEndDate.getUTCDate();
-      const salaryItems = await client.query("SELECT id,employee_id,base_salary,bonus_amount,deduction_amount,advance_repayment_amount FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
+      const salaryItems = await client.query("SELECT id,employee_id,base_salary,bonus_amount,advance_repayment_amount FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
       // Rebuild the full month from persisted punches, schedules, corrections, overrides and approved permissions.
       // Never accept client-supplied minutes as a source of payroll truth.
       const attendanceReport=await buildAttendanceReport(client,monthStart,monthEnd,true);
@@ -451,7 +451,6 @@ export async function payrollRoutes(app: FastifyInstance) {
       // Convert reviewed attendance minutes into auditable payroll lines. Policy defaults
       // are 26 workdays x 8 hours; each employee can override the work pattern and rest-day rate.
       for (const item of salaryItems.rows) {
-        const itemBefore=item;
         const rawPolicy=policiesByEmployee.get(String(item.employee_id))??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
         const rawEmployeeDays=(daysByEmployee.get(String(item.employee_id))??[]) as unknown as PayrollAttendanceDay[];
         const activeProfiles=profilesByEmployee.get(String(item.employee_id))??[];
@@ -473,8 +472,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         let calculation;
         try {
           calculation=calculatePayrollAttendance({
-            baseSalary:Number(itemBefore.base_salary),
-            existingBonus:Number(itemBefore.bonus_amount),
+            baseSalary:Number(item.base_salary),
+            existingBonus:Number(item.bonus_amount),
             policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),scheduledMinutes:effectiveScheduledMinutes},
             days:employeeDays
           });
@@ -504,7 +503,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
           FROM payroll_adjustment_lines WHERE payroll_item_id=$1`,[item.id]);
         const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
-        if(Number(itemBefore.base_salary)+bonus<deduction+Number(itemBefore.advance_repayment_amount??0))
+        if(Number(item.base_salary)+bonus<deduction+Number(item.advance_repayment_amount??0))
           throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الحضور والبنود الأخرى أكبر من إجمالي المستحقات؛ راجع المسير قبل الاعتماد.",409);
         await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,item.id]);
         await client.query(`INSERT INTO payroll_attendance_calculations(payroll_item_id,calculation_data,captured_by)
