@@ -66,6 +66,8 @@ The initial implementation uses a 30-second in-memory TTL only for a narrow refe
 - Perform local filtering only on bounded datasets already needed by the current view.
 - Never fetch hundreds of records only to display a count; use dedicated count endpoints.
 - Avoid polling when an event, manual refresh, or sensible stale interval is sufficient.
+- Sidebar badges use dedicated count endpoints; refresh on initial permission resolution and tab focus/visibility, throttled to one refresh per 30 seconds. Do not fetch full task/payment/notification lists to render counts.
+- Keep count queries permission-scoped: task counts honor all-vs-own assignment scope, payment-request counts honor worker employee scope, and notification counts are restricted to the authenticated user.
 - Avoid loading hidden tabs, unopened report sections, and below-the-fold heavy components.
 - Lazy-load large export/chart/report code only when requested.
 - Use Web Workers only when profiling justifies their startup and memory overhead.
@@ -117,5 +119,6 @@ The initial implementation uses a 30-second in-memory TTL only for a narrow refe
 ## Current implementation status
 
 - PR #255 contains the first server-side request reductions (count endpoints, consolidated auth read, session activity write throttling, and attendance report grouping).
-- PR #256 begins the browser-side layer with bounded in-memory GET caching and a narrow reference-data TTL allowlist.
+- PR #256 begins the browser-side layer with bounded in-memory GET caching; PR #257 tightens it to a reviewed metadata allowlist, session-safe invalidation, and post-mutation cross-tab invalidation.
+- Sidebar task/payment/notification badges use count-only endpoints and a throttled focus refresh; existing task, payment-request, and notification indexes support the relevant count predicates.
 - IndexedDB, Service Worker API caching, offline writes, and Web Workers are **not** implemented. They require separate profiling, threat review, and tests before adoption.
