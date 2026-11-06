@@ -786,6 +786,67 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.calculatedAvailable),130,
         "the diagnostic total must not double-count production-linked bonus or deduction");
 
+      // Production-percentage advance repayment must use production actually allocated
+      // by an earlier settlement, not the full gross payout when it included an adjustment.
+      const productionAdvanceWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Production Advance Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const priorProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE-1,1,$5,$6,130,$7,'PER_PIECE','PER_PIECE',130,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(priorProduction.total_earning_amount),130);
+      const priorSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(
+           employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by
+         ) VALUES($1,155,155,0,CURRENT_DATE-1,'Prior payout includes a separate 25 adjustment',$2) RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,130)",
+        [priorSettlement.id,priorProduction.id]
+      );
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$8,$8,now())`,
+        [productionAdvanceWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      );
+      const productionPercentageAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(
+           employee_id,amount,reason,status,requested_by,paid_by,paid_at,
+           repayment_method,production_percentage,production_period_days,repayment_status
+         )
+         VALUES($1,200,'Production allocation repayment regression','PAID',$2,$2,CURRENT_DATE-INTERVAL '30 days',
+                'PRODUCTION_PERCENTAGE',10,15,'OPEN')
+         RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
+      const productionAdvancePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:productionAdvanceWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(productionAdvancePayout.statusCode,201,productionAdvancePayout.body);
+      assert.equal(Number(productionAdvancePayout.json().data.payment.advance_repayment_amount),10,
+        "10% repayment must be based on 100 of production remaining after the 130 allocation, not 75 after subtracting the 155 gross payout");
+      const productionAdvanceRepayment=(await apiPool.query(
+        "SELECT amount FROM advance_repayments WHERE advance_id=$1 AND source_worker_payment_id=$2",
+        [productionPercentageAdvance.id,productionAdvancePayout.json().data.payment.id]
+      )).rows[0];
+      assert.equal(Number(productionAdvanceRepayment.amount),10);
+
       // Payroll is a separate employee entitlement and must never become production dues
       // through the ledger-only fallback for an employee without approved production.
       const payrollOnlyEmployee=(await apiPool.query(
