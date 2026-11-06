@@ -214,11 +214,17 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
           -COALESCE((SELECT SUM(
               CASE
                 WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id)
-                  THEN COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id),0)
+                  THEN COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa
+                    JOIN production_entries allocated ON allocated.id=sa.production_entry_id
+                    WHERE sa.settlement_id=s.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id)
-                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id),0)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa
+                    JOIN production_entries allocated ON allocated.id=oa.production_entry_id
+                    WHERE oa.worker_payment_id=s.worker_payment_id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id)
-                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id),0)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa
+                    JOIN production_entries allocated ON allocated.id=wa.production_entry_id
+                    WHERE wa.worker_payment_id=s.worker_payment_id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 ELSE s.gross_amount
               END)
             FROM employee_earnings_settlements s
@@ -226,9 +232,13 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
           -COALESCE((SELECT SUM(
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
-                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id),0)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa
+                    JOIN production_entries allocated ON allocated.id=oa.production_entry_id
+                    WHERE oa.worker_payment_id=wp.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id)
-                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id),0)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa
+                    JOIN production_entries allocated ON allocated.id=wa.production_entry_id
+                    WHERE wa.worker_payment_id=wp.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 ELSE wp.gross_amount
               END)
             FROM worker_payments wp
