@@ -5,9 +5,38 @@ export const API_URL = API_BASE;
 // A tiny in-memory cache avoids refetching the same read-only data while navigating
 // between pages. Mutations invalidate it immediately; the HTTP cache stays disabled.
 const GET_CACHE_TTL_MS = 1_500;
+const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
+const MAX_GET_CACHE_ENTRIES = 100;
 const getCache = new Map<string, { expiresAt: number; value: unknown }>();
 const pendingGets = new Map<string, Promise<unknown>>();
 let cacheGeneration = 0;
+
+function getCacheTtl(path: string): number {
+  // Keep the default short for user-specific or frequently changing records.
+  // Only low-volatility reference lists receive a longer in-memory cache.
+  const pathname = path.split("?")[0];
+  const referenceDataPaths = new Set([
+    "/api/products",
+    "/api/stages",
+    "/api/rates",
+    "/api/shifts",
+    "/api/shifts/rate-groups",
+    "/api/machines"
+  ]);
+  return referenceDataPaths.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : GET_CACHE_TTL_MS;
+}
+
+function storeGetCache(key: string, value: unknown, ttlMs: number) {
+  // Bound memory usage on long-lived tabs. Refreshing an existing key moves it
+  // to the newest position so the oldest entries are evicted first.
+  getCache.delete(key);
+  while (getCache.size >= MAX_GET_CACHE_ENTRIES) {
+    const oldestKey = getCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    getCache.delete(oldestKey);
+  }
+  getCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
 
 function invalidateGetCache() {
   cacheGeneration += 1;
@@ -29,6 +58,7 @@ export async function api<T>(
   const method = (options.method ?? "GET").toUpperCase();
   const canCache = method === "GET";
   const key = path;
+  const cacheTtlMs = getCacheTtl(path);
   const now = Date.now();
 
   if (canCache) {
@@ -88,7 +118,7 @@ export async function api<T>(
     }
 
     if (canCache && requestGeneration === cacheGeneration) {
-      getCache.set(key, { value: body, expiresAt: Date.now() + GET_CACHE_TTL_MS });
+      storeGetCache(key, body, cacheTtlMs);
     }
     return body as T;
   })();
