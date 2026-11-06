@@ -25,8 +25,17 @@ export function getApiCacheTtl(path) {
 }
 
 export function createGetCacheKey(path, headers, generation = 0) {
-  const normalizedHeaders = new Headers(headers);
-  const headerEntries = Array.from(normalizedHeaders.entries()).sort(([a], [b]) => a.localeCompare(b));
+  const headerEntries = [];
+  if (Array.isArray(headers)) {
+    for (const [name, value] of headers) headerEntries.push([String(name).toLowerCase(), String(value)]);
+  } else if (headers && typeof headers.forEach === "function") {
+    headers.forEach((value, name) => headerEntries.push([String(name).toLowerCase(), String(value)]));
+  } else if (headers) {
+    for (const [name, value] of Object.entries(headers)) headerEntries.push([name.toLowerCase(), String(value)]);
+  }
+  headerEntries.sort(([aName, aValue], [bName, bValue]) =>
+    aName.localeCompare(bName) || aValue.localeCompare(bValue)
+  );
   return JSON.stringify([generation, path, headerEntries]);
 }
 
