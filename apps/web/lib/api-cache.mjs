@@ -4,8 +4,6 @@ const MAX_GET_CACHE_ENTRIES = 100;
 const REFERENCE_DATA_PATHS = new Set([
   "/api/products",
   "/api/stages",
-  "/api/rates",
-  "/api/shifts",
   "/api/shifts/rate-groups",
   "/api/machines"
 ]);
