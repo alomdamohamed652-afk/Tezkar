@@ -804,11 +804,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
       )).rows[0];
       assert.equal(Number(priorProduction.total_earning_amount),130);
+      const priorWorkerPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,created_at)
+         VALUES($1,155,155,0,'CASH',$2,CURRENT_DATE-1+TIME '12:00') RETURNING id`,
+        [productionAdvanceWorker.id,manager.id]
+      )).rows[0];
       const priorSettlement=(await apiPool.query(
         `INSERT INTO employee_earnings_settlements(
-           employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by
-         ) VALUES($1,155,155,0,CURRENT_DATE-1,'Prior payout includes a separate 25 adjustment',$2) RETURNING id`,
-        [productionAdvanceWorker.id,manager.id]
+           employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id
+         ) VALUES($1,155,155,0,CURRENT_DATE-1,'Prior payout includes a separate 25 adjustment',$2,$3) RETURNING id`,
+        [productionAdvanceWorker.id,manager.id,priorWorkerPayment.id]
       )).rows[0];
       await apiPool.query(
         "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,130)",
