@@ -99,6 +99,12 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   });
   assert.equal(payrollReversal.statusCode,201,payrollReversal.body);
   assert.equal(payrollReversal.json().data.lines.length,2,"payroll and its linked repayment must reverse as one bundle");
+  const payrollReversalReplay=await server.inject({
+    method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:payrollReversalPayload
+  });
+  assert.equal(payrollReversalReplay.statusCode,200,payrollReversalReplay.body);
+  assert.equal(payrollReversalReplay.json().data.reversal.id,payrollReversal.json().data.reversal.id,
+    "replaying a payroll reversal must not duplicate its bundle");
   const payrollReversalState=await db.query(
     `SELECT
       (SELECT COUNT(*)::int FROM payroll_payments WHERE id=$1) AS payment_count,
