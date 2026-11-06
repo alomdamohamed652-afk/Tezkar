@@ -345,12 +345,22 @@ export async function paymentsRoutes(app:FastifyInstance){
   app.get("/api/payment-requests/pending-count", {
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   }, async request => {
-    const user=await isWorker(request.user!.userId);
+    const permissionScope=await pool.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id=ur.role_id
+         JOIN permissions p ON p.id=rp.permission_id
+         JOIN roles r ON r.id=ur.role_id
+         WHERE ur.user_id=$1 AND p.code='payment_requests.view'
+           AND (p.scope IS NULL OR p.scope='all') AND r.is_active=TRUE
+       ) AS can_view_all`,
+      [request.user!.userId]
+    );
     const params:unknown[]=[];
     let scope="";
-    if(user?.is_worker){
-      if(!user.employee_id)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(user.employee_id);
+    if(!permissionScope.rows[0]?.can_view_all){
+      if(!request.user!.employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(request.user!.employeeId);
       scope=" AND employee_id=$1";
     }
     const result=await pool.query(
