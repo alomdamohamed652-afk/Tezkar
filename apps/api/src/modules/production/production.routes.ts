@@ -428,7 +428,7 @@ export async function productionRoutes(app: FastifyInstance) {
         const os0=await client.query("SELECT os.order_id,os.sequence_no,os.is_final_product FROM order_stages os WHERE os.id=$1",[parsed.data.orderStageId]);
         if(!os0.rowCount) throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",422);
         const final0=await client.query("SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os0.rows[0].order_id]);
-        const type0=Boolean(os0.rows[0].is_final_product)||(!Boolean(final0.rows[0]?.has_explicit_final)&&Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence)) ? "FINISHED_GOODS" : "WIP";
+        const type0=os0.rows[0].is_final_product||(!final0.rows[0]?.has_explicit_final&&Number(os0.rows[0].sequence_no)===Number(final0.rows[0]?.max_sequence)) ? "FINISHED_GOODS" : "WIP";
         const wh0=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[type0]);
         if(!wh0.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
         // The server enforces the stage's virtual warehouse. The client cannot redirect
@@ -484,7 +484,7 @@ export async function productionRoutes(app: FastifyInstance) {
         if (os.order_status === "DRAFT" || os.order_status === "COMPLETED") throw new AppError("ORDER_NOT_ACTIVE","لا يمكن تسجيل إنتاج لطلبية مسودة أو مكتملة؛ فعّل الطلبية أو أعد فتحها أولًا",409);
         if (os.stage_status === "COMPLETED") throw new AppError("ORDER_STAGE_COMPLETED","لا يمكن تسجيل إنتاج إضافي لمرحلة مكتملة",409);
         const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status <> 'CANCELLED'",[os.order_id]);
-        const warehouseType=Boolean(os.is_final_product)||(!Boolean(finalStage.rows[0]?.has_explicit_final)&&Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence)) ? "FINISHED_GOODS" : "WIP";
+        const warehouseType=os.is_final_product||(!finalStage.rows[0]?.has_explicit_final&&Number(os.sequence_no)===Number(finalStage.rows[0]?.max_sequence)) ? "FINISHED_GOODS" : "WIP";
         const virtualWarehouse=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!virtualWarehouse.rowCount) throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
         // A production entry tied to an order stage must land in the system warehouse
@@ -811,7 +811,7 @@ export async function productionRoutes(app: FastifyInstance) {
         stageId=orderStage.stage_id;
         productionTypeId=orderStage.stage_production_type_id??productionTypeId;
         const finalStage=await client.query("SELECT MAX(sequence_no) AS max_sequence,BOOL_OR(is_final_product) AS has_explicit_final FROM order_stages WHERE order_id=$1 AND status<>'CANCELLED'",[orderStage.order_id]);
-        const warehouseType=Boolean(orderStage.is_final_product)||(!Boolean(finalStage.rows[0]?.has_explicit_final)&&Number(orderStage.sequence_no)===Number(finalStage.rows[0]?.max_sequence))?"FINISHED_GOODS":"WIP";
+        const warehouseType=orderStage.is_final_product||(!finalStage.rows[0]?.has_explicit_final&&Number(orderStage.sequence_no)===Number(finalStage.rows[0]?.max_sequence))?"FINISHED_GOODS":"WIP";
         const wh=await client.query("SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",[warehouseType]);
         if(!wh.rowCount)throw new AppError("VIRTUAL_WAREHOUSE_MISSING","المخزن الافتراضي للإنتاج غير مُجهز",500);
         warehouseId=wh.rows[0].id;

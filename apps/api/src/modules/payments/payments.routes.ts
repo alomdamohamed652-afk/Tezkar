@@ -53,7 +53,10 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   const r=await client.query(
     `SELECT COALESCE(SUM(credit_amount - debit_amount),0) AS balance
        FROM employee_earnings_ledger
-      WHERE employee_id=$1`,
+      WHERE employee_id=$1
+        AND payroll_item_id IS NULL
+        AND payroll_adjustment_line_id IS NULL
+        AND payroll_payment_id IS NULL`,
     [employeeId]
   );
   return Number(r.rows[0]?.balance ?? 0);
@@ -88,6 +91,10 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           FROM employee_earnings_ledger l
           WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
             AND l.advance_repayment_id IS NULL AND l.created_at>$2
+            AND l.payroll_item_id IS NULL
+            AND l.payroll_adjustment_line_id IS NULL
+            AND l.payroll_payment_id IS NULL
+            AND l.settlement_id IS NULL
             AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments
       FROM production_entries pe
       WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.approved_at>$2
@@ -107,6 +114,10 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
         FROM employee_earnings_ledger l
         WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
           AND l.advance_repayment_id IS NULL
+          AND l.payroll_item_id IS NULL
+          AND l.payroll_adjustment_line_id IS NULL
+          AND l.payroll_payment_id IS NULL
+          AND l.settlement_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
@@ -200,10 +211,44 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
     const production=await client.query(
       `SELECT GREATEST(0,
           COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0)
-          -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
-          -COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
-                     WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
+          -COALESCE((SELECT SUM(
+              CASE
+                WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id)
+                  THEN COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa
+                    JOIN production_entries allocated ON allocated.id=sa.production_entry_id
+                    WHERE sa.settlement_id=s.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa
+                    JOIN production_entries allocated ON allocated.id=oa.production_entry_id
+                    WHERE oa.worker_payment_id=s.worker_payment_id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa
+                    JOIN production_entries allocated ON allocated.id=wa.production_entry_id
+                    WHERE wa.worker_payment_id=s.worker_payment_id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
+                ELSE s.gross_amount
+              END)
+            FROM employee_earnings_settlements s
+            WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+          -COALESCE((SELECT SUM(
+              CASE
+                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa
+                    JOIN production_entries allocated ON allocated.id=oa.production_entry_id
+                    WHERE oa.worker_payment_id=wp.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
+                WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id)
+                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa
+                    JOIN production_entries allocated ON allocated.id=wa.production_entry_id
+                    WHERE wa.worker_payment_id=wp.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
+                ELSE wp.gross_amount
+              END)
+            FROM worker_payments wp
+            LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
+            WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date),0)
+          -COALESCE((SELECT SUM(hm.amount_snapshot)
+            FROM historical_production_settlement_marks hm
+            JOIN production_entries marked ON marked.id=hm.production_entry_id
+            WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
+              AND marked.status='APPROVED' AND marked.work_date>$2::date AND marked.work_date<=$3::date),0)
         ) AS amount
          FROM production_entries pe WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.work_date>$2::date AND pe.work_date<=$3::date`,
       [employeeId,startDate,paymentDate]
@@ -342,6 +387,40 @@ export async function paymentsRoutes(app:FastifyInstance){
     const r=await pool.query("INSERT INTO payment_methods(code,name,sort_order) VALUES($1,$2,$3) RETURNING *",[parsed.data.code,parsed.data.name,parsed.data.sortOrder]);
     return reply.code(201).send({data:r.rows[0]});
   });
+  app.get("/api/payment-requests/pending-count", {
+    preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
+  }, async request => {
+    // Worker accounts must always receive their own count, matching the
+    // employee scoping applied by GET /api/payment-requests.
+    const user=await isWorker(request.user!.userId);
+    const isWorkerAccount=Boolean(user?.is_worker);
+    const permissionScope= isWorkerAccount ? null : await pool.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id=ur.role_id
+         JOIN permissions p ON p.id=rp.permission_id
+         JOIN roles r ON r.id=ur.role_id
+         WHERE ur.user_id=$1 AND p.code='payment_requests.view'
+           AND (p.scope IS NULL OR p.scope='all') AND r.is_active=TRUE
+       ) AS can_view_all`,
+      [request.user!.userId]
+    );
+    const params:unknown[]=[];
+    let scope="";
+    if(isWorkerAccount || !permissionScope?.rows[0]?.can_view_all){
+      const employeeId=user?.employee_id ?? request.user!.employeeId;
+      if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(employeeId);
+      scope=" AND employee_id=$1";
+    }
+    const result=await pool.query(
+      `SELECT COUNT(*)::int AS count FROM payment_requests
+       WHERE status IN ('PENDING','APPROVED')${scope}`,
+      params
+    );
+    return {data:{count:Number(result.rows[0]?.count??0)}};
+  });
+
   app.get("/api/payment-requests",{
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   },async(request)=>{
@@ -1460,6 +1539,10 @@ export async function paymentsRoutes(app:FastifyInstance){
               FROM employee_earnings_ledger l
               WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
                 AND l.advance_repayment_id IS NULL
+                AND l.payroll_item_id IS NULL
+                AND l.payroll_adjustment_line_id IS NULL
+                AND l.payroll_payment_id IS NULL
+                AND l.settlement_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp

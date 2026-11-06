@@ -24,6 +24,43 @@ const updateSchema = z.object({
 });
 
 export async function taskRoutes(app: FastifyInstance) {
+  app.get("/api/tasks/pending-count", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.view","all"],["tasks.view_own","own"])] }, async request => {
+    if (!request.user!.employeeId) {
+      const scope = await pool.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM user_roles ur
+           JOIN role_permissions rp ON rp.role_id=ur.role_id
+           JOIN permissions p ON p.id=rp.permission_id
+           JOIN roles r ON r.id=ur.role_id
+           WHERE ur.user_id=$1 AND p.code='tasks.view'
+             AND (p.scope IS NULL OR p.scope='all') AND r.is_active=TRUE
+         ) AS can_view_all`,
+        [request.user!.userId]
+      );
+      if (!scope.rows[0]?.can_view_all) throw new AppError("EMPLOYEE_LINK_REQUIRED", "الحساب غير مرتبط بموظف", 403);
+    }
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM tasks t
+       WHERE t.status NOT IN ('COMPLETED','CANCELLED')
+         AND (
+           EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN role_permissions rp ON rp.role_id=ur.role_id
+             JOIN permissions p ON p.id=rp.permission_id
+             JOIN roles r ON r.id=ur.role_id
+             WHERE ur.user_id=$1 AND p.code='tasks.view'
+               AND (p.scope IS NULL OR p.scope='all') AND r.is_active=TRUE
+           )
+           OR EXISTS (
+             SELECT 1 FROM task_assignees ta
+             WHERE ta.task_id=t.id AND ta.employee_id=$2
+           )
+         )`,
+      [request.user!.userId, request.user!.employeeId]
+    );
+    return { data: { count: Number(result.rows[0]?.count ?? 0) } };
+  });
+
   app.get("/api/tasks", { preHandler: [authenticateRequest, requireAnyPermission(["tasks.view","all"],["tasks.view_own","own"])] }, async (request) => {
     const client = await pool.connect();
     try {

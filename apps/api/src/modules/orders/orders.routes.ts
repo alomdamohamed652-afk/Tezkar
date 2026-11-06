@@ -844,7 +844,7 @@ export async function orderRoutes(app: FastifyInstance) {
           [stageRoute.rows[0].order_id]
         );
         const warehouseType = Boolean(stageRoute.rows[0].is_final_product) ||
-          (!Boolean(finalStage.rows[0]?.has_explicit_final) && Number(stageRoute.rows[0].sequence_no)===Number(finalStage.rows[0]?.max_sequence))
+          (!finalStage.rows[0]?.has_explicit_final && Number(stageRoute.rows[0].sequence_no)===Number(finalStage.rows[0]?.max_sequence))
           ? "FINISHED_GOODS" : "WIP";
         const warehouse = await client.query(
           "SELECT id FROM warehouses WHERE warehouse_type=$1 AND is_active=TRUE ORDER BY created_at,id LIMIT 1",
