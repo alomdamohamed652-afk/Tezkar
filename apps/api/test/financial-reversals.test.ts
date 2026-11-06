@@ -111,7 +111,11 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
       (SELECT COUNT(*)::int FROM advance_repayments WHERE id=$2) AS repayment_count,
       (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$3) AS line_count,
       (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status,
-      (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3) AS reversal_custody_count`,
+      (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3) AS reversal_custody_count,
+      (SELECT COALESCE(SUM(credit_amount),0) FROM employee_earnings_ledger WHERE notes LIKE '%عكس صرف راتب%' AND notes LIKE '%' || $1::text || '%') AS payroll_ledger_credit,
+      (SELECT COALESCE(SUM(debit_amount),0) FROM employee_earnings_ledger WHERE notes LIKE '%عكس سداد سلفة%' AND notes LIKE '%' || $2::text || '%') AS advance_ledger_debit,
+      (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='IN') AS custody_in,
+      (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='OUT') AS custody_out`,
     [payrollPayment,payrollRepayment,payrollReversal.json().data.reversal.id,payrollAdvance]
   );
   assert.equal(Number(payrollReversalState.rows[0].payment_count),1,"original payroll payment must remain immutable");
@@ -120,5 +124,11 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   assert.equal(payrollReversalState.rows[0].advance_status,"OPEN","reversing payroll must restore the advance balance");
   assert.equal(Number(payrollReversalState.rows[0].reversal_custody_count),2,
     "cash reversal must separately restore payroll cash and undo the advance offset");
+  assert.equal(Number(payrollReversalState.rows[0].payroll_ledger_credit),120,
+    "the payroll ledger debit must be fully reversed, including the advance offset");
+  assert.equal(Number(payrollReversalState.rows[0].advance_ledger_debit),20,
+    "the advance repayment credit must be reversed independently");
+  assert.equal(Number(payrollReversalState.rows[0].custody_in),120);
+  assert.equal(Number(payrollReversalState.rows[0].custody_out),20);
  }finally{if(app)await app.close();if(db)await db.end();const c=new pg.Client({connectionString:adminUrl});await c.connect();try{await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)}finally{await c.end()}}
 });
