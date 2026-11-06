@@ -354,11 +354,29 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(request.statusCode,201,request.body);
       assert.equal(request.json().data.transfer_reference,"IP-TEST-2026-001");
       const requestId=request.json().data.id;
+      const workerPendingCount=await app.inject({
+        method:"GET",url:"/api/payment-requests/pending-count",headers:{cookie:workerCookie}
+      });
+      assert.equal(workerPendingCount.statusCode,200,workerPendingCount.body);
+      assert.equal(workerPendingCount.json().data.count,1,
+        "worker badge count must include the worker's own pending request");
+      const managerPendingCount=await app.inject({
+        method:"GET",url:"/api/payment-requests/pending-count",headers:{cookie:managerCookie}
+      });
+      assert.equal(managerPendingCount.statusCode,200,managerPendingCount.body);
+      assert.equal(managerPendingCount.json().data.count,1,
+        "manager badge count must include pending requests across employees");
       const approved=await app.inject({
         method:"POST",url:`/api/payment-requests/${requestId}/approve`,headers:{cookie:managerCookie},payload:{advanceRepaymentAmount:50}
       });
       assert.equal(approved.statusCode,200,approved.body);
       assert.equal(approved.json().data.request.status,"PAID");
+      const countAfterApproval=await app.inject({
+        method:"GET",url:"/api/payment-requests/pending-count",headers:{cookie:managerCookie}
+      });
+      assert.equal(countAfterApproval.statusCode,200,countAfterApproval.body);
+      assert.equal(countAfterApproval.json().data.count,0,
+        "paid requests must disappear from the pending badge count");
       assert.ok(approved.json().data.request.paid_payment_id);
       assert.equal(approved.json().data.payment.transfer_reference,"IP-TEST-2026-001");
       const custodyDebit=await apiPool.query("SELECT direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
