@@ -538,7 +538,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         }
         const adjustmentLines=await client.query(
           `SELECT id,line_type,description,amount FROM payroll_adjustment_lines
-            WHERE payroll_item_id=$1 ORDER BY created_at,id`,[item.id]
+            WHERE payroll_item_id=$1 AND status='ACTIVE' ORDER BY created_at,id`,[item.id]
         );
         for(const line of adjustmentLines.rows){
           if(line.line_type==="BONUS"){
