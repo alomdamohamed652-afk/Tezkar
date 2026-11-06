@@ -172,12 +172,18 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         ["attendance-permission-"+randomBytes(5).toString("hex"),hashPassword(password),permissionEmployee.rows[0].id]
       );
       await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[permissionUser.rows[0].id]);
+      // Give the permission employee a historical scheduled day so the report/payroll path
+      // can verify that approved PAID and UNPAID requests are reflected in attendance minutes.
+      for(let weekday=0;weekday<7;weekday++)await apiPool.query(
+        "INSERT INTO attendance_weekly_schedule_versions(employee_id,weekday,starts_at,ends_at,is_day_off,effective_from,created_by) VALUES($1,$2,'08:00','16:00',FALSE,'2026-01-01',$3)",
+        [permissionEmployee.rows[0].id,weekday,permissionUser.rows[0].id]
+      );
       const permissionLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:permissionUser.rows[0].username,password}});
       assert.equal(permissionLogin.statusCode,200,permissionLogin.body);
       const permissionSetCookie=permissionLogin.headers["set-cookie"];
       assert.ok(permissionSetCookie,"employee permission login must issue a session cookie");
       const permissionCookie=(Array.isArray(permissionSetCookie)?permissionSetCookie[0]:permissionSetCookie).split(";")[0];
-      const permissionDate="2099-01-15";
+      const permissionDate="2026-11-04";
       const permissionRequest=async(startsAt:string,endsAt:string)=>app.inject({
         method:"POST",url:"/api/attendance/permissions",headers:{cookie:permissionCookie},
         payload:{date:permissionDate,startsAt,endsAt,reason:"Personal appointment"}
@@ -251,6 +257,17 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const refreshedOwnPermissions=await app.inject({method:"GET",url:"/api/attendance/permissions/my",headers:{cookie:permissionCookie}});
       assert.equal(refreshedOwnPermissions.statusCode,200,refreshedOwnPermissions.body);
       assert.equal(refreshedOwnPermissions.json().data.length,4,"employees should see only their own requests across all statuses");
+
+      const permissionAttendanceReport=await app.inject({
+        method:"GET",url:`/api/attendance/report?from=${permissionDate}&to=${permissionDate}`,headers:{cookie:cookieHeader}
+      });
+      assert.equal(permissionAttendanceReport.statusCode,200,permissionAttendanceReport.body);
+      const permissionAttendanceDay=permissionAttendanceReport.json().data.find((day:{employeeId:string})=>day.employeeId===permissionEmployee.rows[0].id);
+      assert.ok(permissionAttendanceDay,"approved permission employee must appear in the attendance report");
+      assert.equal(permissionAttendanceDay.status,"ABSENT");
+      assert.equal(permissionAttendanceDay.paidPermissionMinutes,60,"approved paid permission minutes must be included in attendance reporting");
+      assert.equal(permissionAttendanceDay.unpaidPermissionMinutes,60,"approved unpaid permission minutes must be included in attendance reporting");
+      assert.equal(permissionAttendanceDay.permissionMinutes,120,"rejected and cancelled requests must not affect attendance reporting");
 
       const passwordResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Password Reset Integration Employee') RETURNING id");
       const passwordResetUser=await apiPool.query(
