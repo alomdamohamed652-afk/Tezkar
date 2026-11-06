@@ -1,4 +1,4 @@
-import { belongsToAttendanceShift, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents } from "./attendance-calculation.js";
+import { belongsToAttendanceShift, calculateOvertimeMinutes, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents } from "./attendance-calculation.js";
 import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
 
 type AttendanceReportDb = { query: (sql: string, values?: any[]) => Promise<{ rows: any[] }> };
@@ -58,7 +58,17 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      const expectedEnd=end===null?null:(overnight?end+1440:end);
      const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
      const workedMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
-     const explicitOvertimeMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.filter(p=>p.status==="OVERTIME_IN"||p.status==="OVERTIME_OUT").map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));const earlyArrivalMinutes=inMinute!==null&&start!==null?Math.max(0,start-inMinute):0;const lateDepartureMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,outMinute-expectedEnd):0;const overtimeMinutes=explicitOvertimeMinutes+earlyArrivalMinutes+lateDepartureMinutes;
+     const earlyArrivalMinutes=inMinute!==null&&start!==null?Math.max(0,start-inMinute):0;const lateDepartureMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,outMinute-expectedEnd):0;
+     const overtimeBoundaryIntervals:Array<{start:string;end:string}>=[];
+     if(earlyArrivalMinutes>0&&inPunch){
+       const punchAt=new Date(inPunch.punch_at);
+       overtimeBoundaryIntervals.push({start:punchAt.toISOString(),end:new Date(punchAt.getTime()+earlyArrivalMinutes*60000).toISOString()});
+     }
+     if(lateDepartureMinutes>0&&outPunch){
+       const punchAt=new Date(outPunch.punch_at);
+       overtimeBoundaryIntervals.push({start:new Date(punchAt.getTime()-lateDepartureMinutes*60000).toISOString(),end:punchAt.toISOString()});
+     }
+     const overtimeMinutes=calculateOvertimeMinutes(selectedEvents.countedEvents.map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})),overtimeBoundaryIntervals);
      const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0;
      let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
      const correctionHistory=assigned.filter(p=>p.correction_decision).map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,decision:p.correction_decision}));
