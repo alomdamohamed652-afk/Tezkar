@@ -56,6 +56,7 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
   const tokenHash = hashToken(token);
   const result = await client.query(
     `SELECT u.id AS user_id, u.employee_id, u.username, e.full_name, u.is_bootstrap, u.must_complete_setup, u.must_change_password,
+            s.last_seen_at,
             COALESCE(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL), '{}') AS role_codes
      FROM user_sessions s
      JOIN users u ON u.id = s.user_id
@@ -63,12 +64,22 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      LEFT JOIN roles r ON r.id = ur.role_id
      WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active = TRUE AND (u.employee_id IS NULL OR e.is_active=TRUE)
-     GROUP BY u.id, u.employee_id, u.username, e.full_name, u.is_bootstrap, u.must_complete_setup, u.must_change_password`,
+     GROUP BY u.id, u.employee_id, u.username, e.full_name, u.is_bootstrap, u.must_complete_setup, u.must_change_password, s.last_seen_at`,
     [tokenHash]
   );
   const row = result.rows[0];
   if (!row) return null;
-  await client.query("UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1", [tokenHash]);
+
+  // Keep activity timestamps useful without writing the same session row on
+  // every authenticated API request. The SQL predicate also makes concurrent
+  // requests safe: only the first request after the one-minute window updates it.
+  const lastSeenAt = new Date(row.last_seen_at).getTime();
+  if (!Number.isFinite(lastSeenAt) || Date.now() - lastSeenAt >= 60_000) {
+    await client.query(
+      "UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1 AND last_seen_at < now() - interval '1 minute'",
+      [tokenHash]
+    );
+  }
   return {
     userId: row.user_id,
     employeeId: row.employee_id,
