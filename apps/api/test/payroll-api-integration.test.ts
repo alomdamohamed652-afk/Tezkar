@@ -1173,7 +1173,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(duplicateFebruaryApproval.statusCode,409);
       assert.equal(duplicateFebruaryApproval.json().error.code,"PAYROLL_PERIOD_LOCKED");
-      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,1);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,2,
+        "the fixed advance must have one February cash repayment and one March zero-net repayment");
 
       const partialKey=randomUUID();
       const partialPayload={idempotencyKey:partialKey,amount:600,paymentMethod:"TEST"};
