@@ -377,7 +377,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(reactivatedLogin.statusCode,200,reactivatedLogin.body);
       const reactivatedSetCookie=reactivatedLogin.headers["set-cookie"];
       const reactivatedCookie=(Array.isArray(reactivatedSetCookie)?reactivatedSetCookie[0]:reactivatedSetCookie).split(";")[0];
-      const reactivatedSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[deactivationUser.rows[0].id]);
+      const reactivatedSession=await apiPool.query("SELECT id FROM user_sessions WHERE user_id=$1 AND revoked_at IS NULL LIMIT 1",[deactivationUser.rows[0].id]);
       const accountDeactivated=await app.inject({method:"DELETE",url:"/api/users/"+deactivationUser.rows[0].id,headers:{cookie:cookieHeader}});
       assert.equal(accountDeactivated.statusCode,200,accountDeactivated.body);
       assert.ok((await apiPool.query("SELECT revoked_at FROM user_sessions WHERE id=$1",[reactivatedSession.rows[0].id])).rows[0].revoked_at,
@@ -484,7 +484,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(allowedAfterChange.statusCode,200,allowedAfterChange.body,
         "the account must regain normal protected API access after changing the temporary password");
       invalidSessionHandlerExecuted=false;
-      const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' ORDER BY created_at DESC LIMIT 1",[passwordResetUser.rows[0].id]);
+      const resetNotification=await apiPool.query("SELECT type,title,entity_type,entity_id FROM user_notifications WHERE user_id=$1 AND type='PASSWORD_RESET' LIMIT 1",[passwordResetUser.rows[0].id]);
       assert.equal(resetNotification.rowCount,1,"successful employee password reset must create a schema-compatible notification");
       assert.equal(resetNotification.rows[0].entity_type,"user");
       assert.equal(resetNotification.rows[0].entity_id,passwordResetUser.rows[0].id);
@@ -749,13 +749,57 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         payload: { lineType: "DEDUCTION", description: "Temporary API test deduction", amount: 10 }
       });
       assert.equal(temporaryAdjustment.statusCode, 201, temporaryAdjustment.body);
-      const deleteTemporaryAdjustment = await app.inject({
+      const missingVoidReason = await app.inject({
         method: "DELETE",
         url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
         headers: { cookie: cookieHeader }
       });
+      assert.equal(missingVoidReason.statusCode, 422, missingVoidReason.body);
+      const deleteTemporaryAdjustment = await app.inject({
+        method: "DELETE",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader },
+        payload: { reason: "تم إدخال الخصم بالخطأ أثناء الاختبار" }
+      });
       assert.equal(deleteTemporaryAdjustment.statusCode, 200, deleteTemporaryAdjustment.body);
-      assert.equal(deleteTemporaryAdjustment.json().data.deleted, true);
+      assert.equal(deleteTemporaryAdjustment.json().data.voided, true);
+      const voidedRow = await apiPool.query(
+        "SELECT status,void_reason,voided_by,voided_at FROM payroll_adjustment_lines WHERE id=$1",
+        [temporaryAdjustment.json().data.id]
+      );
+      assert.equal(voidedRow.rows[0].status, "VOIDED");
+      assert.equal(voidedRow.rows[0].void_reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
+      assert.equal(voidedRow.rows[0].voided_by, userId);
+      assert.ok(voidedRow.rows[0].voided_at);
+      const retainedAdjustmentHistory = await app.inject({
+        method: "GET", url: `/api/payroll/items/${itemA.rows[0].id}/adjustments`, headers: { cookie: cookieHeader }
+      });
+      assert.equal(retainedAdjustmentHistory.statusCode, 200, retainedAdjustmentHistory.body);
+      const retainedVoidedLine = retainedAdjustmentHistory.json().data.find((line: { id: string }) => line.id === temporaryAdjustment.json().data.id);
+      assert.equal(retainedVoidedLine.status, "VOIDED");
+      assert.equal(retainedVoidedLine.void_reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
+      const editVoidedLine = await app.inject({
+        method: "PATCH",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader },
+        payload: { lineType: "DEDUCTION", description: "Should not edit voided line", amount: 10 }
+      });
+      assert.equal(editVoidedLine.statusCode, 409, editVoidedLine.body);
+      const duplicateVoid = await app.inject({
+        method: "DELETE",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader },
+        payload: { reason: "محاولة إلغاء مكرر للاختبار" }
+      });
+      assert.equal(duplicateVoid.statusCode, 409, duplicateVoid.body);
+      const voidAudit = await apiPool.query(
+        "SELECT action,module,entity_type,entity_id,metadata FROM audit_log WHERE entity_id=$1 AND action='void_adjustment_line' LIMIT 1",
+        [temporaryAdjustment.json().data.id]
+      );
+      assert.equal(voidAudit.rowCount, 1, "voiding must create one audit-log record");
+      assert.equal(voidAudit.rows[0].module, "payroll");
+      assert.equal(voidAudit.rows[0].entity_type, "payroll_adjustment_line");
+      assert.equal(voidAudit.rows[0].metadata.reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
       const afterAdjustmentCrud = await apiPool.query(
         "SELECT bonus_amount,deduction_amount FROM payroll_items WHERE id=$1", [itemA.rows[0].id]
       );
@@ -874,10 +918,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         `SELECT l.id,l.line_type,l.amount,e.credit_amount,e.debit_amount
            FROM payroll_adjustment_lines l
            LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id
-          WHERE l.payroll_item_id IN ($1,$2)`,
+          WHERE l.payroll_item_id IN ($1,$2) AND l.status='ACTIVE'`,
         [itemA.rows[0].id,itemB.rows[0].id]
       );
       assert.equal(linkedAdjustments.rowCount,4);
+      const voidedAdjustmentLedger = await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_ledger WHERE payroll_adjustment_line_id=$1",
+        [temporaryAdjustment.json().data.id]
+      );
+      assert.equal(voidedAdjustmentLedger.rows[0].count,0,"voided payroll adjustments must never post an employee-ledger entry");
       assert.ok(linkedAdjustments.rows.every((row:{line_type:string;credit_amount:string|null;debit_amount:string|null}) =>
         row.line_type==="BONUS" ? Number(row.credit_amount)===100 && Number(row.debit_amount??0)===0
                                 : Number(row.debit_amount)===100 && Number(row.credit_amount??0)===0),
@@ -1379,7 +1428,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
 
       // A cash payment must be reconciled against the exact custody OUT amount.
       const itemBPayment = await apiPool.query(
-        "SELECT id FROM payroll_payments WHERE payroll_item_id=$1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT id FROM payroll_payments WHERE payroll_item_id=$1 LIMIT 1",
         [itemB.rows[0].id]
       );
       assert.equal(itemBPayment.rowCount,1,"diagnostic cash payment must exist");

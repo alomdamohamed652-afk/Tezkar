@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { api } from "../lib/api";
+import { api, notifyApiSessionChanged } from "../lib/api";
+import { usePermissions } from "./session-provider";
+export { usePermissions } from "./session-provider";
 
-type Session={permissions:string[];username?:string;fullName?:string|null;employeeId?:string|null;roleCodes?:string[];activeRecords?:{custody?:boolean;advance?:boolean}};
 type NavItem={icon:string;label:string;href:string;permissions?:string[];conditional?:"custody"|"advance"};
 type NavGroup={label:string;items:NavItem[]};
 
@@ -52,14 +53,6 @@ const groups:NavGroup[]=[
  ]}
 ];
 
-export function usePermissions(){
- const [session,setSession]=useState<Session|null>(null);
- useEffect(()=>{api<{data:Session}>("/api/auth/me").then(r=>setSession(r.data)).catch(()=>setSession(null));},[]);
- const permissions=session?.permissions??null;
- const has=useCallback((code:string)=>permissions?.includes(code)??false,[permissions]);
- return {permissions,session,has};
-}
-
 type SidebarPreferences={collapsed:boolean;groups:Record<string,boolean>};
 const defaultSidebarPreferences:SidebarPreferences={collapsed:false,groups:{}};
 
@@ -105,24 +98,41 @@ export function Sidebar({active}:{active:string}){
  function toggleSidebar(){
   setSidebarPreferences(current=>({...current,collapsed:!current.collapsed}));
  }
+ const lastBadgeRefresh=useRef(0);
  useEffect(()=>{
   let alive=true;
-  if(permissions?.some(p=>p==="tasks.view"||p==="tasks.view_own")){
-   api<{data:{count:number}}>("/api/tasks/pending-count")
-    .then(r=>{if(alive)setPendingTaskCount(r.data.count)})
-    .catch(()=>{if(alive)setPendingTaskCount(0)});
-  }else setPendingTaskCount(0);
-  if(permissions?.includes("payment_requests.view")){
-   api<{data:{count:number}}>("/api/payment-requests/pending-count")
-    .then(r=>{if(alive)setPendingPaymentCount(r.data.count)})
-    .catch(()=>{if(alive)setPendingPaymentCount(0)});
-  }else setPendingPaymentCount(0);
-  if(permissions!==null){
+  const refreshCounts=()=>{
+   if(permissions===null){
+    setPendingTaskCount(0);setPendingPaymentCount(0);setUnreadNotificationCount(0);
+    return;
+   }
+   // Avoid repeated count queries when users switch focus between tabs rapidly.
+   if(Date.now()-lastBadgeRefresh.current<30_000)return;
+   lastBadgeRefresh.current=Date.now();
+   if(permissions.some(p=>p==="tasks.view"||p==="tasks.view_own")){
+    api<{data:{count:number}}>("/api/tasks/pending-count")
+     .then(r=>{if(alive)setPendingTaskCount(r.data.count)})
+     .catch(()=>{if(alive)setPendingTaskCount(0)});
+   }else setPendingTaskCount(0);
+   if(permissions.includes("payment_requests.view")){
+    api<{data:{count:number}}>("/api/payment-requests/pending-count")
+     .then(r=>{if(alive)setPendingPaymentCount(r.data.count)})
+     .catch(()=>{if(alive)setPendingPaymentCount(0)});
+   }else setPendingPaymentCount(0);
    api<{data:{count:number}}>("/api/notifications/unread-count")
     .then(r=>{if(alive)setUnreadNotificationCount(r.data.count)})
     .catch(()=>{if(alive)setUnreadNotificationCount(0)});
-  }else setUnreadNotificationCount(0);
-  return()=>{alive=false};
+  };
+  const handleVisibility=()=>{if(document.visibilityState==="visible")refreshCounts()};
+  lastBadgeRefresh.current=0;
+  refreshCounts();
+  window.addEventListener("focus",refreshCounts);
+  document.addEventListener("visibilitychange",handleVisibility);
+  return()=>{
+   alive=false;
+   window.removeEventListener("focus",refreshCounts);
+   document.removeEventListener("visibilitychange",handleVisibility);
+  };
  },[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null)return false;
@@ -132,7 +142,7 @@ export function Sidebar({active}:{active:string}){
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;
    return Boolean(session?.activeRecords?.[item.conditional]);
  })})).filter(group=>group.items.length),[permissions,session]);
- async function logout(){await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
+ async function logout(){notifyApiSessionChanged("logout");await api("/api/auth/logout",{method:"POST"}).catch(()=>{});window.location.replace("/login");}
  return <aside className={"sidebar"+(!isMobile&&sidebarPreferences.collapsed?" sidebar-collapsed":"")+(preferencesReady?" sidebar-ready":" sidebar-restoring")}>
    <div className="brand">
     <div className="brand-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>

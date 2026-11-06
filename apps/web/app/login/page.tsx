@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { API_BASE as API } from "../../lib/api-base";
+import { notifyApiSessionChanged } from "../../lib/api";
 
 function getDeviceId() {
   const key = "tezkar_device_id";
@@ -40,6 +41,7 @@ export default function LoginPage() {
       });
       const body=await res.json().catch(()=>null);
       if(!res.ok) throw new Error(body?.error?.message ?? "تعذر تسجيل الدخول");
+      notifyApiSessionChanged("login");
       if(body?.newDevice) window.dispatchEvent(new CustomEvent("tezkar:mutation-success",{detail:{title:"تم التعرف على جهاز جديد",message:"تم حفظ هذا الجهاز في سجل أمان حسابك."}}));
       router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : "/");
     } catch(err) {

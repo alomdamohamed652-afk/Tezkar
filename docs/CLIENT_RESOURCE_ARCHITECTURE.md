@@ -55,10 +55,10 @@ Continue to own authentication, authorization, business validation, transactions
 | Session, permissions, user identity | No long-lived cache | Clear on logout/session changes; revalidate through API |
 | Payroll, accounting, balances, custody, employee-private data | No persistent browser cache | Short/no cache unless endpoint-specific review proves safe |
 | Pending approvals, notifications, live production/stock | Short TTL or explicit refresh | Invalidate after related mutations |
-| Reference lists (products, stages, rates, shifts, machines) | Bounded in-memory cache | Longer TTL only where data is low-volatility; invalidate after edits |
+| Reference lists (products, stages, machine names, rate groups) | Bounded in-memory cache | Cache only reviewed low-volatility metadata; avoid dynamic employee counts and wage rates |
 | Large reports and tables | Server pagination/filtering first | Cache bounded pages, not unbounded full datasets |
 
-The initial implementation uses a 30-second in-memory TTL for a narrow reference-data allowlist, a 1.5-second default for other GETs, a 100-entry cap, and full GET-cache invalidation after successful mutations. This is a conservative first step, not the final policy. The allowlist must be verified against actual endpoint semantics before expanding it.
+The initial implementation uses a 30-second in-memory TTL only for a narrow reference-data allowlist, no response caching by default for every other GET endpoint, a 100-entry cap, and request deduplication for identical in-flight GETs (including non-cached endpoints). Authentication, payroll, accounting, finance, custody, advances, attendance, warehouse, production, notifications, tasks, payment requests, orders, deliveries, employees, earnings, reports, and all unreviewed endpoints bypass response caching. Query strings and request headers participate in cache keys. Cache generations prevent in-flight reads from repopulating the cache after invalidation. Login/account-switch/logout lifecycle signals clear the cache in the current tab and other tabs where BroadcastChannel is available; HTTP 401 also clears it. This is a conservative first step, not the final policy. The allowlist must be verified against actual endpoint semantics before expanding it.
 
 ## Performance rules
 
@@ -66,6 +66,8 @@ The initial implementation uses a 30-second in-memory TTL for a narrow reference
 - Perform local filtering only on bounded datasets already needed by the current view.
 - Never fetch hundreds of records only to display a count; use dedicated count endpoints.
 - Avoid polling when an event, manual refresh, or sensible stale interval is sufficient.
+- Sidebar badges use dedicated count endpoints; refresh on initial permission resolution and tab focus/visibility, throttled to one refresh per 30 seconds. Do not fetch full task/payment/notification lists to render counts.
+- Keep count queries permission-scoped: task counts honor all-vs-own assignment scope, payment-request counts honor worker employee scope, and notification counts are restricted to the authenticated user.
 - Avoid loading hidden tabs, unopened report sections, and below-the-fold heavy components.
 - Lazy-load large export/chart/report code only when requested.
 - Use Web Workers only when profiling justifies their startup and memory overhead.
@@ -116,7 +118,10 @@ The initial implementation uses a 30-second in-memory TTL for a narrow reference
 
 ## Current implementation status
 
-- PR #255 contains the first server-side request reductions: compact permission-scoped Sidebar count endpoints, a consolidated `/api/auth/me` read, throttled session activity writes, and attendance report indexing by employee plus Cairo-local date. Overnight shifts retain the next-day OUT-punch rule; regression coverage checks that the next shift's punches are not stolen.
-- PR #256 begins the browser-side layer with bounded, tab-local in-memory GET caching and a short reference-data TTL. Its stacked follow-up PR #257 tightens the allowlist to products, stages, shift rate-group names, and machine reference data; wage rates and shifts with dynamic employee counts are excluded.
-- Latest verified PR #255 head: `f4fe6eb5d0cc1722c4053df8463521c40eb9c191` (Install, Lint, Typecheck, Tests, Build all pass). The PR remains open and unmerged.
+- PR #255 contains compact permission-scoped Sidebar count endpoints, a consolidated `/api/auth/me` read, throttled session activity writes, and attendance report indexing by employee plus Cairo-local date. Overnight shifts retain the next-day OUT-punch rule, with regression coverage to protect the next shift's punches.
+- PR #256 begins the browser-side layer with bounded in-memory GET caching; PR #257 tightens it to a reviewed metadata allowlist, session-safe invalidation, and post-mutation cross-tab invalidation. Wage rates and shifts with dynamic employee counts are excluded from the final allowlist.
+- Sidebar task/payment/notification badges use count-only endpoints and a throttled focus refresh; existing task, payment-request, and notification indexes support the relevant count predicates.
+- PR #255 latest verified head is `f4fe6eb5d0cc1722c4053df8463521c40eb9c191`; Install, Lint, Typecheck, Tests, and Build all pass. PR #255 remains open and unmerged.
+- PR #258 adds a root-level in-memory session provider so route-level Sidebars reuse one session snapshot instead of independently calling `/api/auth/me`; it refreshes on session lifecycle events and at most every two minutes on focus/visibility. API authorization remains server-side, and session data is never written to browser storage. Session lifecycle logic is isolated in a small controller with regression tests for concurrent initial consumers, account switching, logout/401 during an in-flight request, stale request success/failure, and two-minute revalidation. CI on the updated PR head is pending.
+- Railway production read-only baseline (24 hours before these PRs are deployed): 2,637 API requests total; `/api/auth/me` accounted for 1,280 (48.5%). The old Sidebar list endpoints `/api/tasks`, `/api/payment-requests`, and `/api/notifications` accounted for 118, 121, and 119 requests respectively. New count endpoints had zero traffic because they are not deployed yet. These are request counts, not measured cost savings.
 - IndexedDB, Service Worker API caching, offline writes, and Web Workers are **not** implemented. They require separate profiling, threat review, and tests before adoption.

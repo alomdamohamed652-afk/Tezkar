@@ -1,47 +1,61 @@
 import { API_BASE } from "./api-base";
+import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, getApiCacheTtl } from "./api-cache.mjs";
 
 export const API_URL = API_BASE;
 
-// A tiny in-memory cache avoids refetching the same read-only data while navigating
-// between pages. Mutations invalidate it immediately; the HTTP cache stays disabled.
-const GET_CACHE_TTL_MS = 1_500;
-const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
-const MAX_GET_CACHE_ENTRIES = 100;
-const getCache = new Map<string, { expiresAt: number; value: unknown }>();
-const pendingGets = new Map<string, Promise<unknown>>();
+const getCache = createMemoryGetCache({ maxEntries: 100 });
+const pendingGets = createPendingGetRegistry();
 let cacheGeneration = 0;
 
-function getCacheTtl(path: string): number {
-  // Keep the default short for user-specific or frequently changing records.
-  // Only low-volatility reference lists receive a longer in-memory cache.
-  const pathname = path.split("?")[0];
-  const referenceDataPaths = new Set([
-    "/api/products",
-    "/api/stages",
-    "/api/rates",
-    "/api/shifts",
-    "/api/shifts/rate-groups",
-    "/api/machines"
-  ]);
-  return referenceDataPaths.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : GET_CACHE_TTL_MS;
-}
-
-function storeGetCache(key: string, value: unknown, ttlMs: number) {
-  // Bound memory usage on long-lived tabs. Refreshing an existing key moves it
-  // to the newest position so the oldest entries are evicted first.
-  getCache.delete(key);
-  while (getCache.size >= MAX_GET_CACHE_ENTRIES) {
-    const oldestKey = getCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    getCache.delete(oldestKey);
-  }
-  getCache.set(key, { value, expiresAt: Date.now() + ttlMs });
-}
-
-function invalidateGetCache() {
+export function clearApiCache(): void {
   cacheGeneration += 1;
   getCache.clear();
   pendingGets.clear();
+}
+
+// Broadcast lifecycle signals only; never include identity or session data.
+let sessionChannel: BroadcastChannel | null = null;
+
+function dispatchSessionChanged(action: "login" | "logout" | "changed"): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("tezkar:session-changed", { detail: { action } }));
+  }
+}
+
+function dispatchSessionExpired(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("tezkar:session-expired"));
+  }
+}
+
+if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+  try {
+    sessionChannel = new BroadcastChannel("tezkar-session-lifecycle");
+    sessionChannel.onmessage = event => {
+      if (event.data?.type === "session-changed") {
+        clearApiCache();
+        dispatchSessionChanged(event.data.action === "login" || event.data.action === "logout" ? event.data.action : "changed");
+      } else if (event.data?.type === "session-expired") {
+        clearApiCache();
+        dispatchSessionExpired();
+      } else if (event.data?.type === "cache-invalidated") {
+        clearApiCache();
+      }
+    };
+  } catch {
+    // Same-tab lifecycle handling remains available if cross-tab messaging is unavailable.
+    sessionChannel = null;
+  }
+}
+
+export function notifyApiSessionChanged(action: "login" | "logout" | "changed" = "changed"): void {
+  clearApiCache();
+  dispatchSessionChanged(action);
+  try {
+    sessionChannel?.postMessage({ type: "session-changed", action });
+  } catch {
+    // Same-tab notification is immediate; cross-tab notification is best-effort.
+  }
 }
 
 export class ApiError extends Error {
@@ -57,19 +71,19 @@ export async function api<T>(
 ): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase();
   const canCache = method === "GET";
-  const key = path;
-  const cacheTtlMs = getCacheTtl(path);
-  const now = Date.now();
+  const cacheTtlMs = canCache ? getApiCacheTtl(path) : 0;
+  const key = createGetCacheKey(path, options.headers, cacheGeneration);
 
   if (canCache) {
-    const cached = getCache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value as T;
-    if (cached) getCache.delete(key);
+    if (cacheTtlMs > 0) {
+      const cached = getCache.get(key);
+      if (cached !== undefined) return cached as T;
+    }
     const pending = pendingGets.get(key);
     if (pending) return pending as Promise<T>;
   } else {
-    // Any write may affect any page's totals or badges, so prefer correctness.
-    invalidateGetCache();
+    // A write can affect any view; invalidate before issuing it.
+    clearApiCache();
   }
 
   const requestGeneration = cacheGeneration;
@@ -87,8 +101,27 @@ export async function api<T>(
     const body = await response.json().catch(() => null);
 
     if (!response.ok) {
+      // A 401 means the browser's authentication context is no longer valid.
+      // Drop all cached reads immediately so they cannot survive session expiry.
+      if (response.status === 401) {
+        clearApiCache();
+        dispatchSessionExpired();
+        try { sessionChannel?.postMessage({ type: "session-expired" }); } catch {
+          // Cross-tab expiry notification is best-effort.
+        }
+      }
       const message = body?.error?.message ?? "حدث خطأ أثناء الاتصال بالنظام";
       throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
+    }
+
+    if (!canCache) {
+      // Invalidate again after success to cover reads that started while the write was in flight.
+      clearApiCache();
+      try {
+        sessionChannel?.postMessage({ type: "cache-invalidated" });
+      } catch {
+        // Cross-tab invalidation is best-effort; same-tab invalidation is immediate.
+      }
     }
 
     if (!canCache && typeof window !== "undefined") {
@@ -108,6 +141,7 @@ export async function api<T>(
       else if (cleanPath === "/api/employees" && method === "POST") { title = "تمت إضافة الموظف"; message = "تم حفظ بيانات الموظف بنجاح."; }
       else if (cleanPath.includes("/production/scrap") && method === "POST") { title = "تم تسجيل الهالك"; message = "تم حفظ سجل الهالك بنجاح."; }
       else if (cleanPath.includes("/accounting/expenses") && method === "POST") { title = "تم تسجيل المصروف"; message = "تم حفظ المصروف وربطه بالقيد المحدد."; }
+      else if (cleanPath.includes("/api/payroll/items/") && cleanPath.includes("/adjustments/") && method === "DELETE") { title = "تم إلغاء بند المرتب"; message = "تم الاحتفاظ بالبند وسبب الإلغاء في سجل المراجعة."; }
       else if (cleanPath === "/api/tasks" && method === "POST") { title = "تمت إضافة المهمة"; message = "تم حفظ المهمة بنجاح."; }
       else if (cleanPath === "/api/custody" && method === "POST") { title = "تم تسجيل حركة العهدة"; message = "تم حفظ حركة العهدة بنجاح."; }
       else if (method === "POST") { title = "تمت الإضافة بنجاح"; message = "تم تنفيذ الإضافة المطلوبة."; }
@@ -117,8 +151,8 @@ export async function api<T>(
       window.dispatchEvent(new CustomEvent("tezkar:mutation-success", { detail: { title, message } }));
     }
 
-    if (canCache && requestGeneration === cacheGeneration) {
-      storeGetCache(key, body, cacheTtlMs);
+    if (canCache && cacheTtlMs > 0 && requestGeneration === cacheGeneration) {
+      getCache.set(key, body, cacheTtlMs);
     }
     return body as T;
   })();
