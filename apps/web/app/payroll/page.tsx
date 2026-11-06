@@ -23,7 +23,7 @@ const money=(v:string|number)=>formatMoney(v);
 const monthNow=()=>new Date().toISOString().slice(0,7);
 const today=()=>new Date().toISOString().slice(0,10);
 const periodStatus:Record<string,string>={DRAFT:"مسودة",APPROVED:"معتمد",CLOSED:"مغلق"};
-const itemStatus:Record<string,string>={UNPAID:"لم يُصرف",PARTIAL:"صرف جزئي",PAID:"مدفوع بالكامل"};
+const itemStatus:Record<string,string>={UNPAID:"لم يُصرف",PARTIAL:"صرف جزئي",PAID:"مدفوع بالكامل",REVERSED:"تم عكس التسوية"};
 export default function PayrollPage(){
  const {has,permissions}=usePermissions();
  const [employees,setEmployees]=useState<Employee[]>([]),[payroll,setPayroll]=useState<PayrollData>({period:null,items:[],totals:{employees:0,net:0,paid:0,remaining:0}});
