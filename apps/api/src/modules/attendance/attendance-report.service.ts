@@ -79,7 +79,7 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      const ordered=[...assigned].sort((a,b)=>new Date(a.effectivePunchAt).getTime()-new Date(b.effectivePunchAt).getTime()).map(p=>({...p,punch_at:p.effectivePunchAt,status:p.corrected_status??p.status}));
      const selectedEvents=selectAttendanceDayEvents(ordered);
      const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
-     let inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
+     const inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
      const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
      const expectedEnd=end===null?null:(overnight?end+1440:end);
      const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
