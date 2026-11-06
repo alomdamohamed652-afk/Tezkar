@@ -526,7 +526,10 @@ export async function paymentsRoutes(app:FastifyInstance){
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               JOIN production_entries p ON p.id=a.production_entry_id
               LEFT JOIN order_stages os ON os.id=p.order_stage_id
-              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
+              WHERE wp.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s
+                  JOIN employee_earnings_settlement_allocations sa ON sa.settlement_id=s.id
+                  WHERE s.worker_payment_id=wp.id)),0)
             + COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
               JOIN employee_earnings_settlements s ON s.id=a.settlement_id
               JOIN production_entries p ON p.id=a.production_entry_id
@@ -748,8 +751,13 @@ export async function paymentsRoutes(app:FastifyInstance){
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
         const productionRows=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining
+            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                WHERE a.production_entry_id=p.id
+                  AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s
+                    JOIN employee_earnings_settlement_allocations sa ON sa.settlement_id=s.id
+                    WHERE s.worker_payment_id=a.worker_payment_id)),0)
+            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+                WHERE a.production_entry_id=p.id),0),0) AS remaining
             FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
