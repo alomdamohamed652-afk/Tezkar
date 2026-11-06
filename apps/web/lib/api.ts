@@ -15,32 +15,28 @@ export function clearApiCache(): void {
 
 // Call after a successful login/account switch and before logout navigation.
 // Broadcast only a lifecycle signal; never put identity or session data in it.
-export function notifyApiSessionChanged(): void {
-  clearApiCache();
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new Event("tezkar:session-changed"));
+let sessionChannel: BroadcastChannel | null = null;
+
+if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
   try {
-    if (typeof BroadcastChannel !== "undefined") {
-      const channel = new BroadcastChannel("tezkar-session-lifecycle");
-      channel.postMessage({ type: "session-changed" });
-      channel.close();
-    }
+    sessionChannel = new BroadcastChannel("tezkar-session-lifecycle");
+    sessionChannel.onmessage = event => {
+      if (event.data?.type === "session-changed") clearApiCache();
+    };
   } catch {
-    // Cross-tab notification is best-effort; same-tab cache clearing is immediate.
+    // Same-tab cache clearing remains available if cross-tab messaging is unavailable.
+    sessionChannel = null;
   }
 }
 
-if (typeof window !== "undefined") {
-  window.addEventListener("tezkar:session-changed", clearApiCache);
+// Call after a successful login/account switch and before logout navigation.
+// Broadcast only a lifecycle signal; never put identity or session data in it.
+export function notifyApiSessionChanged(): void {
+  clearApiCache();
   try {
-    if (typeof BroadcastChannel !== "undefined") {
-      const channel = new BroadcastChannel("tezkar-session-lifecycle");
-      channel.onmessage = event => {
-        if (event.data?.type === "session-changed") clearApiCache();
-      };
-    }
+    sessionChannel?.postMessage({ type: "session-changed" });
   } catch {
-    // Browsers without BroadcastChannel still get same-tab lifecycle protection.
+    // Same-tab cache clearing is immediate; cross-tab notification is best-effort.
   }
 }
 
