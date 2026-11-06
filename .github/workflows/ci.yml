@@ -36,6 +36,8 @@ jobs:
         run: corepack prepare pnpm@10.34.6 --activate
       - name: Install
         run: pnpm install --no-frozen-lockfile
+      - name: Lint
+        run: pnpm lint
       - name: Typecheck
         run: pnpm typecheck
       - name: Tests
