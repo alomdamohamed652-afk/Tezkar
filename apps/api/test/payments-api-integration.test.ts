@@ -1004,6 +1004,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.equal(Number(bonusAllocation.rows[0].amount),130,
         "only the production portion must be allocated to the canonical settlement allocation ledger");
+      // Legacy reconciliation can leave a duplicate order-allocation row for the
+      // same payment. Settlement allocations are canonical and must take precedence.
+      await apiPool.query(
+        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,130) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
+        [bonusAwarePayout.json().data.payment.id,bonusProduction.id]
+      );
+      const productionHistoryAfterDuplicate=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${bonusWorkerEmployee.id}&status=APPROVED&limit=200`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionHistoryAfterDuplicate.statusCode,200,productionHistoryAfterDuplicate.body);
+      const canonicalProductionRow=productionHistoryAfterDuplicate.json().data.find((row:any)=>row.id===bonusProduction.id);
+      assert.ok(canonicalProductionRow,"production history must retain the settled production row");
+      assert.equal(Number(canonicalProductionRow.paid_amount),130,
+        "duplicate order allocation must not be added to the canonical settlement allocation");
+      assert.equal(Number(canonicalProductionRow.remaining_amount),0,
+        "duplicate allocation rows must not create a negative or remaining production balance");
+      assert.equal(canonicalProductionRow.payment_status,"PAID",
+        "the production row must remain paid when both allocation tables contain the same payment");
       const queueAfterAdjustmentPayout=await app.inject({
         method:"GET",url:"/api/worker-payments/historical-unallocated",headers:{cookie:managerCookie}
       });
