@@ -849,6 +849,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         missingPayrollExpenses:0,
         missingAdjustmentLedgerEntries:0,
         zeroNetPayrollSettlementMismatches:0,
+        advanceRepaymentLedgerMismatches:0,
         cashPaymentsMissingCustodyOut:0,
         payrollPaymentMismatches:0,
         advanceDeductionMismatches:0,
@@ -1131,6 +1132,24 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(marchReconciliation.statusCode,200,marchReconciliation.body);
       assert.equal(marchReconciliation.json().data.counts.zeroNetPayrollSettlementMismatches,0,
         "a correctly posted zero-net non-cash settlement must pass accounting reconciliation");
+      assert.equal(marchReconciliation.json().data.counts.advanceRepaymentLedgerMismatches,0,
+        "every advance repayment must have an exact employee-ledger credit");
+      const zeroNetRepaymentLedger=await apiPool.query(
+        `SELECT el.id,el.credit_amount FROM advance_repayments ar
+         JOIN employee_earnings_ledger el ON el.advance_repayment_id=ar.id
+         WHERE ar.source_payroll_item_id=$1 AND ar.advance_id=$2`,
+        [marchItem.id,zeroNetAdvance.rows[0].id]
+      );
+      assert.equal(zeroNetRepaymentLedger.rowCount,1);
+      await apiPool.query("UPDATE employee_earnings_ledger SET credit_amount=credit_amount+1 WHERE id=$1",[zeroNetRepaymentLedger.rows[0].id]);
+      const corruptedRepaymentLedger=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
+      assert.equal(corruptedRepaymentLedger.statusCode,200,corruptedRepaymentLedger.body);
+      assert.equal(corruptedRepaymentLedger.json().data.counts.advanceRepaymentLedgerMismatches,1,
+        "reconciliation must catch an incorrect advance repayment credit amount");
+      await apiPool.query("UPDATE employee_earnings_ledger SET credit_amount=$2 WHERE id=$1",
+        [zeroNetRepaymentLedger.rows[0].id,zeroNetRepaymentLedger.rows[0].credit_amount]);
+      const restoredRepaymentLedger=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
+      assert.equal(restoredRepaymentLedger.json().data.counts.advanceRepaymentLedgerMismatches,0);
 
       const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
       await apiPool.query(
