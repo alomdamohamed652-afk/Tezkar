@@ -41,7 +41,7 @@ export default function LoginPage() {
       });
       const body=await res.json().catch(()=>null);
       if(!res.ok) throw new Error(body?.error?.message ?? "تعذر تسجيل الدخول");
-      notifyApiSessionChanged();
+      notifyApiSessionChanged("login");
       if(body?.newDevice) window.dispatchEvent(new CustomEvent("tezkar:mutation-success",{detail:{title:"تم التعرف على جهاز جديد",message:"تم حفظ هذا الجهاز في سجل أمان حسابك."}}));
       router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : "/");
     } catch(err) {
