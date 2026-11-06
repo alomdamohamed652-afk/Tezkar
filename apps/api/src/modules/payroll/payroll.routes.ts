@@ -49,8 +49,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         ORDER BY effective_from DESC,created_at DESC LIMIT 24`,[employeeId]),
       pool.query(`SELECT i.id,i.employee_id,p.period_month,p.status AS period_status,i.base_salary,i.bonus_amount,i.deduction_amount,
           i.advance_repayment_amount,i.net_amount,i.status,i.notes,
-          COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0) AS paid_amount,
-          GREATEST(i.net_amount-COALESCE((SELECT SUM(pp.amount) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0),0) AS remaining_amount,
+          COALESCE((SELECT SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0) AS paid_amount,
+          GREATEST(i.net_amount-COALESCE((SELECT SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0),0) AS remaining_amount,
           COALESCE((SELECT json_agg(json_build_object(
             'id',pp.id,'amount',pp.amount,'payment_date',pp.payment_date,'payment_method',pp.payment_method,
             'reference',pp.reference,'notes',pp.notes
@@ -249,7 +249,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         const advances = await client.query(
           `SELECT a.*,
                   GREATEST(a.amount
-                    -COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0)
+                    -COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0)
                     -COALESCE((SELECT SUM(d.amount)
                                  FROM payroll_advance_deductions d
                                  JOIN payroll_items ri ON ri.id=d.payroll_item_id
@@ -537,7 +537,7 @@ export async function payrollRoutes(app: FastifyInstance) {
             }
             if(deduction.repayment_status!=="OPEN")
               throw new AppError("ADVANCE_NOT_OPEN","إحدى السلف المحجوزة في المسير لم تعد مفتوحة؛ راجع الحسابات.",409);
-            const repaid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
+            const repaid=await client.query("SELECT COALESCE(SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)),0) AS amount FROM advance_repayments ar WHERE ar.advance_id=$1",[deduction.advance_id]);
             const balance=Number(deduction.advance_amount)-Number(repaid.rows[0].amount);
             if(Number(deduction.amount)>balance+0.0001)
               throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد إحدى السلف؛ أعد مراجعة المسير قبل الاعتماد.",409);
@@ -656,7 +656,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         const saved=prior.rows[0];
         if(saved.payroll_item_id!==id||saved.idempotency_fingerprint!==fingerprint)
           throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم مع بيانات صرف راتب مختلفة",409);
-        const paid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM payroll_payments WHERE payroll_item_id=$1",[id]);
+        const paid=await client.query("SELECT COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0) AS amount FROM payroll_payments pp WHERE pp.payroll_item_id=$1",[id]);
         const paidAmount=Number(paid.rows[0].amount);
         const payment={id:saved.id,payroll_item_id:saved.payroll_item_id,amount:saved.amount,payment_date:saved.payment_date,payment_method:saved.payment_method,reference:saved.reference,notes:saved.notes,paid_by:saved.paid_by,created_at:saved.created_at};
         const netAmount=Number(saved.net_amount);
@@ -667,7 +667,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const item = await client.query("SELECT i.*,p.status AS period_status FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
       if (!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
       if (item.rows[0].period_status !== "APPROVED" && item.rows[0].period_status !== "CLOSED") throw new AppError("PAYROLL_NOT_APPROVED", "يجب اعتماد مسير الرواتب قبل الصرف", 409);
-      const paid = await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM payroll_payments WHERE payroll_item_id=$1", [id]);
+      const paid = await client.query("SELECT COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0) AS amount FROM payroll_payments pp WHERE pp.payroll_item_id=$1", [id]);
       const remaining = Number(item.rows[0].net_amount)-Number(paid.rows[0].amount);
       if (parsed.data.amount > remaining + 0.0001) throw new AppError("PAYROLL_OVERPAYMENT", "مبلغ الصرف أكبر من الراتب المتبقي", 409);
       const newPaid = Number(paid.rows[0].amount)+parsed.data.amount;
@@ -684,7 +684,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         const prior=await client.query("SELECT id FROM advance_repayments WHERE source_payroll_item_id=$1 AND advance_id=$2",[id,deduction.advance_id]);
         if(prior.rowCount)continue;
         if(deduction.repayment_status!=="OPEN")throw new AppError("ADVANCE_NOT_OPEN","السلفة المرتبطة بالراتب لم تعد مفتوحة؛ راجع المسير قبل الصرف",409);
-        const repaid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[deduction.advance_id]);
+        const repaid=await client.query("SELECT COALESCE(SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)),0) AS amount FROM advance_repayments ar WHERE ar.advance_id=$1",[deduction.advance_id]);
         const remaining=Number(deduction.advance_amount)-Number(repaid.rows[0].amount);
         if(Number(deduction.amount)>remaining+0.0001)throw new AppError("ADVANCE_BALANCE_CHANGED","تغير رصيد السلفة؛ أعد مراجعة مسير الرواتب قبل الصرف",409);
         const repayment=await client.query(
@@ -717,6 +717,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if(parsed.data.paymentMethod==="CASH" && !fromCustody && settlementSource!=="PREVIOUS_CUSTODY")throw new AppError("CASH_CUSTODY_REQUIRED","الصرف النقدي يجب أن يكون مرتبطًا بعهدة موظف محددة أو مسجلًا كتسوية من عهدة سابقة",422);
       const payment = await client.query("INSERT INTO payroll_payments(payroll_item_id,amount,payment_date,payment_method,settlement_source,reference,notes,paid_by,idempotency_key,idempotency_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,payroll_item_id,amount,payment_date,payment_method,settlement_source,reference,notes,paid_by,created_at",
         [id,parsed.data.amount,paymentDate,parsed.data.paymentMethod??null,settlementSource,parsed.data.reference??null,parsed.data.notes??null,request.user!.userId,parsed.data.idempotencyKey,fingerprint]);
+      if(committedAdvanceRepayment>0)await client.query("UPDATE advance_repayments SET source_payroll_payment_id=$1 WHERE source_payroll_item_id=$2 AND source_payroll_payment_id IS NULL",[payment.rows[0].id,id]);
       let custodyIn=null;
       if(fromCustody && committedAdvanceRepayment>0)custodyIn=await client.query(
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by) VALUES($1,'IN',$2,$3::date,$4,$5,'PAYROLL_ADVANCE_REPAYMENT_OFFSET',$6,$7) RETURNING id",
