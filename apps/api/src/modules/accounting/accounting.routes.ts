@@ -58,7 +58,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  const reconciliationHandler = async () => {
   // Read-only checks: findings are never repaired automatically and no balance is changed.
-  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch] = await Promise.all([
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.advance_repayment_amount,
@@ -228,6 +228,33 @@ export async function accountingRoutes(app:FastifyInstance){
             OR movements.holder_id IS DISTINCT FROM creator.employee_id::text
             OR ROUND(movements.movement_amount::numeric,2)<>ROUND(ar.amount::numeric,2))
      ORDER BY ar.payment_date DESC,emp.full_name`)
+   pool.query(`
+    SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
+           i.base_salary,i.bonus_amount,i.deduction_amount,i.advance_repayment_amount,
+           (i.base_salary+i.bonus_amount-i.deduction_amount) AS expected_offset,
+           offset_entry.id AS ledger_entry_id,offset_entry.employee_id AS ledger_employee_id,
+           offset_entry.debit_amount,offset_entry.credit_amount,
+           COALESCE(repayments.amount,0) AS committed_repayments
+      FROM payroll_items i
+      JOIN payroll_periods p ON p.id=i.period_id
+      JOIN employees emp ON emp.id=i.employee_id
+      LEFT JOIN employee_earnings_ledger offset_entry
+        ON offset_entry.payroll_advance_offset_item_id=i.id
+      LEFT JOIN LATERAL (
+        SELECT SUM(ar.amount) AS amount
+          FROM advance_repayments ar
+         WHERE ar.source_payroll_item_id=i.id
+      ) repayments ON TRUE
+     WHERE p.status IN ('APPROVED','CLOSED')
+       AND i.status='PAID' AND i.net_amount<=0.01 AND i.advance_repayment_amount>0.01
+       AND (
+         ROUND(COALESCE(repayments.amount,0)::numeric,2)<>ROUND(i.advance_repayment_amount::numeric,2)
+         OR offset_entry.id IS NULL
+         OR offset_entry.employee_id IS DISTINCT FROM i.employee_id
+         OR ROUND(offset_entry.debit_amount::numeric,2)<>ROUND((i.base_salary+i.bonus_amount-i.deduction_amount)::numeric,2)
+         OR offset_entry.credit_amount<>0
+       )
+     ORDER BY p.period_month,emp.full_name`)
   ]);
   return {
    checkedAt:new Date().toISOString(),
@@ -239,7 +266,8 @@ export async function accountingRoutes(app:FastifyInstance){
     advanceDeductionMismatches:advanceDeductionMismatch.rows.length,
     paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows.length,
     expensesMissingCustodyLink:expenseCustodyMismatch.rows.length,
-    advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows.length
+    advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows.length,
+    zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows.length
    },
    issues:{
     missingPayrollExpenses:missingExpenses.rows,
@@ -249,7 +277,8 @@ export async function accountingRoutes(app:FastifyInstance){
     advanceDeductionMismatches:advanceDeductionMismatch.rows,
     paidPayrollMissingAdvanceRepayments:missingAdvanceRepayments.rows,
     expensesMissingCustodyLink:expenseCustodyMismatch.rows,
-    advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows
+    advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows,
+    zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows
    }
   };
  };
