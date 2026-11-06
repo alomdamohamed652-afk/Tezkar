@@ -749,13 +749,28 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         payload: { lineType: "DEDUCTION", description: "Temporary API test deduction", amount: 10 }
       });
       assert.equal(temporaryAdjustment.statusCode, 201, temporaryAdjustment.body);
-      const deleteTemporaryAdjustment = await app.inject({
+      const missingVoidReason = await app.inject({
         method: "DELETE",
         url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
         headers: { cookie: cookieHeader }
       });
+      assert.equal(missingVoidReason.statusCode, 422, missingVoidReason.body);
+      const deleteTemporaryAdjustment = await app.inject({
+        method: "DELETE",
+        url: `/api/payroll/items/${itemA.rows[0].id}/adjustments/${temporaryAdjustment.json().data.id}`,
+        headers: { cookie: cookieHeader },
+        payload: { reason: "تم إدخال الخصم بالخطأ أثناء الاختبار" }
+      });
       assert.equal(deleteTemporaryAdjustment.statusCode, 200, deleteTemporaryAdjustment.body);
-      assert.equal(deleteTemporaryAdjustment.json().data.deleted, true);
+      assert.equal(deleteTemporaryAdjustment.json().data.voided, true);
+      const voidedRow = await apiPool.query(
+        "SELECT status,void_reason,voided_by,voided_at FROM payroll_adjustment_lines WHERE id=$1",
+        [temporaryAdjustment.json().data.id]
+      );
+      assert.equal(voidedRow.rows[0].status, "VOIDED");
+      assert.equal(voidedRow.rows[0].void_reason, "تم إدخال الخصم بالخطأ أثناء الاختبار");
+      assert.equal(voidedRow.rows[0].voided_by, userId);
+      assert.ok(voidedRow.rows[0].voided_at);
       const afterAdjustmentCrud = await apiPool.query(
         "SELECT bonus_amount,deduction_amount FROM payroll_items WHERE id=$1", [itemA.rows[0].id]
       );
