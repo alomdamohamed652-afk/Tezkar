@@ -56,7 +56,7 @@ export async function accountingRoutes(app:FastifyInstance){
  const reversalSchema=z.object({
   sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT"]),
   sourceId:z.string().uuid(),
-  amount:z.number().positive().max(100000000),
+  amount:z.number().positive().max(100000000).refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   reason:z.string().trim().min(2).max(500),
   idempotencyKey:z.string().uuid()
  });
@@ -79,7 +79,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const ledgerMoves:Array<{employeeId:string;credit:number;debit:number;notes:string}>=[];
    const custodyMoves:Array<{employeeId:string;direction:"IN"|"OUT";amount:number;description:string}>=[];
    let payrollItemId:string|null=null;
-   let advanceId:string|null=null;
+   const advanceIds=new Set<string>();
    if(input.sourceType==="PAYROLL_PAYMENT"){
     const q=await client.query(`SELECT pp.*,i.employee_id,i.net_amount,p.status AS period_status
       FROM payroll_payments pp JOIN payroll_items i ON i.id=pp.payroll_item_id
@@ -104,7 +104,7 @@ export async function accountingRoutes(app:FastifyInstance){
     for(const ar of linked.rows){
      const rev=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[ar.id]);
      const amount=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
-     if(amount>0.0001){lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount});advanceId=ar.advance_id;}
+     if(amount>0.0001){lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount});advanceIds.add(ar.advance_id);}
     }
     const ledger=await client.query("SELECT employee_id FROM employee_earnings_ledger WHERE payroll_payment_id=$1 FOR UPDATE",[input.sourceId]);
     if(!ledger.rowCount)throw new AppError("REVERSAL_LEDGER_MISSING","قيد دفتر الموظف الأصلي غير موجود؛ أوقفنا العكس لحماية الأرصدة",409);
@@ -123,7 +123,7 @@ export async function accountingRoutes(app:FastifyInstance){
     if(!q.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","عملية سداد السلفة الأصلية غير موجودة",404);
     const ar=q.rows[0];
     if(ar.source_payroll_item_id||ar.source_payroll_payment_id)throw new AppError("PAYROLL_REPAYMENT_REQUIRES_PAYMENT_REVERSAL","قسط السلفة المسدد من الراتب يُعكس بعكس دفعة الراتب المرتبطة به",409);
-    advanceId=ar.advance_id;
+    advanceIds.add(ar.advance_id);
     const prior=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[input.sourceId]);
     if(input.amount>Number(ar.amount)-Number(prior.rows[0].amount)+0.0001)throw new AppError("REVERSAL_EXCEEDS_REMAINING","مبلغ العكس أكبر من المتبقي من عملية السداد",409);
     const ledger=await client.query("SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE advance_repayment_id=$1 FOR UPDATE",[input.sourceId]);
@@ -141,7 +141,7 @@ export async function accountingRoutes(app:FastifyInstance){
      VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code]);
    for(const move of custodyMoves)await client.query(`INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by)
      VALUES($1,$2,$3,$4,$5,$6,'FINANCIAL_REVERSAL',$7,$8)`,[move.employeeId,move.direction,move.amount,reversalDate,move.description,"سبب العكس: "+input.reason,header.rows[0].id,request.user!.userId]);
-   if(advanceId)await client.query(`UPDATE advance_requests a SET repayment_status=CASE WHEN a.amount<=COALESCE((
+   for(const advanceId of advanceIds)await client.query(`UPDATE advance_requests a SET repayment_status=CASE WHEN a.amount<=COALESCE((
      SELECT SUM(ar.amount)-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)
      FROM advance_repayments ar WHERE ar.advance_id=a.id),0)+0.0001 THEN 'SETTLED' ELSE 'OPEN' END,updated_at=now() WHERE a.id=$1`,[advanceId]);
    if(payrollItemId){
