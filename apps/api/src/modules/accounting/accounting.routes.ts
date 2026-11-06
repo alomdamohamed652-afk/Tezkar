@@ -91,7 +91,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const prior=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='PAYROLL_PAYMENT' AND source_id=$1",[input.sourceId]);
     const remaining=Number(payment.amount)-Number(prior.rows[0].amount);
     if(input.amount>remaining+0.0001)throw new AppError("REVERSAL_EXCEEDS_REMAINING","مبلغ العكس أكبر من المتبقي من الحركة الأصلية",409);
-    const linked=await client.query(`SELECT ar.id,ar.advance_id,ar.amount,a.employee_id
+    const linked=await client.query(`SELECT ar.id,ar.advance_id,ar.amount,a.employee_id,a.code
       FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
       WHERE ar.source_payroll_payment_id=$1 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId]);
     let linkedAmount=0;
@@ -125,7 +125,13 @@ export async function accountingRoutes(app:FastifyInstance){
     for(const ar of linked.rows){
      const rev=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[ar.id]);
      const amount=Math.max(0,Number(ar.amount)-Number(rev.rows[0].amount));
-     if(amount>0.0001){lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount});advanceIds.add(ar.advance_id);}
+     if(amount>0.0001){
+      lines.push({source_type:"ADVANCE_REPAYMENT",source_id:ar.id,amount});
+      advanceIds.add(ar.advance_id);
+      // Keep the repayment's employee-ledger reversal separate from the payroll
+      // payment reversal: the original repayment posted its own credit entry.
+      ledgerMoves.push({employeeId:ar.employee_id,credit:0,debit:amount,notes:"عكس سداد سلفة "+ar.code+" / "+ar.id});
+     }
     }
     const ledger=await client.query("SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE payroll_payment_id=$1 FOR UPDATE",[input.sourceId]);
     if(!ledger.rowCount)throw new AppError("REVERSAL_LEDGER_MISSING","قيد دفتر الموظف الأصلي غير موجود؛ أوقفنا العكس لحماية الأرصدة",409);
