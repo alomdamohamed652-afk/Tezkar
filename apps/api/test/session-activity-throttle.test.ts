@@ -39,7 +39,7 @@ test("session authentication does not write last_seen_at on every request", asyn
 
 test("session activity is touched after the one-minute activity window", async () => {
   const client = fakeClient(new Date(Date.now() - 120_000));
-  const user = await getSessionUser(client, "opaque-session-token");
+  const user = await getSessionUser(client.client, "opaque-session-token");
 
   assert.equal(user?.userId, "user-1");
   assert.equal(client.calls.length, 2);
