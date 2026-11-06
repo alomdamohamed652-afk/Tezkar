@@ -847,7 +847,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const id=(request.params as {id:string}).id;
   return {data:await withTransaction(async client=>{
    const period=await client.query("SELECT * FROM accounting_periods WHERE id=$1 FOR UPDATE",[id]);
-   if(!period.rowCount)throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
+   if(!period.rows[0])throw new AppError("ACCOUNTING_PERIOD_NOT_FOUND","الفترة المالية غير موجودة",404);
    if(period.rows[0].status!=="UNDER_REVIEW")throw new AppError("ACCOUNTING_PERIOD_STATE_INVALID","الفترة ليست قيد المراجعة",409);
    const r=await client.query("UPDATE accounting_periods SET status='READY_FOR_APPROVAL',reviewed_by=$2,reviewed_at=now() WHERE id=$1 RETURNING *",[id,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"accounting_review_approved",module:"finance",entityType:"accounting_period",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
