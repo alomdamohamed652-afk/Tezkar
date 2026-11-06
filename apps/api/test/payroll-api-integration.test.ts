@@ -1288,6 +1288,9 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(reservedManualRepayment.statusCode,409,reservedManualRepayment.body);
       assert.equal(reservedManualRepayment.json().error.code,"ADVANCE_INSTALLMENT_RESERVED",
         "manual collection must not consume an installment already reserved by an approved unpaid payroll item");
+      // Deliberately corrupt the diagnostic item into a paid state without committing
+      // its reserved installment, so reconciliation must report the missing repayment.
+      await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=10,status='PAID' WHERE id=$1",[reservationItem.rows[0].id]);
       await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=411 WHERE id=$1",[februaryItem.id]);
       await apiPool.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[itemB.rows[0].id]);
       const diagnosticExpense = await apiPool.query(
