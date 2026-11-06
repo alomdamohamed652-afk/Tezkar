@@ -246,6 +246,30 @@ export async function advanceRoutes(app:FastifyInstance){
       await assertAccountingPeriodOpen(client,paymentDate);
       if(advance.rows[0].status!=="PAID")throw new AppError("INVALID_STATUS","لا يمكن تسجيل السداد قبل صرف السلفة",409);
       if(advance.rows[0].repayment_status==="SETTLED")throw new AppError("ADVANCE_SETTLED","السلفة مسددة بالكامل",409);
+      // Approved payroll deductions reserve this installment until the payroll item is fully settled.
+      // A manual receipt here would reduce the advance balance and make the later payroll payment
+      // fail (or, worse, allow the same installment to be collected twice).
+      const reserved=await client.query(
+        `SELECT p.period_month,i.id AS payroll_item_id
+           FROM payroll_advance_deductions d
+           JOIN payroll_items i ON i.id=d.payroll_item_id
+           JOIN payroll_periods p ON p.id=i.period_id
+          WHERE d.advance_id=$1
+            AND p.status IN ('APPROVED','CLOSED')
+            AND i.status<>'PAID'
+            AND NOT EXISTS(
+              SELECT 1 FROM advance_repayments ar
+               WHERE ar.advance_id=d.advance_id AND ar.source_payroll_item_id=i.id
+            )
+          ORDER BY p.period_month DESC
+          LIMIT 1`,
+        [id]
+      );
+      if(reserved.rowCount)throw new AppError(
+        "ADVANCE_INSTALLMENT_RESERVED",
+        "هذا القسط محجوز في مسير راتب معتمد؛ لا يمكن تحصيله يدويًا قبل تسوية المسير أو إلغاء الحجز منه.",
+        409
+      );
       const paid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[id]);
       const remaining=Number(advance.rows[0].amount)-Number(paid.rows[0].amount||0);
       if(p.data.amount>remaining+1e-9)throw new AppError("REPAYMENT_EXCEEDS_BALANCE","مبلغ السداد أكبر من المتبقي",409);
