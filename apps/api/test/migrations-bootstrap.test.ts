@@ -60,8 +60,10 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
         `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
           WHERE conrelid='public.attendance_permission_requests'::regclass AND contype='c'`
       );
-      assert.ok(approvedTypeConstraint.rows.some((row:{definition:string})=>/permission_type IS NOT NULL/.test(row.definition)),
-        "an approved permission must always have an explicit paid/unpaid classification");
+      assert.ok(approvedTypeConstraint.rows.some((row:{definition:string})=>
+        /status = 'APPROVED'.*permission_type IS NOT NULL/.test(row.definition)
+        && /status <> 'APPROVED'.*permission_type IS NULL/.test(row.definition)
+      ), "only approved permissions may carry a paid/unpaid classification; pending, rejected and cancelled requests must remain unclassified");
       const requiredPermissions = [
         "employees.lookup", "orders.view", "products.view", "shifts.view", "rates.view",
         "machines.view", "machine_production.view", "machine_production.create",
