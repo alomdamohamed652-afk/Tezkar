@@ -379,7 +379,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
       const daysInMonth=monthEndDate.getUTCDate();
-      const salaryItems = await client.query("SELECT id,employee_id FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
+      const salaryItems = await client.query("SELECT id,employee_id,base_salary,bonus_amount,advance_repayment_amount FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",[id]);
       // Rebuild the full month from persisted punches, schedules, corrections, overrides and approved permissions.
       // Never accept client-supplied minutes as a source of payroll truth.
       const attendanceReport=await buildAttendanceReport(client,monthStart,monthEnd,true);
@@ -399,31 +399,62 @@ export async function payrollRoutes(app: FastifyInstance) {
       const expectedKeys=new Set<string>();
       for(const item of salaryItems.rows)for(let day=1;day<=daysInMonth;day++)expectedKeys.add(item.employee_id+"|"+monthLabel+"-"+String(day).padStart(2,"0"));
       const suppliedKeys=new Set<string>();
+      const daysByEmployee=new Map<string,typeof snapshot>();
       for(const row of snapshot){
         const key=row.employeeId+"|"+row.date;
         if(row.date<monthStart||row.date>monthEnd||!expectedKeys.has(key)||suppliedKeys.has(key))
           throw new AppError("ATTENDANCE_SNAPSHOT_INVALID","تعذر تكوين سجل حضور كامل من قاعدة البيانات؛ راجع الموظفين وتواريخ المسير.",409);
         suppliedKeys.add(key);
+        const employeeDays=daysByEmployee.get(row.employeeId);
+        if(employeeDays)employeeDays.push(row);
+        else daysByEmployee.set(row.employeeId,[row]);
       }
       if(suppliedKeys.size!==expectedKeys.size)
         throw new AppError("ATTENDANCE_SNAPSHOT_INCOMPLETE","سجل الحضور المحسوب من قاعدة البيانات غير مكتمل لكل موظفي المسير وأيام الشهر.",409);
-      for(const row of snapshot){
-        const item=salaryItems.rows.find(x=>x.employee_id===row.employeeId);
-        await client.query("INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by) VALUES($1,$2::date,$3::jsonb,$4) ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING",[item.id,row.date,JSON.stringify(row),request.user!.userId]);
+
+      // Persist all employee/day snapshots in one SQL statement rather than one
+      // round-trip per day. This keeps approval latency predictable as headcount grows.
+      const snapshotRows=snapshot.map(row=>({employee_id:row.employeeId,attendance_date:row.date,snapshot_data:row}));
+      await client.query(
+        `INSERT INTO payroll_attendance_snapshots(payroll_item_id,attendance_date,snapshot_data,captured_by)
+         SELECT item.id,source.attendance_date,source.snapshot_data,$2
+           FROM jsonb_to_recordset($1::jsonb) AS source(employee_id uuid,attendance_date date,snapshot_data jsonb)
+           JOIN payroll_items item ON item.period_id=$3 AND item.employee_id=source.employee_id
+         ON CONFLICT(payroll_item_id,attendance_date) DO NOTHING`,
+        [JSON.stringify(snapshotRows),request.user!.userId,id]
+      );
+
+      // Load all policies and active salary-profile ranges once. The approval transaction
+      // already locks every payroll item; maps avoid repeated DB round-trips and full-array scans.
+      const employeeIds=salaryItems.rows.map(item=>item.employee_id);
+      const [policiesResult,profilesResult]=await Promise.all([
+        client.query(`SELECT employee_id,COALESCE(work_days_per_month,26)::int AS work_days_per_month,
+            COALESCE(daily_work_minutes,480)::int AS daily_work_minutes,
+            COALESCE(day_off_pay_amount,0)::numeric AS day_off_pay_amount,
+            COALESCE(overtime_multiplier,1.5)::numeric AS overtime_multiplier
+          FROM employee_payroll_attendance_policies WHERE employee_id=ANY($1::uuid[])`,[employeeIds]),
+        client.query(`SELECT employee_id,effective_from::text AS effective_from,effective_to::text AS effective_to
+          FROM employee_salary_profiles
+          WHERE employee_id=ANY($1::uuid[]) AND effective_from<=$2::date
+            AND (effective_to IS NULL OR effective_to>=$3::date)`,[employeeIds,monthEnd,monthStart])
+      ]);
+      const policiesByEmployee=new Map<string,(typeof policiesResult.rows)[number]>(
+        policiesResult.rows.map(policy=>[String(policy.employee_id),policy] as const)
+      );
+      const profilesByEmployee=new Map<string,typeof profilesResult.rows>();
+      for(const profile of profilesResult.rows){
+        const employeeProfiles=profilesByEmployee.get(String(profile.employee_id));
+        if(employeeProfiles)employeeProfiles.push(profile);
+        else profilesByEmployee.set(String(profile.employee_id),[profile]);
       }
+
       // Convert reviewed attendance minutes into auditable payroll lines. Policy defaults
       // are 26 workdays x 8 hours; each employee can override the work pattern and rest-day rate.
       for (const item of salaryItems.rows) {
-        const itemBefore=await client.query("SELECT base_salary,bonus_amount,deduction_amount,advance_repayment_amount FROM payroll_items WHERE id=$1 FOR UPDATE",[item.id]);
-        const policyResult=await client.query(`SELECT COALESCE(work_days_per_month,26)::int AS work_days_per_month,
-          COALESCE(daily_work_minutes,480)::int AS daily_work_minutes,
-          COALESCE(day_off_pay_amount,0)::numeric AS day_off_pay_amount,
-          COALESCE(overtime_multiplier,1.5)::numeric AS overtime_multiplier
-          FROM employee_payroll_attendance_policies WHERE employee_id=$1`,[item.employee_id]);
-        const rawPolicy=policyResult.rows[0]??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
-        const rawEmployeeDays=snapshot.filter(row=>row.employeeId===item.employee_id) as unknown as PayrollAttendanceDay[];
-        const activeProfiles=await client.query("SELECT effective_from::text AS effective_from,effective_to::text AS effective_to FROM employee_salary_profiles WHERE employee_id=$1 AND effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$3::date)",[item.employee_id,monthEnd,monthStart]);
-        const salaryActiveDays=rawEmployeeDays.filter(day=>activeProfiles.rows.some(profile=>
+        const rawPolicy=policiesByEmployee.get(String(item.employee_id))??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
+        const rawEmployeeDays=(daysByEmployee.get(String(item.employee_id))??[]) as unknown as PayrollAttendanceDay[];
+        const activeProfiles=profilesByEmployee.get(String(item.employee_id))??[];
+        const salaryActiveDays=rawEmployeeDays.filter(day=>activeProfiles.some(profile=>
           day.date>=String(profile.effective_from).slice(0,10)&&(profile.effective_to===null||day.date<=String(profile.effective_to).slice(0,10))
         )).length;
         if(salaryActiveDays===0)throw new AppError("PAYROLL_SALARY_PROFILE_REQUIRED","لا توجد فترة راتب سارية لهذا الموظف داخل الشهر المحدد.",409);
@@ -432,7 +463,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         // salary changes retain the correct per-minute rate.
         const effectiveScheduledMinutes=Number(rawPolicy.work_days_per_month)*Number(rawPolicy.daily_work_minutes)*salaryActiveDays/daysInMonth;
         const employeeDays=rawEmployeeDays.map(day=>{
-          const salaryActive=activeProfiles.rows.some(profile=>day.date>=String(profile.effective_from).slice(0,10)&&(profile.effective_to===null||day.date<=String(profile.effective_to).slice(0,10)));
+          const salaryActive=activeProfiles.some(profile=>day.date>=String(profile.effective_from).slice(0,10)&&(profile.effective_to===null||day.date<=String(profile.effective_to).slice(0,10)));
           if(salaryActive)return day;
           if(day.status==="NO_SCHEDULE_WITH_PUNCH"||day.status==="MISSING_PUNCH"||day.needsReview||Number(day.workedMinutes??0)>0)
             throw new AppError("PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE","يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
@@ -441,8 +472,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         let calculation;
         try {
           calculation=calculatePayrollAttendance({
-            baseSalary:Number(itemBefore.rows[0].base_salary),
-            existingBonus:Number(itemBefore.rows[0].bonus_amount),
+            baseSalary:Number(item.base_salary),
+            existingBonus:Number(item.bonus_amount),
             policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),scheduledMinutes:effectiveScheduledMinutes},
             days:employeeDays
           });
@@ -472,7 +503,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
           FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE'`,[item.id]);
         const bonus=Number(totals.rows[0].bonus),deduction=Number(totals.rows[0].deduction);
-        if(Number(itemBefore.rows[0].base_salary)+bonus<deduction+Number(itemBefore.rows[0].advance_repayment_amount??0))
+        if(Number(item.base_salary)+bonus<deduction+Number(item.advance_repayment_amount??0))
           throw new AppError("PAYROLL_NET_NEGATIVE","خصومات الحضور والبنود الأخرى أكبر من إجمالي المستحقات؛ راجع المسير قبل الاعتماد.",409);
         await client.query("UPDATE payroll_items SET bonus_amount=$1,deduction_amount=$2 WHERE id=$3",[bonus,deduction,item.id]);
         await client.query(`INSERT INTO payroll_attendance_calculations(payroll_item_id,calculation_data,captured_by)
