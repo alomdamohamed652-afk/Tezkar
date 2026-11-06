@@ -345,7 +345,11 @@ export async function paymentsRoutes(app:FastifyInstance){
   app.get("/api/payment-requests/pending-count", {
     preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
   }, async request => {
-    const permissionScope=await pool.query(
+    // Worker accounts must always receive their own count, matching the
+    // employee scoping applied by GET /api/payment-requests.
+    const user=await isWorker(request.user!.userId);
+    const isWorkerAccount=Boolean(user?.is_worker);
+    const permissionScope= isWorkerAccount ? null : await pool.query(
       `SELECT EXISTS (
          SELECT 1 FROM user_roles ur
          JOIN role_permissions rp ON rp.role_id=ur.role_id
@@ -358,9 +362,10 @@ export async function paymentsRoutes(app:FastifyInstance){
     );
     const params:unknown[]=[];
     let scope="";
-    if(!permissionScope.rows[0]?.can_view_all){
-      if(!request.user!.employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(request.user!.employeeId);
+    if(isWorkerAccount || !permissionScope?.rows[0]?.can_view_all){
+      const employeeId=user?.employee_id ?? request.user!.employeeId;
+      if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(employeeId);
       scope=" AND employee_id=$1";
     }
     const result=await pool.query(
