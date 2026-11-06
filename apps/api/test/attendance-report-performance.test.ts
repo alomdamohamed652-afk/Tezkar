@@ -16,7 +16,7 @@ test("attendance report isolates each employee's punches after indexing report i
     effective_from: "1900-01-01",
     effective_to: null,
   }));
-  const punches = employees.flatMap((employee, index) => [
+  const punches = employees.flatMap(employee => [
     {
       id: employee.id + "-in",
       employee_id: employee.id,
