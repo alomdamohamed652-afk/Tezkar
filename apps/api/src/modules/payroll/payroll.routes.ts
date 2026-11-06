@@ -172,7 +172,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       COALESCE(p.paid,0) AS paid_amount,GREATEST(i.net_amount-COALESCE(p.paid,0),0) AS remaining_amount,
       COALESCE(ae.amount,0) AS recorded_expense_amount
       FROM payroll_items i JOIN employees e ON e.id=i.employee_id LEFT JOIN departments d ON d.id=e.department_id
-      LEFT JOIN (SELECT payroll_item_id,SUM(amount) AS paid FROM payroll_payments GROUP BY payroll_item_id) p ON p.payroll_item_id=i.id
+      LEFT JOIN (SELECT pp.payroll_item_id,SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)) AS paid FROM payroll_payments pp GROUP BY pp.payroll_item_id) p ON p.payroll_item_id=i.id
       LEFT JOIN accounting_expenses ae ON ae.id=i.accounting_expense_id
       WHERE i.period_id=$1 ORDER BY e.full_name`, [period.rows[0].id]);
     const totals = items.rows.reduce((a, x) => {
