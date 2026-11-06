@@ -793,6 +793,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "settlement allocation must take precedence over duplicate order allocation for the same payment");
       assert.equal(Number(dualAllocationSummary.json().data.orderAccount.remaining),0,
         "duplicate allocation rows must not double-consume the production entitlement");
+      const duplicatePayoutAttempt=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:previousCustodyEmployee.id,settlementSource:"PREVIOUS_CUSTODY",orderId:hamzaOrder.json().data.id,amount:1,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(duplicatePayoutAttempt.statusCode,409,duplicatePayoutAttempt.body,
+        "a second payout must be rejected after the canonical settlement allocation consumes the production row");
 
       const bonusAwarePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
