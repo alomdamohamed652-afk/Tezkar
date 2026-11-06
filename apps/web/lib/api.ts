@@ -21,7 +21,7 @@ if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
   try {
     sessionChannel = new BroadcastChannel("tezkar-session-lifecycle");
     sessionChannel.onmessage = event => {
-      if (event.data?.type === "session-changed") clearApiCache();
+      if (event.data?.type === "session-changed" || event.data?.type === "cache-invalidated") clearApiCache();
     };
   } catch {
     // Same-tab cache clearing remains available if cross-tab messaging is unavailable.
@@ -88,6 +88,16 @@ export async function api<T>(
       if (response.status === 401) clearApiCache();
       const message = body?.error?.message ?? "حدث خطأ أثناء الاتصال بالنظام";
       throw new ApiError(body?.error?.code ?? "HTTP_ERROR", message, response.status);
+    }
+
+    if (!canCache) {
+      // Invalidate again after success to cover reads that started while the write was in flight.
+      clearApiCache();
+      try {
+        sessionChannel?.postMessage({ type: "cache-invalidated" });
+      } catch {
+        // Cross-tab invalidation is best-effort; same-tab invalidation is immediate.
+      }
     }
 
     if (!canCache && typeof window !== "undefined") {
