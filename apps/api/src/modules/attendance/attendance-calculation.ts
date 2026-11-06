@@ -66,6 +66,21 @@ function collapseNearDuplicateEvents(events: readonly AttendancePunchEvent[]) {
   return { accepted, duplicateIds };
 }
 
+function findUnpairedPunchIds(events:readonly AttendancePunchEvent[],inStatus:string,outStatus:string):string[] {
+  const relevant=[...events].filter(event=>event.status===inStatus||event.status===outStatus)
+    .sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
+  const unpaired=new Set<string>();let open:AttendancePunchEvent|null=null;
+  for(const event of relevant){
+    if(event.status===inStatus){
+      if(open){unpaired.add(open.id);unpaired.add(event.id);}
+      else open=event;
+    }else if(!open){unpaired.add(event.id);}
+    else open=null;
+  }
+  if(open)unpaired.add(open.id);
+  return [...unpaired];
+}
+
 export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent[]) {
   // Pending, rejected and suspicious-unreviewed punches remain in the raw
   // attendance history, but cannot contribute to payable worked time.
@@ -90,10 +105,15 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   // A repeated same-type event can make a missing checkout look like a long
   // continuous shift. Freeze the day's payable minutes until a reviewer approves
   // the extra punches or corrects their event types.
-  const countedEvents = unresolvedRepeatedEvents.length ? [] : usable;
+  // Regular multi-shift punches retain the established reviewer workflow. Overtime
+  // is a separate optional interval, so an incomplete overtime pair must be explicitly
+  // resolved instead of silently disappearing from payroll.
+  const unpairedPunchIds=findUnpairedPunchIds(usable,"OVERTIME_IN","OVERTIME_OUT");
+  const countedEvents = unresolvedRepeatedEvents.length || unpairedPunchIds.length ? [] : usable;
   const candidateIds = new Set([
     ...collapsed.duplicateIds,
     ...extraSameType.map((event) => event.id),
+    ...unpairedPunchIds,
     ...ordered.filter((event) => event.suspicious || event.review_status === "PENDING").map((event) => event.id),
   ]);
   // A second same-type punch is a review candidate, not automatically an error:
@@ -102,7 +122,10 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
   const reviewPunches = [...candidateIds]
     .map((id) => ordered.find((candidate) => candidate.id === id))
     .filter((event): event is AttendancePunchEvent =>
-      event !== undefined && event.review_status !== "APPROVED" && event.review_status !== "REJECTED"
+      event !== undefined && (
+        (event.review_status !== "APPROVED" && event.review_status !== "REJECTED")
+        || unpairedPunchIds.includes(event.id)
+      )
     )
     .map((event) => ({ id: event.id, status: event.status, punch_at: event.punch_at }));
   const reviewPunchIds = reviewPunches.map((event) => event.id);
@@ -118,7 +141,8 @@ export function selectAttendanceDayEvents(ordered: readonly AttendancePunchEvent
     duplicatePunchCount: collapsed.duplicateIds.length,
     reviewPunchIds,
     reviewPunches,
-    needsReview: reviewPunchIds.length > 0,
+    needsReview: reviewPunchIds.length > 0 || unpairedPunchIds.length > 0,
+    unpairedPunchIds,
     multipleNormalIns: normalIns.length > 1,
     multipleNormalOuts: normalOuts.length > 1,
     multipleOvertimeIns: overtimeIns.length > 1,
@@ -161,6 +185,42 @@ export function calculateWorkedMinutes(events: readonly { status: string; punch_
   return merged.reduce((total,interval)=>total+Math.floor((interval.end-interval.start)/60000),0);
 }
 
+
+/**
+ * Merge separately recorded overtime with early-arrival/late-departure intervals.
+ * The same real-world minutes must never be paid twice when those sources overlap.
+ */
+export function calculateOvertimeMinutes(
+  events: readonly { status: string; punch_at: string }[],
+  boundaryIntervals: readonly { start: string; end: string }[] = [],
+): number {
+  const sorted = [...events].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime());
+  const intervals: Array<{start:number;end:number}> = [];
+  let overtimeIn: number | null = null;
+  for (const event of sorted) {
+    const at = new Date(event.punch_at).getTime();
+    if (!Number.isFinite(at)) continue;
+    if (event.status === "OVERTIME_IN") {
+      if (overtimeIn === null) overtimeIn = at;
+    } else if (event.status === "OVERTIME_OUT" && overtimeIn !== null && at >= overtimeIn) {
+      intervals.push({start:overtimeIn,end:at});
+      overtimeIn = null;
+    }
+  }
+  for (const interval of boundaryIntervals) {
+    const start = new Date(interval.start).getTime();
+    const end = new Date(interval.end).getTime();
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) intervals.push({start,end});
+  }
+  intervals.sort((a,b)=>a.start-b.start);
+  const merged: Array<{start:number;end:number}> = [];
+  for (const interval of intervals) {
+    const previous=merged.at(-1);
+    if (previous && interval.start <= previous.end) previous.end=Math.max(previous.end,interval.end);
+    else merged.push({...interval});
+  }
+  return merged.reduce((total,interval)=>total+Math.floor((interval.end-interval.start)/60000),0);
+}
 
 export type EffectiveAttendanceSchedule = {
   employee_id: string;

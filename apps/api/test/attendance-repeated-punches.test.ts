@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { belongsToAttendanceShift, selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
+import { belongsToAttendanceShift, calculateOvertimeMinutes, selectAttendanceDayEvents, type AttendancePunchEvent } from "../src/modules/attendance/attendance-calculation.js";
 
 const event = (id: string, status: string, hour: number): AttendancePunchEvent => ({
   id,
@@ -53,4 +53,70 @@ test("next-day punches are not assigned to a same-day shift", () => {
     overnight: false,
     scheduledEndMinute: 23 * 60,
   }), false);
+});
+
+
+test("an unmatched overtime entry blocks payroll and remains visible for correction", () => {
+  const result = selectAttendanceDayEvents([
+    event("regular-in", "IN", 8),
+    event("regular-out", "OUT", 16),
+    event("overtime-in", "OVERTIME_IN", 17),
+  ]);
+  assert.equal(result.needsReview, true);
+  assert.deepEqual(result.unpairedPunchIds, ["overtime-in"]);
+  assert.deepEqual(result.reviewPunchIds, ["overtime-in"]);
+  assert.deepEqual(result.countedEvents, []);
+});
+
+test("complete regular and overtime pairs remain payable without a review flag", () => {
+  const result = selectAttendanceDayEvents([
+    event("regular-in", "IN", 8),
+    event("regular-out", "OUT", 16),
+    event("overtime-in", "OVERTIME_IN", 17),
+    event("overtime-out", "OVERTIME_OUT", 19),
+  ]);
+  assert.equal(result.needsReview, false);
+  assert.deepEqual(result.unpairedPunchIds, []);
+  assert.equal(result.countedEvents.length, 4);
+});
+
+test("an approved but unmatched punch remains a correction candidate", () => {
+  const approved = { ...event("approved-overtime-in", "OVERTIME_IN", 17), review_status: "APPROVED" };
+  const result = selectAttendanceDayEvents([
+    event("regular-in", "IN", 8),
+    event("regular-out", "OUT", 16),
+    approved,
+  ]);
+  assert.equal(result.needsReview, true);
+  assert.deepEqual(result.reviewPunchIds, ["approved-overtime-in"]);
+});
+
+test("explicit overtime overlapping early arrival is counted once", () => {
+  const result = calculateOvertimeMinutes([
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T05:30:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T06:30:00.000Z" },
+  ], [
+    { start: "2026-10-15T05:30:00.000Z", end: "2026-10-15T06:00:00.000Z" },
+  ]);
+  assert.equal(result, 60);
+});
+
+test("explicit overtime and late departure overlap without double counting", () => {
+  const result = calculateOvertimeMinutes([
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T14:30:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T16:00:00.000Z" },
+  ], [
+    { start: "2026-10-15T15:00:00.000Z", end: "2026-10-15T16:30:00.000Z" },
+  ]);
+  assert.equal(result, 120);
+});
+
+test("separate overtime intervals remain additive when they do not overlap", () => {
+  const result = calculateOvertimeMinutes([
+    { status: "OVERTIME_IN", punch_at: "2026-10-15T05:00:00.000Z" },
+    { status: "OVERTIME_OUT", punch_at: "2026-10-15T06:00:00.000Z" },
+  ], [
+    { start: "2026-10-15T15:00:00.000Z", end: "2026-10-15T16:00:00.000Z" },
+  ]);
+  assert.equal(result, 120);
 });

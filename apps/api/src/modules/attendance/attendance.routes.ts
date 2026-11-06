@@ -6,8 +6,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { belongsToAttendanceShift, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents } from "./attendance-calculation.js";
-import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
+import { buildAttendanceReport } from "./attendance-report.service.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
@@ -28,10 +27,10 @@ function minutesOfTime(value:string|null|undefined):number|null{if(!value)return
 export async function attendanceRoutes(app:FastifyInstance){
  app.get("/api/attendance",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
   const q=request.query as {from?:string;to?:string;review?:string};const args:unknown[]=[];const where:string[]=[];
-  if(q.from){args.push(q.from);where.push(`(p.punch_at AT TIME ZONE 'Africa/Cairo')::date >= ${args.length}::date`);}
-  if(q.to){args.push(q.to);where.push(`(p.punch_at AT TIME ZONE 'Africa/Cairo')::date <= ${args.length}::date`);}
+  if(q.from){args.push(q.from);where.push(`(COALESCE(p.corrected_punch_at,p.punch_at) AT TIME ZONE 'Africa/Cairo')::date >= ${args.length}::date`);}
+  if(q.to){args.push(q.to);where.push(`(COALESCE(p.corrected_punch_at,p.punch_at) AT TIME ZONE 'Africa/Cairo')::date <= ${args.length}::date`);}
   if(q.review&&["PENDING","AUTO_ACCEPTED","APPROVED","REJECTED"].includes(q.review)){args.push(q.review);where.push(`p.review_status=$${args.length}`);}
-  const rows=await pool.query(`SELECT p.id,p.device_code,p.punch_at,p.status,p.verify_method,p.suspicious,p.duplicate_of,p.review_status,p.corrected_status,p.correction_decision,p.correction_reviewed_at,p.location_id,p.card_no,p.id_number,e.id employee_id,e.full_name employee_name,e.code employee_code,b.source_name FROM attendance_punches p LEFT JOIN employees e ON e.id=p.employee_id LEFT JOIN attendance_import_batches b ON b.id=p.batch_id ${where.length?"WHERE "+where.join(" AND"):""} ORDER BY p.punch_at DESC LIMIT 1000`,args);
+  const rows=await pool.query(`SELECT p.id,p.device_code,p.punch_at,p.corrected_punch_at,p.status,p.verify_method,p.suspicious,p.duplicate_of,p.review_status,p.corrected_status,p.correction_decision,p.correction_note,p.correction_reviewed_at,p.location_id,p.card_no,p.id_number,e.id employee_id,e.full_name employee_name,e.code employee_code,b.source_name FROM attendance_punches p LEFT JOIN employees e ON e.id=p.employee_id LEFT JOIN attendance_import_batches b ON b.id=p.batch_id ${where.length?"WHERE "+where.join(" AND"):""} ORDER BY COALESCE(p.corrected_punch_at,p.punch_at) DESC LIMIT 1000`,args);
   const summary=await pool.query("SELECT count(*)::int total,count(*) FILTER(WHERE review_status='PENDING')::int pending,count(*) FILTER(WHERE suspicious)::int suspicious,count(*) FILTER(WHERE employee_id IS NULL)::int unknown FROM attendance_punches");
   const batches=await pool.query("SELECT id,source_name,total_rows,inserted_rows,duplicate_rows,suspicious_rows,unknown_rows,created_at FROM attendance_import_batches ORDER BY created_at DESC LIMIT 20");
   return {data:rows.rows,summary:summary.rows[0],batches:batches.rows};
@@ -131,20 +130,40 @@ export async function attendanceRoutes(app:FastifyInstance){
 
  app.post("/api/attendance/punches/:id/correction",{preHandler:[authenticateRequest,requirePermission("attendance.review")]},async request=>{
   const id=(request.params as {id:string}).id;
-  const parsed=z.object({decision:z.enum(["APPLY_SUGGESTION","KEEP_ORIGINAL"]),suggestedStatus:z.enum(["IN","OUT"])}).safeParse(request.body);
-  if(!z.string().uuid().safeParse(id).success||!parsed.success)throw new AppError("VALIDATION_ERROR","قرار تصحيح البصمة غير صحيح",422);
+  const parsed=z.object({
+   decision:z.enum(["APPLY_SUGGESTION","KEEP_ORIGINAL","APPLY_MANUAL"]),
+   suggestedStatus:z.enum(["IN","OUT"]).optional(),
+   correctedStatus:z.enum(["IN","OUT","OVERTIME_IN","OVERTIME_OUT"]).optional(),
+   correctedPunchAt:z.string().datetime({offset:true}).optional(),
+   reason:z.string().trim().min(2).max(500).optional()
+  }).safeParse(request.body);
+  if(!z.string().uuid().safeParse(id).success||!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تصحيح البصمة غير صحيحة",422);
   const result=await withTransaction(async client=>{
-   const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,correction_decision FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
+   const before=await client.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,corrected_punch_at,correction_decision,correction_note,review_status FROM attendance_punches WHERE id=$1 FOR UPDATE",[id]);
    if(!before.rowCount)throw new AppError("ATTENDANCE_PUNCH_NOT_FOUND","حركة البصمة غير موجودة",404);
-   const old=before.rows[0];
-   if(old.correction_decision)throw new AppError("ATTENDANCE_CORRECTION_ALREADY_REVIEWED","تم حسم تصحيح هذه البصمة بالفعل. راجع سجل التدقيق قبل أي تعديل جديد.",409);
-   if(!["IN","OUT"].includes(old.status)||parsed.data.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","التصحيح المقترح يجب أن يعكس دخولًا إلى خروج أو العكس.",422);
-   const corrected=parsed.data.decision==="APPLY_SUGGESTION"?parsed.data.suggestedStatus:null;
-   const updated=await client.query(
-    "UPDATE attendance_punches SET corrected_status=$2,correction_decision=$3,correction_reviewed_by=$4,correction_reviewed_at=now(),review_status=CASE WHEN review_status='PENDING' THEN 'APPROVED' ELSE review_status END,reviewed_by=COALESCE(reviewed_by,$4),reviewed_at=COALESCE(reviewed_at,now()) WHERE id=$1 RETURNING id,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at,review_status,reviewed_by,reviewed_at",
-    [id,corrected,parsed.data.decision==="APPLY_SUGGESTION"?"APPLIED":"KEPT_ORIGINAL",request.user!.userId]
-   );
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPLY_SUGGESTION"?"apply_attendance_correction":"keep_original_attendance_punch",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:old,afterData:updated.rows[0],metadata:{decision:parsed.data.decision,suggestedStatus:parsed.data.suggestedStatus,originalStatus:old.status},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   const old=before.rows[0],d=parsed.data;
+   if(!["IN","OUT","OVERTIME_IN","OVERTIME_OUT"].includes(old.status))throw new AppError("INVALID_ATTENDANCE_CORRECTION","تصحيح النوع متاح لحركات الدخول والخروج والإضافي فقط",422);
+   let status:string|null=null,at:string|null=null,decision:string;
+   if(d.decision==="KEEP_ORIGINAL"){decision="KEPT_ORIGINAL";}
+   else if(d.decision==="APPLY_SUGGESTION"){
+    if(!["IN","OUT"].includes(old.status)||!d.suggestedStatus||d.suggestedStatus===old.status)throw new AppError("INVALID_ATTENDANCE_CORRECTION","نوع التصحيح المقترح غير صالح",422);
+    status=d.suggestedStatus;decision="APPLIED";
+   }else{
+    status=d.correctedStatus??old.status;at=d.correctedPunchAt??null;
+    if(status===old.status&&!at)throw new AppError("EMPTY_ATTENDANCE_CORRECTION","اختر نوع حركة مختلفًا أو وقتًا مصححًا",422);
+    if(at){
+     const correctedDate=new Date(at),originalDate=new Date(old.punch_at);
+     if(Math.abs(correctedDate.getTime()-originalDate.getTime())>24*60*60*1000)throw new AppError("CORRECTION_TIME_OUT_OF_RANGE","وقت التصحيح يجب ألا يبتعد أكثر من 24 ساعة عن وقت البصمة الأصلية",422);
+    }
+    if(!d.reason)throw new AppError("CORRECTION_REASON_REQUIRED","اكتب سبب تعديل البصمة",422);
+    decision="MANUAL_APPLIED";
+   }
+   const correctedStatus=d.decision==="KEEP_ORIGINAL"?null:status;
+   const correctedAt=d.decision==="APPLY_MANUAL"?at:null;
+   const note=d.decision==="APPLY_MANUAL"?d.reason??null:null;
+   const updated=await client.query(`UPDATE attendance_punches SET corrected_status=$2,corrected_punch_at=$3::timestamptz,correction_note=$4,correction_decision=$5,correction_reviewed_by=$6,correction_reviewed_at=now(),review_status=CASE WHEN review_status='PENDING' THEN 'APPROVED' ELSE review_status END,reviewed_by=COALESCE(reviewed_by,$6),reviewed_at=COALESCE(reviewed_at,now()) WHERE id=$1 RETURNING id,status,corrected_status,corrected_punch_at,correction_note,correction_decision,correction_reviewed_by,correction_reviewed_at,review_status,reviewed_by,reviewed_at`,
+    [id,correctedStatus,correctedAt,note,decision,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:decision==="MANUAL_APPLIED"?"manually_correct_attendance_punch":decision==="APPLIED"?"apply_attendance_correction":"keep_original_attendance_punch",module:"attendance",entityType:"attendance_punch",entityId:id,beforeData:old,afterData:updated.rows[0],metadata:{decision,reason:d.reason??null,originalStatus:old.status,originalPunchAt:old.punch_at},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
   return {data:result};
@@ -200,60 +219,104 @@ export async function attendanceRoutes(app:FastifyInstance){
   return {ok:true};
  });
  app.get("/api/attendance/report",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
-  const q=request.query as {from?:string;to?:string;includeInactive?:string};const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
+  const q=request.query as {from?:string;to?:string;includeInactive?:string};
+  const dates=z.object({from:z.string().date(),to:z.string().date()}).safeParse(q);
   if(!dates.success||dates.data.to<dates.data.from)throw new AppError("VALIDATION_ERROR","حدد فترة صحيحة للتقرير",422);
-  const first=new Date(dates.data.from+"T00:00:00Z"),last=new Date(dates.data.to+"T00:00:00Z");const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
-  if(daysCount>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
-  const includeInactive=q.includeInactive==="true";
-  const employees=(await pool.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE ($1::boolean=TRUE OR e.is_active=TRUE) ORDER BY e.code`,[includeInactive])).rows;
-  const schedules=(await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$1::date) ORDER BY employee_id,weekday,effective_from",[dates.data.from,dates.data.to])).rows;
-  const exceptions=(await pool.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[dates.data.from,dates.data.to])).rows;
-  // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
-  const raw=(await pool.query("SELECT id,employee_id,device_code,punch_at,status,corrected_status,correction_decision,correction_reviewed_by,correction_reviewed_at,verify_method,suspicious,review_status FROM attendance_punches WHERE (punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2) AND review_status <> 'REJECTED' ORDER BY punch_at",[dates.data.from,dates.data.to])).rows;
-  const punches=raw.map(p=>({...p,localDate:cairoDateKey(new Date(p.punch_at)),minute:cairoMinute(new Date(p.punch_at))}));
-  const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
-  for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
-   const date=addDateKey(dates.data.from,dayIndex);const weekday=new Date(date+"T00:00:00Z").getUTCDay();
-   for(const employee of employees){
-    const exception=exceptions.find(e=>e.employee_id===employee.id&&e.start_date<=date&&e.end_date>=date);
-    const schedule=exception?{starts_at:exception.starts_at,ends_at:exception.ends_at,is_day_off:exception.is_day_off}:findEffectiveAttendanceSchedule(schedules,employee.id,weekday,date);
-    const noSchedule=!schedule;const dayOff=Boolean(schedule?.is_day_off);const start=minutesOfTime(schedule?.starts_at);const end=minutesOfTime(schedule?.ends_at);const overnight=!dayOff&&start!==null&&end!==null&&end<=start;
-    const assigned=punches.filter(p=>{
-     if(p.employee_id!==employee.id||used.has(p.id))return false;
-     if(belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.corrected_status??p.status,shiftDate:date,overnight,scheduledEndMinute:end}))return true;
-     // A next-day IN near an overnight shift's end is considered only when the same shift
-     // also has a punch near its start; this avoids stealing unrelated next-day check-ins.
-     return overnight&&p.localDate===addDateKey(date,1)&&(p.corrected_status??p.status)==="IN"&&end!==null&&start!==null&&Math.abs(p.minute-end)<=240&&punches.some(other=>other.employee_id===employee.id&&other.localDate===date&&Math.abs(other.minute-start)<=240&&other.id!==p.id);
-    });
-    assigned.forEach(p=>used.add(p.id));
-    const correctionSuggestions=(!dayOff&&start!==null&&end!==null)?suggestBoundaryPunchCorrections({punches:assigned,shiftDate:date,startMinute:start,endMinute:end,overnight}):[];
-    const ordered=[...assigned].sort((a,b)=>new Date(a.punch_at).getTime()-new Date(b.punch_at).getTime()).map(p=>({...p,status:p.corrected_status??p.status}));
-    const selectedEvents=selectAttendanceDayEvents(ordered);
-    const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
-    let inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
-    const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
-    const expectedEnd=end===null?null:(overnight?end+1440:end);
-    const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
-    const workedMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
-    const overtimeMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.filter(p=>p.status==="OVERTIME_IN"||p.status==="OVERTIME_OUT").map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
-    const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0;
-    let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
-    const correctionHistory=assigned.filter(p=>p.correction_decision).map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,decision:p.correction_decision}));
-    report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,correctionHistory,lateMinutes,earlyMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length,punchTimeline:assigned.map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,verifyMethod:p.verify_method,suspicious:p.suspicious,reviewStatus:p.review_status,correctionDecision:p.correction_decision??null,isNearDuplicate:selectedEvents.duplicateIds.includes(p.id)})).sort((a,b)=>new Date(a.punchAt).getTime()-new Date(b.punchAt).getTime())});
-   }
-  }
-  const overrides=(await pool.query(`SELECT employee_id,attendance_date::text,status,first_in::text,last_out::text,worked_minutes,late_minutes,early_minutes,note,updated_at,updated_by FROM attendance_day_overrides WHERE attendance_date BETWEEN $1::date AND $2::date`,[dates.data.from,dates.data.to])).rows;
-  const overrideMap=new Map(overrides.map(o=>[o.employee_id+"|"+String(o.attendance_date).slice(0,10),o]));
-  for(let index=0;index<report.length;index++){
-    const row=report[index] as Record<string,unknown>;
-    const override=overrideMap.get(String(row.employeeId)+"|"+String(row.date));
-    if(!override)continue;
-    const firstIn=override.first_in?String(row.date)+"T"+String(override.first_in).slice(0,8):null;
-    const lastOut=override.last_out?String(row.date)+"T"+String(override.last_out).slice(0,8):null;
-    report[index]={...row,firstIn,lastOut,workedMinutes:Number(override.worked_minutes),workedHours:Math.round(Number(override.worked_minutes)/60*100)/100,lateMinutes:Number(override.late_minutes),earlyMinutes:Number(override.early_minutes),status:String(override.status),needsReview:false,manualOverride:true,manualNote:override.note,manualUpdatedAt:override.updated_at};
-  }
-  const totals={rows:report.length,totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
-  return {data:report,summary:totals};
+  const reportDays=(new Date(dates.data.to+"T00:00:00Z").getTime()-new Date(dates.data.from+"T00:00:00Z").getTime())/86400000+1;
+  if(reportDays>62)throw new AppError("DATE_RANGE_TOO_LARGE","الفترة القصوى للتقرير 62 يومًا",422);
+  return buildAttendanceReport(pool,dates.data.from,dates.data.to,q.includeInactive==="true");
+ });
+
+
+ app.post("/api/attendance/permissions",{preHandler:[authenticateRequest,requirePermission("attendance.permission.request","own")]},async(request,reply)=>{
+  const parsed=z.object({date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),reason:z.string().trim().min(2).max(500)}).strict().safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات طلب الإذن غير صحيحة؛ يجب تحديد التاريخ والوقت والسبب",422);
+  const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
+  const d=parsed.data;const start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
+  if(start===null||end===null||end<=start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يكون بعد بدايته في نفس اليوم",422);
+  const duration=end-start;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
+  const saved=await withTransaction(async client=>{
+   await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[employeeId,d.date]);
+   const overlap=await client.query(`SELECT id FROM attendance_permission_requests
+    WHERE employee_id=$1 AND permission_date=$2::date AND status IN ('PENDING','APPROVED')
+      AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[employeeId,d.date,d.startsAt,d.endsAt]);
+   if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد طلب إذن آخر متداخل في نفس اليوم",409);
+   const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,requested_by)
+    VALUES($1,$2::date,$3::time,$4::time,$5,NULL,$6,$7) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.reason,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"create_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return result.rows[0];
+  });
+  return reply.code(201).send({data:saved});
+ });
+ app.post("/api/attendance/permissions/admin",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async(request,reply)=>{
+  const parsed=z.object({employeeId:z.string().uuid(),date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),type:z.enum(["PAID","UNPAID"]),reason:z.string().trim().min(2).max(500)}).safeParse(request.body);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الإذن الإداري غير صحيحة",422);
+  const d=parsed.data,start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
+  if(start===null||end===null||end<=start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يكون بعد بدايته في نفس اليوم",422);
+  const duration=end-start;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
+  const saved=await withTransaction(async client=>{
+   await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[d.employeeId,d.date]);
+   if(!(await client.query("SELECT id FROM employees WHERE id=$1",[d.employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+   const overlap=await client.query(`SELECT id FROM attendance_permission_requests WHERE employee_id=$1 AND permission_date=$2::date
+    AND status IN ('PENDING','APPROVED') AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[d.employeeId,d.date,d.startsAt,d.endsAt]);
+   if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد إذن آخر متداخل مع الفترة المحددة",409);
+   const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,status,requested_by,reviewed_by,reviewed_at,review_note)
+    VALUES($1,$2::date,$3::time,$4::time,$5,$6,$7,'APPROVED',$8,$8,now(),'تم الإنشاء والاعتماد مباشرة بواسطة مسؤول الحضور') RETURNING *`,
+    [d.employeeId,d.date,d.startsAt,d.endsAt,duration,d.type,d.reason,request.user!.userId]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"admin_create_approved_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],metadata:{createdByAdmin:true},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return result.rows[0];
+  });
+  return reply.code(201).send({data:saved});
+ });
+ app.get("/api/attendance/permissions/my",{preHandler:[authenticateRequest,requirePermission("attendance.permission.view_own","own")]},async request=>{
+  const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
+  const result=await pool.query("SELECT * FROM attendance_permission_requests WHERE employee_id=$1 ORDER BY permission_date DESC,starts_at DESC LIMIT 300",[employeeId]);
+  return {data:result.rows};
+ });
+ app.get("/api/attendance/permissions/employees",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async()=>{
+  const result=await pool.query("SELECT id,code,full_name,is_active,NULL::text AS device_code,10::int AS late_grace_minutes,5::int AS early_grace_minutes FROM employees ORDER BY is_active DESC,code");
+  return {data:result.rows};
+ });
+ app.get("/api/attendance/permissions",{preHandler:[authenticateRequest,requirePermission("attendance.permission.view")]},async request=>{
+  const q=z.object({from:z.string().date().optional(),to:z.string().date().optional(),employeeId:z.string().uuid().optional(),status:z.enum(["PENDING","APPROVED","REJECTED","CANCELLED"]).optional()}).safeParse(request.query);
+  if(!q.success||(q.data.from&&q.data.to&&q.data.to<q.data.from))throw new AppError("VALIDATION_ERROR","فترة البحث غير صحيحة",422);
+  const d=q.data,args:unknown[]=[];const where:string[]=[];
+  if(d.from){args.push(d.from);where.push("r.permission_date >= $"+args.length+"::date");}
+  if(d.to){args.push(d.to);where.push("r.permission_date <= $"+args.length+"::date");}
+  if(d.employeeId){args.push(d.employeeId);where.push("r.employee_id = $"+args.length);}
+  if(d.status){args.push(d.status);where.push("r.status = $"+args.length);}
+  const result=await pool.query(`SELECT r.*,e.code AS employee_code,e.full_name AS employee_name,
+    requester.username AS requester_username,reviewer.username AS reviewer_username
+    FROM attendance_permission_requests r JOIN employees e ON e.id=r.employee_id
+    LEFT JOIN users requester ON requester.id=r.requested_by LEFT JOIN users reviewer ON reviewer.id=r.reviewed_by
+    ${where.length?"WHERE "+where.join(" AND "):""}
+    ORDER BY r.permission_date DESC,r.starts_at DESC LIMIT 1000`,args);
+  return {data:result.rows};
+ });
+ app.post("/api/attendance/permissions/:id/review",{preHandler:[authenticateRequest,requirePermission("attendance.permission.review")]},async request=>{
+  const params=z.object({id:z.string().uuid()}).safeParse(request.params);
+  const parsed=z.object({decision:z.enum(["APPROVED","REJECTED"]),permissionType:z.enum(["PAID","UNPAID"]).optional(),note:z.string().trim().max(500).nullable().optional()}).strict().superRefine((value,ctx)=>{if(value.decision==="APPROVED"&&!value.permissionType)ctx.addIssue({code:z.ZodIssueCode.custom,path:["permissionType"],message:"يجب تحديد نوع الإذن عند الموافقة"});if(value.decision==="REJECTED"&&value.permissionType)ctx.addIssue({code:z.ZodIssueCode.custom,path:["permissionType"],message:"لا يتم تحديد نوع مالي عند رفض الطلب"});}).safeParse(request.body);
+  if(!params.success||!parsed.success)throw new AppError("VALIDATION_ERROR","قرار مراجعة الإذن غير صحيح",422);
+  return withTransaction(async client=>{
+   const before=await client.query("SELECT * FROM attendance_permission_requests WHERE id=$1 FOR UPDATE",[params.data.id]);
+   if(!before.rowCount)throw new AppError("PERMISSION_NOT_FOUND","طلب الإذن غير موجود",404);
+   if(before.rows[0].status!=="PENDING")throw new AppError("PERMISSION_ALREADY_REVIEWED","لا يمكن مراجعة طلب ليس قيد الانتظار",409);
+   const result=await client.query(`UPDATE attendance_permission_requests SET status=$1,permission_type=CASE WHEN $1='APPROVED' THEN $2 ELSE permission_type END,reviewed_by=$3,reviewed_at=now(),review_note=$4,updated_at=now() WHERE id=$5 RETURNING *`,[parsed.data.decision,parsed.data.permissionType??null,request.user!.userId,parsed.data.note??null,params.data.id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:parsed.data.decision==="APPROVED"?"approve_attendance_permission":"reject_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:params.data.id,beforeData:before.rows[0],afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {data:result.rows[0]};
+  });
+ });
+ app.post("/api/attendance/permissions/:id/cancel",{preHandler:[authenticateRequest,requirePermission("attendance.permission.request","own")]},async request=>{
+  const params=z.object({id:z.string().uuid()}).safeParse(request.params);if(!params.success)throw new AppError("VALIDATION_ERROR","رقم طلب الإذن غير صحيح",422);
+  const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
+  return withTransaction(async client=>{
+   const before=await client.query("SELECT * FROM attendance_permission_requests WHERE id=$1 AND employee_id=$2 FOR UPDATE",[params.data.id,employeeId]);
+   if(!before.rowCount)throw new AppError("PERMISSION_NOT_FOUND","طلب الإذن غير موجود",404);
+   if(before.rows[0].status!=="PENDING")throw new AppError("PERMISSION_CANNOT_CANCEL","يمكن إلغاء الطلب قبل اعتماده أو رفضه فقط",409);
+   const result=await client.query("UPDATE attendance_permission_requests SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now() WHERE id=$2 RETURNING *",[request.user!.userId,params.data.id]);
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"cancel_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:params.data.id,beforeData:before.rows[0],afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   return {data:result.rows[0]};
+  });
  });
 
 }

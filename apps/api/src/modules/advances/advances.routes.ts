@@ -74,8 +74,8 @@ export async function advanceRoutes(app:FastifyInstance){
     if(q.data.status&&(!isWorker||canViewAll)){params.push(q.data.status);where.push("a.status=$"+params.length);}
     const r=await pool.query(
       `SELECT a.*,e.code AS employee_code,e.full_name AS employee_name,
-              COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
-              GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount,
+              COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
+              GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount,
               COALESCE((SELECT SUM(l.credit_amount-l.debit_amount) FROM employee_earnings_ledger l WHERE l.employee_id=a.employee_id),0) AS account_balance
          FROM advance_requests a JOIN employees e ON e.id=a.employee_id
         ${where.length?"WHERE "+where.join(" AND "):""}
@@ -91,8 +91,8 @@ export async function advanceRoutes(app:FastifyInstance){
     const [balance,advances,ledger,scheduledDeductions]=await Promise.all([
       pool.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",[employeeId]),
       pool.query(`SELECT a.id,a.code,a.amount,a.repayment_method,a.installment_amount,a.salary_percentage,a.production_percentage,a.production_period_days,a.production_installment_amount,a.production_minimum_earning,a.status,a.repayment_status,
-        COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
-        GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount
+        COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0) AS repaid_amount,
+        GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS remaining_amount
         FROM advance_requests a WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
         ORDER BY a.paid_at DESC,a.created_at DESC`,[employeeId]),
       pool.query("SELECT id,code,entry_type,credit_amount,debit_amount,notes,created_at FROM employee_earnings_ledger WHERE employee_id=$1 ORDER BY created_at DESC LIMIT 100",[employeeId]),
@@ -240,13 +240,37 @@ export async function advanceRoutes(app:FastifyInstance){
         const prior=existing.rows[0];
         if(prior.advance_id!==id||prior.idempotency_fingerprint!==fingerprint)
           throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح العملية مستخدم لسداد مختلف. استخدم مفتاحًا جديدًا للعملية الجديدة.",409);
-        const paidNow=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[id]);
+        const paidNow=await client.query("SELECT COALESCE(SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)),0) AS amount FROM advance_repayments ar WHERE ar.advance_id=$1",[id]);
         return {replayed:true,data:{advance:advance.rows[0],repayment:prior,remaining:Math.max(0,Number(advance.rows[0].amount)-Number(paidNow.rows[0].amount||0))}};
       }
       await assertAccountingPeriodOpen(client,paymentDate);
       if(advance.rows[0].status!=="PAID")throw new AppError("INVALID_STATUS","لا يمكن تسجيل السداد قبل صرف السلفة",409);
       if(advance.rows[0].repayment_status==="SETTLED")throw new AppError("ADVANCE_SETTLED","السلفة مسددة بالكامل",409);
-      const paid=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE advance_id=$1",[id]);
+      // Approved payroll deductions reserve this installment until the payroll item is fully settled.
+      // A manual receipt here would reduce the advance balance and make the later payroll payment
+      // fail (or, worse, allow the same installment to be collected twice).
+      const reserved=await client.query(
+        `SELECT p.period_month,i.id AS payroll_item_id
+           FROM payroll_advance_deductions d
+           JOIN payroll_items i ON i.id=d.payroll_item_id
+           JOIN payroll_periods p ON p.id=i.period_id
+          WHERE d.advance_id=$1
+            AND p.status IN ('APPROVED','CLOSED')
+            AND i.status<>'PAID'
+            AND NOT EXISTS(
+              SELECT 1 FROM advance_repayments ar
+               WHERE ar.advance_id=d.advance_id AND ar.source_payroll_item_id=i.id
+            )
+          ORDER BY p.period_month DESC
+          LIMIT 1`,
+        [id]
+      );
+      if(reserved.rowCount)throw new AppError(
+        "ADVANCE_INSTALLMENT_RESERVED",
+        "هذا القسط محجوز في مسير راتب معتمد؛ لا يمكن تحصيله يدويًا قبل تسوية المسير أو إلغاء الحجز منه.",
+        409
+      );
+      const paid=await client.query("SELECT COALESCE(SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)),0) AS amount FROM advance_repayments ar WHERE ar.advance_id=$1",[id]);
       const remaining=Number(advance.rows[0].amount)-Number(paid.rows[0].amount||0);
       if(p.data.amount>remaining+1e-9)throw new AppError("REPAYMENT_EXCEEDS_BALANCE","مبلغ السداد أكبر من المتبقي",409);
       const x=await client.query(

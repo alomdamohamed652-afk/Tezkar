@@ -58,12 +58,13 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     process.env.SESSION_SECRET = "test-only-session-secret-that-is-long-enough";
     process.env.NODE_ENV = "test";
 
-    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { userRoutes }, { accountRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
+    const [{ default: Fastify }, { default: cookie }, { authRoutes }, { payrollRoutes }, { attendanceRoutes }, { operationsMasterRoutes }, { advanceRoutes }, { accountingRoutes }, { employeeRoutes }, { userRoutes }, { accountRoutes }, { hashPassword }, { authenticateRequest }, poolModule] =
       await Promise.all([
         import("fastify"),
         import("@fastify/cookie"),
         import("../src/modules/auth/auth.routes.js"),
         import("../src/modules/payroll/payroll.routes.js"),
+        import("../src/modules/attendance/attendance.routes.js"),
         import("../src/modules/operations-master/operations-master.routes.js"),
         import("../src/modules/advances/advances.routes.js"),
         import("../src/modules/accounting/accounting.routes.js"),
@@ -84,6 +85,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
     });
     await app.register(authRoutes);
     await app.register(payrollRoutes);
+    await app.register(attendanceRoutes);
     await app.register(operationsMasterRoutes);
     await app.register(advanceRoutes);
     await app.register(accountingRoutes);
@@ -110,6 +112,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         ["payroll-api-" + randomBytes(5).toString("hex"), hashPassword(password), employeeA.rows[0].id]
       );
       const userId = userResult.rows[0].id;
+      for (const employeeId of [employeeA.rows[0].id, employeeB.rows[0].id]) {
+        for (let weekday = 0; weekday < 7; weekday++) {
+          await apiPool.query(
+            "INSERT INTO attendance_weekly_schedule_versions(employee_id,weekday,starts_at,ends_at,is_day_off,effective_from,created_by) VALUES($1,$2,'08:00','16:00',FALSE,'2099-01-01',$3)",
+            [employeeId, weekday, userId]
+          );
+        }
+      }
       const secondUserResult = await apiPool.query(
         "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES ($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id",
         ["payroll-api-reviewer-" + randomBytes(5).toString("hex"), hashPassword(password), employeeB.rows[0].id]
@@ -153,6 +163,111 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const setCookie = login.headers["set-cookie"];
       assert.ok(setCookie, "login must issue a session cookie");
       const cookieHeader = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0];
+
+
+      // Employee permission requests: identity and financial classification are server-controlled.
+      const permissionEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES($1) RETURNING id",["Attendance Permission Integration Employee"]);
+      const permissionUser=await apiPool.query(
+        "INSERT INTO users(username,password_hash,employee_id,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,$3,TRUE,FALSE,FALSE) RETURNING id,username",
+        ["attendance-permission-"+randomBytes(5).toString("hex"),hashPassword(password),permissionEmployee.rows[0].id]
+      );
+      await apiPool.query("INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",[permissionUser.rows[0].id]);
+      // Give the permission employee a historical scheduled day so the report/payroll path
+      // can verify that approved PAID and UNPAID requests are reflected in attendance minutes.
+      for(let weekday=0;weekday<7;weekday++)await apiPool.query(
+        "INSERT INTO attendance_weekly_schedule_versions(employee_id,weekday,starts_at,ends_at,is_day_off,effective_from,created_by) VALUES($1,$2,'08:00','16:00',FALSE,'2026-01-01',$3)",
+        [permissionEmployee.rows[0].id,weekday,permissionUser.rows[0].id]
+      );
+      const permissionLogin=await app.inject({method:"POST",url:"/api/auth/login",payload:{username:permissionUser.rows[0].username,password}});
+      assert.equal(permissionLogin.statusCode,200,permissionLogin.body);
+      const permissionSetCookie=permissionLogin.headers["set-cookie"];
+      assert.ok(permissionSetCookie,"employee permission login must issue a session cookie");
+      const permissionCookie=(Array.isArray(permissionSetCookie)?permissionSetCookie[0]:permissionSetCookie).split(";")[0];
+      const permissionDate="2026-11-04";
+      const permissionRequest=async(startsAt:string,endsAt:string)=>app.inject({
+        method:"POST",url:"/api/attendance/permissions",headers:{cookie:permissionCookie},
+        payload:{date:permissionDate,startsAt,endsAt,reason:"Personal appointment"}
+      });
+
+      const forgedPermission=await app.inject({
+        method:"POST",url:"/api/attendance/permissions",headers:{cookie:permissionCookie},
+        payload:{date:permissionDate,startsAt:"08:00",endsAt:"09:00",reason:"Personal appointment",employeeId:employeeB.rows[0].id,type:"PAID",status:"APPROVED"}
+      });
+      assert.equal(forgedPermission.statusCode,422,"employees must not choose identity, approval status or paid/unpaid classification");
+      const ownPermissionList=await app.inject({method:"GET",url:"/api/attendance/permissions/my",headers:{cookie:permissionCookie}});
+      assert.equal(ownPermissionList.statusCode,200,ownPermissionList.body);
+      assert.equal(ownPermissionList.json().data.length,0);
+      const deniedGlobalPermissionList=await app.inject({method:"GET",url:"/api/attendance/permissions",headers:{cookie:permissionCookie}});
+      assert.equal(deniedGlobalPermissionList.statusCode,403,"employees may only view their own permission requests");
+
+      const paidPermission=await permissionRequest("08:00","09:00");
+      assert.equal(paidPermission.statusCode,201,paidPermission.body);
+      const paidPermissionRow=paidPermission.json().data;
+      assert.equal(paidPermissionRow.employee_id,permissionEmployee.rows[0].id);
+      assert.equal(paidPermissionRow.requested_by,permissionUser.rows[0].id);
+      assert.equal(paidPermissionRow.permission_type,null);
+      assert.equal(paidPermissionRow.status,"PENDING");
+      const paidReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${paidPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"APPROVED",permissionType:"PAID"}
+      });
+      assert.equal(paidReview.statusCode,200,paidReview.body);
+      assert.equal(paidReview.json().data.status,"APPROVED");
+      assert.equal(paidReview.json().data.permission_type,"PAID");
+
+      const unpaidPermission=await permissionRequest("09:00","10:00");
+      assert.equal(unpaidPermission.statusCode,201,unpaidPermission.body);
+      const unpaidPermissionRow=unpaidPermission.json().data;
+      const unpaidReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${unpaidPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"APPROVED",permissionType:"UNPAID"}
+      });
+      assert.equal(unpaidReview.statusCode,200,unpaidReview.body);
+      assert.equal(unpaidReview.json().data.permission_type,"UNPAID");
+
+      const rejectedPermission=await permissionRequest("10:00","11:00");
+      assert.equal(rejectedPermission.statusCode,201,rejectedPermission.body);
+      const rejectedPermissionRow=rejectedPermission.json().data;
+      const invalidRejectedReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${rejectedPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"REJECTED",permissionType:"PAID"}
+      });
+      assert.equal(invalidRejectedReview.statusCode,422,"rejected requests cannot carry a financial classification");
+      const rejectedReview=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${rejectedPermissionRow.id}/review`,headers:{cookie:cookieHeader},
+        payload:{decision:"REJECTED"}
+      });
+      assert.equal(rejectedReview.statusCode,200,rejectedReview.body);
+      assert.equal(rejectedReview.json().data.status,"REJECTED");
+      assert.equal(rejectedReview.json().data.permission_type,null);
+
+      const cancelledPermission=await permissionRequest("11:00","12:00");
+      assert.equal(cancelledPermission.statusCode,201,cancelledPermission.body);
+      const cancelledPermissionRow=cancelledPermission.json().data;
+      const cancelled=await app.inject({
+        method:"POST",url:`/api/attendance/permissions/${cancelledPermissionRow.id}/cancel`,headers:{cookie:permissionCookie}
+      });
+      assert.equal(cancelled.statusCode,200,cancelled.body);
+      assert.equal(cancelled.json().data.status,"CANCELLED");
+      assert.equal(cancelled.json().data.permission_type,null);
+
+      const overlapPermission=await permissionRequest("08:30","09:30");
+      assert.equal(overlapPermission.statusCode,409,"a new request cannot overlap an already approved permission");
+      assert.equal(overlapPermission.json().error.code,"PERMISSION_OVERLAP");
+      const refreshedOwnPermissions=await app.inject({method:"GET",url:"/api/attendance/permissions/my",headers:{cookie:permissionCookie}});
+      assert.equal(refreshedOwnPermissions.statusCode,200,refreshedOwnPermissions.body);
+      assert.equal(refreshedOwnPermissions.json().data.length,4,"employees should see only their own requests across all statuses");
+
+      const permissionAttendanceReport=await app.inject({
+        method:"GET",url:`/api/attendance/report?from=${permissionDate}&to=${permissionDate}`,headers:{cookie:cookieHeader}
+      });
+      assert.equal(permissionAttendanceReport.statusCode,200,permissionAttendanceReport.body);
+      const permissionAttendanceDay=permissionAttendanceReport.json().data.find((day:{employeeId:string})=>day.employeeId===permissionEmployee.rows[0].id);
+      assert.ok(permissionAttendanceDay,"approved permission employee must appear in the attendance report");
+      assert.equal(permissionAttendanceDay.status,"ABSENT");
+      assert.equal(permissionAttendanceDay.paidPermissionMinutes,60,"approved paid permission minutes must be included in attendance reporting");
+      assert.equal(permissionAttendanceDay.unpaidPermissionMinutes,60,"approved unpaid permission minutes must be included in attendance reporting");
+      assert.equal(permissionAttendanceDay.permissionMinutes,120,"rejected and cancelled requests must not affect attendance reporting");
 
       const passwordResetEmployee=await apiPool.query("INSERT INTO employees(full_name) VALUES('Password Reset Integration Employee') RETURNING id");
       const passwordResetUser=await apiPool.query(
@@ -657,32 +772,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const attendanceSnapshot = Array.from({length:31},(_,index)=>{
         const date = `2099-01-${String(index+1).padStart(2,"0")}`;
         return [
-          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
-          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",isDayOff:false,firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,needsReview:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",isDayOff:false,firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,needsReview:false}
         ];
       }).flat();
-      const missingSnapshotApproval = await app.inject({
-        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: {}
-      });
-      assert.equal(missingSnapshotApproval.statusCode, 422, missingSnapshotApproval.body);
-      assert.equal(missingSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_REQUIRED");
-      const incompleteSnapshotApproval = await app.inject({
-        method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers: { cookie: cookieHeader },
-        payload: { attendanceSnapshot: attendanceSnapshot.slice(0, 1) }
-      });
-      assert.equal(incompleteSnapshotApproval.statusCode, 422, incompleteSnapshotApproval.body);
-      assert.equal(incompleteSnapshotApproval.json().error.code, "ATTENDANCE_SNAPSHOT_INCOMPLETE");
-      const missingAttendanceSnapshot=await app.inject({
-        method:"POST",url:`/api/payroll/periods/${period.rows[0].id}/approve`,
-        headers:{cookie:cookieHeader},payload:{}
-      });
-      assert.equal(missingAttendanceSnapshot.statusCode,422,missingAttendanceSnapshot.body);
-      assert.equal(missingAttendanceSnapshot.json().error.code,"ATTENDANCE_SNAPSHOT_REQUIRED");
       const pendingPayrollPunch=await apiPool.query(
-        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE','2099-01-15T08:00:00Z','IN','FINGERPRINT',TRUE,'PENDING',$2) RETURNING id",
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE',TIMESTAMP '2099-01-15 08:00:00' AT TIME ZONE 'Africa/Cairo','IN','FINGERPRINT',TRUE,'PENDING',$2) RETURNING id",
         [employeeA.rows[0].id,randomBytes(32).toString("hex")]
       );
       const blockedByPendingAttendance=await app.inject({
@@ -693,6 +788,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(blockedByPendingAttendance.json().error.code,"ATTENDANCE_REVIEW_REQUIRED");
       await apiPool.query("UPDATE attendance_punches SET review_status='APPROVED',reviewed_by=$2,reviewed_at=now() WHERE id=$1",
         [pendingPayrollPunch.rows[0].id,userId]);
+      await apiPool.query(
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE',TIMESTAMP '2099-01-15 16:00:00' AT TIME ZONE 'Africa/Cairo','OUT','FINGERPRINT',FALSE,'AUTO_ACCEPTED',$2)",
+        [employeeA.rows[0].id,randomBytes(32).toString("hex")]
+      );
       const approval = await app.inject({
         method: "POST", url: `/api/payroll/periods/${period.rows[0].id}/approve`,
         headers: { cookie: cookieHeader },
@@ -700,6 +799,48 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(approval.statusCode, 200, approval.body);
       assert.equal(approval.json().data.status, "APPROVED");
+      const authoritativeDay=(await apiPool.query(
+        "SELECT snapshot_data FROM payroll_attendance_snapshots WHERE payroll_item_id=(SELECT id FROM payroll_items WHERE period_id=$1 AND employee_id=$2) AND attendance_date='2099-01-15'",
+        [period.rows[0].id,employeeA.rows[0].id]
+      )).rows[0].snapshot_data;
+      assert.equal(authoritativeDay.status,"PRESENT","approval must derive the day from persisted punch records");
+      assert.equal(Number(authoritativeDay.workedMinutes),480,"client-supplied zero minutes must not override the actual punch pair");
+      assert.equal(Number(authoritativeDay.lateMinutes),0,"the persisted shift boundary should determine lateness");
+      const approvedPayrollItemId=(await apiPool.query(
+        "SELECT id FROM payroll_items WHERE period_id=$1 AND employee_id=$2",
+        [period.rows[0].id,employeeA.rows[0].id]
+      )).rows[0].id;
+      await assert.rejects(
+        apiPool.query("UPDATE payroll_attendance_snapshots SET snapshot_data=snapshot_data || jsonb_build_object('workedMinutes',0) WHERE payroll_item_id=$1 AND attendance_date='2099-01-15'",[approvedPayrollItemId]),
+        {code:"55000"},
+        "approved attendance snapshots must not be editable"
+      );
+      await assert.rejects(
+        apiPool.query("DELETE FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 AND attendance_date='2099-01-15'",[approvedPayrollItemId]),
+        {code:"55000"},
+        "approved attendance snapshots must not be deletable"
+      );
+      await assert.rejects(
+        apiPool.query("UPDATE payroll_attendance_calculations SET calculation_data=calculation_data || jsonb_build_object('minuteRate',0) WHERE payroll_item_id=$1",[approvedPayrollItemId]),
+        {code:"55000"},
+        "approved attendance calculation policy must remain frozen"
+      );
+      const overtimePunch=(await apiPool.query(
+        "INSERT INTO attendance_punches(employee_id,device_code,punch_at,status,verify_method,suspicious,review_status,external_key) VALUES($1,'PAYROLL-REVIEW-DEVICE',TIMESTAMP '2099-01-16 17:00:00' AT TIME ZONE 'Africa/Cairo','OVERTIME_IN','FINGERPRINT',FALSE,'AUTO_ACCEPTED',$2) RETURNING id",
+        [employeeA.rows[0].id,randomBytes(32).toString("hex")]
+      )).rows[0];
+      const correctedOvertime=await app.inject({
+        method:"POST",url:`/api/attendance/punches/${overtimePunch.id}/correction`,
+        headers:{cookie:cookieHeader},
+        payload:{decision:"APPLY_MANUAL",correctedStatus:"OVERTIME_OUT",correctedPunchAt:"2099-01-16T17:00:00+02:00",reason:"تصحيح نوع حركة إضافي في اختبار التكامل"}
+      });
+      assert.equal(correctedOvertime.statusCode,200,correctedOvertime.body);
+      assert.equal(correctedOvertime.json().data.corrected_status,"OVERTIME_OUT");
+      const frozenNextDay=(await apiPool.query(
+        "SELECT snapshot_data FROM payroll_attendance_snapshots WHERE payroll_item_id=$1 AND attendance_date='2099-01-16'",
+        [approvedPayrollItemId]
+      )).rows[0].snapshot_data;
+      assert.equal(Number(frozenNextDay.workedMinutes),0,"post-approval punch corrections must not rewrite the frozen payroll snapshot");
       const reconciliation = await app.inject({
         method: "GET", url: "/api/accounting/reconciliation/payroll", headers: { cookie: cookieHeader }
       });
@@ -707,11 +848,14 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.deepEqual(reconciliation.json().data.counts,{
         missingPayrollExpenses:0,
         missingAdjustmentLedgerEntries:0,
+        zeroNetPayrollSettlementMismatches:0,
+        advanceRepaymentLedgerMismatches:0,
         cashPaymentsMissingCustodyOut:0,
         payrollPaymentMismatches:0,
         advanceDeductionMismatches:0,
         paidPayrollMissingAdvanceRepayments:0,
-        expensesMissingCustodyLink:0
+        expensesMissingCustodyLink:0,
+        advanceRepaymentsMissingCustodyIn:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
@@ -784,8 +928,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       const februaryAttendanceSnapshot = Array.from({length:28},(_,index)=>{
         const date = `2099-02-${String(index+1).padStart(2,"0")}`;
         return [
-          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false},
-          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,needsReview:false}
+          {date,employeeId:employeeA.rows[0].id,status:"PRESENT",isDayOff:false,firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,needsReview:false},
+          {date,employeeId:employeeB.rows[0].id,status:"PRESENT",isDayOff:false,firstIn:null,lastOut:null,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,needsReview:false}
         ];
       }).flat();
       const februaryApproval = await app.inject({
@@ -904,6 +1048,12 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "custody outflow must include the 600 cash paid plus 400 advance repayment");
       assert.equal(Number(custodySummary.rows.find((row:any)=>row.direction==="IN").amount),400,
         "advance repayment must be returned to the cash custody balance");
+      const februaryReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/payroll",headers:{cookie:cookieHeader}
+      });
+      assert.equal(februaryReconciliation.statusCode,200,februaryReconciliation.body);
+      assert.equal(februaryReconciliation.json().data.counts.missingPayrollExpenses,0,
+        "salary expense reconciliation must compare gross salary expense (take-home net plus advance recovery), not cash take-home alone");
       const februaryEmployeeB=februaryData.json().data.items.find((row:any)=>row.employee_id===employeeB.rows[0].id);
       assert.ok(februaryEmployeeB,"second employee should have a February payroll item");
       const previousCustodyPayment=await app.inject({
@@ -919,6 +1069,140 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       );
       assert.equal(previousCustodyMovements.rows[0].count,0,
         "previous-custody payroll settlement must not debit a custody balance twice");
+      const previousCustodyReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/payroll",headers:{cookie:cookieHeader}
+      });
+      assert.equal(previousCustodyReconciliation.statusCode,200,previousCustodyReconciliation.body);
+      assert.equal(previousCustodyReconciliation.json().data.counts.cashPaymentsMissingCustodyOut,0,
+        "a documented previous-custody settlement must not be flagged for lacking a second current-custody outflow");
+
+      // A payroll whose full net amount is consumed by advance installments must settle
+      // those advances at approval without inventing a zero-value payment or custody movement.
+      const zeroNetAdvance=await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,installment_amount,repayment_status)
+         VALUES($1,600,'Zero-net payroll settlement test','PAID',$2,$2,'2099-02-28T12:00:00Z','FIXED_INSTALLMENT',600,'OPEN')
+         RETURNING id`,
+        [employeeA.rows[0].id,userId]
+      );
+      await apiPool.query(
+        `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
+         VALUES($1,'ADJUSTMENT',600,$2,'صرف سلفة تسوية صافي صفر للاختبار')`,
+        [employeeA.rows[0].id,userId]
+      );
+      const marchGenerate=await app.inject({
+        method:"POST",url:"/api/payroll/generate",headers:{cookie:cookieHeader},payload:{month:"2099-03"}
+      });
+      assert.equal(marchGenerate.statusCode,201,marchGenerate.body);
+      const marchData=await app.inject({method:"GET",url:"/api/payroll?month=2099-03",headers:{cookie:cookieHeader}});
+      assert.equal(marchData.statusCode,200,marchData.body);
+      const marchItem=marchData.json().data.items.find((row:any)=>row.employee_id===employeeA.rows[0].id);
+      assert.ok(marchItem,"employee with a salary profile must be included in March payroll");
+      assert.equal(Number(marchItem.advance_repayment_amount),1000,
+        "the available 1,000 salary must be allocated across the three open advances");
+      assert.equal(Number(marchItem.net_amount),0,"advance installments equal the full take-home salary");
+      const marchApproval=await app.inject({
+        method:"POST",url:`/api/payroll/periods/${marchData.json().data.period.id}/approve`,headers:{cookie:cookieHeader}
+      });
+      assert.equal(marchApproval.statusCode,200,marchApproval.body);
+      const zeroNetState=await apiPool.query(
+        `SELECT i.status,i.net_amount,i.advance_repayment_amount,
+                (SELECT COUNT(*)::int FROM payroll_payments pp WHERE pp.payroll_item_id=i.id) AS payment_count,
+                (SELECT COUNT(*)::int FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id) AS repayment_count,
+                (SELECT COALESCE(SUM(ar.amount),0) FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id) AS repaid_amount,
+                (SELECT COUNT(*)::int FROM employee_earnings_ledger el WHERE el.payroll_advance_offset_item_id=i.id) AS offset_ledger_count,
+                (SELECT COALESCE(SUM(c.amount),0) FROM cash_custody_transactions c
+                  WHERE c.source_id=i.id AND c.source_type IN ('PAYROLL_PAYMENT','PAYROLL_ADVANCE_REPAYMENT_OFFSET')) AS custody_amount
+           FROM payroll_items i WHERE i.id=$1`,
+        [marchItem.id]
+      );
+      assert.equal(zeroNetState.rows[0].status,"PAID");
+      assert.equal(Number(zeroNetState.rows[0].net_amount),0);
+      assert.equal(Number(zeroNetState.rows[0].payment_count),0,"zero-net settlement must not fabricate a cash payment");
+      assert.equal(Number(zeroNetState.rows[0].repayment_count),3,"all allocated advances must be repaid exactly once");
+      assert.equal(Number(zeroNetState.rows[0].repaid_amount),1000);
+      assert.equal(Number(zeroNetState.rows[0].offset_ledger_count),1,"employee salary entitlement must be cleared by one source-linked ledger debit");
+      assert.equal(Number(zeroNetState.rows[0].custody_amount),0,"non-cash settlement must not create custody movements");
+      const zeroNetAdvanceStatus=await apiPool.query("SELECT repayment_status FROM advance_requests WHERE id=$1",[zeroNetAdvance.rows[0].id]);
+      assert.equal(zeroNetAdvanceStatus.rows[0].repayment_status,"SETTLED");
+      const repeatedZeroNetRepayments=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM advance_repayments WHERE source_payroll_item_id=$1",[marchItem.id]
+      );
+      assert.equal(repeatedZeroNetRepayments.rows[0].count,3,"approval may not duplicate any advance repayment");
+      const marchReconciliation=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
+      assert.equal(marchReconciliation.statusCode,200,marchReconciliation.body);
+      assert.equal(marchReconciliation.json().data.counts.zeroNetPayrollSettlementMismatches,0,
+        "a correctly posted zero-net non-cash settlement must pass accounting reconciliation");
+      assert.equal(marchReconciliation.json().data.counts.advanceRepaymentLedgerMismatches,0,
+        "every advance repayment must have an exact employee-ledger credit");
+      const zeroNetRepaymentLedger=await apiPool.query(
+        `SELECT el.id,el.credit_amount FROM advance_repayments ar
+         JOIN employee_earnings_ledger el ON el.advance_repayment_id=ar.id
+         WHERE ar.source_payroll_item_id=$1 AND ar.advance_id=$2`,
+        [marchItem.id,zeroNetAdvance.rows[0].id]
+      );
+      assert.equal(zeroNetRepaymentLedger.rowCount,1);
+      await apiPool.query("UPDATE employee_earnings_ledger SET credit_amount=credit_amount+1 WHERE id=$1",[zeroNetRepaymentLedger.rows[0].id]);
+      const corruptedRepaymentLedger=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
+      assert.equal(corruptedRepaymentLedger.statusCode,200,corruptedRepaymentLedger.body);
+      assert.equal(corruptedRepaymentLedger.json().data.counts.advanceRepaymentLedgerMismatches,1,
+        "reconciliation must catch an incorrect advance repayment credit amount");
+      await apiPool.query("UPDATE employee_earnings_ledger SET credit_amount=$2 WHERE id=$1",
+        [zeroNetRepaymentLedger.rows[0].id,zeroNetRepaymentLedger.rows[0].credit_amount]);
+      const restoredRepaymentLedger=await app.inject({method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}});
+      assert.equal(restoredRepaymentLedger.json().data.counts.advanceRepaymentLedgerMismatches,0);
+
+      // Reversing a zero-net settlement must undo its offset and every linked
+      // advance repayment without inventing any cash-custody movement.
+      const zeroNetSettlementAmount=Number(marchItem.base_salary)+Number(marchItem.bonus_amount)-Number(marchItem.deduction_amount);
+      assert.ok(zeroNetSettlementAmount>0.01);
+      assert.equal(Math.abs(zeroNetSettlementAmount-Number(marchItem.advance_repayment_amount))<0.01,true);
+      const zeroNetReversalPayload={
+        sourceType:"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:marchItem.id,
+        amount:zeroNetSettlementAmount,reason:"عكس تسوية راتب بصافي صفر للاختبار",idempotencyKey:randomUUID()
+      };
+      const zeroNetReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:zeroNetReversalPayload
+      });
+      assert.equal(zeroNetReversal.statusCode,201,zeroNetReversal.body);
+      assert.equal(zeroNetReversal.json().data.lines.length,4,"the settlement and all three advance repayments must be reversed together");
+      const zeroNetReversalReplay=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:zeroNetReversalPayload
+      });
+      assert.equal(zeroNetReversalReplay.statusCode,200,zeroNetReversalReplay.body);
+      const zeroNetReversalId=zeroNetReversal.json().data.reversal.id;
+      const reversedZeroNetState=await apiPool.query(
+        `SELECT i.status,
+          (SELECT COUNT(*)::int FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id) AS original_repayments,
+          (SELECT COUNT(*)::int FROM financial_reversal_lines rl WHERE rl.reversal_id=$2) AS reversal_lines,
+          (SELECT COALESCE(SUM(credit_amount),0) FROM employee_earnings_ledger el
+            WHERE el.employee_id=i.employee_id AND el.notes LIKE '%عكس تسوية راتب بصافي صفر%'
+              AND el.notes LIKE '%' || i.id::text || '%') AS offset_reversal_credit,
+          (SELECT COALESCE(SUM(debit_amount),0) FROM employee_earnings_ledger el
+            WHERE el.employee_id=i.employee_id AND el.notes LIKE '%عكس سداد سلفة%'
+              AND EXISTS (SELECT 1 FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id
+                AND el.notes LIKE '%' || ar.id::text || '%')) AS repayment_reversal_debit,
+          (SELECT COUNT(*)::int FROM advance_requests a
+            WHERE a.id IN (SELECT ar.advance_id FROM advance_repayments ar WHERE ar.source_payroll_item_id=i.id)
+              AND a.repayment_status='OPEN') AS reopened_advances,
+          (SELECT COUNT(*)::int FROM cash_custody_transactions c
+            WHERE c.source_type='FINANCIAL_REVERSAL' AND c.source_id=$2) AS custody_movements
+         FROM payroll_items i WHERE i.id=$1`,
+        [marchItem.id,zeroNetReversalId]
+      );
+      assert.equal(reversedZeroNetState.rows[0].status,"REVERSED");
+      assert.equal(Number(reversedZeroNetState.rows[0].original_repayments),3);
+      assert.equal(Number(reversedZeroNetState.rows[0].reversal_lines),4);
+      assert.equal(Number(reversedZeroNetState.rows[0].offset_reversal_credit),zeroNetSettlementAmount);
+      assert.equal(Number(reversedZeroNetState.rows[0].repayment_reversal_debit),zeroNetSettlementAmount);
+      assert.equal(Number(reversedZeroNetState.rows[0].reopened_advances),3);
+      assert.equal(Number(reversedZeroNetState.rows[0].custody_movements),0,
+        "zero-net settlement reversal must not create cash-custody movements");
+      const zeroNetReversalReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:cookieHeader}
+      });
+      assert.equal(zeroNetReversalReconciliation.statusCode,200,zeroNetReversalReconciliation.body);
+      assert.equal(zeroNetReversalReconciliation.json().data.counts.zeroNetPayrollSettlementMismatches,0);
+      assert.equal(zeroNetReversalReconciliation.json().data.counts.advanceRepaymentLedgerMismatches,0);
 
       const concurrentCustodyHolder=await apiPool.query("INSERT INTO employees(full_name) VALUES('Concurrent Payroll Custody Holder') RETURNING id");
       await apiPool.query(
@@ -926,7 +1210,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         [concurrentCustodyHolder.rows[0].id,userId]
       );
       const concurrentPeriod=await apiPool.query(
-        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-03-01','APPROVED',$1,$1,now()) RETURNING id",
+        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-04-01','APPROVED',$1,$1,now()) RETURNING id",
         [userId]
       );
       const concurrentEmployees=await apiPool.query(
@@ -961,7 +1245,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       });
       assert.equal(duplicateFebruaryApproval.statusCode,409);
       assert.equal(duplicateFebruaryApproval.json().error.code,"PAYROLL_PERIOD_LOCKED");
-      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,1);
+      assert.equal((await apiPool.query("SELECT COUNT(*)::int AS count FROM advance_repayments WHERE advance_id=$1",[fixedAdvance.rows[0].id])).rows[0].count,2,
+        "the fixed advance must have one February cash repayment and one March zero-net repayment");
 
       const partialKey=randomUUID();
       const partialPayload={idempotencyKey:partialKey,amount:600,paymentMethod:"TEST"};
@@ -997,7 +1282,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
         [employeeA.rows[0].id]
       );
-      assert.equal(Number(finalEmployeeAccount.rows[0].balance),-900,"after all earned wages are paid, the employee account must equal the 900 remaining advance debt");
+      assert.equal(Number(finalEmployeeAccount.rows[0].balance),-500,
+        "after February cash repayment and March zero-net settlement, the employee account must equal the 500 remaining advance debt");
 
       const overpay = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
@@ -1033,10 +1319,31 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
          RETURNING id`,
         [employeeA.rows[0].id,userId]
       );
+      // Use a separate approved period with an unpaid item: the February item above
+      // has already been fully paid, so it must not be treated as a live reservation.
+      const reservationPeriod=await apiPool.query(
+        "INSERT INTO payroll_periods(period_month,status,generated_by,approved_by,approved_at) VALUES('2099-05-01','APPROVED',$1,$1,now()) RETURNING id",
+        [userId]
+      );
+      const reservationItem=await apiPool.query(
+        "INSERT INTO payroll_items(period_id,employee_id,base_salary,status) VALUES($1,$2,100,'UNPAID') RETURNING id",
+        [reservationPeriod.rows[0].id,employeeA.rows[0].id]
+      );
       await apiPool.query(
         "INSERT INTO payroll_advance_deductions(payroll_item_id,advance_id,amount,repayment_type) VALUES($1,$2,10,'FIXED_INSTALLMENT')",
-        [februaryItem.id,diagnosticAdvance.rows[0].id]
+        [reservationItem.rows[0].id,diagnosticAdvance.rows[0].id]
       );
+      const reservedManualRepayment=await app.inject({
+        method:"POST",url:`/api/advances/${diagnosticAdvance.rows[0].id}/repayments`,
+        headers:{cookie:secondCookieHeader},
+        payload:{amount:10,repaymentType:"CUSTOM",idempotencyKey:randomUUID()}
+      });
+      assert.equal(reservedManualRepayment.statusCode,409,reservedManualRepayment.body);
+      assert.equal(reservedManualRepayment.json().error.code,"ADVANCE_INSTALLMENT_RESERVED",
+        "manual collection must not consume an installment already reserved by an approved unpaid payroll item");
+      // Deliberately corrupt the diagnostic item into a paid state without committing
+      // its reserved installment, so reconciliation must report the missing repayment.
+      await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=10,status='PAID' WHERE id=$1",[reservationItem.rows[0].id]);
       await apiPool.query("UPDATE payroll_items SET advance_repayment_amount=411 WHERE id=$1",[februaryItem.id]);
       await apiPool.query("UPDATE payroll_items SET status='PAID' WHERE id=$1",[itemB.rows[0].id]);
       const diagnosticExpense = await apiPool.query(
@@ -1059,6 +1366,15 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       await apiPool.query(
         "UPDATE employee_earnings_ledger SET employee_id=$1,credit_amount=99 WHERE payroll_adjustment_line_id=$2",
         [employeeB.rows[0].id,januaryBonusLineId]
+      );
+      // A direct advance repayment must have one matching cash-custody IN movement.
+      await apiPool.query(
+        "UPDATE cash_custody_transactions SET amount=49 WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",
+        [earlyRepayment.json().data.repayment.id]
+      );
+      await apiPool.query(
+        "UPDATE employee_earnings_ledger SET credit_amount=49 WHERE advance_repayment_id=$1",
+        [earlyRepayment.json().data.repayment.id]
       );
 
       // A cash payment must be reconciled against the exact custody OUT amount.
@@ -1113,6 +1429,16 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "integrity overview must detect a paid payroll deduction without its advance repayment ledger row");
       assert.ok(findingData.counts.expensesMissingCustodyLink>=1,
         "integrity overview must detect an explicitly linked custody movement with a different employee and amount");
+      assert.ok(findingData.counts.advanceRepaymentsMissingCustodyIn>=1,
+        "integrity overview must detect a manual advance repayment whose custody receipt is missing or has a different amount");
+      assert.ok(findingData.counts.advanceRepaymentLedgerMismatches>=1,
+        "integrity overview must detect a manual advance repayment with a missing or incorrect employee-ledger credit");
+      assert.ok(findingData.issues.advanceRepaymentLedgerMismatches.some((row:{repayment_id:string;credit_amount:string|number|null})=>
+        row.repayment_id===earlyRepayment.json().data.repayment.id&&Number(row.credit_amount)!==50),
+        "integrity overview must identify the exact manual advance repayment ledger mismatch");
+      assert.ok(findingData.issues.advanceRepaymentsMissingCustodyIn.some((row:{repayment_id:string;amount:string;custody_amount:string}) =>
+        row.repayment_id===earlyRepayment.json().data.repayment.id && Number(row.custody_amount)!==Number(row.amount)),
+        "integrity overview must identify the mismatched manual advance repayment receipt");
       assert.ok(findingData.counts.missingAdjustmentLedgerEntries>=1,
         "integrity overview must detect a source-linked adjustment with the wrong employee and amount");
       assert.ok(findingData.counts.cashPaymentsMissingCustodyOut>=1,

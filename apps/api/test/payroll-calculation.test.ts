@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "../src/modules/payroll/payroll-calculation.js";
+import { calculatePayrollAttendance } from "../src/modules/payroll/payroll-attendance-calculation.js";
 
 test("fixed deduction rounds the payable amount to two decimal places", () => {
   const result = calculatePayrollDeduction({
@@ -44,4 +45,135 @@ test("percentage deduction rejects missing, zero, negative and over-100 values",
 test("salary expense reconciliation adds advance repayment back to take-home pay", () => {
   assert.equal(calculatePayrollExpenseAmount(5700, 300), 6000);
   assert.equal(calculatePayrollExpenseAmount(0, 6000), 6000);
+});
+
+
+test("minute-based attendance payroll uses 26 days x 8 hours and prices all deduction minutes", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [
+      { date: "2026-11-02", status: "PRESENT", lateMinutes: 30, earlyMinutes: 15, unpaidPermissionMinutes: 60 },
+      { date: "2026-11-03", status: "ABSENT" },
+      { date: "2026-11-04", status: "PRESENT", overtimeMinutes: 120 },
+      { date: "2026-11-05", status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 480 }
+    ]
+  });
+  assert.equal(result.scheduledMinutes, 12480);
+  assert.equal(result.minuteRate, 0.4808);
+  assert.equal(result.deductionMinutes, 585);
+  assert.equal(result.deductionAmount, 281.25);
+  assert.equal(result.overtimeBonus, 86.54);
+  assert.equal(result.dayOffBonus, 200);
+  assert.equal(result.totalBonus, 286.54);
+});
+
+test("minute-based attendance payroll refuses unresolved and missing-punch days", () => {
+  const policy = { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 };
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000, existingBonus: 0, policy,
+    days: [{ date: "2026-11-02", status: "PRESENT", needsReview: true }]
+  }), /ATTENDANCE_REVIEW_REQUIRED/);
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000, existingBonus: 0, policy,
+    days: [{ date: "2026-11-02", status: "MISSING_PUNCH" }]
+  }), /ATTENDANCE_MISSING_PUNCH/);
+});
+
+
+test("minute-based payroll requires a configured rest-day rate when a rest day was worked", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 0, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-06", status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 240 }]
+  }), /DAY_OFF_RATE_REQUIRED/);
+});
+
+
+test("paid permission time is credited against a full-day absence before deduction", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-07", status: "ABSENT", paidPermissionMinutes: 120 }]
+  });
+  assert.equal(result.paidPermissionMinutes, 120);
+  assert.equal(result.absenceMinutes, 360);
+  assert.equal(result.deductionAmount, 173.08);
+});
+
+
+test("unpaid permission on a full absence is itemized separately without double deduction", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{
+      date: "2026-11-07",
+      status: "ABSENT",
+      paidPermissionMinutes: 60,
+      unpaidPermissionMinutes: 60
+    }]
+  });
+  assert.equal(result.paidPermissionMinutes, 60);
+  assert.equal(result.unpaidPermissionMinutes, 60);
+  assert.equal(result.absenceMinutes, 360);
+  assert.equal(result.deductionMinutes, 420);
+  assert.equal(result.deductionAmount, 201.92);
+});
+
+test("minute-based payroll blocks worked days without a schedule classification", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-08", status: "NO_SCHEDULE_WITH_PUNCH", workedMinutes: 240 }]
+  }), /ATTENDANCE_SCHEDULE_REQUIRED/);
+});
+
+
+test("minute-based payroll requires a schedule for every attendance day", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-09", status: "NO_SCHEDULE", workedMinutes: 0 }]
+  }), /ATTENDANCE_SCHEDULE_REQUIRED/);
+});
+
+
+test("minute rate denominator is prorated for a salary active during half the month", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 3000,
+    existingBonus: 0,
+    policy: {
+      workDaysPerMonth: 26,
+      dailyWorkMinutes: 480,
+      dayOffPayAmount: 0,
+      overtimeMultiplier: 1.5,
+      scheduledMinutes: 26 * 480 / 2
+    },
+    days: [{ date: "2026-11-20", status: "PRESENT", lateMinutes: 30 }]
+  });
+  assert.equal(result.scheduledMinutes, 6240);
+  assert.equal(result.minuteRate, 0.4808);
+  assert.equal(result.deductionMinutes, 30);
+  assert.equal(result.deductionAmount, 14.42);
+});
+
+test("minute rate rejects a zero effective scheduled-minute denominator", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 3000,
+    existingBonus: 0,
+    policy: {
+      workDaysPerMonth: 26,
+      dailyWorkMinutes: 480,
+      dayOffPayAmount: 0,
+      overtimeMultiplier: 1.5,
+      scheduledMinutes: 0
+    },
+    days: []
+  }), /Invalid scheduled payroll minutes/);
 });

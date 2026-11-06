@@ -21,11 +21,18 @@ type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:st
 type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
 type PayrollReconciliation = {
   checkedAt:string;
-  counts:{missingPayrollExpenses:number;missingAdjustmentLedgerEntries:number;cashPaymentsMissingCustodyOut:number};
+  counts:{
+    missingPayrollExpenses:number;missingAdjustmentLedgerEntries:number;cashPaymentsMissingCustodyOut:number;
+    payrollPaymentMismatches:number;advanceDeductionMismatches:number;paidPayrollMissingAdvanceRepayments:number;
+    expensesMissingCustodyLink:number;advanceRepaymentsMissingCustodyIn:number;
+    zeroNetPayrollSettlementMismatches:number;advanceRepaymentLedgerMismatches:number;
+  };
   issues:{
     missingPayrollExpenses:Array<{payroll_item_id:string;employee_id:string;full_name:string;period_month:string;net_amount:string|number;accounting_expense_id:string|null;expense_amount:string|number|null;category:string|null}>;
     missingAdjustmentLedgerEntries:Array<{adjustment_line_id:string;payroll_item_id:string;employee_id:string;full_name:string;period_month:string;line_type:string;description:string;amount:string|number}>;
     cashPaymentsMissingCustodyOut:Array<{payment_id:string;payroll_item_id:string;employee_id:string;full_name:string;period_month:string;payment_date:string;amount:string|number;reference:string|null}>;
+    zeroNetPayrollSettlementMismatches:Array<{payroll_item_id:string;full_name:string;period_month:string;expected_offset:string|number;debit_amount:string|number|null;committed_repayments:string|number}>;
+    advanceRepaymentLedgerMismatches:Array<{repayment_id:string;payroll_item_id:string|null;full_name:string;period_month:string;advance_code:string;expected_repayment_amount:string|number;repayment_amount:string|number;credit_amount:string|number|null}>;
   };
 };
 
@@ -68,6 +75,11 @@ export default function AccountingPage() {
   const [payrollReconciliation,setPayrollReconciliation]=useState<PayrollReconciliation|null>(null);
   const [reconciliationLoading,setReconciliationLoading]=useState(false);
 
+  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:"",amount:"",reason:""});
+  const [reversalSaving,setReversalSaving]=useState(false);
+  const [reversals,setReversals]=useState<Array<{id:string;code:string;reason:string;reversal_date:string;created_at:string;created_by_username:string;source_type:string;source_id:string;amount:string|number}>>([]);
+
+
   async function load() {
     setError("");
     try {
@@ -82,6 +94,7 @@ export default function AccountingPage() {
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
+  useEffect(()=>{void loadReversals()},[has]);
   useEffect(()=>{
     let active=true;
     if(!eForm.orderId||eForm.expenseType!=="DIRECT"){setExpenseStages([]);return;}
@@ -96,6 +109,26 @@ export default function AccountingPage() {
     if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
     return()=>{active=false};
   },[has]);
+  async function loadReversals(){
+    if(!has("finance.expenses.view"))return;
+    try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
+  }
+  async function submitReversal(){
+    setError("");setMessage("");
+    if(!reversalForm.sourceId.trim()||!reversalForm.amount||!reversalForm.reason.trim()){setError("أدخل معرّف الحركة والمبلغ وسبب العكس");return;}
+    setReversalSaving(true);
+    try{
+      await api("/api/accounting/reversals",{method:"POST",body:JSON.stringify({
+        sourceType:reversalForm.sourceType,sourceId:reversalForm.sourceId.trim(),amount:Number(reversalForm.amount),
+        reason:reversalForm.reason.trim(),idempotencyKey:crypto.randomUUID()
+      })});
+      setReversalForm(v=>({...v,sourceId:"",amount:"",reason:""}));
+      await loadReversals();
+      setMessage("تم تسجيل العكس المحاسبي مع الاحتفاظ بالحركة الأصلية.");
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل العكس المحاسبي");}
+    finally{setReversalSaving(false);}
+  }
+
   async function runPayrollReconciliation(){
     if(!has("finance.expenses.view"))return;
     setReconciliationLoading(true);setError("");setMessage("");
@@ -270,6 +303,18 @@ export default function AccountingPage() {
      {error&&<div className="alert error">{error}</div>}
      {message&&<div className="success-box">{message}</div>}
 
+     {has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
+      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
+      <div className="form-grid" style={{padding:"0 16px 16px"}}>
+       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
+       <label>معرّف الحركة الأصلية (UUID)<input value={reversalForm.sourceId} onChange={e=>setReversalForm(v=>({...v,sourceId:e.target.value}))} placeholder="الصق معرّف الحركة"/></label>
+       <label>مبلغ العكس (ج.م)<input type="number" min="0.01" step="0.01" value={reversalForm.amount} onChange={e=>setReversalForm(v=>({...v,amount:e.target.value}))}/></label>
+       <label style={{gridColumn:"1 / -1"}}>سبب العكس<textarea rows={2} value={reversalForm.reason} onChange={e=>setReversalForm(v=>({...v,reason:e.target.value}))} placeholder="اكتب سبب التصحيح بالتفصيل"/></label>
+       <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" type="button" disabled={reversalSaving} onClick={()=>void submitReversal()}>{reversalSaving?"جارٍ التسجيل...":"تسجيل العكس"}</button></div>
+      </div>
+      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
+     </section>}
+
      <div className="tabs finance-tabs">
       <button className={"tab "+(tab==="dashboard"?"active":"")} onClick={()=>setTab("dashboard")}>الرئيسية المالية</button>
       <button className={"tab "+(tab==="in"?"active":"")} onClick={()=>setTab("in")}>الداخل</button>
@@ -324,11 +369,20 @@ export default function AccountingPage() {
          <article className="card stat"><div className="stat-label">مصروفات رواتب تحتاج مراجعة</div><div className="stat-value">{payrollReconciliation.counts.missingPayrollExpenses}</div></article>
          <article className="card stat"><div className="stat-label">بنود غير مرتبطة بدفتر الموظف</div><div className="stat-value">{payrollReconciliation.counts.missingAdjustmentLedgerEntries}</div></article>
          <article className="card stat"><div className="stat-label">دفعات نقدية بلا حركة عهدة</div><div className="stat-value">{payrollReconciliation.counts.cashPaymentsMissingCustodyOut}</div></article>
+         <article className="card stat"><div className="stat-label">اختلافات سداد السلف</div><div className="stat-value">{payrollReconciliation.counts.advanceRepaymentLedgerMismatches}</div></article>
+         <article className="card stat"><div className="stat-label">تسويات راتب بصافي صفر غير مكتملة</div><div className="stat-value">{payrollReconciliation.counts.zeroNetPayrollSettlementMismatches}</div></article>
+         <article className="card stat"><div className="stat-label">عدم تطابق سداد السلف مع المسير</div><div className="stat-value">{payrollReconciliation.counts.advanceDeductionMismatches}</div></article>
+         <article className="card stat"><div className="stat-label">مسيرات مدفوعة دون سداد السلف</div><div className="stat-value">{payrollReconciliation.counts.paidPayrollMissingAdvanceRepayments}</div></article>
+         <article className="card stat"><div className="stat-label">دفعات رواتب غير متطابقة</div><div className="stat-value">{payrollReconciliation.counts.payrollPaymentMismatches}</div></article>
+         <article className="card stat"><div className="stat-label">مصروفات بلا ربط بالعهدة</div><div className="stat-value">{payrollReconciliation.counts.expensesMissingCustodyLink}</div></article>
+         <article className="card stat"><div className="stat-label">سلف يدوية بلا توريد للعهدة</div><div className="stat-value">{payrollReconciliation.counts.advanceRepaymentsMissingCustodyIn}</div></article>
         </div>
         <div className="form-hint">آخر فحص: {new Date(payrollReconciliation.checkedAt).toLocaleString("ar-EG")}. النتائج تنبيهات للمراجعة فقط، ولا يتم إصلاح السجلات تلقائيًا.</div>
         {payrollReconciliation.counts.missingPayrollExpenses>0&&<div className="table-wrap"><h3>مصروفات الرواتب</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>صافي المسير</th><th>مصروف الحسابات</th><th>التصنيف</th></tr></thead><tbody>{payrollReconciliation.issues.missingPayrollExpenses.map(x=><tr key={x.payroll_item_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{n(Number(x.net_amount))}</td><td>{x.expense_amount==null?"غير موجود":n(Number(x.expense_amount))}</td><td>{x.category||"—"}</td></tr>)}</tbody></table></div>}
         {payrollReconciliation.counts.missingAdjustmentLedgerEntries>0&&<div className="table-wrap"><h3>المكافآت والخصومات</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>{payrollReconciliation.issues.missingAdjustmentLedgerEntries.map(x=><tr key={x.adjustment_line_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.line_type==="BONUS"?"مكافأة":"خصم"}</td><td>{x.description}</td><td>{n(Number(x.amount))}</td></tr>)}</tbody></table></div>}
         {payrollReconciliation.counts.cashPaymentsMissingCustodyOut>0&&<div className="table-wrap"><h3>دفعات نقدية بلا حركة عهدة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>تاريخ الصرف</th><th>المبلغ</th><th>المرجع</th></tr></thead><tbody>{payrollReconciliation.issues.cashPaymentsMissingCustodyOut.map(x=><tr key={x.payment_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.payment_date}</td><td>{n(Number(x.amount))}</td><td>{x.reference||"—"}</td></tr>)}</tbody></table></div>}
+        {payrollReconciliation.counts.zeroNetPayrollSettlementMismatches>0&&<div className="table-wrap"><h3>تسويات رواتب بصافي صفر غير مكتملة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>المستحق الواجب تسويته</th><th>قيد الخصم</th><th>السلف المسددة</th></tr></thead><tbody>{payrollReconciliation.issues.zeroNetPayrollSettlementMismatches.map(x=><tr key={x.payroll_item_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{n(Number(x.expected_offset))}</td><td>{x.debit_amount==null?"غير موجود":n(Number(x.debit_amount))}</td><td>{n(Number(x.committed_repayments))}</td></tr>)}</tbody></table></div>}
+        {payrollReconciliation.counts.advanceRepaymentLedgerMismatches>0&&<div className="table-wrap"><h3>قيود سداد السلف غير المطابقة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>كود السلفة</th><th>قسط المسير</th><th>السداد المسجل</th><th>قيد الموظف</th></tr></thead><tbody>{payrollReconciliation.issues.advanceRepaymentLedgerMismatches.map(x=><tr key={x.repayment_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.advance_code}</td><td>{n(Number(x.expected_repayment_amount))}</td><td>{x.repayment_amount==null?"غير موجود":n(Number(x.repayment_amount))}</td><td>{x.credit_amount==null?"غير موجود":n(Number(x.credit_amount))}</td></tr>)}</tbody></table></div>}
        </>}
       </section>}
      </>}

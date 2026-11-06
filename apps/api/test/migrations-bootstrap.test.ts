@@ -32,6 +32,38 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
     try {
       const leader = await verification.query("SELECT id FROM roles WHERE code='shift_leader' AND is_active=TRUE");
       assert.equal(leader.rowCount, 1, "migration must seed the SHIFT_LEADER role");
+      const protectedAttendanceTables = [
+        "attendance_employee_settings","attendance_weekly_schedule","attendance_schedule_exceptions",
+        "attendance_import_batches","attendance_punches","attendance_weekly_schedule_versions",
+        "attendance_permission_requests","attendance_day_overrides","payroll_attendance_snapshots",
+        "employee_payroll_attendance_policies","payroll_attendance_calculations"
+      ];
+      const rls = await verification.query(
+        `SELECT c.relname,c.relrowsecurity
+           FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='public' AND c.relname=ANY($1::text[])
+          ORDER BY c.relname`,
+        [protectedAttendanceTables]
+      );
+      assert.deepEqual(
+        rls.rows,
+        [...protectedAttendanceTables].sort().map(relname=>({relname,relrowsecurity:true})),
+        "attendance and payroll attendance records must be protected from direct Supabase Data API access"
+      );
+      const permissionTypeColumn = await verification.query(
+        `SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='attendance_permission_requests' AND column_name='permission_type'`
+      );
+      assert.equal(permissionTypeColumn.rows[0]?.is_nullable,"YES",
+        "a pending employee request must not have a pay classification before management reviews it");
+      const approvedTypeConstraint = await verification.query(
+        `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+          WHERE conrelid='public.attendance_permission_requests'::regclass AND contype='c'`
+      );
+      assert.ok(approvedTypeConstraint.rows.some((row:{definition:string})=>
+        /status = 'APPROVED'.*permission_type IS NOT NULL/.test(row.definition)
+        && /status <> 'APPROVED'.*permission_type IS NULL/.test(row.definition)
+      ), "only approved permissions may carry a paid/unpaid classification; pending, rejected and cancelled requests must remain unclassified");
       const requiredPermissions = [
         "employees.lookup", "orders.view", "products.view", "shifts.view", "rates.view",
         "machines.view", "machine_production.view", "machine_production.create",

@@ -15,7 +15,7 @@ type PayrollData = { period: { id: string; period_month: string; status: string 
 type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
-const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل" };
+const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل", REVERSED: "تم عكس التسوية" };
 
 export default function PayrollSlipPage() {
   const [item, setItem] = useState<PayrollItem | null>(null);
@@ -120,7 +120,7 @@ export default function PayrollSlipPage() {
         <section className="net-box">
           <div><span>صافي المرتب المستحق لهذا الشهر</span><strong>{money(item.net_amount)} ج.م</strong></div>
           <div className="net-sub"><span>تم صرفه</span><strong>{money(item.paid_amount)} ج.م</strong><span>المتبقي للصرف</span><strong>{money(item.remaining_amount)} ج.م</strong></div>
-          <p>حالة الصرف: {statusLabels[item.status] || item.status}</p>
+          <p>حالة الصرف: {item.status==="PAID"&&Number(item.net_amount)<=0.0001?"تمت التسوية دون صرف نقدي":statusLabels[item.status] || item.status}</p>
         </section>
 
         {item.notes && <section className="slip-section"><h3>ملاحظات الإدارة</h3><p className="notes-box">{item.notes}</p></section>}
