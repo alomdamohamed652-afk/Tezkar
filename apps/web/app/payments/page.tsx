@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
@@ -20,23 +20,39 @@ const fallbackMethods:Record<string,string>={CASH:"نقدي",VODAFONE_CASH:"فو
 const statuses:Record<string,string>={PENDING:"قيد المراجعة",APPROVED:"بانتظار الصرف",REJECTED:"مرفوض",PAID:"تم الصرف",CANCELLED:"ملغي"};
 
 export default function PaymentsPage(){
- const { has } = usePermissions();
+ const { has, permissions, session } = usePermissions();
  const [balance,setBalance]=useState(0),[accountBalance,setAccountBalance]=useState(0),[outstandingAdvanceAmount,setOutstandingAdvanceAmount]=useState(0),[dueAdvanceRepaymentAmount,setDueAdvanceRepaymentAmount]=useState(0),[amount,setAmount]=useState(""),[method,setMethod]=useState("CASH"),[transferReference,setTransferReference]=useState(""),[methods,setMethods]=useState<Record<string,string>>(fallbackMethods),[requests,setRequests]=useState<Request[]>([]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[isWorker,setIsWorker]=useState(false);
  const [cashCustodians,setCashCustodians]=useState<CashCustodian[]>([]),[cashCustodyEmployeeId,setCashCustodyEmployeeId]=useState("");
  const [settlementSource,setSettlementSource]=useState<"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY">("CURRENT_CUSTODY"),[orders,setOrders]=useState<OrderOption[]>([]),[orderStages,setOrderStages]=useState<OrderStageOption[]>([]),[settlementOrderId,setSettlementOrderId]=useState(""),[settlementOrderStageId,setSettlementOrderStageId]=useState("");
  const [employees,setEmployees]=useState<Array<{id:string;code:string;full_name:string;is_active?:boolean}>>([]),[orderAccounts,setOrderAccounts]=useState<OrderAccountRow[]>([]),[orderAccountsLoading,setOrderAccountsLoading]=useState(false),[settlementEmployeeId,setSettlementEmployeeId]=useState(""),[settlementSummary,setSettlementSummary]=useState<{productionEarnings:number;bonuses:number;deductions:number;previouslySettled:number;outstandingAdvances:number;availableForSettlement:number;availableBreakdown?:{calculationMode:"PRODUCTION"|"LEDGER_FALLBACK";approvedProductionCount:number;productionNet:number;standaloneAdjustmentsNet:number;ledgerOnlyAdjustmentsNet:number;previouslySettled:number;ledgerBalance:number;outstandingAdvances:number;calculatedAvailable:number};orderAccount?:{orderId:string;orderStageId:string|null;earned:number;paid:number;remaining:number}|null}|null>(null),[settlementAmount,setSettlementAmount]=useState(""),[settlementMethod,setSettlementMethod]=useState("CASH"),[settlementReference,setSettlementReference]=useState(""),[settlementNotes,setSettlementNotes]=useState(""),[settlementSaving,setSettlementSaving]=useState(false),[unpaidProduction,setUnpaidProduction]=useState<UnpaidProduction[]>([]),[selectedProductionIds,setSelectedProductionIds]=useState<string[]>([]),[productionLoading,setProductionLoading]=useState(false),[settlementMode,setSettlementMode]=useState<"SELECTED_PRODUCTION"|"ALL_DUES">("ALL_DUES");const [employeeStatement,setEmployeeStatement]=useState<EmployeeStatement|null>(null),[statementLoading,setStatementLoading]=useState(false);
- async function load(){
-  try{
-   const me=await api<{data:{roleCodes:string[]}}>("/api/auth/me"); const worker=me.data.roleCodes.includes("worker"); setIsWorker(worker);
-   const [r,m]=await Promise.all([api<{data:Request[]}>("/api/payment-requests"),api<{data:{code:string;name:string}[]}>("/api/payment-methods")]);
-   setRequests(r.data); const map:Record<string,string>={};m.data.forEach(x=>map[x.code]=x.name);setMethods(map);
-   try{const cash=await api<{data:CashCustodian[]}>("/api/custodies/eligible-employees");setCashCustodians(cash.data);setCashCustodyEmployeeId(current=>current&&cash.data.some(x=>x.id===current)?current:(cash.data[0]?.id||""))}catch{setCashCustodians([]);setCashCustodyEmployeeId("");}
-   try{const e=await api<{data:Array<{id:string;code:string;full_name:string;is_active?:boolean}>}>("/api/worker-payments/eligible-employees");setEmployees(e.data.filter(x=>x.is_active!==false));setSettlementEmployeeId(current=>current&&e.data.some(x=>x.id===current)?current:(e.data.find(x=>x.is_active!==false)?.id||""))}catch{setEmployees([]);}
-   try{const o=await api<{data:OrderOption[]}>("/api/worker-payments/historical-allocation-orders");setOrders(o.data.filter(x=>!["CANCELLED","COMPLETED"].includes(x.status)));}catch{setOrders([]);}
-   if(worker){const b=await api<{data:{balance:number;availableEarnings:number;outstandingAdvanceAmount:number;dueAdvanceRepaymentAmount:number}}>("/api/payments/my-balance");setBalance(b.data.availableEarnings);setAccountBalance(b.data.balance);setOutstandingAdvanceAmount(b.data.outstandingAdvanceAmount);setDueAdvanceRepaymentAmount(b.data.dueAdvanceRepaymentAmount);}
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المدفوعات")}
- }
- useEffect(()=>{void load()},[]);
+ const load=useCallback(async()=>{
+  const worker=session?.roleCodes?.includes("worker")??false;
+  setIsWorker(worker);
+
+  // Request-review access is optional for payout-only finance roles. A forbidden
+  // request list must never abort loading the separate settlement workflow.
+  if(has("payment_requests.view")){
+   try{const r=await api<{data:Request[]}>("/api/payment-requests");setRequests(r.data)}catch{setRequests([])}
+   try{const m=await api<{data:{code:string;name:string}[]}>("/api/payment-methods");const map:Record<string,string>={};m.data.forEach(x=>map[x.code]=x.name);setMethods(map)}catch{setMethods(fallbackMethods)}
+  }else{
+   setRequests([]);
+   setMethods(fallbackMethods);
+  }
+
+  try{const cash=await api<{data:CashCustodian[]}>("/api/custodies/eligible-employees");setCashCustodians(cash.data);setCashCustodyEmployeeId(current=>current&&cash.data.some(x=>x.id===current)?current:(cash.data[0]?.id||""))}catch{setCashCustodians([]);setCashCustodyEmployeeId("")}
+  if(has("worker_payments.pay")){
+   try{const e=await api<{data:Array<{id:string;code:string;full_name:string;is_active?:boolean}>}>("/api/worker-payments/eligible-employees");const active=e.data.filter(x=>x.is_active!==false);setEmployees(active);setSettlementEmployeeId(current=>current&&active.some(x=>x.id===current)?current:(active[0]?.id||""))}catch{setEmployees([]);setSettlementEmployeeId("")}
+   try{const o=await api<{data:OrderOption[]}>("/api/worker-payments/historical-allocation-orders");setOrders(o.data.filter(x=>!["CANCELLED","COMPLETED"].includes(x.status)))}catch{setOrders([])}
+  }else{
+   setEmployees([]);setSettlementEmployeeId("");setOrders([]);
+  }
+  if(worker&&has("payment_requests.view")){
+   try{const b=await api<{data:{balance:number;availableEarnings:number;outstandingAdvanceAmount:number;dueAdvanceRepaymentAmount:number}}>("/api/payments/my-balance");setBalance(b.data.availableEarnings);setAccountBalance(b.data.balance);setOutstandingAdvanceAmount(b.data.outstandingAdvanceAmount);setDueAdvanceRepaymentAmount(b.data.dueAdvanceRepaymentAmount)}catch{setBalance(0);setAccountBalance(0);setOutstandingAdvanceAmount(0);setDueAdvanceRepaymentAmount(0)}
+  }else{
+   setBalance(0);setAccountBalance(0);setOutstandingAdvanceAmount(0);setDueAdvanceRepaymentAmount(0);
+  }
+ },[has,session]);
+ useEffect(()=>{if(permissions!==null)void load()},[permissions,load]);
  async function loadUnpaidProduction(employeeId:string){if(!employeeId){setUnpaidProduction([]);setSelectedProductionIds([]);return}setProductionLoading(true);try{const r=await api<{data:UnpaidProduction[]}>("/api/worker-payments/unpaid-production?employeeId="+encodeURIComponent(employeeId));setUnpaidProduction(r.data);setSelectedProductionIds(current=>current.filter(id=>r.data.some(row=>row.id===id)))}catch(e){setUnpaidProduction([]);setSelectedProductionIds([]);setError(e instanceof Error?e.message:"تعذر تحميل سجلات الإنتاج غير المدفوعة")}finally{setProductionLoading(false)}}
  useEffect(()=>{if(has("worker_payments.pay")&&settlementEmployeeId)void loadUnpaidProduction(settlementEmployeeId)},[settlementEmployeeId,has]);
  async function loadEmployeeStatement(employeeId:string){
