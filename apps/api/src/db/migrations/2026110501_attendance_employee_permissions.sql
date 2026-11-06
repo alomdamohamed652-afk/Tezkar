@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS attendance_permission_requests (
   starts_at time NOT NULL,
   ends_at time NOT NULL,
   duration_minutes integer NOT NULL CHECK (duration_minutes BETWEEN 1 AND 720),
-  permission_type text NOT NULL CHECK (permission_type IN ('PAID','UNPAID')),
+  permission_type text CHECK (permission_type IN ('PAID','UNPAID')),
   reason text NOT NULL CHECK (length(trim(reason)) >= 2),
   status text NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED','CANCELLED')),
   requested_by uuid NOT NULL REFERENCES users(id),
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS attendance_permission_requests (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (ends_at > starts_at),
+  CHECK (status <> 'APPROVED' OR permission_type IS NOT NULL),
   CHECK (
     (status = 'PENDING' AND reviewed_by IS NULL AND reviewed_at IS NULL)
     OR status <> 'PENDING'
