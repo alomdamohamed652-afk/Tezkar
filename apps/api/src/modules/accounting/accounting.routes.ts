@@ -61,14 +61,16 @@ export async function accountingRoutes(app:FastifyInstance){
   const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
-           i.net_amount,i.accounting_expense_id,e.amount AS expense_amount,e.category
+           i.net_amount,i.advance_repayment_amount,
+           (i.net_amount+i.advance_repayment_amount) AS expected_salary_expense,
+           i.accounting_expense_id,e.amount AS expense_amount,e.category
       FROM payroll_items i
       JOIN payroll_periods p ON p.id=i.period_id
       JOIN employees emp ON emp.id=i.employee_id
       LEFT JOIN accounting_expenses e ON e.id=i.accounting_expense_id
      WHERE p.status IN ('APPROVED','CLOSED') AND i.net_amount>0
        AND (e.id IS NULL OR e.category IS DISTINCT FROM 'SALARIES'
-            OR ROUND(e.amount::numeric,2)<>ROUND(i.net_amount::numeric,2))
+            OR ROUND(e.amount::numeric,2)<>ROUND((i.net_amount+i.advance_repayment_amount)::numeric,2))
      ORDER BY p.period_month,emp.full_name`),
    pool.query(`
     SELECT l.id AS adjustment_line_id,l.payroll_item_id,i.employee_id,emp.full_name,
