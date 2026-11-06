@@ -1210,7 +1210,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
         [employeeA.rows[0].id]
       );
-      assert.equal(Number(finalEmployeeAccount.rows[0].balance),-900,"after all earned wages are paid, the employee account must equal the 900 remaining advance debt");
+      assert.equal(Number(finalEmployeeAccount.rows[0].balance),-500,
+        "after February cash repayment and March zero-net settlement, the employee account must equal the 500 remaining advance debt");
 
       const overpay = await app.inject({
         method: "POST", url: `/api/payroll/items/${itemA.rows[0].id}/payments`,
