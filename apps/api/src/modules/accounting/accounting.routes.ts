@@ -125,6 +125,7 @@ export async function accountingRoutes(app:FastifyInstance){
            AND ci.source_id=pp.id AND ci.direction='IN'
       ) offsets ON TRUE
      WHERE UPPER(COALESCE(pp.payment_method,''))='CASH'
+       AND COALESCE(pp.settlement_source,'CURRENT_CUSTODY')<>'PREVIOUS_CUSTODY'
        AND (
          custody.out_count<>1
          OR ROUND(custody.out_amount::numeric,2) <>
