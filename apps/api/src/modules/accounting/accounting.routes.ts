@@ -116,8 +116,8 @@ export async function accountingRoutes(app:FastifyInstance){
      "SELECT advance_id,amount FROM payroll_advance_deductions WHERE payroll_item_id=$1 FOR UPDATE",[payment.payroll_item_id]);
     const deductionByAdvance=new Map<string,number>();
     for(const row of deductions.rows)deductionByAdvance.set(row.advance_id,(deductionByAdvance.get(row.advance_id)??0)+Number(row.amount));
-    if(deductionByAdvance.size!==linkedByAdvance.size||
-       [...deductionByAdvance].some(([advanceId,amount])=>Math.abs(amount-(linkedByAdvance.get(advanceId)??0))>0.01))
+    if(linkedOriginalAmount>0.0001&&(deductionByAdvance.size!==linkedByAdvance.size||
+       [...deductionByAdvance].some(([advanceId,amount])=>Math.abs(amount-(linkedByAdvance.get(advanceId)??0))>0.01)))
      throw new AppError("REVERSAL_ADVANCE_ALLOCATION_MISMATCH","أقساط السلف المسجلة في المسير لا تطابق عمليات السداد المرتبطة بدفعة الراتب؛ أوقفنا العكس لحماية الأرصدة",409);
     if(linkedAmount>0.0001&&input.amount<remaining-0.0001)
      throw new AppError("PAYROLL_REVERSAL_BUNDLE_REQUIRED","هذه الدفعة سوّت أقساط سلف؛ يجب عكس المتبقي من الدفعة بالكامل مع تسوية السلف المرتبطة",409);
