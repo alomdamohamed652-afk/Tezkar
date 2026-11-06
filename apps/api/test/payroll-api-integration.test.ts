@@ -903,7 +903,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         `SELECT l.id,l.line_type,l.amount,e.credit_amount,e.debit_amount
            FROM payroll_adjustment_lines l
            LEFT JOIN employee_earnings_ledger e ON e.payroll_adjustment_line_id=l.id
-          WHERE l.payroll_item_id IN ($1,$2)`,
+          WHERE l.payroll_item_id IN ($1,$2) AND l.status='ACTIVE'`,
         [itemA.rows[0].id,itemB.rows[0].id]
       );
       assert.equal(linkedAdjustments.rowCount,4);
