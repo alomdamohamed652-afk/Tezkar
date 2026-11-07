@@ -28,9 +28,11 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
  const first=new Date(from+"T00:00:00Z"),last=new Date(to+"T00:00:00Z");
  const daysCount=Math.round((last.getTime()-first.getTime())/86400000)+1;
  if(!Number.isFinite(daysCount)||daysCount<1||daysCount>62)throw new Error("ATTENDANCE_REPORT_RANGE_INVALID");
+ // Process the preceding calendar day to claim its overnight checkout before the requested range begins.
+ const processingFrom=addDateKey(from,-1);
    const employees=(await db.query(`SELECT e.id,e.code,e.full_name,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes,COALESCE(s.overnight_checkout_grace_minutes,120)::int overnight_checkout_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id WHERE ($1::boolean=TRUE OR e.is_active=TRUE) ORDER BY e.code`,[includeInactive])).rows;
-   const schedules=(await db.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$1::date) ORDER BY employee_id,weekday,effective_from",[from,to])).rows;
-   const exceptions=(await db.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[from,to])).rows;
+   const schedules=(await db.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions WHERE effective_from<=$2::date AND (effective_to IS NULL OR effective_to>=$1::date) ORDER BY employee_id,weekday,effective_from",[processingFrom,to])).rows;
+   const exceptions=(await db.query("SELECT id,employee_id,start_date::text,end_date::text,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE start_date<=$2::date AND end_date>=$1::date ORDER BY (end_date-start_date) ASC,created_at DESC",[processingFrom,to])).rows;
    // The report inputs are Cairo calendar dates. Compare local calendar dates explicitly instead of relying on the database session timezone.
    const raw=(await db.query(`SELECT id,employee_id,device_code,punch_at,corrected_punch_at,status,corrected_status,correction_decision,correction_note,correction_reviewed_by,correction_reviewed_at,verify_method,suspicious,review_status FROM attendance_punches WHERE (
      ((punch_at AT TIME ZONE 'Africa/Cairo')::date >= ($1::date - 1) AND (punch_at AT TIME ZONE 'Africa/Cairo')::date < ($2::date + 2))
@@ -62,7 +64,7 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
     exceptionsByEmployee.set(exception.employee_id,rows);
    }
    const today=cairoDateKey(new Date());const used=new Set<string>();const report:Record<string,unknown>[]=[];
-   for(let dayIndex=0;dayIndex<daysCount;dayIndex++){
+   for(let dayIndex=-1;dayIndex<daysCount;dayIndex++){
     const date=addDateKey(from,dayIndex);const weekday=new Date(date+"T00:00:00Z").getUTCDay();
     for(const employee of employees){
      const employeePunchDates=punchesByEmployeeAndDate.get(employee.id);
@@ -82,6 +84,8 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
       if(belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.corrected_status??p.status,shiftDate:date,overnight,scheduledEndMinute:end,checkoutGraceMinutes:employee.overnight_checkout_grace_minutes}))return true;
      });
      assigned.forEach(p=>used.add(p.id));
+     // The preceding day is processed only to reserve its punches; it is not part of this report.
+     if(dayIndex<0)continue;
      const correctionSuggestions=(!dayOff&&start!==null&&end!==null)?suggestBoundaryPunchCorrections({punches:assigned,shiftDate:date,startMinute:start,endMinute:end,overnight}):[];
      const ordered=[...assigned].sort((a,b)=>new Date(a.effectivePunchAt).getTime()-new Date(b.effectivePunchAt).getTime()).map(p=>({...p,punch_at:p.effectivePunchAt,status:p.corrected_status??p.status}));
      const selectedEvents=selectAttendanceDayEvents(ordered);
