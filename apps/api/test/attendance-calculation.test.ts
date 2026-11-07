@@ -334,3 +334,39 @@ test("a next-day checkout is not attached to a non-overnight shift", () => {
     scheduledEndMinute: 2 * 60,
   }), false);
 });
+
+
+test("20:00 to 04:00 overnight shift accepts a 06:00 next-day checkout within the default grace", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 6 * 60,
+    punchStatus: "OUT",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 4 * 60,
+  }), true);
+});
+
+test("overnight checkout grace can be configured and is enforced at its upper boundary", () => {
+  const base = {
+    punchLocalDate: "2026-11-06",
+    punchStatus: "OUT",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 4 * 60,
+    checkoutGraceMinutes: 90,
+  };
+  assert.equal(belongsToAttendanceShift({ ...base, punchMinute: 5 * 60 + 30 }), true);
+  assert.equal(belongsToAttendanceShift({ ...base, punchMinute: 5 * 60 + 31 }), false);
+});
+
+test("an early next-day checkout still belongs to the preceding overnight shift", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 2 * 60 + 30,
+    punchStatus: "OUT",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 4 * 60,
+  }), true);
+});
