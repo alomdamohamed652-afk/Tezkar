@@ -236,3 +236,84 @@ test("a report starting on a new month does not steal the prior month's overnigh
     ["nov-day-in", "nov-day-out"],
   );
 });
+
+
+test("attendance report applies each employee's configured overnight checkout grace", async () => {
+  const employee = {
+    id: "configured-grace-employee",
+    code: "EMP-GRACE",
+    full_name: "Configured Grace Employee",
+    device_code: "GRACE-1",
+    late_grace_minutes: 10,
+    early_grace_minutes: 5,
+    overnight_checkout_grace_minutes: 0,
+  };
+  const schedules = [
+    {
+      employee_id: employee.id,
+      weekday: 4,
+      starts_at: "20:00",
+      ends_at: "04:00",
+      is_day_off: false,
+      effective_from: "1900-01-01",
+      effective_to: null,
+    },
+    {
+      employee_id: employee.id,
+      weekday: 5,
+      starts_at: "08:00",
+      ends_at: "16:00",
+      is_day_off: false,
+      effective_from: "1900-01-01",
+      effective_to: null,
+    },
+  ];
+  const punch = (id: string, at: string, status: "IN" | "OUT") => ({
+    id,
+    employee_id: employee.id,
+    device_code: employee.device_code,
+    punch_at: new Date(at),
+    corrected_punch_at: null,
+    status,
+    corrected_status: null,
+    correction_decision: null,
+    correction_note: null,
+    correction_reviewed_by: null,
+    correction_reviewed_at: null,
+    verify_method: "FINGERPRINT",
+    suspicious: false,
+    review_status: "AUTO_ACCEPTED",
+  });
+  const punches = [
+    punch("grace-night-in", "2026-11-05T18:00:00.000Z", "IN"),
+    punch("grace-night-out", "2026-11-06T03:30:00.000Z", "OUT"), // 05:30 Cairo, beyond zero grace
+    punch("grace-day-in", "2026-11-06T06:00:00.000Z", "IN"),
+    punch("grace-day-out", "2026-11-06T14:00:00.000Z", "OUT"),
+  ];
+  const db = {
+    async query(sql: string) {
+      if (sql.includes("FROM employees e")) return { rows: [employee] };
+      if (sql.includes("FROM attendance_weekly_schedule_versions")) return { rows: schedules };
+      if (sql.includes("FROM attendance_schedule_exceptions")) return { rows: [] };
+      if (sql.includes("FROM attendance_punches")) return { rows: punches };
+      if (sql.includes("FROM attendance_day_overrides")) return { rows: [] };
+      if (sql.includes("FROM attendance_permission_requests")) return { rows: [] };
+      throw new Error("Unexpected attendance report query: " + sql);
+    },
+  };
+
+  const result = await buildAttendanceReport(db, "2026-11-05", "2026-11-06");
+  const overnight = result.data.find(row => row.date === "2026-11-05");
+  const daytime = result.data.find(row => row.date === "2026-11-06");
+  assert.ok(overnight);
+  assert.ok(daytime);
+  assert.deepEqual(
+    (overnight.punchTimeline as Array<{ id: string }>).map(item => item.id),
+    ["grace-night-in"],
+  );
+  assert.deepEqual(
+    (daytime.punchTimeline as Array<{ id: string }>).map(item => item.id),
+    ["grace-night-out", "grace-day-in", "grace-day-out"],
+  );
+  assert.equal(daytime.needsReview, true);
+});
