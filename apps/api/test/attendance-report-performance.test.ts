@@ -160,3 +160,79 @@ test("attendance report assigns next-day overnight checkout without stealing the
     ["day-in", "day-out"],
   );
 });
+
+
+test("a report starting on a new month does not steal the prior month's overnight checkout", async () => {
+  const employee = {
+    id: "month-boundary-employee",
+    code: "EMP-MONTH",
+    full_name: "Month Boundary Employee",
+    device_code: "MONTH-1",
+    late_grace_minutes: 10,
+    early_grace_minutes: 5,
+    overnight_checkout_grace_minutes: 120,
+  };
+  const schedules = [
+    {
+      employee_id: employee.id,
+      weekday: 6, // Saturday, 2026-10-31
+      starts_at: "20:00",
+      ends_at: "04:00",
+      is_day_off: false,
+      effective_from: "1900-01-01",
+      effective_to: null,
+    },
+    {
+      employee_id: employee.id,
+      weekday: 0, // Sunday, 2026-11-01
+      starts_at: "08:00",
+      ends_at: "16:00",
+      is_day_off: false,
+      effective_from: "1900-01-01",
+      effective_to: null,
+    },
+  ];
+  const punch = (id: string, at: string, status: "IN" | "OUT") => ({
+    id,
+    employee_id: employee.id,
+    device_code: employee.device_code,
+    punch_at: new Date(at),
+    corrected_punch_at: null,
+    status,
+    corrected_status: null,
+    correction_decision: null,
+    correction_note: null,
+    correction_reviewed_by: null,
+    correction_reviewed_at: null,
+    verify_method: "FINGERPRINT",
+    suspicious: false,
+    review_status: "AUTO_ACCEPTED",
+  });
+  const punches = [
+    punch("oct-night-in", "2026-10-31T18:00:00.000Z", "IN"),
+    punch("nov-early-out", "2026-11-01T02:00:00.000Z", "OUT"),
+    punch("nov-day-in", "2026-11-01T06:00:00.000Z", "IN"),
+    punch("nov-day-out", "2026-11-01T14:00:00.000Z", "OUT"),
+  ];
+  const db = {
+    async query(sql: string) {
+      if (sql.includes("FROM employees e")) return { rows: [employee] };
+      if (sql.includes("FROM attendance_weekly_schedule_versions")) return { rows: schedules };
+      if (sql.includes("FROM attendance_schedule_exceptions")) return { rows: [] };
+      if (sql.includes("FROM attendance_punches")) return { rows: punches };
+      if (sql.includes("FROM attendance_day_overrides")) return { rows: [] };
+      if (sql.includes("FROM attendance_permission_requests")) return { rows: [] };
+      throw new Error("Unexpected attendance report query: " + sql);
+    },
+  };
+
+  const result = await buildAttendanceReport(db, "2026-11-01", "2026-11-01");
+  assert.equal(result.data.length, 1);
+  const sunday = result.data[0];
+  assert.equal(sunday.punchCount, 2);
+  assert.equal(sunday.workedMinutes, 480);
+  assert.deepEqual(
+    (sunday.punchTimeline as Array<{ id: string }>).map(item => item.id),
+    ["nov-day-in", "nov-day-out"],
+  );
+});
