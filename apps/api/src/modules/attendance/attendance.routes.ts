@@ -10,7 +10,7 @@ import { buildAttendanceReport } from "./attendance-report.service.js";
 
 const rowSchema=z.object({No:z.union([z.string(),z.number()]).transform(String),"Date/Time":z.union([z.string(),z.number()]).transform(String),Status:z.unknown().optional(),Department:z.unknown().optional(),Name:z.unknown().optional(),"Location ID":z.unknown().optional(),"ID Number":z.unknown().optional(),VerifyCode:z.unknown().optional(),CardNo:z.unknown().optional()});
 const importSchema=z.object({sourceName:z.string().trim().min(1).max(255).default("attendance-import"),rows:z.array(z.record(z.string(),z.unknown())).min(1).max(5000)});
-const settingSchema=z.object({deviceCode:z.string().trim().max(80).nullable(),lateGraceMinutes:z.number().int().min(0).max(240).default(10),earlyGraceMinutes:z.number().int().min(0).max(240).default(5)});
+const settingSchema=z.object({deviceCode:z.string().trim().max(80).nullable(),lateGraceMinutes:z.number().int().min(0).max(240).default(10),earlyGraceMinutes:z.number().int().min(0).max(240).default(5),overnightCheckoutGraceMinutes:z.number().int().min(0).max(480).default(120)});
 const timePattern=/^([01]\d|2[0-3]):[0-5]\d$/;
 const scheduleSchema=z.object({effectiveFrom:z.string().date(),days:z.array(z.object({weekday:z.number().int().min(0).max(6),startsAt:z.string().regex(timePattern).nullable(),endsAt:z.string().regex(timePattern).nullable(),isDayOff:z.boolean()})).max(7)});
 const str=(v:unknown)=>v==null?"":String(v).trim();
@@ -36,7 +36,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   return {data:rows.rows,summary:summary.rows[0],batches:batches.rows};
  });
  app.get("/api/attendance/settings",{preHandler:[authenticateRequest,requirePermission("attendance.manage")]},async()=>{
-  const employees=await pool.query(`SELECT e.id,e.code,e.full_name,e.is_active,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id ORDER BY e.code`);
+  const employees=await pool.query(`SELECT e.id,e.code,e.full_name,e.is_active,s.device_code,COALESCE(s.late_grace_minutes,10)::int late_grace_minutes,COALESCE(s.early_grace_minutes,5)::int early_grace_minutes,COALESCE(s.overnight_checkout_grace_minutes,120)::int overnight_checkout_grace_minutes FROM employees e LEFT JOIN attendance_employee_settings s ON s.employee_id=e.id ORDER BY e.code`);
   const schedules=await pool.query("SELECT employee_id,weekday,starts_at::text,ends_at::text,is_day_off,effective_from::text,effective_to::text FROM attendance_weekly_schedule_versions ORDER BY employee_id,weekday,effective_from");
   const exceptions=await pool.query("SELECT id,employee_id,start_date,end_date,starts_at::text,ends_at::text,is_day_off,note FROM attendance_schedule_exceptions WHERE end_date>=CURRENT_DATE-30 ORDER BY start_date DESC LIMIT 200");
   return {employees:employees.rows,schedules:schedules.rows,exceptions:exceptions.rows};
@@ -47,7 +47,7 @@ export async function attendanceRoutes(app:FastifyInstance){
   const d=parsed.data;const saved=await withTransaction(async client=>{
    if(!(await client.query("SELECT id FROM employees WHERE id=$1",[id])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
    if(d.deviceCode&&(await client.query("SELECT employee_id FROM attendance_employee_settings WHERE device_code=$1 AND employee_id<>$2",[d.deviceCode,id])).rowCount)throw new AppError("DEVICE_CODE_IN_USE","كود الجهاز مربوط بموظف آخر",409);
-   const r=await client.query(`INSERT INTO attendance_employee_settings(employee_id,device_code,late_grace_minutes,early_grace_minutes) VALUES($1,$2,$3,$4) ON CONFLICT(employee_id) DO UPDATE SET device_code=EXCLUDED.device_code,late_grace_minutes=EXCLUDED.late_grace_minutes,early_grace_minutes=EXCLUDED.early_grace_minutes,updated_at=now() RETURNING employee_id,device_code,late_grace_minutes,early_grace_minutes`,[id,d.deviceCode||null,d.lateGraceMinutes,d.earlyGraceMinutes]);
+   const r=await client.query(`INSERT INTO attendance_employee_settings(employee_id,device_code,late_grace_minutes,early_grace_minutes,overnight_checkout_grace_minutes) VALUES($1,$2,$3,$4,$5) ON CONFLICT(employee_id) DO UPDATE SET device_code=EXCLUDED.device_code,late_grace_minutes=EXCLUDED.late_grace_minutes,early_grace_minutes=EXCLUDED.early_grace_minutes,overnight_checkout_grace_minutes=EXCLUDED.overnight_checkout_grace_minutes,updated_at=now() RETURNING employee_id,device_code,late_grace_minutes,early_grace_minutes,overnight_checkout_grace_minutes`,[id,d.deviceCode||null,d.lateGraceMinutes,d.earlyGraceMinutes,d.overnightCheckoutGraceMinutes]);
    if(d.deviceCode)await client.query("UPDATE attendance_punches SET employee_id=$1 WHERE employee_id IS NULL AND device_code=$2",[id,d.deviceCode]);await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"attendance",entityType:"attendance_settings",entityId:id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});return r.rows[0];
   });return {data:saved};
  });
