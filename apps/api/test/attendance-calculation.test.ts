@@ -370,3 +370,28 @@ test("an early next-day checkout still belongs to the preceding overnight shift"
     scheduledEndMinute: 4 * 60,
   }), true);
 });
+
+
+test("next-day overtime checkout can close the preceding overnight shift within grace", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 6 * 60,
+    punchStatus: "OVERTIME_OUT",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 4 * 60,
+    checkoutGraceMinutes: 120,
+  }), true);
+});
+
+test("next-day overtime start is never consumed as the prior shift checkout", () => {
+  assert.equal(belongsToAttendanceShift({
+    punchLocalDate: "2026-11-06",
+    punchMinute: 4 * 60,
+    punchStatus: "OVERTIME_IN",
+    shiftDate: "2026-11-05",
+    overnight: true,
+    scheduledEndMinute: 4 * 60,
+    checkoutGraceMinutes: 120,
+  }), false);
+});
