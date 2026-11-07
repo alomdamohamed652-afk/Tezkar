@@ -9,6 +9,7 @@ export type AttendancePunchEvent = {
 };
 
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
+export const DEFAULT_OVERNIGHT_CHECKOUT_GRACE_MINUTES = 120;
 
 /**
  * Assign punches to a scheduled shift using Cairo-local calendar dates.
@@ -23,6 +24,7 @@ export function belongsToAttendanceShift(input: {
   shiftDate: string;
   overnight: boolean;
   scheduledEndMinute: number | null;
+  checkoutGraceMinutes?: number;
 }): boolean {
   if (input.punchLocalDate === input.shiftDate) return true;
   const nextDay = new Date(input.shiftDate + "T00:00:00Z");
@@ -33,7 +35,8 @@ export function belongsToAttendanceShift(input: {
     && input.punchLocalDate === nextDate
     && isCheckout
     && input.scheduledEndMinute !== null
-    && input.punchMinute <= input.scheduledEndMinute + 120;
+    && input.punchMinute <= input.scheduledEndMinute
+      + Math.max(0, input.checkoutGraceMinutes ?? DEFAULT_OVERNIGHT_CHECKOUT_GRACE_MINUTES);
 }
 
 /**
