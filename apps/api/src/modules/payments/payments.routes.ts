@@ -835,72 +835,51 @@ export async function paymentsRoutes(app:FastifyInstance){
     return {data:result.rows};
   });
 
+  // Return every approved production record with its reconciled paid amount and derived payment status.
+  // Selection is restricted in the UI to records with a positive remaining balance.
   app.get("/api/worker-payments/unpaid-production", {
     preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
   }, async (request) => {
     const parsed=z.object({employeeId:z.string().uuid()}).safeParse(request.query);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار العامل غير صحيح",422);
     const result=await pool.query(`
-      SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,
-        COALESCE(p.total_earning_amount,p.earning_amount,0) AS total_earned,
-        o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,
-        s.name AS stage_name,
-        COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-        + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
-          JOIN worker_payments awp ON awp.id=a.worker_payment_id
-          WHERE a.production_entry_id=p.id
-            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
-              JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
-              WHERE aes.worker_payment_id=awp.id)),0)
-        + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
-          JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
-          WHERE wpa.production_entry_id=p.id
-            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
-              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-              WHERE es.worker_payment_id=wp.id)
-            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
-         + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
-             WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0) AS paid_amount,
-        GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-          - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-          - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
-          JOIN worker_payments awp ON awp.id=a.worker_payment_id
-          WHERE a.production_entry_id=p.id
-            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
-              JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
-              WHERE aes.worker_payment_id=awp.id)),0)
-          - COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+      WITH production_payment AS (
+        SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,
+          COALESCE(p.total_earning_amount,p.earning_amount,0) AS total_earned,
+          o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,
+          s.name AS stage_name,
+          COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+            WHERE a.production_entry_id=p.id),0)
+          + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            JOIN worker_payments awp ON awp.id=a.worker_payment_id
+            WHERE a.production_entry_id=p.id
+              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
+                JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
+                WHERE aes.worker_payment_id=awp.id)),0)
+          + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
             JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
             WHERE wpa.production_entry_id=p.id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                 JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                 WHERE es.worker_payment_id=wp.id)
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
-           - COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
-             WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0) AS remaining_amount
-      FROM production_entries p
-      LEFT JOIN order_stages os ON os.id=p.order_stage_id
-      LEFT JOIN production_orders o ON o.id=os.order_id
-      LEFT JOIN stages s ON s.id=os.stage_id
-      WHERE p.employee_id=$1 AND p.status='APPROVED'
-        AND GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-          - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-          - COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
-          JOIN worker_payments awp ON awp.id=a.worker_payment_id
-          WHERE a.production_entry_id=p.id
-            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
-              JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
-              WHERE aes.worker_payment_id=awp.id)),0)
-          - COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
-            JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
-            WHERE wpa.production_entry_id=p.id
-              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
-                JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-                WHERE es.worker_payment_id=wp.id)
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
-           - COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
-             WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0)>0.009
-      ORDER BY p.work_date ASC,p.created_at ASC,p.id ASC
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa
+                WHERE woa.worker_payment_id=wp.id)),0)
+          + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+            WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0) AS paid_amount
+        FROM production_entries p
+        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+        LEFT JOIN production_orders o ON o.id=os.order_id
+        LEFT JOIN stages s ON s.id=os.stage_id
+        WHERE p.employee_id=$1 AND p.status='APPROVED'
+      )
+      SELECT *,GREATEST(total_earned-paid_amount,0) AS remaining_amount,
+        CASE
+          WHEN paid_amount>=total_earned-0.009 THEN 'PAID'
+          WHEN paid_amount>0.009 THEN 'PARTIAL'
+          ELSE 'UNPAID'
+        END AS payment_status
+      FROM production_payment
+      ORDER BY work_date ASC,id ASC
     `,[parsed.data.employeeId]);
     return {data:result.rows};
   });
