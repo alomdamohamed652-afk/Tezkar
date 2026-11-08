@@ -1118,6 +1118,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(historicalAvailable.statusCode,200,historicalAvailable.body);
       assert.equal(Number(historicalAvailable.json().data.availableForSettlement),0,
         "historical marks must reduce payable production availability");
+      assert.equal(Number(historicalAvailable.json().data.previouslySettled),20,
+        "historical paid marks must be included in the displayed total paid, not only deducted invisibly");
+      assert.equal(Number(historicalAvailable.json().data.availableBreakdown.historicalPaid),20,
+        "the reconciliation breakdown must expose historical paid marks");
       const financialArtifacts=await apiPool.query(`
         SELECT
           (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS worker_payments,
