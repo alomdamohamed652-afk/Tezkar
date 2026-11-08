@@ -1113,8 +1113,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie}
       });
       assert.equal(historicalUnpaidAfter.statusCode,200,historicalUnpaidAfter.body);
-      assert.equal(historicalUnpaidAfter.json().data.some((row:any)=>row.id===historicalMarkProduction.id),false,
-        "historical mark must remove the production record from outstanding production dues");
+      const historicalPaidRow=historicalUnpaidAfter.json().data.find((row:any)=>row.id===historicalMarkProduction.id);
+      assert.ok(historicalPaidRow,"historically paid production remains visible for payment-status review");
+      assert.equal(historicalPaidRow.payment_status,"PAID","historical paid mark must classify the production as paid");
+      assert.equal(Number(historicalPaidRow.paid_amount),20);
+      assert.equal(Number(historicalPaidRow.remaining_amount),0);
       const historicalAvailable=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${historicalMarkEmployee.id}`,
         headers:{cookie:managerCookie}
@@ -1385,6 +1388,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "order summary must prefer settlement allocation even when stale order and legacy rows target a different production entry");
       assert.equal(Number(crossLedgerOrderRow.remaining_amount),10);
       assert.equal(crossLedgerOrderRow.payment_status,"PARTIAL");
+      const crossLedgerProductionStatus=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${crossLedgerWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(crossLedgerProductionStatus.statusCode,200,crossLedgerProductionStatus.body);
+      const partialProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionA.id);
+      assert.ok(partialProductionStatus,"partially paid production must remain visible in the settlement status list");
+      assert.equal(partialProductionStatus.payment_status,"PARTIAL");
+      assert.equal(Number(partialProductionStatus.paid_amount),10);
+      assert.equal(Number(partialProductionStatus.remaining_amount),0);
+      const unpaidProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionB.id);
+      assert.ok(unpaidProductionStatus,"unpaid production must remain visible in the settlement status list");
+      assert.equal(unpaidProductionStatus.payment_status,"UNPAID");
+      assert.equal(Number(unpaidProductionStatus.remaining_amount),10);
 
       // A partially allocated settlement owns only its canonical allocation rows.
       // The unallocated remainder still counts at order level, while stale order/legacy
