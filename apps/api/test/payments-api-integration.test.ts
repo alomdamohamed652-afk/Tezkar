@@ -1297,8 +1297,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
       assert.equal(unpaidAfterHistoricalReconcile.statusCode,200,unpaidAfterHistoricalReconcile.body);
-      assert.equal(unpaidAfterHistoricalReconcile.json().data.some((row:any)=>row.id===reconcileProduction.id),false,
-        "a reconciled historical settlement must not reappear as unpaid production");
+      const reconciledPaidProduction=unpaidAfterHistoricalReconcile.json().data.find((row:any)=>row.id===reconcileProduction.id);
+      assert.ok(reconciledPaidProduction,"reconciled historical production remains visible for payment-status review");
+      assert.equal(reconciledPaidProduction.payment_status,"PAID");
+      assert.equal(Number(reconciledPaidProduction.paid_amount),10);
+      assert.equal(Number(reconciledPaidProduction.remaining_amount),0);
 
       // Some legacy paths wrote both settlement allocations and order allocations for one payment.
       // The unified ledger must prefer the settlement allocation instead of counting the same payout twice.
