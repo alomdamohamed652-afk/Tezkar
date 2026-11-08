@@ -971,6 +971,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unpaidProductionBeforePayout.json().data.some((row:any)=>row.id===bonusProduction.id),true,
         "the payments screen must list approved production that still has a due balance");
       assert.equal(Number(unpaidProductionBeforePayout.json().data.find((row:any)=>row.id===bonusProduction.id).remaining_amount),130);
+      assert.equal(unpaidProductionBeforePayout.json().data.find((row:any)=>row.id===bonusProduction.id).payment_status,"UNPAID",
+        "approved production with no allocations must be explicitly classified as unpaid");
       const invalidSelectedPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:129,method:"CASH",
@@ -1040,8 +1042,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
       assert.equal(unpaidProductionAfterPayout.statusCode,200,unpaidProductionAfterPayout.body);
-      assert.equal(unpaidProductionAfterPayout.json().data.some((row:any)=>row.id===bonusProduction.id),false,
-        "fully settled production must disappear from the unpaid production list");
+      const settledProductionRow=unpaidProductionAfterPayout.json().data.find((row:any)=>row.id===bonusProduction.id);
+      assert.ok(settledProductionRow,"fully settled production must remain visible for payment-status review");
+      assert.equal(settledProductionRow.payment_status,"PAID","fully settled production must be classified as paid");
+      assert.equal(Number(settledProductionRow.remaining_amount),0,"fully settled production must have no remaining balance");
 
       // A legacy previous-custody payout with a settlement row but no production allocation
       // must be linked to its explicitly referenced order, then disappear from unpaid production.
