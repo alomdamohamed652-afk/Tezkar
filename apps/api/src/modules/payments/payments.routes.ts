@@ -1200,7 +1200,9 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wpa_wp.id)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa_wp.id)),0),0) AS remaining
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa_wp.id)),0)
+            -COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+              WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0) AS remaining
             FROM production_entries p JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
@@ -1947,7 +1949,9 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wp.id)
-                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0) AS remaining
+                AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0)
+            -COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+              WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0) AS remaining
             FROM production_entries p LEFT JOIN order_stages os ON os.id=p.order_stage_id
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
