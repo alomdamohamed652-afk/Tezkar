@@ -1303,6 +1303,58 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledPaidProduction.paid_amount),10);
       assert.equal(Number(reconciledPaidProduction.remaining_amount),0);
 
+      // A legacy allocation that points to production already marked PAID_PREVIOUSLY
+      // must remain unresolved; reconciliation must not mirror it into the canonical ledger.
+      const markedConflictEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Historical Allocation Conflict Worker') RETURNING id"
+      )).rows[0];
+      const markedConflictProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE-2,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [markedConflictEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const markedConflictPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'historical paid conflict regression',$3,'historical-paid-conflict-regression') RETURNING id`,
+        [markedConflictEmployee.id,manager.id,randomUUID()]
+      )).rows[0];
+      const markedConflictSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'historical paid conflict regression',$2,$3) RETURNING id`,
+        [markedConflictEmployee.id,manager.id,markedConflictPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)`,
+        [markedConflictPayment.id,markedConflictProduction.id]
+      );
+      await apiPool.query(
+        `INSERT INTO historical_production_settlement_marks(
+           employee_id,production_entry_id,amount_snapshot,status,notes,marked_by,updated_by
+         ) VALUES($1,$2,10,'PAID_PREVIOUSLY','تم السداد قبل تشغيل النظام',$3,$3)`,
+        [markedConflictEmployee.id,markedConflictProduction.id,manager.id]
+      );
+      const markedConflictReconcile=await app.inject({
+        method:"POST",url:"/api/worker-payments/reconcile-historical-allocations",
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(markedConflictReconcile.statusCode,200,markedConflictReconcile.body);
+      assert.equal(markedConflictReconcile.json().data.reconciledCount,0,
+        "a payment already attributed to historically paid production must not be reconciled");
+      assert.ok(markedConflictReconcile.json().data.skipped.some((row:any)=>row.paymentId===markedConflictPayment.id),
+        "the conflicting legacy payment must be explicitly reported as skipped");
+      const markedConflictCanonical=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",
+        [markedConflictSettlement.id]
+      );
+      assert.equal(Number(markedConflictCanonical.rows[0].count),0,
+        "conflicting historical allocation must not be mirrored into canonical settlement allocations");
+
       // Some legacy paths wrote both settlement allocations and order allocations for one payment.
       // The unified ledger must prefer the settlement allocation instead of counting the same payout twice.
       await apiPool.query(
