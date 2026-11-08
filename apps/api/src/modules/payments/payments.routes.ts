@@ -675,7 +675,12 @@ export async function paymentsRoutes(app:FastifyInstance){
                  COUNT(*) FILTER(WHERE wpa.production_entry_id IS NOT NULL AND
                    (p.id IS NULL OR p.employee_id<>$2 OR p.status<>'APPROVED' OR
                     ($3::uuid IS NOT NULL AND os.order_id IS DISTINCT FROM $3::uuid) OR
-                    ($4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid)))::int AS mismatches
+                    ($4::uuid IS NOT NULL AND p.order_stage_id IS DISTINCT FROM $4::uuid)))::int AS mismatches,
+                 COUNT(*) FILTER(WHERE EXISTS(
+                   SELECT 1 FROM historical_production_settlement_marks hm
+                    WHERE hm.production_entry_id=wpa.production_entry_id
+                      AND hm.status='PAID_PREVIOUSLY'
+                 ))::int AS historically_paid_conflicts
             FROM worker_payment_allocations wpa
             LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
             LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -684,6 +689,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         const legacyCount = Number(existingLegacy.rows[0]?.allocation_count ?? 0);
         const legacyAmount = Math.round(Number(existingLegacy.rows[0]?.allocated ?? 0) * 100) / 100;
         const legacyMismatches = Number(existingLegacy.rows[0]?.mismatches ?? 0);
+        const historicallyPaidConflicts = Number(existingLegacy.rows[0]?.historically_paid_conflicts ?? 0);
 
         if (settlementId) {
           const existingSettlementAllocations = await client.query(
@@ -693,9 +699,11 @@ export async function paymentsRoutes(app:FastifyInstance){
           if (Number(existingSettlementAllocations.rows[0]?.count ?? 0) > 0) continue;
         }
         if (legacyCount > 0) {
-          if (legacyMismatches > 0 || Math.abs(legacyAmount-grossAmount) > 0.009) {
+          if (legacyMismatches > 0 || historicallyPaidConflicts > 0 || Math.abs(legacyAmount-grossAmount) > 0.009) {
             skipped.push({paymentId:payment.id,employeeName:payment.employee_name,amount:grossAmount,
-              reason:legacyMismatches>0
+              reason:historicallyPaidConflicts>0
+                ? "التوزيع القديم يتضمن إنتاجًا مسجلًا كمدفوع تاريخيًا؛ يلزم حل التعارض يدويًا قبل المصالحة."
+                : legacyMismatches>0
                 ? "التوزيع القديم يشمل إنتاجًا غير معتمد أو عاملًا/طلبية/مرحلة مختلفة عن ربط الدفعة."
                 : `إجمالي توزيع الإنتاج القديم (${legacyAmount.toFixed(2)} ج.م) لا يساوي إجمالي الدفعة (${grossAmount.toFixed(2)} ج.م)؛ يلزم مراجعة يدوية.`});
             continue;
@@ -750,6 +758,10 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
              AND ($3::uuid IS NULL OR p.order_stage_id=$3)
              AND p.work_date <= $4::date
+             AND NOT EXISTS(
+               SELECT 1 FROM historical_production_settlement_marks hm
+                WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'
+             )
            ORDER BY p.work_date,p.created_at,p.id
            FOR UPDATE OF p
         `, [payment.employee_id,payment.order_id,payment.order_stage_id,payment.payment_date]);
