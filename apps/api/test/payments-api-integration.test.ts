@@ -1398,7 +1398,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(crossLedgerProductionStatus.statusCode,200,crossLedgerProductionStatus.body);
       const partialProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionA.id);
       assert.ok(partialProductionStatus,"partially paid production must remain visible in the settlement status list");
-      assert.equal(partialProductionStatus.payment_status,"PARTIAL");
+      assert.equal(partialProductionStatus.payment_status,"PAID",
+        "a production record fully covered by its canonical settlement allocation must be marked paid");
       assert.equal(Number(partialProductionStatus.paid_amount),10);
       assert.equal(Number(partialProductionStatus.remaining_amount),0);
       const unpaidProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionB.id);
