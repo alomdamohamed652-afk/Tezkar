@@ -1129,6 +1129,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "historical paid marks must be included in the displayed total paid, not only deducted invisibly");
       assert.equal(Number(historicalAvailable.json().data.availableBreakdown.historicalPaid),20,
         "the reconciliation breakdown must expose historical paid marks");
+      const financialArtifacts=await apiPool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS worker_payments,
+          (SELECT COUNT(*) FROM employee_earnings_settlements WHERE employee_id=$1) AS settlements,
+          (SELECT COUNT(*) FROM employee_earnings_ledger WHERE employee_id=$1) AS ledger,
+          (SELECT COUNT(*) FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id WHERE a.employee_id=$1) AS advance_repayments,
+          (SELECT COUNT(*) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT'
+            AND source_id IN (SELECT id FROM worker_payments WHERE employee_id=$1)) AS custody_movements,
+          (SELECT COUNT(*) FROM accounting_expenses WHERE idempotency_key IN
+            (SELECT idempotency_key FROM worker_payments WHERE employee_id=$1)) AS accounting_expenses
+      `,[historicalMarkEmployee.id]);
+      for(const [key,value] of Object.entries(financialArtifacts.rows[0]))assert.equal(Number(value),0,`historical mark must not create ${key}`);
       // Automatic current-custody allocation must skip production already paid historically.
       const postMarkProduction=(await apiPool.query(
         `INSERT INTO production_entries(
@@ -1162,18 +1174,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.equal(historicalMarkStillPaid.rows[0].status,"PAID_PREVIOUSLY");
       assert.equal(Number(historicalMarkStillPaid.rows[0].amount_snapshot),20);
-      const financialArtifacts=await apiPool.query(`
-        SELECT
-          (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS worker_payments,
-          (SELECT COUNT(*) FROM employee_earnings_settlements WHERE employee_id=$1) AS settlements,
-          (SELECT COUNT(*) FROM employee_earnings_ledger WHERE employee_id=$1) AS ledger,
-          (SELECT COUNT(*) FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id WHERE a.employee_id=$1) AS advance_repayments,
-          (SELECT COUNT(*) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT'
-            AND source_id IN (SELECT id FROM worker_payments WHERE employee_id=$1)) AS custody_movements,
-          (SELECT COUNT(*) FROM accounting_expenses WHERE idempotency_key IN
-            (SELECT idempotency_key FROM worker_payments WHERE employee_id=$1)) AS accounting_expenses
-      `,[historicalMarkEmployee.id]);
-      for(const [key,value] of Object.entries(financialArtifacts.rows[0]))assert.equal(Number(value),0,`historical mark must not create ${key}`);
       const duplicateHistoricalMark=await app.inject({
         method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${historicalMarkProduction.id}`,
         headers:{cookie:managerCookie},payload:{status:"PAID_PREVIOUSLY",notes:"محاولة تكرار"}
