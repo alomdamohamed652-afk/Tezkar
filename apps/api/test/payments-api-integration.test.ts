@@ -1475,6 +1475,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "order summary must count canonical allocation plus only the unallocated remainder, ignoring stale duplicate rows");
       assert.equal(Number(partialLedgerOrderRow.remaining_amount),10);
       assert.equal(partialLedgerOrderRow.payment_status,"PARTIAL");
+      const partialLedgerProductionStatus=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${partialLedgerWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(partialLedgerProductionStatus.statusCode,200,partialLedgerProductionStatus.body);
+      const genuinelyPartialRow=partialLedgerProductionStatus.json().data.find((row:any)=>row.id===partialLedgerProductionA.id);
+      assert.ok(genuinelyPartialRow,"partially paid production row must be returned");
+      assert.equal(genuinelyPartialRow.payment_status,"PARTIAL");
+      assert.equal(Number(genuinelyPartialRow.paid_amount),5);
+      assert.equal(Number(genuinelyPartialRow.remaining_amount),5);
+      const untouchedUnpaidRow=partialLedgerProductionStatus.json().data.find((row:any)=>row.id===partialLedgerProductionB.id);
+      assert.ok(untouchedUnpaidRow,"production without canonical settlement allocation remains unpaid");
+      assert.equal(untouchedUnpaidRow.payment_status,"UNPAID");
+      assert.equal(Number(untouchedUnpaidRow.paid_amount),0);
+      assert.equal(Number(untouchedUnpaidRow.remaining_amount),10);
 
       // Previous-custody settlement is bounded by the selected order, not the worker's
       // global available balance. A standalone ledger deduction can make the global
