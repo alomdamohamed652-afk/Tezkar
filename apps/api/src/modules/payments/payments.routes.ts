@@ -1392,7 +1392,10 @@ export async function paymentsRoutes(app:FastifyInstance){
             COUNT(p.id) FILTER(WHERE p.status='PENDING')::int AS pending_count,
             COALESCE((SELECT SUM(es.gross_amount) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
               + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                           WHERE wp.employee_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)),0) AS paid_gross,
+                           WHERE wp.employee_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)),0)
+              + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+                JOIN production_entries hp ON hp.id=hm.production_entry_id
+                WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY' AND hp.status='APPROVED'),0) AS paid_gross,
             COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                        FROM employee_earnings_adjustments a LEFT JOIN production_entries ap ON ap.id=a.production_entry_id
                       WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR ap.status='APPROVED')),0) AS adjustments
@@ -1558,6 +1561,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const deductions = Number(adjustments.rows[0]?.deductions ?? 0);
       const settled = Number(settlements.rows[0]?.amount ?? 0);
       const legacyPaid = Number(legacyPayments.rows[0]?.amount ?? 0);
+      const historicalPaid = Number(availabilityBreakdown.rows[0]?.historical_paid ?? 0);
       const available = parsed.data.orderId
         ? Math.round((Number(orderAccount.rows[0]?.earned??0)-Number(orderAccount.rows[0]?.allocated_paid??0)-Number(orderAccount.rows[0]?.legacy_order_paid??0))*100)/100
         : await getAvailableEarnings(client, parsed.data.employeeId);
@@ -1566,7 +1570,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         productionEarnings: earned,
         bonuses: bonus,
         deductions,
-        previouslySettled: settled + legacyPaid,
+        previouslySettled: settled + legacyPaid + historicalPaid,
         outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
         availableForSettlement: available,
         availableBreakdown: {
