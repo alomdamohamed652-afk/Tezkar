@@ -347,6 +347,8 @@ async function executeWorkerPayment(
                 JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                 WHERE es.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa WHERE woa.worker_payment_id=wp.id)),0)
+          -COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
+            WHERE hm.production_entry_id=pe.id AND hm.status='PAID_PREVIOUSLY'),0)
         ) AS remaining
         FROM production_entries pe
        WHERE pe.employee_id=$1 AND pe.status='APPROVED'
