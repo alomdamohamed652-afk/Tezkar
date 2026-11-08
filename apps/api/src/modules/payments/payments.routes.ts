@@ -1862,7 +1862,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         }else if(!parsed.data.allowOverpayment&&parsed.data.amount>available+0.009){
           throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
         }
-      } else if(!parsed.data.allowOverpayment && parsed.data.amount > available + 0.009) {
+      } else if(!parsed.data.allowOverpayment && !(parsed.data.settlementSource==="CURRENT_CUSTODY" && (parsed.data.productionEntryIds?.length??0)>0) && parsed.data.amount > available + 0.009) {
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
       }
 
@@ -1879,6 +1879,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         }
       }
 
+      let currentSelectedAvailable: number | null = null;
       if(parsed.data.productionEntryIds !== undefined && (parsed.data.settlementSource==="CURRENT_CUSTODY" || parsed.data.settlementMode==="SELECTED_PRODUCTION")){
         const selected=await client.query(`
           SELECT p.id,os.order_id,p.order_stage_id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
@@ -1905,10 +1906,14 @@ export async function paymentsRoutes(app:FastifyInstance){
         `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
         if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
         if(parsed.data.settlementSource==="PREVIOUS_CUSTODY" && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
-        if(parsed.data.settlementMode==="SELECTED_PRODUCTION"){
-          const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
-          if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المختارة تمت تسويتها بالفعل",409);
-          if(Math.abs(parsed.data.amount-selectedDue)>0.009)throw new AppError("PRODUCTION_SETTLEMENT_AMOUNT_MISMATCH",`إجمالي السجلات المحددة ${selectedDue.toFixed(2)} ج.م؛ حدّث الاختيار قبل اعتماد التسوية.`,409);
+        const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
+        if(parsed.data.settlementSource==="CURRENT_CUSTODY") {
+          currentSelectedAvailable=selectedDue;
+          if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المحددة تمت تسويتها بالفعل",409);
+          if(parsed.data.amount>selectedDue+0.009)throw new AppError("PRODUCTION_SETTLEMENT_AMOUNT_EXCEEDED",`المتبقي في سجلات الإنتاج المحددة ${selectedDue.toFixed(2)} ج.م فقط؛ لا يمكن صرف مبلغ أكبر منها.`,409);
+        }
+        if(parsed.data.settlementMode==="SELECTED_PRODUCTION" && Math.abs(parsed.data.amount-selectedDue)>0.009){
+          throw new AppError("PRODUCTION_SETTLEMENT_AMOUNT_MISMATCH",`إجمالي السجلات المحددة ${selectedDue.toFixed(2)} ج.م؛ حدّث الاختيار قبل اعتماد التسوية.`,409);
         }
       }
 
@@ -1930,7 +1935,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
         skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
-        availableBalanceOverride: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? (orderProductionCount > 0 ? orderAvailable : available) : null,
+        availableBalanceOverride: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? (orderProductionCount > 0 ? orderAvailable : available) : currentSelectedAvailable,
         productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null
       });
       if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
