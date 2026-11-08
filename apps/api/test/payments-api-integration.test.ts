@@ -1129,6 +1129,39 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "historical paid marks must be included in the displayed total paid, not only deducted invisibly");
       assert.equal(Number(historicalAvailable.json().data.availableBreakdown.historicalPaid),20,
         "the reconciliation breakdown must expose historical paid marks");
+      // Automatic current-custody allocation must skip production already paid historically.
+      const postMarkProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [historicalMarkEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const postMarkPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:historicalMarkEmployee.id,cashCustodyEmployeeId:managerEmployee.id,
+          settlementSource:"CURRENT_CUSTODY",settlementMode:"ALL_DUES",amount:10,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(postMarkPayout.statusCode,201,postMarkPayout.body);
+      const postMarkAllocations=await apiPool.query(
+        `SELECT production_entry_id,amount FROM employee_earnings_settlement_allocations
+          WHERE settlement_id=(SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1)`,
+        [postMarkPayout.json().data.payment.id]
+      );
+      assert.equal(postMarkAllocations.rowCount,1);
+      assert.equal(postMarkAllocations.rows[0].production_entry_id,postMarkProduction.id,
+        "new payment must allocate to the genuinely unpaid production row, never the historically paid row");
+      assert.equal(Number(postMarkAllocations.rows[0].amount),10);
+      const historicalMarkStillPaid=await apiPool.query(
+        "SELECT status,amount_snapshot FROM historical_production_settlement_marks WHERE production_entry_id=$1",
+        [historicalMarkProduction.id]
+      );
+      assert.equal(historicalMarkStillPaid.rows[0].status,"PAID_PREVIOUSLY");
+      assert.equal(Number(historicalMarkStillPaid.rows[0].amount_snapshot),20);
       const financialArtifacts=await apiPool.query(`
         SELECT
           (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS worker_payments,
