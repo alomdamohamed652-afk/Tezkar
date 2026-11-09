@@ -1241,6 +1241,29 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(conflictingEvidenceList.json().data.every((row:any)=>row.classification==="NEEDS_REVIEW"),
         "different production targets in mirrored allocation sources must be treated as ambiguous, not silently deduplicated");
 
+      // A conflicting payment must block only production rows referenced by that payment.
+      // It must not prevent a manager from recording an unrelated, independently verified
+      // historical payment for another production row belonging to the same employee.
+      const unrelatedHistoricalProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE-10,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [conflictingEvidenceEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const unrelatedHistoricalMark=await app.inject({
+        method:"PATCH",
+        url:`/api/worker-payments/historical-production-settlements/${unrelatedHistoricalProduction.id}`,
+        headers:{cookie:managerCookie},
+        payload:{status:"PAID_PREVIOUSLY",notes:"تمت مراجعة مستند السداد المستقل"}
+      });
+      assert.equal(unrelatedHistoricalMark.statusCode,200,unrelatedHistoricalMark.body);
+      assert.equal(Number(unrelatedHistoricalMark.json().data.amount_snapshot),10,
+        "an unrelated production row must not inherit another production's hard allocation conflict");
+
       const partialEvidenceEmployee=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES('Test Partial Historical Evidence Worker') RETURNING id"
       )).rows[0];
