@@ -1657,6 +1657,20 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.payroll_payment_id IS NULL
                 AND l.settlement_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
+            COALESCE((SELECT json_agg(json_build_object(
+              'id',l.id,'code',l.code,'createdAt',l.created_at,
+              'credit',l.credit_amount,'debit',l.debit_amount,
+              'net',l.credit_amount-l.debit_amount,'notes',l.notes
+            ) ORDER BY l.created_at,l.id)
+              FROM employee_earnings_ledger l
+              WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
+                AND l.advance_repayment_id IS NULL
+                AND l.payroll_item_id IS NULL
+                AND l.payroll_adjustment_line_id IS NULL
+                AND l.payroll_payment_id IS NULL
+                AND l.settlement_id IS NULL
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)
+            ),'[]'::json) AS ledger_only_adjustment_entries,
             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
@@ -1687,6 +1701,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           productionNet: Number(availabilityBreakdown.rows[0]?.production_net ?? 0),
           standaloneAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0),
           ledgerOnlyAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0),
+          ledgerOnlyAdjustmentEntries: availabilityBreakdown.rows[0]?.ledger_only_adjustment_entries ?? [],
           previouslySettled: Number(availabilityBreakdown.rows[0]?.settled ?? 0) + Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0),
           historicalPaid: Number(availabilityBreakdown.rows[0]?.historical_paid ?? 0),
           calculationMode: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0 ? "PRODUCTION" : "LEDGER_FALLBACK",
