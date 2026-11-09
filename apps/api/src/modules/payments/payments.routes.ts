@@ -857,29 +857,113 @@ export async function paymentsRoutes(app:FastifyInstance){
     const parsed=z.object({employeeId:z.string().uuid()}).safeParse(request.query);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار العامل غير صحيح",422);
     const result=await pool.query(`
-      WITH production_payment AS (
+      WITH source_conflicts AS (
+        SELECT wp.id
+          FROM worker_payments wp
+         WHERE
+           (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                    JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                   WHERE es.worker_payment_id=wp.id)
+            AND EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+            AND (
+              EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                      JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                     WHERE es.worker_payment_id=wp.id AND NOT EXISTS(
+                       SELECT 1 FROM worker_payment_order_allocations oa
+                        WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=sa.production_entry_id
+                          AND oa.amount IS NOT DISTINCT FROM sa.amount))
+              OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+                         WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(
+                           SELECT 1 FROM employee_earnings_settlement_allocations sa
+                            JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                           WHERE es.worker_payment_id=wp.id AND sa.production_entry_id=oa.production_entry_id
+                             AND sa.amount IS NOT DISTINCT FROM oa.amount))
+            ))
+           OR (EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                       JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                      WHERE es.worker_payment_id=wp.id)
+               AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
+               AND (
+                 EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                         JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                        WHERE es.worker_payment_id=wp.id AND NOT EXISTS(
+                          SELECT 1 FROM worker_payment_allocations la
+                           WHERE la.worker_payment_id=wp.id AND la.production_entry_id=sa.production_entry_id
+                             AND la.amount IS NOT DISTINCT FROM sa.amount))
+                 OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+                            WHERE la.worker_payment_id=wp.id AND NOT EXISTS(
+                              SELECT 1 FROM employee_earnings_settlement_allocations sa
+                               JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                              WHERE es.worker_payment_id=wp.id AND sa.production_entry_id=la.production_entry_id
+                                AND sa.amount IS NOT DISTINCT FROM la.amount))
+               ))
+           OR (EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+               AND EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.worker_payment_id=wp.id)
+               AND (
+                 EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+                         WHERE oa.worker_payment_id=wp.id AND NOT EXISTS(
+                           SELECT 1 FROM worker_payment_allocations la
+                            WHERE la.worker_payment_id=wp.id AND la.production_entry_id=oa.production_entry_id
+                              AND la.amount IS NOT DISTINCT FROM oa.amount))
+                 OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+                            WHERE la.worker_payment_id=wp.id AND NOT EXISTS(
+                              SELECT 1 FROM worker_payment_order_allocations oa
+                               WHERE oa.worker_payment_id=wp.id AND oa.production_entry_id=la.production_entry_id
+                                 AND oa.amount IS NOT DISTINCT FROM la.amount))
+               ))
+      ),
+      production_payment AS (
         SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,
           COALESCE(p.total_earning_amount,p.earning_amount,0) AS total_earned,
           o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,
           s.name AS stage_name,
           COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
-            WHERE a.production_entry_id=p.id),0)
+            JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+            WHERE a.production_entry_id=p.id AND es.employee_id=p.employee_id),0)
           + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
             JOIN worker_payments awp ON awp.id=a.worker_payment_id
-            WHERE a.production_entry_id=p.id
+            WHERE a.production_entry_id=p.id AND awp.employee_id=p.employee_id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
                 JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
                 WHERE aes.worker_payment_id=awp.id)),0)
           + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
             JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
-            WHERE wpa.production_entry_id=p.id
+            WHERE wpa.production_entry_id=p.id AND wp.employee_id=p.employee_id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                 JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                 WHERE es.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations woa
                 WHERE woa.worker_payment_id=wp.id)),0)
           + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
-            WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0) AS paid_amount
+            WHERE hm.production_entry_id=p.id AND hm.employee_id=p.employee_id
+              AND hm.status='PAID_PREVIOUSLY'),0) AS paid_amount,
+          (
+            COALESCE(p.total_earning_amount,p.earning_amount,0)<0
+            OR EXISTS(SELECT 1 FROM source_conflicts sc
+              WHERE EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                WHERE es.worker_payment_id=sc.id AND sa.production_entry_id=p.id)
+                 OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+                WHERE oa.worker_payment_id=sc.id AND oa.production_entry_id=p.id)
+                 OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+                WHERE la.worker_payment_id=sc.id AND la.production_entry_id=p.id))
+            OR EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+              JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+              WHERE sa.production_entry_id=p.id AND es.employee_id<>p.employee_id)
+            OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+              JOIN worker_payments wp ON wp.id=oa.worker_payment_id
+              WHERE oa.production_entry_id=p.id AND wp.employee_id<>p.employee_id)
+            OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+              JOIN worker_payments wp ON wp.id=la.worker_payment_id
+              WHERE la.production_entry_id=p.id AND wp.employee_id<>p.employee_id)
+            OR (EXISTS(SELECT 1 FROM historical_production_settlement_marks hm
+                 WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY')
+                AND (
+                  EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.production_entry_id=p.id)
+                  OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.production_entry_id=p.id)
+                  OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.production_entry_id=p.id)
+                ))
+          ) AS payment_conflict
         FROM production_entries p
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
         LEFT JOIN production_orders o ON o.id=os.order_id
@@ -888,6 +972,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       )
       SELECT *,GREATEST(total_earned-paid_amount,0) AS remaining_amount,
         CASE
+          WHEN payment_conflict OR paid_amount>total_earned+0.009 THEN 'NEEDS_REVIEW'
           WHEN paid_amount>=total_earned-0.009 THEN 'PAID'
           WHEN paid_amount>0.009 THEN 'PARTIAL'
           ELSE 'UNPAID'
