@@ -977,6 +977,22 @@ export async function paymentsRoutes(app:FastifyInstance){
               WHERE la.production_entry_id=p.id AND wp.employee_id<>p.employee_id)
             OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
               WHERE uac.employee_id=p.employee_id AND uac.production_entry_id=p.id)
+            OR (
+              EXISTS(SELECT 1 FROM historical_production_settlement_marks hm
+                WHERE hm.production_entry_id=p.id AND hm.employee_id=p.employee_id
+                  AND hm.status='PAID_PREVIOUSLY')
+              AND (
+                EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                  JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                  WHERE sa.production_entry_id=p.id AND es.employee_id=p.employee_id)
+                OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+                  JOIN worker_payments wp ON wp.id=oa.worker_payment_id
+                  WHERE oa.production_entry_id=p.id AND wp.employee_id=p.employee_id)
+                OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+                  JOIN worker_payments wp ON wp.id=la.worker_payment_id
+                  WHERE la.production_entry_id=p.id AND wp.employee_id=p.employee_id)
+              )
+            )
           ) AS payment_conflict
         FROM production_entries p
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
