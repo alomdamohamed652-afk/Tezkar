@@ -1387,6 +1387,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       );
       assert.equal(Number(markedConflictCanonical.rows[0].count),0,
         "conflicting historical allocation must not be mirrored into canonical settlement allocations");
+      const markedConflictStatus=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${markedConflictEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(markedConflictStatus.statusCode,200,markedConflictStatus.body);
+      const markedConflictRow=markedConflictStatus.json().data.find((row:any)=>row.id===markedConflictProduction.id);
+      assert.equal(markedConflictRow.payment_status,"NEEDS_REVIEW",
+        "a historical paid mark and a real allocation on the same production must be surfaced as a conflict");
+      assert.equal(markedConflictRow.payment_conflict,true);
 
       // Some legacy paths wrote both settlement allocations and order allocations for one payment.
       // The unified ledger must prefer the settlement allocation instead of counting the same payout twice.
