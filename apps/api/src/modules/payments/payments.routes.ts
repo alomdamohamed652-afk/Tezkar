@@ -956,13 +956,6 @@ export async function paymentsRoutes(app:FastifyInstance){
             OR EXISTS(SELECT 1 FROM worker_payment_allocations la
               JOIN worker_payments wp ON wp.id=la.worker_payment_id
               WHERE la.production_entry_id=p.id AND wp.employee_id<>p.employee_id)
-            OR (EXISTS(SELECT 1 FROM historical_production_settlement_marks hm
-                 WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY')
-                AND (
-                  EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.production_entry_id=p.id)
-                  OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.production_entry_id=p.id)
-                  OR EXISTS(SELECT 1 FROM worker_payment_allocations la WHERE la.production_entry_id=p.id)
-                ))
           ) AS payment_conflict
         FROM production_entries p
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
