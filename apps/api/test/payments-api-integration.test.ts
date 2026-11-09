@@ -1336,6 +1336,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reconciledPaidProduction.paid_amount),10);
       assert.equal(Number(reconciledPaidProduction.remaining_amount),0);
 
+      // Legacy-source conflicts and historical paid-mark conflicts must surface as NEEDS_REVIEW.
       // A legacy allocation that points to production already marked PAID_PREVIOUSLY
       // must remain unresolved; reconciliation must not mirror it into the canonical ledger.
       const markedConflictEmployee=(await apiPool.query(
