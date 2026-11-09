@@ -971,6 +971,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unpaidProductionBeforePayout.json().data.some((row:any)=>row.id===bonusProduction.id),true,
         "the payments screen must list approved production that still has a due balance");
       assert.equal(Number(unpaidProductionBeforePayout.json().data.find((row:any)=>row.id===bonusProduction.id).remaining_amount),130);
+      assert.equal(unpaidProductionBeforePayout.json().data.find((row:any)=>row.id===bonusProduction.id).payment_status,"UNPAID",
+        "approved production with no allocations must be explicitly classified as unpaid");
       const invalidSelectedPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:bonusWorkerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:129,method:"CASH",
@@ -1040,8 +1042,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
       assert.equal(unpaidProductionAfterPayout.statusCode,200,unpaidProductionAfterPayout.body);
-      assert.equal(unpaidProductionAfterPayout.json().data.some((row:any)=>row.id===bonusProduction.id),false,
-        "fully settled production must disappear from the unpaid production list");
+      const settledProductionRow=unpaidProductionAfterPayout.json().data.find((row:any)=>row.id===bonusProduction.id);
+      assert.ok(settledProductionRow,"fully settled production must remain visible for payment-status review");
+      assert.equal(settledProductionRow.payment_status,"PAID","fully settled production must be classified as paid");
+      assert.equal(Number(settledProductionRow.remaining_amount),0,"fully settled production must have no remaining balance");
 
       // A legacy previous-custody payout with a settlement row but no production allocation
       // must be linked to its explicitly referenced order, then disappear from unpaid production.
@@ -1109,8 +1113,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie}
       });
       assert.equal(historicalUnpaidAfter.statusCode,200,historicalUnpaidAfter.body);
-      assert.equal(historicalUnpaidAfter.json().data.some((row:any)=>row.id===historicalMarkProduction.id),false,
-        "historical mark must remove the production record from outstanding production dues");
+      const historicalPaidRow=historicalUnpaidAfter.json().data.find((row:any)=>row.id===historicalMarkProduction.id);
+      assert.ok(historicalPaidRow,"historically paid production remains visible for payment-status review");
+      assert.equal(historicalPaidRow.payment_status,"PAID","historical paid mark must classify the production as paid");
+      assert.equal(Number(historicalPaidRow.paid_amount),20);
+      assert.equal(Number(historicalPaidRow.remaining_amount),0);
       const historicalAvailable=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${historicalMarkEmployee.id}`,
         headers:{cookie:managerCookie}
@@ -1118,6 +1125,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(historicalAvailable.statusCode,200,historicalAvailable.body);
       assert.equal(Number(historicalAvailable.json().data.availableForSettlement),0,
         "historical marks must reduce payable production availability");
+      assert.equal(Number(historicalAvailable.json().data.previouslySettled),20,
+        "historical paid marks must be included in the displayed total paid, not only deducted invisibly");
+      assert.equal(Number(historicalAvailable.json().data.availableBreakdown.historicalPaid),20,
+        "the reconciliation breakdown must expose historical paid marks");
       const financialArtifacts=await apiPool.query(`
         SELECT
           (SELECT COUNT(*) FROM worker_payments WHERE employee_id=$1) AS worker_payments,
@@ -1130,6 +1141,39 @@ test("approving a worker payout atomically marks it paid and debits the availabl
             (SELECT idempotency_key FROM worker_payments WHERE employee_id=$1)) AS accounting_expenses
       `,[historicalMarkEmployee.id]);
       for(const [key,value] of Object.entries(financialArtifacts.rows[0]))assert.equal(Number(value),0,`historical mark must not create ${key}`);
+      // Automatic current-custody allocation must skip production already paid historically.
+      const postMarkProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [historicalMarkEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const postMarkPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:historicalMarkEmployee.id,cashCustodyEmployeeId:managerEmployee.id,
+          settlementSource:"CURRENT_CUSTODY",settlementMode:"ALL_DUES",amount:10,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(postMarkPayout.statusCode,201,postMarkPayout.body);
+      const postMarkAllocations=await apiPool.query(
+        `SELECT production_entry_id,amount FROM employee_earnings_settlement_allocations
+          WHERE settlement_id=(SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1)`,
+        [postMarkPayout.json().data.payment.id]
+      );
+      assert.equal(postMarkAllocations.rowCount,1);
+      assert.equal(postMarkAllocations.rows[0].production_entry_id,postMarkProduction.id,
+        "new payment must allocate to the genuinely unpaid production row, never the historically paid row");
+      assert.equal(Number(postMarkAllocations.rows[0].amount),10);
+      const historicalMarkStillPaid=await apiPool.query(
+        "SELECT status,amount_snapshot FROM historical_production_settlement_marks WHERE production_entry_id=$1",
+        [historicalMarkProduction.id]
+      );
+      assert.equal(historicalMarkStillPaid.rows[0].status,"PAID_PREVIOUSLY");
+      assert.equal(Number(historicalMarkStillPaid.rows[0].amount_snapshot),20);
       const duplicateHistoricalMark=await app.inject({
         method:"PATCH",url:`/api/worker-payments/historical-production-settlements/${historicalMarkProduction.id}`,
         headers:{cookie:managerCookie},payload:{status:"PAID_PREVIOUSLY",notes:"محاولة تكرار"}
@@ -1196,6 +1240,29 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(conflictingEvidenceList.json().data.length,2);
       assert.ok(conflictingEvidenceList.json().data.every((row:any)=>row.classification==="NEEDS_REVIEW"),
         "different production targets in mirrored allocation sources must be treated as ambiguous, not silently deduplicated");
+
+      // A conflicting payment must block only production rows referenced by that payment.
+      // It must not prevent a manager from recording an unrelated, independently verified
+      // historical payment for another production row belonging to the same employee.
+      const unrelatedHistoricalProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE-10,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [conflictingEvidenceEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const unrelatedHistoricalMark=await app.inject({
+        method:"PATCH",
+        url:`/api/worker-payments/historical-production-settlements/${unrelatedHistoricalProduction.id}`,
+        headers:{cookie:managerCookie},
+        payload:{status:"PAID_PREVIOUSLY",notes:"تمت مراجعة مستند السداد المستقل",confirmAmbiguousPayment:true}
+      });
+      assert.equal(unrelatedHistoricalMark.statusCode,200,unrelatedHistoricalMark.body);
+      assert.equal(Number(unrelatedHistoricalMark.json().data.amount_snapshot),10,
+        "an unrelated production row must not inherit another production's hard allocation conflict");
 
       const partialEvidenceEmployee=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES('Test Partial Historical Evidence Worker') RETURNING id"
@@ -1286,8 +1353,73 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
       assert.equal(unpaidAfterHistoricalReconcile.statusCode,200,unpaidAfterHistoricalReconcile.body);
-      assert.equal(unpaidAfterHistoricalReconcile.json().data.some((row:any)=>row.id===reconcileProduction.id),false,
-        "a reconciled historical settlement must not reappear as unpaid production");
+      const reconciledPaidProduction=unpaidAfterHistoricalReconcile.json().data.find((row:any)=>row.id===reconcileProduction.id);
+      assert.ok(reconciledPaidProduction,"reconciled historical production remains visible for payment-status review");
+      assert.equal(reconciledPaidProduction.payment_status,"PAID");
+      assert.equal(Number(reconciledPaidProduction.paid_amount),10);
+      assert.equal(Number(reconciledPaidProduction.remaining_amount),0);
+
+      // Legacy-source conflicts and historical paid-mark conflicts must surface as NEEDS_REVIEW.
+      // A legacy allocation that points to production already marked PAID_PREVIOUSLY
+      // must remain unresolved; reconciliation must not mirror it into the canonical ledger.
+      const markedConflictEmployee=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Historical Allocation Conflict Worker') RETURNING id"
+      )).rows[0];
+      const markedConflictProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE-2,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id,total_earning_amount`,
+        [markedConflictEmployee.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      const markedConflictPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,notes,idempotency_key,idempotency_fingerprint)
+         VALUES($1,10,10,0,'CASH',$2,'historical paid conflict regression',$3,'historical-paid-conflict-regression') RETURNING id`,
+        [markedConflictEmployee.id,manager.id,randomUUID()]
+      )).rows[0];
+      const markedConflictSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+         VALUES($1,10,10,0,CURRENT_DATE,'historical paid conflict regression',$2,$3) RETURNING id`,
+        [markedConflictEmployee.id,manager.id,markedConflictPayment.id]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO worker_payment_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,10)`,
+        [markedConflictPayment.id,markedConflictProduction.id]
+      );
+      await apiPool.query(
+        `INSERT INTO historical_production_settlement_marks(
+           employee_id,production_entry_id,amount_snapshot,status,notes,marked_by,updated_by
+         ) VALUES($1,$2,10,'PAID_PREVIOUSLY','تم السداد قبل تشغيل النظام',$3,$3)`,
+        [markedConflictEmployee.id,markedConflictProduction.id,manager.id]
+      );
+      const markedConflictReconcile=await app.inject({
+        method:"POST",url:"/api/worker-payments/reconcile-historical-allocations",
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(markedConflictReconcile.statusCode,200,markedConflictReconcile.body);
+      assert.equal(markedConflictReconcile.json().data.reconciledCount,0,
+        "a payment already attributed to historically paid production must not be reconciled");
+      assert.ok(markedConflictReconcile.json().data.skipped.some((row:any)=>row.paymentId===markedConflictPayment.id),
+        "the conflicting legacy payment must be explicitly reported as skipped");
+      const markedConflictCanonical=await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",
+        [markedConflictSettlement.id]
+      );
+      assert.equal(Number(markedConflictCanonical.rows[0].count),0,
+        "conflicting historical allocation must not be mirrored into canonical settlement allocations");
+      const markedConflictStatus=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${markedConflictEmployee.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(markedConflictStatus.statusCode,200,markedConflictStatus.body);
+      const markedConflictRow=markedConflictStatus.json().data.find((row:any)=>row.id===markedConflictProduction.id);
+      assert.equal(markedConflictRow.payment_status,"NEEDS_REVIEW",
+        "a historical paid mark and a real allocation on the same production must be surfaced as a conflict");
+      assert.equal(markedConflictRow.payment_conflict,true);
 
       // Some legacy paths wrote both settlement allocations and order allocations for one payment.
       // The unified ledger must prefer the settlement allocation instead of counting the same payout twice.
@@ -1377,6 +1509,24 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "order summary must prefer settlement allocation even when stale order and legacy rows target a different production entry");
       assert.equal(Number(crossLedgerOrderRow.remaining_amount),10);
       assert.equal(crossLedgerOrderRow.payment_status,"PARTIAL");
+      const crossLedgerProductionStatus=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${crossLedgerWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(crossLedgerProductionStatus.statusCode,200,crossLedgerProductionStatus.body);
+      const partialProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionA.id);
+      assert.ok(partialProductionStatus,"partially paid production must remain visible in the settlement status list");
+      assert.equal(partialProductionStatus.payment_status,"NEEDS_REVIEW",
+        "a canonical allocation that conflicts with stale mirrored allocations to another production record must require review");
+      assert.equal(partialProductionStatus.payment_conflict,true);
+      assert.equal(Number(partialProductionStatus.paid_amount),10);
+      assert.equal(Number(partialProductionStatus.remaining_amount),0);
+      const unpaidProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionB.id);
+      assert.ok(unpaidProductionStatus,"unpaid production must remain visible in the settlement status list");
+      assert.equal(unpaidProductionStatus.payment_status,"NEEDS_REVIEW",
+        "a production targeted only by conflicting stale allocation sources must be flagged for review");
+      assert.equal(unpaidProductionStatus.payment_conflict,true);
+      assert.equal(Number(unpaidProductionStatus.remaining_amount),10);
 
       // A partially allocated settlement owns only its canonical allocation rows.
       // The unallocated remainder still counts at order level, while stale order/legacy
@@ -1450,6 +1600,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "order summary must count canonical allocation plus only the unallocated remainder, ignoring stale duplicate rows");
       assert.equal(Number(partialLedgerOrderRow.remaining_amount),10);
       assert.equal(partialLedgerOrderRow.payment_status,"PARTIAL");
+      const partialLedgerProductionStatus=await app.inject({
+        method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${partialLedgerWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(partialLedgerProductionStatus.statusCode,200,partialLedgerProductionStatus.body);
+      const genuinelyPartialRow=partialLedgerProductionStatus.json().data.find((row:any)=>row.id===partialLedgerProductionA.id);
+      assert.ok(genuinelyPartialRow,"partially paid production row must be returned");
+      assert.equal(genuinelyPartialRow.payment_status,"NEEDS_REVIEW",
+        "a partial canonical allocation with conflicting mirrored sources must require review");
+      assert.equal(genuinelyPartialRow.payment_conflict,true);
+      assert.equal(Number(genuinelyPartialRow.paid_amount),5);
+      assert.equal(Number(genuinelyPartialRow.remaining_amount),5);
+      const untouchedUnpaidRow=partialLedgerProductionStatus.json().data.find((row:any)=>row.id===partialLedgerProductionB.id);
+      assert.ok(untouchedUnpaidRow,"production without canonical settlement allocation remains unpaid");
+      assert.equal(untouchedUnpaidRow.payment_status,"NEEDS_REVIEW",
+        "a production targeted by conflicting stale allocation sources must require review");
+      assert.equal(untouchedUnpaidRow.payment_conflict,true);
+      assert.equal(Number(untouchedUnpaidRow.paid_amount),0);
+      assert.equal(Number(untouchedUnpaidRow.remaining_amount),10);
 
       // Previous-custody settlement is bounded by the selected order, not the worker's
       // global available balance. A standalone ledger deduction can make the global
