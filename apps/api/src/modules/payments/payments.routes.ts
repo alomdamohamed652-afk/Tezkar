@@ -912,6 +912,23 @@ export async function paymentsRoutes(app:FastifyInstance){
                                  AND oa.amount IS NOT DISTINCT FROM la.amount))
                ))
       ),
+      unlinked_allocation_conflicts AS (
+        SELECT DISTINCT es.employee_id,sa.production_entry_id
+          FROM employee_earnings_settlements es
+          JOIN employee_earnings_settlement_allocations sa ON sa.settlement_id=es.id
+          JOIN production_entries p ON p.id=sa.production_entry_id AND p.employee_id=es.employee_id
+         WHERE es.worker_payment_id IS NULL
+           AND (
+             EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+               JOIN worker_payments wp ON wp.id=oa.worker_payment_id
+               WHERE wp.employee_id=es.employee_id AND oa.production_entry_id=sa.production_entry_id
+                 AND ABS(oa.amount-sa.amount)<=0.009)
+             OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+               JOIN worker_payments wp ON wp.id=la.worker_payment_id
+               WHERE wp.employee_id=es.employee_id AND la.production_entry_id=sa.production_entry_id
+                 AND ABS(la.amount-sa.amount)<=0.009)
+           )
+      ),
       production_payment AS (
         SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity,
           COALESCE(p.total_earning_amount,p.earning_amount,0) AS total_earned,
@@ -919,7 +936,9 @@ export async function paymentsRoutes(app:FastifyInstance){
           s.name AS stage_name,
           COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
             JOIN employee_earnings_settlements es ON es.id=a.settlement_id
-            WHERE a.production_entry_id=p.id AND es.employee_id=p.employee_id),0)
+            WHERE a.production_entry_id=p.id AND es.employee_id=p.employee_id
+              AND NOT EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
+                WHERE uac.employee_id=p.employee_id AND uac.production_entry_id=p.id)),0)
           + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
             JOIN worker_payments awp ON awp.id=a.worker_payment_id
             WHERE a.production_entry_id=p.id AND awp.employee_id=p.employee_id
@@ -956,6 +975,8 @@ export async function paymentsRoutes(app:FastifyInstance){
             OR EXISTS(SELECT 1 FROM worker_payment_allocations la
               JOIN worker_payments wp ON wp.id=la.worker_payment_id
               WHERE la.production_entry_id=p.id AND wp.employee_id<>p.employee_id)
+            OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
+              WHERE uac.employee_id=p.employee_id AND uac.production_entry_id=p.id)
           ) AS payment_conflict
         FROM production_entries p
         LEFT JOIN order_stages os ON os.id=p.order_stage_id
