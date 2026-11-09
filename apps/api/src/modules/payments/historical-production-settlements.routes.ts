@@ -123,8 +123,20 @@ actual AS (
              SELECT 1 FROM payment_coverage pc
               WHERE pc.employee_id=p.employee_id
                 AND pc.created_at::date>=p.work_date
-                AND (pc.has_invalid_allocations OR pc.has_source_conflicts
-                  OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id))
+                AND (
+                  (pc.has_invalid_allocations OR pc.has_source_conflicts)
+                  AND (
+                    EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa
+                      JOIN employee_earnings_settlements es ON es.id=sa.settlement_id
+                      WHERE es.worker_payment_id=pc.id AND sa.production_entry_id=p.id)
+                    OR EXISTS(SELECT 1 FROM worker_payment_order_allocations oa
+                      WHERE oa.worker_payment_id=pc.id AND oa.production_entry_id=p.id)
+                    OR EXISTS(SELECT 1 FROM worker_payment_allocations la
+                      WHERE la.worker_payment_id=pc.id AND la.production_entry_id=p.id)
+                  )
+                  OR EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
+                    WHERE uac.employee_id=pc.employee_id AND uac.production_entry_id=p.id)
+                )
            ) AS hard_payment_conflict
       FROM production_entries p
       CROSS JOIN actual
