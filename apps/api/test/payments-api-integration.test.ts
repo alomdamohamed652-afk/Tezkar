@@ -1258,7 +1258,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         method:"PATCH",
         url:`/api/worker-payments/historical-production-settlements/${unrelatedHistoricalProduction.id}`,
         headers:{cookie:managerCookie},
-        payload:{status:"PAID_PREVIOUSLY",notes:"تمت مراجعة مستند السداد المستقل"}
+        payload:{status:"PAID_PREVIOUSLY",notes:"تمت مراجعة مستند السداد المستقل",confirmAmbiguousPayment:true}
       });
       assert.equal(unrelatedHistoricalMark.statusCode,200,unrelatedHistoricalMark.body);
       assert.equal(Number(unrelatedHistoricalMark.json().data.amount_snapshot),10,
