@@ -1483,13 +1483,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(crossLedgerProductionStatus.statusCode,200,crossLedgerProductionStatus.body);
       const partialProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionA.id);
       assert.ok(partialProductionStatus,"partially paid production must remain visible in the settlement status list");
-      assert.equal(partialProductionStatus.payment_status,"PAID",
-        "a production record fully covered by its canonical settlement allocation must be marked paid");
+      assert.equal(partialProductionStatus.payment_status,"NEEDS_REVIEW",
+        "a canonical allocation that conflicts with stale mirrored allocations to another production record must require review");
+      assert.equal(partialProductionStatus.payment_conflict,true);
       assert.equal(Number(partialProductionStatus.paid_amount),10);
       assert.equal(Number(partialProductionStatus.remaining_amount),0);
       const unpaidProductionStatus=crossLedgerProductionStatus.json().data.find((row:any)=>row.id===crossLedgerProductionB.id);
       assert.ok(unpaidProductionStatus,"unpaid production must remain visible in the settlement status list");
-      assert.equal(unpaidProductionStatus.payment_status,"UNPAID");
+      assert.equal(unpaidProductionStatus.payment_status,"NEEDS_REVIEW",
+        "a production targeted only by conflicting stale allocation sources must be flagged for review");
+      assert.equal(unpaidProductionStatus.payment_conflict,true);
       assert.equal(Number(unpaidProductionStatus.remaining_amount),10);
 
       // A partially allocated settlement owns only its canonical allocation rows.
@@ -1571,12 +1574,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(partialLedgerProductionStatus.statusCode,200,partialLedgerProductionStatus.body);
       const genuinelyPartialRow=partialLedgerProductionStatus.json().data.find((row:any)=>row.id===partialLedgerProductionA.id);
       assert.ok(genuinelyPartialRow,"partially paid production row must be returned");
-      assert.equal(genuinelyPartialRow.payment_status,"PARTIAL");
+      assert.equal(genuinelyPartialRow.payment_status,"NEEDS_REVIEW",
+        "a partial canonical allocation with conflicting mirrored sources must require review");
+      assert.equal(genuinelyPartialRow.payment_conflict,true);
       assert.equal(Number(genuinelyPartialRow.paid_amount),5);
       assert.equal(Number(genuinelyPartialRow.remaining_amount),5);
       const untouchedUnpaidRow=partialLedgerProductionStatus.json().data.find((row:any)=>row.id===partialLedgerProductionB.id);
       assert.ok(untouchedUnpaidRow,"production without canonical settlement allocation remains unpaid");
-      assert.equal(untouchedUnpaidRow.payment_status,"UNPAID");
+      assert.equal(untouchedUnpaidRow.payment_status,"NEEDS_REVIEW",
+        "a production targeted by conflicting stale allocation sources must require review");
+      assert.equal(untouchedUnpaidRow.payment_conflict,true);
       assert.equal(Number(untouchedUnpaidRow.paid_amount),0);
       assert.equal(Number(untouchedUnpaidRow.remaining_amount),10);
 
