@@ -159,7 +159,7 @@ export async function processMaturedWorkerPaymentDifferences(
           WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
         AND NOT EXISTS(SELECT 1 FROM production_entries pending
           WHERE pending.employee_id=d.employee_id AND pending.status='PENDING'
-            AND pending.created_at>wp.created_at AND pending.work_date>=wp.created_at::date)
+            AND pending.work_date>=wp.created_at::date)
         AND (
           COALESCE(activity.last_activity,wp.created_at)+INTERVAL '30 days'<=now()
           OR (
