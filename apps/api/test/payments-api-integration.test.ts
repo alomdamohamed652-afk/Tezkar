@@ -796,6 +796,24 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const custodyAfterCurrent=Number((await apiPool.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",[managerEmployee.id])).rows[0].balance);
       assert.equal(custodyAfterCurrent,custodyBeforeCurrent-75,"current custody must be debited once only");
 
+      // A worker with no production on the selected order must not have
+      // independent/general earnings misattributed to that order, even with overpayment enabled.
+      const unrelatedOrderWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Unrelated Order Worker') RETURNING id")).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',20,$2,'unrelated order guard test')",
+        [unrelatedOrderWorker.id,manager.id]
+      );
+      const unrelatedOrderKey=randomUUID();
+      const unrelatedOrderPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:unrelatedOrderWorker.id,settlementSource:"PREVIOUS_CUSTODY",
+          orderId:hamzaOrder.json().data.id,amount:20,method:"CASH",allowOverpayment:true,idempotencyKey:unrelatedOrderKey}
+      });
+      assert.equal(unrelatedOrderPayout.statusCode,409,unrelatedOrderPayout.body);
+      assert.equal(unrelatedOrderPayout.json().error.code,"ORDER_HAS_NO_WORKER_PRODUCTION");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
+
       // No-order settlements must still create one general accounting expense.
       // Previous custody records labor cost without touching today's cash custody.
       const previousGeneralWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Previous General Worker') RETURNING id")).rows[0];
