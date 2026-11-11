@@ -499,6 +499,30 @@ export async function accountingRoutes(app:FastifyInstance){
           AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r WHERE r.reverses_event_id=e.id AND r.event_type='REVERSED')
         ORDER BY e.created_at,e.id FOR UPDATE OF e`,[difference.rows[0].id]);
      for(const event of activeEvents.rows){
+      // A difference allocation is stored in WORKER_PAYMENT_ORDER even when the
+      // original payment's canonical allocations live in the settlement table.
+      // Parent reversal must reverse that secondary allocation too.
+      if(event.event_type==="ALLOCATED_TO_PRODUCTION"&&
+         !allocationReversals.some(item=>item.source==="WORKER_PAYMENT_ORDER"&&
+           item.sourceAllocationId===event.worker_payment_order_allocation_id)){
+       const allocation=await client.query(
+        `SELECT id,worker_payment_id,production_entry_id,amount
+           FROM worker_payment_order_allocations WHERE id=$1 FOR UPDATE`,
+        [event.worker_payment_order_allocation_id]);
+       if(allocation.rowCount!==1||allocation.rows[0].worker_payment_id!==event.worker_payment_id||
+          allocation.rows[0].production_entry_id!==event.production_entry_id||
+          Math.abs(Number(allocation.rows[0].amount)-Number(event.amount))>0.01)
+        throw new AppError("WORKER_DIFFERENCE_ALLOCATION_MISMATCH","تخصيص الإنتاج المرتبط بفرق التسوية غير موجود أو غير مطابق؛ أوقفنا عكس الدفعة",409);
+       const priorAllocationReversal=await client.query(
+        `SELECT 1 FROM worker_payment_allocation_reversals
+          WHERE allocation_source='WORKER_PAYMENT_ORDER' AND source_allocation_id=$1`,
+        [event.worker_payment_order_allocation_id]);
+       if(priorAllocationReversal.rowCount)
+        throw new AppError("WORKER_DIFFERENCE_ALLOCATION_ALREADY_REVERSED","تخصيص فرق التسوية سبق عكسه دون حدث عكس مطابق؛ أوقفنا عكس الدفعة للمراجعة",409);
+       allocationReversals.push({workerPaymentId:event.worker_payment_id,source:"WORKER_PAYMENT_ORDER",
+        sourceAllocationId:event.worker_payment_order_allocation_id,productionEntryId:event.production_entry_id,
+        amount:Number(event.amount)});
+      }
       await client.query(`
        INSERT INTO worker_payment_settlement_difference_events(
         difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,target_order_id,
