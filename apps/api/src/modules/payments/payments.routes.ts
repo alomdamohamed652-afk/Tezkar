@@ -1984,6 +1984,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
         orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-orderLegacyPaid);
+        if(orderProductionCount===0)throw new AppError("ORDER_HAS_NO_WORKER_PRODUCTION","لا يمكن تحميل تسوية العامل على طلبية أو مرحلة لا تحتوي سجلات إنتاج معتمدة تخص هذا العامل؛ نفّذ التسوية العامة بدلًا من ذلك.",409);
         if(orderProductionCount>0){
           if(!parsed.data.allowOverpayment&&parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
         }else if(!parsed.data.allowOverpayment&&parsed.data.amount>available+0.009){
