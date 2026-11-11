@@ -949,7 +949,12 @@ export async function accountingRoutes(app:FastifyInstance){
       COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e),0) AS net,
       COALESCE((SELECT COUNT(*) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
       COALESCE((SELECT COUNT(*) FROM accounting_expenses),0)::int AS expense_count,
-      COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id IS NULL),0) AS general_expenses,
+      COALESCE((SELECT SUM(GREATEST(e.amount
+    -COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)
+    -COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+      WHERE ev.source_expense_id=e.id AND ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+        AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)),0),0))
+    FROM accounting_expenses e WHERE e.order_id IS NULL),0) AS general_expenses,
       COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
   return {data:r.rows[0]};
  });
@@ -1262,7 +1267,11 @@ export async function accountingRoutes(app:FastifyInstance){
   const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,o.contract_value,
     COALESCE(o.contract_value,0) AS accrued_revenue,
     COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id AND UPPER(r.source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' AND ($1::date IS NULL OR r.revenue_date BETWEEN $1::date AND $2::date)),0) AS revenue,
-    COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
+    COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0)
+    +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+      WHERE ev.target_order_id=o.id AND ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+        AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)
+        AND ($1::date IS NULL OR ev.created_at::date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
     COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED' AND ($4::uuid IS NULL OR a.period_id=$4::uuid)),0) AS administrative_allocation,
     COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY' AND ($1::date IS NULL OR sm.created_at::date BETWEEN $1::date AND $2::date)),0) AS material_cost,
     COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND ($1::date IS NULL OR pe.work_date BETWEEN $1::date AND $2::date)),0)
@@ -1283,7 +1292,10 @@ export async function accountingRoutes(app:FastifyInstance){
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]),
    pool.query(`SELECT
-     COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=$1 AND e.expense_type='DIRECT'),0) AS value,
+     COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=$1 AND e.expense_type='DIRECT'),0)
+    +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+      WHERE ev.target_order_id=$1 AND ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+        AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)),0) AS value,
      COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'",[p.data.orderId]),
    pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS value",[p.data.orderId])
