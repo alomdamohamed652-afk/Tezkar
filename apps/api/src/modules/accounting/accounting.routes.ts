@@ -60,7 +60,10 @@ export async function accountingRoutes(app:FastifyInstance){
   reason:z.string().trim().min(2).max(500),
   idempotencyKey:z.string().uuid()
  });
- app.get("/api/accounting/reversals",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>{ const result=await pool.query("SELECT r.id,r.code,r.reason,r.reversal_date,r.created_at,u.username AS created_by_username,l.source_type,l.source_id,l.amount FROM financial_reversals r JOIN users u ON u.id=r.created_by JOIN financial_reversal_lines l ON l.reversal_id=r.id ORDER BY r.created_at DESC LIMIT 200"); return {data:result.rows}; });
+ app.get("/api/accounting/reversals",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>{ const result=await pool.query(`SELECT r.id,r.code,r.reason,r.reversal_date,r.created_at,u.username AS created_by_username,l.source_type,l.source_id,l.amount,
+  COALESCE((SELECT json_agg(jsonb_build_object('allocation_source',wa.allocation_source,'source_allocation_id',wa.source_allocation_id,'production_entry_id',wa.production_entry_id,'amount',wa.amount) ORDER BY wa.id) FROM worker_payment_allocation_reversals wa WHERE wa.reversal_id=r.id),'[]'::json) AS allocation_reversals,
+  COALESCE((SELECT json_agg(jsonb_build_object('expense_id',er.expense_id,'amount',er.amount) ORDER BY er.id) FROM accounting_expense_reversals er WHERE er.reversal_id=r.id),'[]'::json) AS expense_reversals
+ FROM financial_reversals r JOIN users u ON u.id=r.created_by JOIN financial_reversal_lines l ON l.reversal_id=r.id ORDER BY r.created_at DESC,l.source_type,l.source_id LIMIT 200`); return {data:result.rows}; });
  app.post("/api/accounting/reversals",{preHandler:[authenticateRequest,requirePermission("finance.reversals.create")]},async(request,reply)=>{
   const parsed=reversalSchema.safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات العكس المحاسبي غير صحيحة",422);
@@ -682,7 +685,10 @@ export async function accountingRoutes(app:FastifyInstance){
   if(!q.success)throw new AppError("VALIDATION_ERROR","فلتر المصروفات غير صحيح",422);
   const params:unknown[]=[];let where="";
   if(q.data.orderId){params.push(q.data.orderId);where=" WHERE e.order_id=$1 ";}
-  const r=await pool.query(`SELECT e.*,o.code AS order_code,o.order_name,os.sequence_no AS stage_sequence_no,st.name AS stage_name,u.username AS created_by_username
+  const r=await pool.query(`SELECT e.*,
+    COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0) AS reversed_amount,
+    GREATEST(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0),0) AS effective_amount,
+    o.code AS order_code,o.order_name,os.sequence_no AS stage_sequence_no,st.name AS stage_name,u.username AS created_by_username
     FROM accounting_expenses e
     LEFT JOIN production_orders o ON o.id=e.order_id
     LEFT JOIN order_stages os ON os.id=e.order_stage_id
