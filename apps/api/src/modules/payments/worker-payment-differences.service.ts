@@ -172,11 +172,11 @@ export async function processMaturedWorkerPaymentDifferences(
         -- still has later approved production with an unpaid balance. This matters
         -- after an independent allocation reversal restores that production due.
         AND NOT EXISTS(
-          SELECT 1 FROM production_entries unpaid
-           WHERE unpaid.employee_id=d.employee_id
-             AND unpaid.status='APPROVED'
-             AND unpaid.approved_at>wp.created_at
-             AND unpaid.work_date>=wp.created_at::date
+          SELECT 1 FROM production_entries p
+           WHERE p.employee_id=d.employee_id
+             AND p.status='APPROVED'
+             AND p.approved_at>wp.created_at
+             AND p.work_date>=wp.created_at::date
              AND ${productionRemainingSql}>0.009
         )
         AND (
