@@ -414,7 +414,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  const reconciliationHandler = async () => {
   // Read-only checks: findings are never repaired automatically and no balance is changed.
-  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches,advanceRepaymentLedgerMismatches] = await Promise.all([
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches,advanceRepaymentLedgerMismatches,workerPaymentReversalMismatches] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.advance_repayment_amount,
@@ -648,7 +648,82 @@ export async function accountingRoutes(app:FastifyInstance){
          OR ROUND(d.amount::numeric,2)<>ROUND(ar.amount::numeric,2)
        ))
      )
-     ORDER BY ar.payment_date,emp.full_name,a.code`)
+     ORDER BY ar.payment_date,emp.full_name,a.code`),
+   pool.query(`
+    SELECT wp.id AS worker_payment_id,wp.employee_id,wp.gross_amount,wp.amount AS cash_paid_amount,
+           wp.advance_repayment_amount,r.id AS reversal_id,
+           COALESCE(ledger.credit_total,0) AS ledger_credit,
+           COALESCE(ledger.debit_total,0) AS ledger_debit,
+           COALESCE(ledger.wrong_employee_count,0) AS wrong_ledger_employee_count,
+           COALESCE(expenses.source_total,0) AS source_expense_total,
+           COALESCE(expenses.reversed_total,0) AS reversed_expense_total,
+           COALESCE(custody.original_out,0) AS original_custody_out,
+           COALESCE(custody.reversal_in,0) AS reversal_custody_in,
+           COALESCE(allocations.source_count,0) AS source_allocation_count,
+           COALESCE(allocations.reversed_count,0) AS reversed_allocation_count,
+           COALESCE(allocations.source_amount,0) AS source_allocation_amount,
+           COALESCE(allocations.reversed_amount,0) AS reversed_allocation_amount,
+           COALESCE(allocations.missing_count,0) AS missing_allocation_reversals
+      FROM financial_reversal_lines line
+      JOIN financial_reversals r ON r.id=line.reversal_id
+      JOIN worker_payments wp ON wp.id=line.source_id
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(l.credit_amount),0) AS credit_total,
+               COALESCE(SUM(l.debit_amount),0) AS debit_total,
+               COUNT(*) FILTER(WHERE l.employee_id<>wp.employee_id)::int AS wrong_employee_count
+          FROM employee_earnings_ledger l WHERE l.financial_reversal_id=r.id
+      ) ledger ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(e.amount),0) AS source_total,
+               COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.reversal_id=r.id),0) AS reversed_total
+          FROM accounting_expenses e
+         WHERE e.source_worker_payment_id=wp.id
+            OR (e.source_worker_payment_id IS NULL AND e.idempotency_key=wp.idempotency_key)
+      ) expenses ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE((SELECT SUM(c.amount) FROM cash_custody_transactions c WHERE c.source_type='WORKER_PAYMENT' AND c.source_id=wp.id AND c.direction='OUT'),0) AS original_out,
+               COALESCE((SELECT SUM(c.amount) FROM cash_custody_transactions c WHERE c.source_type='FINANCIAL_REVERSAL' AND c.source_id=r.id AND c.direction='IN'),0) AS reversal_in
+      ) custody ON TRUE
+      LEFT JOIN LATERAL (
+        WITH source_allocations AS (
+          SELECT a.id,a.amount,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
+            FROM employee_earnings_settlement_allocations a
+            JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+           WHERE es.worker_payment_id=wp.id
+          UNION ALL
+          SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text
+            FROM worker_payment_order_allocations a
+           WHERE a.worker_payment_id=wp.id
+             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
+          UNION ALL
+          SELECT a.id,a.amount,'WORKER_PAYMENT_LEGACY'::text
+            FROM worker_payment_allocations a
+           WHERE a.worker_payment_id=wp.id
+             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+        )
+        SELECT COUNT(*)::int AS source_count,COALESCE(SUM(sa.amount),0) AS source_amount,
+               (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals wa WHERE wa.reversal_id=r.id) AS reversed_count,
+               (SELECT COALESCE(SUM(wa.amount),0) FROM worker_payment_allocation_reversals wa WHERE wa.reversal_id=r.id) AS reversed_amount,
+               COUNT(*) FILTER(WHERE NOT EXISTS(
+                 SELECT 1 FROM worker_payment_allocation_reversals wa
+                  WHERE wa.reversal_id=r.id AND wa.source_allocation_id=sa.id AND wa.allocation_source=sa.source
+               ))::int AS missing_count
+          FROM source_allocations sa
+      ) allocations ON TRUE
+     WHERE line.source_type='WORKER_PAYMENT'
+       AND (
+         ABS(COALESCE(ledger.credit_total,0)-wp.gross_amount)>0.01
+         OR ABS(COALESCE(ledger.debit_total,0)-wp.advance_repayment_amount)>0.01
+         OR COALESCE(ledger.wrong_employee_count,0)>0
+         OR ABS(COALESCE(expenses.source_total,0)-wp.gross_amount)>0.01
+         OR ABS(COALESCE(expenses.reversed_total,0)-wp.gross_amount)>0.01
+         OR ABS(COALESCE(custody.original_out,0)-COALESCE(custody.reversal_in,0))>0.01
+         OR COALESCE(allocations.source_count,0)<>COALESCE(allocations.reversed_count,0)
+         OR ABS(COALESCE(allocations.source_amount,0)-COALESCE(allocations.reversed_amount,0))>0.01
+         OR COALESCE(allocations.missing_count,0)>0
+       )
+     ORDER BY r.created_at DESC,wp.created_at DESC`)
   ]);
   return {
    checkedAt:new Date().toISOString(),
@@ -662,7 +737,8 @@ export async function accountingRoutes(app:FastifyInstance){
     expensesMissingCustodyLink:expenseCustodyMismatch.rows.length,
     advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows.length,
     zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows.length,
-    advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows.length
+    advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows.length,
+    workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows.length
    },
    issues:{
     missingPayrollExpenses:missingExpenses.rows,
@@ -674,7 +750,8 @@ export async function accountingRoutes(app:FastifyInstance){
     expensesMissingCustodyLink:expenseCustodyMismatch.rows,
     advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows,
     zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows,
-    advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows
+    advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows,
+    workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows
    }
   };
  };
