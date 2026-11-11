@@ -375,7 +375,7 @@ export default function AccountingPage() {
         <div className="table-wrap"><table><thead><tr><th>العامل</th><th>الدفعة</th><th>الطلبية الأصلية</th><th>الفرق الأصلي</th><th>تم توزيعه</th><th>تم ترحيله</th><th>المتبقي</th><th>مؤهل من</th><th>الحالة</th><th></th></tr></thead><tbody>
          {workerDifferences.map(d=><tr key={d.id}>
           <td>{d.employee_name}</td><td className="mono">{d.payment_code}</td><td>{d.source_order_code} — {d.source_order_name}{d.source_stage_name?" / "+d.source_stage_name:""}</td>
-          <td className="money">{n(d.original_amount)}</td><td className="money">{n(d.allocated_amount)}</td><td className="money">{n(d.transferred_amount)}</td><td className="money strong">{n(d.remaining_amount)}</td><td>{String(d.eligible_at).slice(0,10)}</td>
+          <td className="money">{n(Number(d.original_amount))}</td><td className="money">{n(Number(d.allocated_amount))}</td><td className="money">{n(Number(d.transferred_amount))}</td><td className="money strong">{n(Number(d.remaining_amount))}</td><td>{String(d.eligible_at).slice(0,10)}</td>
           <td>{d.status==="PENDING"?"معلق":d.status==="PARTIALLY_ALLOCATED"?"موزع جزئيًا":d.status==="ALLOCATED"?"موزع بالكامل":d.status==="TRANSFERRED_TO_SOURCE_ORDER"?"مُرحّل للطلبية":"معكوس"}</td>
           <td><button className="secondary-button" onClick={()=>void loadWorkerDifferenceEvents(d.id)}>الحركات</button></td>
          </tr>)}
@@ -385,7 +385,7 @@ export default function AccountingPage() {
        {selectedWorkerDifference&&<section className="card">
         <div className="card-header"><div><h2 className="card-title">سجل حركات فرق التسوية</h2><div className="form-hint">كل توزيع أو ترحيل أو عكس محفوظ كسجل مستقل دون حذف الحركة الأصلية.</div></div><button className="secondary-button" onClick={()=>{setSelectedWorkerDifference("");setWorkerDifferenceEvents([])}}>إغلاق</button></div>
         <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>الطلبية المستهدفة</th><th>المرحلة</th><th>الإنتاج</th><th>المبلغ</th><th>المنفذ</th><th>السبب</th></tr></thead><tbody>
-         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(e.amount)}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td></tr>)}
+         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(Number(e.amount))}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td></tr>)}
          {!workerDifferenceEvents.length&&<tr><td colSpan={8}>لا توجد حركات لهذا الفرق بعد.</td></tr>}
         </tbody></table></div>
        </section>}
