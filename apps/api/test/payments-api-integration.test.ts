@@ -2202,9 +2202,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS reversal_custody_holder,
           (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$3 AND direction='OUT') AS original_custody_holder,
           (SELECT COUNT(*)::int FROM employee_earnings_settlement_allocations WHERE id=$2) AS original_allocation_count,
-          (SELECT repayment_status FROM advance_requests WHERE id=$3) AS advance_status,
+          (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status,
           (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$1 AND source_type='ADVANCE_REPAYMENT') AS advance_reversal_lines`,
-        [reversalResponse.json().data.reversal.id,originalAllocation.id,reversalAdvance]
+        [reversalResponse.json().data.reversal.id,originalAllocation.id,reversalPaymentId,reversalAdvance]
       );
       assert.equal(Number(reversalEffects.rows[0].allocation_count),1);
       assert.equal(Number(reversalEffects.rows[0].allocation_amount),100);
