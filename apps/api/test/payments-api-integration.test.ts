@@ -2441,6 +2441,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }catch(error){await pendingMaturityClient.query("ROLLBACK");throw error}
       finally{pendingMaturityClient.release()}
       await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[pendingDifferenceProduction.id]);
+      const employeeLockClient=await apiPool.connect();
+      const blockedMaturityClient=await apiPool.connect();
+      try{
+        await employeeLockClient.query("BEGIN");
+        await employeeLockClient.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[differenceWorker.id]);
+        await blockedMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          blockedMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"maturity processing must serialize with worker production approval through the employee lock");
+        await blockedMaturityClient.query("COMMIT");
+        await employeeLockClient.query("ROLLBACK");
+      }catch(error){
+        await blockedMaturityClient.query("ROLLBACK").catch(()=>{});
+        await employeeLockClient.query("ROLLBACK").catch(()=>{});
+        throw error;
+      }finally{
+        blockedMaturityClient.release();
+        employeeLockClient.release();
+      }
       const matureClient=await apiPool.connect();
       let transferredCount=0;
       try{
