@@ -2352,6 +2352,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(maturityDiagnostic.rows[0].mature,true,JSON.stringify(maturityDiagnostic.rows[0]));
       assert.equal(maturityDiagnostic.rows[0].no_pending,true,JSON.stringify(maturityDiagnostic.rows[0]));
       assert.equal(maturityDiagnostic.rows[0].no_reversal,true,JSON.stringify(maturityDiagnostic.rows[0]));
+      const pendingDifferenceProduction=await insertDifferenceProduction(1,10);
+      await apiPool.query(
+        "UPDATE production_entries SET status='PENDING',approved_by=NULL,approved_at=NULL,work_date=CURRENT_DATE-40 WHERE id=$1",
+        [pendingDifferenceProduction.id]
+      );
+      const pendingMaturityClient=await apiPool.connect();
+      try{
+        await pendingMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          pendingMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"maturity must wait while the worker has unresolved production awaiting approval");
+        await pendingMaturityClient.query("COMMIT");
+      }catch(error){await pendingMaturityClient.query("ROLLBACK");throw error}
+      finally{pendingMaturityClient.release()}
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[pendingDifferenceProduction.id]);
       const matureClient=await apiPool.connect();
       let transferredCount=0;
       try{
