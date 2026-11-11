@@ -1,5 +1,13 @@
 -- Append-only effects for worker-payment reversals.
 -- Original payment, allocation and expense rows remain immutable.
+ALTER TABLE employee_earnings_ledger
+  ADD COLUMN IF NOT EXISTS financial_reversal_id UUID
+  REFERENCES financial_reversals(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS employee_earnings_ledger_financial_reversal_idx
+  ON employee_earnings_ledger(financial_reversal_id)
+  WHERE financial_reversal_id IS NOT NULL;
+
 ALTER TABLE financial_reversal_lines
   DROP CONSTRAINT IF EXISTS financial_reversal_lines_source_type_check;
 
