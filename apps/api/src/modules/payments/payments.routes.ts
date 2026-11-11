@@ -1833,7 +1833,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (prior.rowCount) {
         const payment = prior.rows[0];
         const sameRequest = payment.employee_id === parsed.data.employeeId
-          && payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null)
+          && (Number(payment.amount) <= 0.009 || payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null))
           && payment.expense_order_id === (parsed.data.orderId ?? null)
           && payment.expense_order_stage_id === (parsed.data.orderStageId ?? null)
           && payment.idempotency_fingerprint === fingerprint;
