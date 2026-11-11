@@ -1715,7 +1715,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [hamzaOrder.json().data.id,reconcileOrderStage.id]
       )).rows[0];
       assert.ok(secondExpenseStage,"split expense test requires a second order stage");
-      const splitProductionA=await apiPool.query(
+      await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
            wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
@@ -1726,7 +1726,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [splitExpenseWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
          reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
       );
-      const splitProductionB=await apiPool.query(
+      await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
            wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
@@ -1763,6 +1763,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(orderExpenseRows.length,2);
       assert.equal(generalExpenseRows.length,1);
       assert.equal(Number(generalExpenseRows[0].amount),5,"standalone ledger adjustment must remain unallocated");
+      assert.notEqual(orderExpenseRows[0].order_id,orderExpenseRows[1].order_id,"the two production expenses must retain distinct source orders");
       assert.equal(orderExpenseRows[0].order_stage_id===orderExpenseRows[1].order_stage_id,false,
         "production expenses must preserve their actual stages");
       assert.ok(orderExpenseRows.every((row:any)=>Number(row.amount)===10));
