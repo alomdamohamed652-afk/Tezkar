@@ -8,7 +8,7 @@ const productionRoutes = readFileSync(
 );
 
 test("production report remaining summary subtracts net allocated payments", () => {
-  const match = productionRoutes.match(/const remainingSql = \`([\s\S]*?)\`;/);
+  const match = productionRoutes.match(/const remainingSql = `([\s\S]*?)`;/);
   assert.ok(match, "remainingSql must be defined");
   const expression = match[1];
 
