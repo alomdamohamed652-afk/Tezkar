@@ -2327,6 +2327,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
            quantity,differenceStage.unit_id,bonusRate.id,perPieceWageType.id,earning,manager.id,differenceStage.id]
         )).rows[0];
       }
+      async function readDifferenceOrderDashboard(){
+        const response=await app.inject({
+          method:"GET",url:"/api/accounting/orders-dashboard",headers:{cookie:managerCookie}
+        });
+        assert.equal(response.statusCode,200,response.body);
+        const row=response.json().data.find((item:any)=>item.id===differenceOrderId);
+        assert.ok(row,"the worker settlement order must appear in the profitability dashboard");
+        return row;
+      }
       const sourceProduction=await insertDifferenceProduction(10,100);
       assert.equal(Number(sourceProduction.total_earning_amount),100);
       const differencePaymentResponse=await app.inject({
@@ -2372,6 +2381,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(initialProfitability.json().data.expenses),0,
         "worker-payment cash expense must not be counted again on top of production labor cost");
       assert.equal(Number(initialProfitability.json().data.totalCost),100);
+      const initialDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(initialDashboardOrder.labor_cost),100);
+      assert.equal(Number(initialDashboardOrder.direct_expenses),0);
+      assert.equal(Number(initialDashboardOrder.total_cost),100);
 
       const laterProduction=await insertDifferenceProduction(2,20);
       const differenceClient=await apiPool.connect();
@@ -2403,6 +2416,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(partialProfitability.json().data.expenses),0,
         "an allocation to later approved production is already included in labor cost");
       assert.equal(Number(partialProfitability.json().data.totalCost),120);
+      const partialDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(partialDashboardOrder.labor_cost),120);
+      assert.equal(Number(partialDashboardOrder.direct_expenses),0);
+      assert.equal(Number(partialDashboardOrder.total_cost),120);
       const immutableDifferenceEvent=(await apiPool.query(
         "SELECT id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 ORDER BY created_at,id LIMIT 1",
         [differenceRecord.id]
@@ -2512,6 +2529,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(maturedProfitability.json().data.expenses),30,
         "only the unmatched remainder transferred to the source order is an additional expense");
       assert.equal(Number(maturedProfitability.json().data.totalCost),150);
+      const maturedDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(maturedDashboardOrder.labor_cost),120);
+      assert.equal(Number(maturedDashboardOrder.direct_expenses),30);
+      assert.equal(Number(maturedDashboardOrder.total_cost),150);
       const duplicateMaturityClient=await apiPool.connect();
       try{
         await duplicateMaturityClient.query("BEGIN");
@@ -2638,6 +2659,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "the separate closure difference remains charged until its own payment is reversed");
       assert.equal(Number(reversedProfitability.json().data.totalCost),190,
         "reversing one payment must not erase other workers' earned labor or leave duplicate transferred expense");
+      const reversedDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(reversedDashboardOrder.labor_cost),180);
+      assert.equal(Number(reversedDashboardOrder.direct_expenses),10);
+      assert.equal(Number(reversedDashboardOrder.total_cost),190);
       const differenceEventsApi=await app.inject({
         method:"GET",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/events`,
         headers:{cookie:managerCookie}
