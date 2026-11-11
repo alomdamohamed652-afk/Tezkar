@@ -120,7 +120,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       for(const key of [
         "missingPayrollExpenses","missingAdjustmentLedgerEntries","cashPaymentsMissingCustodyOut",
         "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink",
-        "workerPaymentReversalMismatches"
+        "workerPaymentReversalMismatches","workerDifferenceEventReversalMismatches"
       ]){
         assert.equal(typeof integrityCounts[key],"number",`financial integrity overview must return numeric count for ${key}`);
       }
@@ -2641,6 +2641,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           idempotencyKey:independentAllocationReversalKey}
       });
       assert.equal(independentAllocationReversal.statusCode,201,independentAllocationReversal.body);
+      const independentReversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(independentReversalIntegrity.statusCode,200,independentReversalIntegrity.body);
+      assert.equal(independentReversalIntegrity.json().data.counts.workerDifferenceEventReversalMismatches,0,
+        "an independent difference-event reversal must reconcile to its immutable event and financial journal line");
       assert.equal((await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0].status,"REQUIRES_REVIEW","an independently reversed allocation must be held for accounting review");
@@ -3001,6 +3007,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(parentReversalIntegrity.statusCode,200,parentReversalIntegrity.body);
       assert.equal(parentReversalIntegrity.json().data.counts.workerPaymentReversalMismatches,0,
         "reconciliation must include difference-event allocations stored beside canonical settlement allocations");
+      assert.equal(parentReversalIntegrity.json().data.counts.workerDifferenceEventReversalMismatches,0,
+        "parent payment reversals must reconcile their generated difference-event reversal records to the parent journal line");
 
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
