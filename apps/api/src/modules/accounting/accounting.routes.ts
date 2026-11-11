@@ -881,7 +881,14 @@ export async function accountingRoutes(app:FastifyInstance){
   if(q.data.orderId){params.push(q.data.orderId);where=" WHERE e.order_id=$1 ";}
   const r=await pool.query(`SELECT e.*,
     COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0) AS reversed_amount,
-    GREATEST(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0),0) AS effective_amount,
+    COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+      WHERE ev.source_expense_id=e.id AND ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+        AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)),0) AS difference_allocated_amount,
+    GREATEST(e.amount
+      -COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)
+      -COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+        WHERE ev.source_expense_id=e.id AND ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)),0),0) AS effective_amount,
     o.code AS order_code,o.order_name,os.sequence_no AS stage_sequence_no,st.name AS stage_name,u.username AS created_by_username
     FROM accounting_expenses e
     LEFT JOIN production_orders o ON o.id=e.order_id
