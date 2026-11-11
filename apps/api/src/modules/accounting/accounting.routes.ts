@@ -279,14 +279,14 @@ export async function accountingRoutes(app:FastifyInstance){
     if(custody.rowCount>1)throw new AppError("WORKER_PAYMENT_CUSTODY_AMBIGUOUS","توجد أكثر من حركة خروج نقدي مرتبطة بالدفعة؛ أوقفنا العكس",409);
     const expenseCustodians=[...new Set(expenses.rows.map(row=>row.paid_from_employee_id).filter(Boolean))];
     if(custody.rowCount===1){
+     if(previousCustodySettlement)
+      throw new AppError("WORKER_PAYMENT_PREVIOUS_CUSTODY_CONFLICT","التسوية موثقة كعهدة سابقة رغم وجود خروج نقدي حالي؛ أوقفنا العكس",409);
      if(Math.abs(Number(custody.rows[0].amount)-cashPaid)>0.01||
         (expenseCustodians.length&& (expenseCustodians.length!==1||expenseCustodians[0]!==custody.rows[0].employee_id)))
       throw new AppError("WORKER_PAYMENT_CUSTODY_MISMATCH","حركة خروج العهدة أو صاحبها لا يطابق مصروفات الدفعة وصافي النقد؛ أوقفنا العكس",409);
      if(cashPaid>0.009)custodyMoves.push({employeeId:custody.rows[0].employee_id,direction:"IN",amount:cashPaid,description:"استرداد عكس دفعة العامل "+payment.id});
     }else if(cashPaid>0.009&&(!previousCustodySettlement||expenseCustodians.length))
      throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","لا توجد حركة خروج نقدي موثقة، كما لا يوجد إثبات أن التسوية تمت من عهدة سابقة؛ أوقفنا العكس",409);
-    else if(cashPaid>0.009&&custody.rowCount&&previousCustodySettlement)
-     throw new AppError("WORKER_PAYMENT_PREVIOUS_CUSTODY_CONFLICT","التسوية موثقة كعهدة سابقة رغم وجود خروج نقدي حالي؛ أوقفنا العكس",409);
     else if(cashPaid<=0.009&&custody.rowCount)
      throw new AppError("WORKER_PAYMENT_CUSTODY_ZERO_MISMATCH","توجد حركة خروج نقدي رغم أن صافي النقد المصروف صفر؛ أوقفنا العكس",409);
 
