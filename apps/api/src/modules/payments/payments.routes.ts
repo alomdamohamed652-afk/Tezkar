@@ -72,7 +72,15 @@ function activeDifferencePaymentProductionAllocationSql(paymentIdExpr:string,set
       THEN COALESCE((SELECT SUM(${net("a","EMPLOYEE_EARNINGS_SETTLEMENT")})
         FROM employee_earnings_settlement_allocations a
         JOIN production_entries p ON p.id=a.production_entry_id
-        WHERE a.settlement_id=${settlementIdExpr} AND ${eligible}),0)` : "";
+        WHERE a.settlement_id=${settlementIdExpr} AND ${eligible}),0)
+        +COALESCE((SELECT SUM(ev.amount)
+          FROM worker_payment_settlement_difference_events ev
+          JOIN production_entries p ON p.id=ev.production_entry_id
+          WHERE ev.worker_payment_id=${paymentIdExpr}
+            AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND ${eligible}
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)` : "";
   return `CASE
     ${canonical}
     WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations x WHERE x.worker_payment_id=${paymentIdExpr})
