@@ -55,7 +55,7 @@ async function assertAccountingDateOpen(client:import("pg").PoolClient,date:stri
 export async function accountingRoutes(app:FastifyInstance){
 
  const reversalSchema=z.object({
-  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT","ZERO_NET_PAYROLL_SETTLEMENT","WORKER_PAYMENT"]),
+  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT","ZERO_NET_PAYROLL_SETTLEMENT","WORKER_PAYMENT","WORKER_SETTLEMENT_DIFFERENCE_EVENT"]),
   sourceId:z.string().uuid(),
   amount:z.number().positive().max(100000000).refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   reason:z.string().trim().min(2).max(500),
@@ -88,6 +88,7 @@ export async function accountingRoutes(app:FastifyInstance){
    let payrollItemId:string|null=null;
    let zeroNetPayrollItemId:string|null=null;
    const advanceIds=new Set<string>();
+   let settlementDifferenceEventReversal:{event:any;differenceId:string}|null=null;
    if(input.sourceType==="PAYROLL_PAYMENT"){
     const q=await client.query(`SELECT pp.*,i.employee_id,i.net_amount,p.status AS period_status
       FROM payroll_payments pp JOIN payroll_items i ON i.id=pp.payroll_item_id
@@ -374,7 +375,7 @@ export async function accountingRoutes(app:FastifyInstance){
     lines.push({source_type:"ZERO_NET_PAYROLL_SETTLEMENT",source_id:item.id,amount:grossSalary});
     ledgerMoves.push({employeeId:item.employee_id,credit:grossSalary,debit:0,notes:"عكس تسوية راتب بصافي صفر "+item.id});
     zeroNetPayrollItemId=item.id;
-   }else{
+   }else if(input.sourceType==="ADVANCE_REPAYMENT"){
     const q=await client.query(`SELECT ar.*,a.employee_id,a.code FROM advance_repayments ar
       JOIN advance_requests a ON a.id=ar.advance_id WHERE ar.id=$1 FOR UPDATE OF ar,a`,[input.sourceId]);
     if(!q.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","عملية سداد السلفة الأصلية غير موجودة",404);
@@ -392,6 +393,71 @@ export async function accountingRoutes(app:FastifyInstance){
     lines.push({source_type:"ADVANCE_REPAYMENT",source_id:input.sourceId,amount:input.amount});
     ledgerMoves.push({employeeId:ar.employee_id,credit:0,debit:input.amount,notes:"عكس سداد سلفة "+ar.code+" / "+input.sourceId});
     custodyMoves.push({employeeId:cash.rows[0].employee_id,direction:"OUT",amount:input.amount,description:"عكس تحصيل سداد سلفة "+ar.code});
+   }else if(input.sourceType==="WORKER_SETTLEMENT_DIFFERENCE_EVENT"){
+    const identity=await client.query(
+     `SELECT d.employee_id FROM worker_payment_settlement_difference_events ev
+        JOIN worker_payment_settlement_differences d ON d.id=ev.difference_id
+       WHERE ev.id=$1`,[input.sourceId]);
+    if(!identity.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","حركة فرق التسوية الأصلية غير موجودة",404);
+    await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[identity.rows[0].employee_id]);
+    const eventResult=await client.query(
+     `SELECT ev.*,d.employee_id,d.status AS difference_status,wp.created_at AS payment_created_at
+        FROM worker_payment_settlement_difference_events ev
+        JOIN worker_payment_settlement_differences d ON d.id=ev.difference_id
+        JOIN worker_payments wp ON wp.id=ev.worker_payment_id
+       WHERE ev.id=$1 FOR UPDATE OF ev,d`,[input.sourceId]);
+    if(!eventResult.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","حركة فرق التسوية الأصلية غير موجودة",404);
+    const event=eventResult.rows[0];
+    if(!["ALLOCATED_TO_PRODUCTION","TRANSFERRED_TO_SOURCE_ORDER"].includes(event.event_type))
+     throw new AppError("WORKER_DIFFERENCE_EVENT_NOT_REVERSIBLE","نوع الحركة لا يدعم العكس المستقل",409);
+    if(event.difference_status==="REVERSED"||event.difference_status==="REQUIRES_REVIEW")
+     throw new AppError("WORKER_DIFFERENCE_REQUIRES_REVIEW","فرق التسوية معكوس أو قيد المراجعة بالفعل",409);
+    if(Math.abs(Number(event.amount)-input.amount)>0.01)
+     throw new AppError("WORKER_DIFFERENCE_FULL_EVENT_REVERSAL_REQUIRED","عكس حدث فرق التسوية يتطلب عكس الحدث بالكامل",409);
+    const parentReversal=await client.query(
+     "SELECT 1 FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+     [event.worker_payment_id]);
+    if(parentReversal.rowCount)
+     throw new AppError("WORKER_PAYMENT_ALREADY_REVERSED","دفعة العامل الأصلية معكوسة بالفعل؛ لا يمكن عكس حدث تابع لها منفصلًا",409);
+    const priorEventReversal=await client.query(
+     "SELECT 1 FROM worker_payment_settlement_difference_events WHERE reverses_event_id=$1 AND event_type='REVERSED'",
+     [event.id]);
+    if(priorEventReversal.rowCount)
+     throw new AppError("WORKER_DIFFERENCE_EVENT_ALREADY_REVERSED","حركة فرق التسوية سبق عكسها",409);
+    if(event.event_type==="ALLOCATED_TO_PRODUCTION"){
+     const allocation=await client.query(
+      `SELECT id,worker_payment_id,production_entry_id,amount
+         FROM worker_payment_order_allocations
+        WHERE id=$1 FOR UPDATE`,[event.worker_payment_order_allocation_id]);
+     if(allocation.rowCount!==1||allocation.rows[0].worker_payment_id!==event.worker_payment_id||
+        allocation.rows[0].production_entry_id!==event.production_entry_id||
+        Math.abs(Number(allocation.rows[0].amount)-Number(event.amount))>0.01)
+      throw new AppError("WORKER_DIFFERENCE_ALLOCATION_MISMATCH","تخصيص الإنتاج المرتبط بفرق التسوية غير موجود أو غير مطابق",409);
+     const priorAllocationReversal=await client.query(
+      `SELECT 1 FROM worker_payment_allocation_reversals
+        WHERE allocation_source='WORKER_PAYMENT_ORDER' AND source_allocation_id=$1`,
+      [event.worker_payment_order_allocation_id]);
+     if(priorAllocationReversal.rowCount)
+      throw new AppError("WORKER_DIFFERENCE_ALLOCATION_ALREADY_REVERSED","تخصيص الإنتاج سبق عكسه؛ راجع سجل التسويات",409);
+     const dependent=await client.query(
+      `SELECT 1 FROM worker_payments later
+        WHERE later.employee_id=$1 AND later.id<>$2
+          AND later.created_at>(SELECT created_at FROM worker_payments WHERE id=$2)
+          AND (
+            EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=later.id AND a.production_entry_id=$3)
+            OR EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=later.id AND a.production_entry_id=$3)
+            OR EXISTS(SELECT 1 FROM employee_earnings_settlements es
+              JOIN employee_earnings_settlement_allocations a ON a.settlement_id=es.id
+              WHERE es.worker_payment_id=later.id AND a.production_entry_id=$3)
+          ) LIMIT 1 FOR UPDATE OF later`,
+      [event.employee_id,event.worker_payment_id,event.production_entry_id]);
+     if(dependent.rowCount)
+      throw new AppError("WORKER_PAYMENT_HAS_DEPENDENT_SETTLEMENT","توجد دفعة لاحقة تعتمد على سجل الإنتاج؛ أوقفنا عكس التخصيص لحماية تسلسل المستحقات",409);
+     allocationReversals.push({workerPaymentId:event.worker_payment_id,source:"WORKER_PAYMENT_ORDER",
+      sourceAllocationId:event.worker_payment_order_allocation_id,productionEntryId:event.production_entry_id,amount:Number(event.amount)});
+    }
+    lines.push({source_type:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",source_id:event.id,amount:Number(event.amount)});
+    settlementDifferenceEventReversal={event,differenceId:event.difference_id};
    }
    const header=await client.query("INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[input.idempotencyKey,requestFingerprint,input.reason,reversalDate,request.user!.userId]);
    for(const line of lines)await client.query("INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount) VALUES($1,$2,$3,$4)",[header.rows[0].id,line.source_type,line.source_id,line.amount]);
@@ -399,6 +465,21 @@ export async function accountingRoutes(app:FastifyInstance){
     `INSERT INTO worker_payment_allocation_reversals(reversal_id,worker_payment_id,allocation_source,source_allocation_id,production_entry_id,amount,created_by)
      VALUES($1,$2,$3,$4,$5,$6,$7)`,
     [header.rows[0].id,allocation.workerPaymentId,allocation.source,allocation.sourceAllocationId,allocation.productionEntryId,allocation.amount,request.user!.userId]);
+   if(settlementDifferenceEventReversal){
+    const event=settlementDifferenceEventReversal.event;
+    await client.query(
+     `INSERT INTO worker_payment_settlement_difference_events(
+       difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,target_order_id,
+       target_order_stage_id,production_entry_id,worker_payment_order_allocation_id,reverses_event_id,
+       financial_reversal_id,actor_type,actor_user_id,reason
+      ) VALUES($1,$2,$3,'REVERSED',$4,$5,$6,$7,$8,$9,$10,$11,'USER',$12,$13)`,
+     [event.difference_id,event.worker_payment_id,event.source_expense_id,event.amount,event.source_order_id,
+      event.target_order_id,event.target_order_stage_id,event.production_entry_id,event.worker_payment_order_allocation_id,
+      event.id,header.rows[0].id,request.user!.userId,"عكس مستقل لحدث فرق التسوية: "+input.reason]);
+    await client.query(
+     "UPDATE worker_payment_settlement_differences SET status='REQUIRES_REVIEW',updated_at=now() WHERE id=$1",
+     [settlementDifferenceEventReversal.differenceId]);
+   }
    for(const expense of expenseReversals)await client.query(
     `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
      VALUES($1,$2,$3,$4,$5)`,
@@ -443,7 +524,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const paid=Number(totals.rows[0].effective_paid),net=Number(totals.rows[0].net_amount);
     await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2",[net<=0.0001||paid>=net-0.0001?"PAID":paid>0.0001?"PARTIAL":"UNPAID",payrollItemId]);
    }
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,allocationReversals,expenseReversals,settlementDifferenceReversals,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,allocationReversals,expenseReversals,settlementDifferenceReversals,settlementDifferenceEventReversal:settlementDifferenceEventReversal?{eventId:settlementDifferenceEventReversal.event.id,differenceId:settlementDifferenceEventReversal.differenceId}:null,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {replayed:false,reversal:header.rows[0],lines};
   });
   return reply.code(result.replayed?200:201).send({data:{reversal:result.reversal,lines:result.lines}});
