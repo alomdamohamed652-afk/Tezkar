@@ -37,6 +37,7 @@ const productionRemainingSql = `
         AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
           WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')
         AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+          JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
           WHERE es.worker_payment_id=ev.worker_payment_id)),0)
     -COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
       WHERE hm.production_entry_id=p.id AND hm.status='PAID_PREVIOUSLY'),0),0)
