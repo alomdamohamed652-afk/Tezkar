@@ -1705,6 +1705,79 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(orderScopedPayout.statusCode,201,orderScopedPayout.body,
         "previous-custody payout must validate and execute against selected order balance, not global available balance");
       assert.equal(Number(orderScopedPayout.json().data.grossAmount),100);
+      // An all-orders settlement must split labor expense by the real production
+      // order/stage allocations and leave independent ledger adjustments general.
+      const splitExpenseWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Split Expense Worker') RETURNING id"
+      )).rows[0];
+      const secondExpenseStage=(await apiPool.query(
+        "SELECT id,stage_id FROM order_stages WHERE order_id=$1 AND id<>$2 ORDER BY sequence_no LIMIT 1",
+        [hamzaOrder.json().data.id,reconcileOrderStage.id]
+      )).rows[0];
+      assert.ok(secondExpenseStage,"split expense test requires a second order stage");
+      const splitProductionA=await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [splitExpenseWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      );
+      const splitProductionB=await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [splitExpenseWorker.id,secondExpenseStage.id,reconcileProduct.id,secondExpenseStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',5,$2,'split expense standalone adjustment')",
+        [splitExpenseWorker.id,manager.id]
+      );
+      const splitExpenseKey=randomUUID();
+      const splitExpensePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:splitExpenseWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,amount:25,method:"CASH",idempotencyKey:splitExpenseKey}
+      });
+      assert.equal(splitExpensePayout.statusCode,201,splitExpensePayout.body);
+      const splitExpenseRows=await apiPool.query(
+        `SELECT order_id,order_stage_id,amount,allocation_type,source_worker_payment_id,
+                paid_from_employee_id,cash_custody_transaction_id
+           FROM accounting_expenses
+          WHERE source_worker_payment_id=$1
+          ORDER BY order_id NULLS LAST,order_stage_id NULLS LAST`,
+        [splitExpensePayout.json().data.payment.id]
+      );
+      assert.equal(splitExpenseRows.rowCount,3,"two production scopes plus one standalone general amount");
+      assert.equal(Number(splitExpenseRows.rows.reduce((sum:any,row:any)=>sum+Number(row.amount),0)),25);
+      const orderExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.order_id!==null);
+      const generalExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.order_id===null);
+      assert.equal(orderExpenseRows.length,2);
+      assert.equal(generalExpenseRows.length,1);
+      assert.equal(Number(generalExpenseRows[0].amount),5,"standalone ledger adjustment must remain unallocated");
+      assert.equal(orderExpenseRows[0].order_stage_id===orderExpenseRows[1].order_stage_id,false,
+        "production expenses must preserve their actual stages");
+      assert.ok(orderExpenseRows.every((row:any)=>Number(row.amount)===10));
+      assert.ok(splitExpenseRows.rows.every((row:any)=>row.source_worker_payment_id===splitExpensePayout.json().data.payment.id));
+      const linkedExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.cash_custody_transaction_id!==null);
+      assert.equal(linkedExpenseRows.length,1,"one real custody movement must be linked once, not duplicated across split expenses");
+      assert.equal(linkedExpenseRows[0].paid_from_employee_id,managerEmployee.id);
+      const splitExpenseMovement=await apiPool.query(
+        "SELECT id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [splitExpensePayout.json().data.payment.id]
+      );
+      assert.equal(splitExpenseMovement.rowCount,1);
+      assert.equal(Number(splitExpenseMovement.rows[0].amount),25);
+      assert.equal(linkedExpenseRows[0].cash_custody_transaction_id,splitExpenseMovement.rows[0].id);
+
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [orderScopedPayout.json().data.payment.id]
