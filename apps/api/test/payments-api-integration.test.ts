@@ -2936,6 +2936,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(parentReversedSummary.statusCode,200,parentReversedSummary.body);
       assert.equal(Number(parentReversedSummary.json().data.availableForSettlement),110,
         "full parent reversal must reopen both source production and the separately allocated later production");
+      const parentReversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(parentReversalIntegrity.statusCode,200,parentReversalIntegrity.body);
+      assert.equal(parentReversalIntegrity.json().data.counts.workerPaymentReversalMismatches,0,
+        "reconciliation must include difference-event allocations stored beside canonical settlement allocations");
 
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
