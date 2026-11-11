@@ -80,7 +80,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         SELECT COALESCE(BOOL_OR(TRUE),FALSE) OR EXISTS(
           SELECT 1 FROM worker_payment_settlement_differences d
            WHERE d.employee_id=p.employee_id AND d.source_order_id=os.order_id
-             AND d.status IN ('PENDING','PARTIALLY_ALLOCATED')
+             AND d.status IN ('PENDING','PARTIALLY_ALLOCATED','REQUIRES_REVIEW')
         ) AS has_unallocated FROM worker_payments wp
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
@@ -109,7 +109,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         SELECT COALESCE(BOOL_OR(TRUE),FALSE) OR EXISTS(
              SELECT 1 FROM worker_payment_settlement_differences d
               WHERE d.employee_id=p.employee_id AND d.source_order_id=os.order_id
-                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED')
+                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED','REQUIRES_REVIEW')
            ) AS has_unallocated FROM worker_payments wp
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
@@ -191,7 +191,7 @@ export async function reportsRoutes(app: FastifyInstance) {
            SELECT COALESCE(BOOL_OR(TRUE),FALSE) OR EXISTS(
              SELECT 1 FROM worker_payment_settlement_differences d
               WHERE d.employee_id=p.employee_id AND d.source_order_id=os.order_id
-                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED')
+                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED','REQUIRES_REVIEW')
            ) AS has_unallocated FROM worker_payments wp
              JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
             WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
@@ -240,7 +240,7 @@ export async function reportsRoutes(app: FastifyInstance) {
            SELECT COALESCE(BOOL_OR(TRUE),FALSE) OR EXISTS(
              SELECT 1 FROM worker_payment_settlement_differences d
               WHERE d.employee_id=p.employee_id AND d.source_order_id=os.order_id
-                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED')
+                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED','REQUIRES_REVIEW')
            ) AS has_unallocated FROM worker_payments wp
            JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
            WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
