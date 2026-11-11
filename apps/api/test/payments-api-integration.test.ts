@@ -753,7 +753,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{
           employeeId:previousCustodyEmployee.id,
           settlementSource:"PREVIOUS_CUSTODY",
-          orderId:hamzaOrder.json().data.id,
           amount:75,
           method:"CASH",
           idempotencyKey:previousCustodyKey,
@@ -792,7 +791,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(currentOrderOut.rows[0].employee_id,managerEmployee.id);
       assert.equal(Number(currentOrderOut.rows[0].amount),75);
       assert.equal(currentOrderExpense.rows[0].cash_custody_transaction_id,currentOrderOut.rows[0].id);
-      const currentOrderRetry=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,orderId:hamzaOrder.json().data.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody order"}});
+      const currentOrderRetry=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody general"}});
       assert.equal(currentOrderRetry.statusCode,200,currentOrderRetry.body);
       assert.equal(currentOrderRetry.json().data.payment.id,currentOrderPaymentId);
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey])).rows[0].count),1);
