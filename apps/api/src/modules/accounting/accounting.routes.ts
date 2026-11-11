@@ -597,11 +597,13 @@ export async function accountingRoutes(app:FastifyInstance){
  app.post("/api/accounting/worker-settlement-differences/:id/release",{
   preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.manage")]
  },async(request,reply)=>{
+  const releaseParams=request.params as {id:string};
+  const releaseBody=request.body as {reason?:unknown;idempotencyKey?:unknown};
   const parsed=z.object({
    id:z.string().uuid(),
    reason:z.string().trim().min(2).max(500),
    idempotencyKey:z.string().uuid()
-  }).safeParse({...request.params,...(request.body as object)});
+  }).safeParse({id:releaseParams.id,reason:releaseBody?.reason,idempotencyKey:releaseBody?.idempotencyKey});
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إعادة اعتماد فرق التسوية غير صحيحة",422);
   const input=parsed.data;
   const result=await withTransaction(async client=>{
