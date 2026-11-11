@@ -1778,6 +1778,22 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(splitExpenseMovement.rowCount,1);
       assert.equal(Number(splitExpenseMovement.rows[0].amount),25);
       assert.equal(linkedExpenseRows[0].cash_custody_transaction_id,splitExpenseMovement.rows[0].id);
+      const splitExpenseRetry=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:splitExpenseWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,amount:25,method:"CASH",idempotencyKey:splitExpenseKey}
+      });
+      assert.equal(splitExpenseRetry.statusCode,200,splitExpenseRetry.body);
+      assert.equal(splitExpenseRetry.json().data.payment.id,splitExpensePayout.json().data.payment.id);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE source_worker_payment_id=$1",
+        [splitExpensePayout.json().data.payment.id]
+      )).rows[0].count),3,"retry must preserve the same three expense allocations");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [splitExpensePayout.json().data.payment.id]
+      )).rows[0].count),1,"retry must not duplicate the single custody movement");
+
 
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
