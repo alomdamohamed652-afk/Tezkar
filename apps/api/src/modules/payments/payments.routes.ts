@@ -1818,14 +1818,10 @@ export async function paymentsRoutes(app:FastifyInstance){
       });
       const prior = await client.query(
         `SELECT wp.*,
-                c.employee_id AS custody_employee_id,
-                e.order_id AS expense_order_id,
-                e.order_stage_id AS expense_order_stage_id
+                c.employee_id AS custody_employee_id
            FROM worker_payments wp
            LEFT JOIN cash_custody_transactions c
              ON c.source_type='WORKER_PAYMENT' AND c.source_id=wp.id
-           LEFT JOIN accounting_expenses e
-             ON e.expense_type='DIRECT' AND e.category='WORKER_PAYMENT' AND e.idempotency_key=wp.idempotency_key
           WHERE wp.idempotency_key=$1
           LIMIT 1`,
         [parsed.data.idempotencyKey]
@@ -1834,8 +1830,6 @@ export async function paymentsRoutes(app:FastifyInstance){
         const payment = prior.rows[0];
         const sameRequest = payment.employee_id === parsed.data.employeeId
           && (Number(payment.amount) <= 0.009 || payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null))
-          && payment.expense_order_id === (parsed.data.orderId ?? null)
-          && payment.expense_order_stage_id === (parsed.data.orderStageId ?? null)
           && payment.idempotency_fingerprint === fingerprint;
         if (!sameRequest) throw new AppError("IDEMPOTENCY_KEY_REUSED", "مفتاح العملية مستخدم مع بيانات صرف مختلفة", 409);
         return {
@@ -2187,9 +2181,71 @@ export async function paymentsRoutes(app:FastifyInstance){
         }
         if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0 && !parsed.data.allowOverpayment)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
       }
-      const expenseOrder = parsed.data.orderId
-        ? await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId])
-        : { rows: [] as Array<{code:string;order_name:string|null}> };
+      const expenseAllocations = parsed.data.orderId
+        ? await client.query(
+            `SELECT os.order_id,p.order_stage_id,o.code AS order_code,o.order_name,
+                    os.sequence_no,st.name AS stage_name,SUM(a.amount)::numeric AS amount
+               FROM worker_payment_order_allocations a
+               JOIN production_entries p ON p.id=a.production_entry_id
+               LEFT JOIN order_stages os ON os.id=p.order_stage_id
+               LEFT JOIN production_orders o ON o.id=os.order_id
+               LEFT JOIN stages st ON st.id=os.stage_id
+              WHERE a.worker_payment_id=$1
+              GROUP BY os.order_id,p.order_stage_id,o.code,o.order_name,os.sequence_no,st.name
+              ORDER BY os.order_id NULLS LAST,p.order_stage_id NULLS LAST`,
+            [settlement.payment.id]
+          )
+        : await client.query(
+            `SELECT os.order_id,p.order_stage_id,o.code AS order_code,o.order_name,
+                    os.sequence_no,st.name AS stage_name,SUM(a.amount)::numeric AS amount
+               FROM employee_earnings_settlement_allocations a
+               JOIN production_entries p ON p.id=a.production_entry_id
+               LEFT JOIN order_stages os ON os.id=p.order_stage_id
+               LEFT JOIN production_orders o ON o.id=os.order_id
+               LEFT JOIN stages st ON st.id=os.stage_id
+              WHERE a.settlement_id=(
+                SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1
+              )
+              GROUP BY os.order_id,p.order_stage_id,o.code,o.order_name,os.sequence_no,st.name
+              ORDER BY os.order_id NULLS LAST,p.order_stage_id NULLS LAST`,
+            [settlement.payment.id]
+          );
+      const expenseBuckets: Array<{
+        order_id:string|null;order_stage_id:string|null;order_code:string|null;order_name:string|null;
+        sequence_no:number|null;stage_name:string|null;amount:number;scope:string
+      }> = [];
+      let generalExpenseAmount=0;
+      let allocatedExpenseAmount=0;
+      for(const row of expenseAllocations.rows){
+        const amount=Math.round(Number(row.amount)*100)/100;
+        if(amount<=0.009)continue;
+        allocatedExpenseAmount=Math.round((allocatedExpenseAmount+amount)*100)/100;
+        if(row.order_id){
+          expenseBuckets.push({
+            order_id:row.order_id,order_stage_id:row.order_stage_id,order_code:row.order_code,
+            order_name:row.order_name,sequence_no:row.sequence_no,stage_name:row.stage_name,
+            amount,scope:`ORDER:${row.order_id}:STAGE:${row.order_stage_id??"NONE"}`
+          });
+        }else{
+          generalExpenseAmount=Math.round((generalExpenseAmount+amount)*100)/100;
+        }
+      }
+      if(allocatedExpenseAmount>settlement.grossAmount+0.009){
+        throw new AppError("WORKER_EXPENSE_ALLOCATION_EXCEEDED","توزيع تكلفة العامل تجاوز إجمالي التسوية؛ تم إلغاء العملية بالكامل.",409);
+      }
+      generalExpenseAmount=Math.round((generalExpenseAmount+Math.max(0,settlement.grossAmount-allocatedExpenseAmount))*100)/100;
+      if(generalExpenseAmount>0.009){
+        expenseBuckets.push({
+          order_id:null,order_stage_id:null,order_code:null,order_name:null,
+          sequence_no:null,stage_name:null,amount:generalExpenseAmount,scope:"GENERAL"
+        });
+      }
+      if(!expenseBuckets.length){
+        expenseBuckets.push({
+          order_id:null,order_stage_id:null,order_code:null,order_name:null,
+          sequence_no:null,stage_name:null,amount:settlement.grossAmount,scope:"GENERAL"
+        });
+      }
       const custodyMovement = parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009
         ? await client.query(
             "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
@@ -2199,30 +2255,38 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rows.length !== 1) {
         throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
       }
-      const expenseDescription = parsed.data.orderId
-        ? `تسوية مستحقات العامل ${String(settlement.payment.code)} ${parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? "من عهدة سابقة" : "من العهدة الحالية"} — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`
-        : `تسوية مستحقات العامل ${String(settlement.payment.code)} — جميع الطلبيات / مستحقات عامة`;
-      await client.query(
-        `INSERT INTO accounting_expenses(
-           order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
-           expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
-           cash_custody_transaction_id,allocation_type
-         )
-         VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11)`,
-        [
-          parsed.data.orderId ?? null,
-          parsed.data.orderId ? parsed.data.orderStageId ?? null : null,
-          expenseDescription,
-          parsed.data.amount,
-          parsed.data.method,
-          request.user!.userId,
-          parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 ? parsed.data.cashCustodyEmployeeId : null,
-          parsed.data.idempotencyKey,
-          createHash("sha256").update(fingerprint).digest("hex"),
-          custodyMovement.rows[0]?.id ?? null,
-          parsed.data.orderId ? "DIRECT" : "GENERAL"
-        ]
-      );
+      for(let index=0;index<expenseBuckets.length;index++){
+        const bucket=expenseBuckets[index];
+        const bucketHash=createHash("sha256").update(`${parsed.data.idempotencyKey}:${bucket.scope}`).digest("hex");
+        const expenseIdempotencyKey=index===0
+          ? parsed.data.idempotencyKey
+          : `${bucketHash.slice(0,8)}-${bucketHash.slice(8,12)}-4${bucketHash.slice(13,16)}-a${bucketHash.slice(17,20)}-${bucketHash.slice(20,32)}`;
+        const expenseDescription=bucket.order_id
+          ? `تسوية مستحقات العامل ${String(settlement.payment.code)} — الطلبية ${String(bucket.order_code??bucket.order_id)}${bucket.order_name?` — ${String(bucket.order_name)}`:""}${bucket.stage_name?` — المرحلة ${String(bucket.stage_name)}`:""}`
+          : `تسوية مستحقات العامل ${String(settlement.payment.code)} — مستحقات عامة غير مرتبطة بإنتاج محدد`;
+        await client.query(
+          `INSERT INTO accounting_expenses(
+             order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+             expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
+             cash_custody_transaction_id,allocation_type,source_worker_payment_id
+           )
+           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)`,
+          [
+            bucket.order_id,
+            bucket.order_stage_id,
+            expenseDescription,
+            bucket.amount,
+            parsed.data.method,
+            request.user!.userId,
+            index===0 && parsed.data.settlementSource==="CURRENT_CUSTODY" && settlement.cashPaid>0.009 ? parsed.data.cashCustodyEmployeeId : null,
+            expenseIdempotencyKey,
+            createHash("sha256").update(`${fingerprint}:${bucket.scope}:${bucket.amount.toFixed(2)}`).digest("hex"),
+            index===0 ? custodyMovement.rows[0]?.id ?? null : null,
+            bucket.order_id ? "DIRECT" : "GENERAL",
+            settlement.payment.id
+          ]
+        );
+      }
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
       }
