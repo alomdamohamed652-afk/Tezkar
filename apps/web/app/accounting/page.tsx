@@ -15,7 +15,7 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];openingBalances?:Array<{balance_type:string;entity_key:string;balance:Record<string,unknown>;source_period_id:string;created_at:string}>;orders:Order[]};
-type WorkerSettlementDifference = {id:string;worker_payment_id:string;employee_id:string;employee_name:string;payment_code:string;payment_gross_amount:number|string;source_order_id:string;source_order_code:string;source_order_name:string;source_stage_name:string|null;original_amount:number|string;payment_date:string;eligible_at:string;status:"PENDING"|"PARTIALLY_ALLOCATED"|"ALLOCATED"|"TRANSFERRED_TO_SOURCE_ORDER"|"REVERSED";allocated_amount:number|string;transferred_amount:number|string;reversed_amount:number|string;remaining_amount:number|string};
+type WorkerSettlementDifference = {id:string;worker_payment_id:string;employee_id:string;employee_name:string;payment_code:string;payment_gross_amount:number|string;source_order_id:string;source_order_code:string;source_order_name:string;source_stage_name:string|null;original_amount:number|string;payment_date:string;eligible_at:string;status:"PENDING"|"PARTIALLY_ALLOCATED"|"ALLOCATED"|"TRANSFERRED_TO_SOURCE_ORDER"|"REQUIRES_REVIEW"|"REVERSED";allocated_amount:number|string;transferred_amount:number|string;reversed_amount:number|string;remaining_amount:number|string};
 type WorkerSettlementDifferenceEvent = {id:string;event_type:string;amount:number|string;target_order_code:string|null;target_order_name:string|null;production_code:string|null;target_stage_name:string|null;actor_username:string|null;actor_type:"USER"|"SYSTEM";reason:string;created_at:string};
 type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; reversed_amount?:number; difference_allocated_amount?:number; effective_amount?:number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
@@ -135,6 +135,22 @@ export default function AccountingPage() {
     setSelectedWorkerDifference(id);setWorkerDifferenceEvents([]);
     try{setWorkerDifferenceEvents((await api<{data:WorkerSettlementDifferenceEvent[]}>(`/api/accounting/worker-settlement-differences/${id}/events`)).data)}
     catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل حركات فرق التسوية")}
+  }
+  async function releaseWorkerDifference(id:string){
+    if(!has("finance.worker_settlement_differences.manage"))return;
+    const reason=window.prompt("اكتب سبب إعادة اعتماد فرق التسوية بعد المراجعة المحاسبية:");
+    if(reason===null)return;
+    if(reason.trim().length<2){setError("سبب إعادة الاعتماد مطلوب ويجب ألا يقل عن حرفين.");return;}
+    if(!window.confirm("سيعود الرصيد المتبقي إلى دورة معالجة فروق التسوية، وقد يُوزع على إنتاج لاحق أو يُرحّل عند استيفاء الشروط. هل تريد المتابعة؟"))return;
+    setError("");setMessage("");
+    try{
+      await api("/api/accounting/worker-settlement-differences/"+id+"/release",{method:"POST",body:JSON.stringify({
+        reason:reason.trim(),idempotencyKey:crypto.randomUUID()
+      })});
+      setMessage("تمت إعادة اعتماد فرق التسوية وتسجيل الحركة في سجل المراجعة.");
+      await loadWorkerDifferences();
+      if(selectedWorkerDifference===id)await loadWorkerDifferenceEvents(id);
+    }catch(e){setError(e instanceof Error?e.message:"تعذرت إعادة اعتماد فرق التسوية");}
   }
   async function processWorkerDifferences(){
     if(!has("finance.worker_settlement_differences.manage"))return;
@@ -376,8 +392,10 @@ export default function AccountingPage() {
          {workerDifferences.map(d=><tr key={d.id}>
           <td>{d.employee_name}</td><td className="mono">{d.payment_code}</td><td>{d.source_order_code} — {d.source_order_name}{d.source_stage_name?" / "+d.source_stage_name:""}</td>
           <td className="money">{n(Number(d.original_amount))}</td><td className="money">{n(Number(d.allocated_amount))}</td><td className="money">{n(Number(d.transferred_amount))}</td><td className="money strong">{n(Number(d.remaining_amount))}</td><td>{String(d.eligible_at).slice(0,10)}</td>
-          <td>{d.status==="PENDING"?"معلق":d.status==="PARTIALLY_ALLOCATED"?"موزع جزئيًا":d.status==="ALLOCATED"?"موزع بالكامل":d.status==="TRANSFERRED_TO_SOURCE_ORDER"?"مُرحّل للطلبية":"معكوس"}</td>
-          <td><button className="secondary-button" onClick={()=>void loadWorkerDifferenceEvents(d.id)}>الحركات</button></td>
+          <td>{d.status==="PENDING"?"معلق":d.status==="PARTIALLY_ALLOCATED"?"موزع جزئيًا":d.status==="ALLOCATED"?"موزع بالكامل":d.status==="TRANSFERRED_TO_SOURCE_ORDER"?"مُرحّل للطلبية":d.status==="REQUIRES_REVIEW"?"قيد المراجعة المحاسبية":"معكوس"}</td>
+          <td><button className="secondary-button" onClick={()=>void loadWorkerDifferenceEvents(d.id)}>الحركات</button>
+           {d.status==="REQUIRES_REVIEW"&&has("finance.worker_settlement_differences.manage")&&<button className="primary-button" style={{marginInlineStart:6}} onClick={()=>void releaseWorkerDifference(d.id)}>إعادة اعتماد</button>}
+          </td>
          </tr>)}
          {!workerDifferences.length&&<tr><td colSpan={10}>{workerDifferencesLoading?"جارٍ تحميل الفروق…":"لا توجد فروق تسوية مسجلة."}</td></tr>}
         </tbody></table></div>
@@ -385,7 +403,7 @@ export default function AccountingPage() {
        {selectedWorkerDifference&&<section className="card">
         <div className="card-header"><div><h2 className="card-title">سجل حركات فرق التسوية</h2><div className="form-hint">كل توزيع أو ترحيل أو عكس محفوظ كسجل مستقل دون حذف الحركة الأصلية.</div></div><button className="secondary-button" onClick={()=>{setSelectedWorkerDifference("");setWorkerDifferenceEvents([])}}>إغلاق</button></div>
         <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>الطلبية المستهدفة</th><th>المرحلة</th><th>الإنتاج</th><th>المبلغ</th><th>المنفذ</th><th>السبب</th></tr></thead><tbody>
-         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(Number(e.amount))}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td></tr>)}
+         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":e.event_type==="RELEASED_AFTER_REVIEW"?"إعادة اعتماد بعد المراجعة":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(Number(e.amount))}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td></tr>)}
          {!workerDifferenceEvents.length&&<tr><td colSpan={8}>لا توجد حركات لهذا الفرق بعد.</td></tr>}
         </tbody></table></div>
        </section>}
