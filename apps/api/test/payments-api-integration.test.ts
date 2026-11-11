@@ -2571,6 +2571,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         await unpaidAfterReviewClient.query("COMMIT");
       }catch(error){await unpaidAfterReviewClient.query("ROLLBACK");throw error}
       finally{unpaidAfterReviewClient.release()}
+      const reopenedSettlementSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${differenceWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reopenedSettlementSummary.statusCode,200,reopenedSettlementSummary.body);
+      assert.equal(Number(reopenedSettlementSummary.json().data.availableForSettlement),20,
+        "an independently reversed allocation must restore only the genuinely unpaid production amount, not subtract the old unmatched difference twice");
+
       const replacementProductionPayment=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:differenceWorker.id,settlementSource:"CURRENT_CUSTODY",
