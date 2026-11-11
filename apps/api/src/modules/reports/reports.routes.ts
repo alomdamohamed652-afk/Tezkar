@@ -130,7 +130,7 @@ export async function reportsRoutes(app: FastifyInstance) {
                 p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.rate_snapshot,p.earning_amount,
                 p.bonus_amount,p.deduction_amount,p.total_earning_amount,p.status,p.created_at
            FROM production_entries p
-           LEFT JOIN order_stages filter_os ON filter_os.id=p.order_stage_id
+           LEFT JOIN order_stages os ON os.id=p.order_stage_id
            ${whereSql}
        )
        SELECT p.id,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.production_code,
