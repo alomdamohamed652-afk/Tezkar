@@ -1779,7 +1779,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
       }
       if (!value.orderId) {
-        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب عند التسوية من عهدة سابقة" });
+        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب لتحديد تكلفة التسوية" });
       }
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
@@ -2194,7 +2194,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           [
             parsed.data.orderId,
             parsed.data.orderStageId ?? null,
-            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`,
+            `تسوية مستحقات العامل ${String(settlement.payment.code)} ${parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? "من عهدة سابقة" : "من العهدة الحالية"} — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`,
             parsed.data.amount,
             parsed.data.method,
             request.user!.userId,
