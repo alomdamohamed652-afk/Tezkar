@@ -709,7 +709,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  const reconciliationHandler = async () => {
   // Read-only checks: findings are never repaired automatically and no balance is changed.
-  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches,advanceRepaymentLedgerMismatches,workerPaymentReversalMismatches] = await Promise.all([
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches,advanceRepaymentLedgerMismatches,workerPaymentReversalMismatches,workerDifferenceEventReversalMismatches] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.advance_repayment_amount,
@@ -1053,7 +1053,57 @@ export async function accountingRoutes(app:FastifyInstance){
          OR COALESCE(allocations.missing_count,0)>0
          OR COALESCE(difference_events.active_count,0)>0
        )
-     ORDER BY r.created_at DESC,wp.created_at DESC`)
+     ORDER BY r.created_at DESC,wp.created_at DESC`),
+   pool.query(`
+    SELECT 'MISSING_OR_MISMATCHED_REVERSAL_EVENT'::text AS issue_type,
+           line.source_id AS source_event_id,line.reversal_id,
+           line.amount AS journal_amount,original.amount AS original_amount,
+           reversed.id AS reversal_event_id,reversed.amount AS reversal_event_amount
+      FROM financial_reversal_lines line
+      LEFT JOIN worker_payment_settlement_difference_events original
+        ON original.id=line.source_id
+      LEFT JOIN worker_payment_settlement_difference_events reversed
+        ON reversed.reverses_event_id=original.id AND reversed.event_type='REVERSED'
+     WHERE line.source_type='WORKER_SETTLEMENT_DIFFERENCE_EVENT'
+       AND (
+         original.id IS NULL
+         OR original.event_type NOT IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+         OR ABS(line.amount-original.amount)>0.01
+         OR reversed.id IS NULL
+         OR reversed.financial_reversal_id IS DISTINCT FROM line.reversal_id
+         OR ABS(reversed.amount-line.amount)>0.01
+         OR reversed.difference_id IS DISTINCT FROM original.difference_id
+         OR reversed.worker_payment_id IS DISTINCT FROM original.worker_payment_id
+       )
+    UNION ALL
+    SELECT 'MISSING_REVERSAL_JOURNAL_LINE'::text AS issue_type,
+           reversed.reverses_event_id AS source_event_id,reversed.financial_reversal_id AS reversal_id,
+           NULL::numeric AS journal_amount,original.amount AS original_amount,
+           reversed.id AS reversal_event_id,reversed.amount AS reversal_event_amount
+      FROM worker_payment_settlement_difference_events reversed
+      LEFT JOIN worker_payment_settlement_difference_events original
+        ON original.id=reversed.reverses_event_id
+     WHERE reversed.event_type='REVERSED'
+       AND (
+         original.id IS NULL
+         OR original.difference_id IS DISTINCT FROM reversed.difference_id
+         OR original.worker_payment_id IS DISTINCT FROM reversed.worker_payment_id
+         OR ABS(original.amount-reversed.amount)>0.01
+         OR NOT EXISTS(
+           SELECT 1 FROM financial_reversal_lines line
+            WHERE line.reversal_id=reversed.financial_reversal_id
+              AND (
+                (line.source_type='WORKER_SETTLEMENT_DIFFERENCE_EVENT'
+                  AND line.source_id=reversed.reverses_event_id
+                  AND ABS(line.amount-reversed.amount)<=0.01)
+                OR
+                (line.source_type='WORKER_PAYMENT'
+                  AND line.source_id=reversed.worker_payment_id)
+              )
+         )
+       )
+     ORDER BY reversal_id,source_event_id
+   `)
   ]);
   return {
    checkedAt:new Date().toISOString(),
@@ -1068,7 +1118,8 @@ export async function accountingRoutes(app:FastifyInstance){
     advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows.length,
     zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows.length,
     advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows.length,
-    workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows.length
+    workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows.length,
+    workerDifferenceEventReversalMismatches:workerDifferenceEventReversalMismatches.rows.length
    },
    issues:{
     missingPayrollExpenses:missingExpenses.rows,
@@ -1081,7 +1132,8 @@ export async function accountingRoutes(app:FastifyInstance){
     advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows,
     zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows,
     advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows,
-    workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows
+    workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows,
+    workerDifferenceEventReversalMismatches:workerDifferenceEventReversalMismatches.rows
    }
   };
  };
