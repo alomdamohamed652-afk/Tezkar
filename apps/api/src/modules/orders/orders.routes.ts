@@ -583,7 +583,11 @@ export async function orderRoutes(app: FastifyInstance) {
         await client.query("SELECT e.id FROM employees e WHERE e.id IN (SELECT DISTINCT pe.employee_id FROM production_entries pe WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')) ORDER BY e.id FOR UPDATE",[parsed.data.orderStageId]);
         const paidAmountSql=`COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a JOIN employee_earnings_settlements es ON es.id=a.settlement_id WHERE a.production_entry_id=pe.id),0)
           +COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a WHERE a.production_entry_id=pe.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)),0)
-          +COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a WHERE a.production_entry_id=pe.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=a.worker_payment_id)),0)`;
+          +COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a WHERE a.production_entry_id=pe.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=a.worker_payment_id)),0)
+          +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+             WHERE ev.production_entry_id=pe.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+               AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+                 WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)`;
         const entries=await client.query(
           `SELECT pe.id,pe.code AS production_code,pe.employee_id,pe.status,pe.quantity,pe.hours_worked,pe.base_amount,
                   pe.wage_type_method_snapshot,pe.rate_snapshot,pe.earning_amount,pe.bonus_amount,pe.deduction_amount,
@@ -687,6 +691,14 @@ export async function orderRoutes(app: FastifyInstance) {
         UNION ALL
         SELECT a.production_entry_id,a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)
           FROM worker_payment_allocations a JOIN production_entries pe ON pe.id=a.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=a.worker_payment_id)
+        UNION ALL
+        SELECT ev.production_entry_id,ev.amount
+          FROM worker_payment_settlement_difference_events ev
+          JOIN production_entries pe ON pe.id=ev.production_entry_id
+          JOIN order_stages os ON os.id=pe.order_stage_id
+         WHERE os.order_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+           AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+             WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')
       ) effective GROUP BY production_entry_id`,[id]),
       pool.query("SELECT p.id AS product_id,p.name AS product_name,pol.quantity,pol.unit_id,u.name AS unit_name FROM production_order_lines pol JOIN products p ON p.id=pol.product_id JOIN units u ON u.id=pol.unit_id WHERE pol.order_id=$1 ORDER BY pol.id",[id])
     ]);
