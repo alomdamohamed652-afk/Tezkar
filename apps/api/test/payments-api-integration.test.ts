@@ -552,12 +552,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(allocations.statusCode,200,allocations.body);
 
       // A reversal dated after this period must not rewrite its historical snapshot.
+      const periodSnapshotPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,25,25,0,'CASH',$2,$3,'period-snapshot-boundary-payment') RETURNING id`,
+        [workerEmployee.id,manager.id,randomUUID()]
+      )).rows[0].id;
       const laterReversedExpense=(await apiPool.query(
         `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,
            expense_type,allocation_type,source_worker_payment_id)
          VALUES('WORKER_PAYMENT','Expense reversed in a later period',25,'2099-02-15','CASH',$1,
            'DIRECT','GENERAL',$2) RETURNING id`,
-        [manager.id,directPaymentId]
+        [manager.id,periodSnapshotPayment]
       )).rows[0].id;
       const laterReversedAdvance=(await apiPool.query(
         `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,
