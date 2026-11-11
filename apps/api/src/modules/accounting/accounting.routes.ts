@@ -54,7 +54,7 @@ async function assertAccountingDateOpen(client:import("pg").PoolClient,date:stri
 export async function accountingRoutes(app:FastifyInstance){
 
  const reversalSchema=z.object({
-  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT","ZERO_NET_PAYROLL_SETTLEMENT"]),
+  sourceType:z.enum(["PAYROLL_PAYMENT","ADVANCE_REPAYMENT","ZERO_NET_PAYROLL_SETTLEMENT","WORKER_PAYMENT"]),
   sourceId:z.string().uuid(),
   amount:z.number().positive().max(100000000).refine(v=>Math.abs(v*100-Math.round(v*100))<1e-7,{message:"المبلغ يجب أن يكون بحد أقصى منزلتين عشريتين"}),
   reason:z.string().trim().min(2).max(500),
@@ -79,6 +79,8 @@ export async function accountingRoutes(app:FastifyInstance){
    const lines:Array<{source_type:string;source_id:string;amount:number}>=[];
    const ledgerMoves:Array<{employeeId:string;credit:number;debit:number;notes:string}>=[];
    const custodyMoves:Array<{employeeId:string;direction:"IN"|"OUT";amount:number;description:string}>=[];
+   const allocationReversals:Array<{workerPaymentId:string;source:string;sourceAllocationId:string;productionEntryId:string;amount:number}>=[];
+   const expenseReversals:Array<{expenseId:string;workerPaymentId:string;amount:number}>=[];
    let payrollItemId:string|null=null;
    let zeroNetPayrollItemId:string|null=null;
    const advanceIds=new Set<string>();
@@ -151,7 +153,135 @@ export async function accountingRoutes(app:FastifyInstance){
      custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"IN",amount:input.amount+linkedAmount,description:"استرداد عكس صرف راتب "+input.sourceId});
      if(linkedAmount>0.0001)custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"OUT",amount:linkedAmount,description:"عكس استرداد أقساط السلف من الراتب "+input.sourceId});
     }else if(offset.rowCount)throw new AppError("REVERSAL_CUSTODY_INCOMPLETE","يوجد استرداد عهدة دون حركة الصرف المقابلة؛ راجع المطابقة قبل العكس",409);
-   }else if(input.sourceType==="ZERO_NET_PAYROLL_SETTLEMENT"){
+   }else if(input.sourceType==="WORKER_PAYMENT"){
+    const paymentResult=await client.query(
+     `SELECT wp.*,e.full_name AS employee_name
+        FROM worker_payments wp JOIN employees e ON e.id=wp.employee_id
+       WHERE wp.id=$1 FOR UPDATE OF wp`,[input.sourceId]);
+    if(!paymentResult.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","دفعة العامل الأصلية غير موجودة",404);
+    const payment=paymentResult.rows[0];
+    const gross=Number(payment.gross_amount),cashPaid=Number(payment.amount),advanceAmount=Number(payment.advance_repayment_amount??0);
+    if(!Number.isFinite(gross)||!Number.isFinite(cashPaid)||!Number.isFinite(advanceAmount)||
+       gross<=0||cashPaid<0||advanceAmount<0||Math.abs(gross-cashPaid-advanceAmount)>0.01)
+     throw new AppError("WORKER_PAYMENT_AMOUNT_MISMATCH","إجمالي الدفعة لا يساوي النقد المصروف مضافًا إليه سداد السلف؛ أوقفنا العكس",409);
+    if(Math.abs(input.amount-gross)>0.01)
+     throw new AppError("WORKER_PAYMENT_FULL_REVERSAL_REQUIRED","عكس دفعة العامل يتطلب عكس إجمالي الدفعة بالكامل؛ العكس الجزئي غير متاح قبل مطابقة جميع آثارها",409);
+    const priorPayment=await client.query(
+     "SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1 FOR UPDATE",[input.sourceId]);
+    if(Number(priorPayment.rows[0].amount)>0.0001)
+     throw new AppError("WORKER_PAYMENT_ALREADY_REVERSED","دفعة العامل سبق عكسها؛ لا يمكن تكرار العكس",409);
+
+    const paymentLedger=await client.query(
+     `SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger
+       WHERE worker_payment_id=$1 FOR UPDATE`,[input.sourceId]);
+    if(paymentLedger.rowCount!==1||paymentLedger.rows[0].employee_id!==payment.employee_id||
+       Number(paymentLedger.rows[0].credit_amount)!==0||
+       Math.abs(Number(paymentLedger.rows[0].debit_amount)-gross)>0.01)
+     throw new AppError("WORKER_PAYMENT_LEDGER_MISMATCH","قيد مستحقات العامل الأصلي غير موجود أو لا يطابق الموظف وإجمالي الدفعة؛ أوقفنا العكس",409);
+
+    const repayments=await client.query(
+     `SELECT ar.id,ar.advance_id,ar.amount,a.employee_id,a.code
+        FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
+       WHERE ar.source_worker_payment_id=$1 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId]);
+    const repaymentTotal=repayments.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+    if(Math.abs(repaymentTotal-advanceAmount)>0.01)
+     throw new AppError("WORKER_PAYMENT_ADVANCE_MISMATCH","مجموع سداد السلف المرتبط بالدفعة لا يطابق مبلغ سداد السلف المسجل؛ أوقفنا العكس",409);
+    for(const repayment of repayments.rows){
+     const repaymentLedger=await client.query(
+      "SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE advance_repayment_id=$1 FOR UPDATE",[repayment.id]);
+     if(repaymentLedger.rowCount!==1||repaymentLedger.rows[0].employee_id!==repayment.employee_id||
+        Math.abs(Number(repaymentLedger.rows[0].credit_amount)-Number(repayment.amount))>0.01||
+        Number(repaymentLedger.rows[0].debit_amount)!==0)
+      throw new AppError("WORKER_PAYMENT_ADVANCE_LEDGER_MISMATCH","قيد سداد إحدى السلف المرتبطة غير موجود أو غير مطابق؛ أوقفنا العكس",409);
+     const priorRepayment=await client.query(
+      "SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[repayment.id]);
+     if(Number(priorRepayment.rows[0].amount)>0.0001)
+      throw new AppError("WORKER_PAYMENT_ADVANCE_ALREADY_REVERSED","يوجد سداد سلفة مرتبط سبق عكسه بصورة مستقلة؛ يلزم فحص يدوي قبل عكس الدفعة",409);
+     lines.push({source_type:"ADVANCE_REPAYMENT",source_id:repayment.id,amount:Number(repayment.amount)});
+     advanceIds.add(repayment.advance_id);
+     ledgerMoves.push({employeeId:repayment.employee_id,credit:0,debit:Number(repayment.amount),notes:"عكس سداد سلفة "+repayment.code+" / "+repayment.id});
+    }
+
+    // Resolve the same canonical allocation source used by production reports:
+    // settlement allocations take precedence, then order allocations, then legacy allocations.
+    const settlementAllocations=await client.query(
+     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status
+        FROM employee_earnings_settlement_allocations a
+        JOIN employee_earnings_settlements s ON s.id=a.settlement_id
+        JOIN production_entries p ON p.id=a.production_entry_id
+       WHERE s.worker_payment_id=$1 ORDER BY a.id FOR UPDATE OF a,p`,[input.sourceId]);
+    const orderAllocations=await client.query(
+     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status
+        FROM worker_payment_order_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+       WHERE a.worker_payment_id=$1 ORDER BY a.id FOR UPDATE OF a,p`,[input.sourceId]);
+    const legacyAllocations=await client.query(
+     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status
+        FROM worker_payment_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+       WHERE a.worker_payment_id=$1 ORDER BY a.id FOR UPDATE OF a,p`,[input.sourceId]);
+    const chosenAllocations=settlementAllocations.rowCount?{rows:settlementAllocations.rows,source:"EMPLOYEE_EARNINGS_SETTLEMENT"}:
+     orderAllocations.rowCount?{rows:orderAllocations.rows,source:"WORKER_PAYMENT_ORDER"}:
+     {rows:legacyAllocations.rows,source:"WORKER_PAYMENT_LEGACY"};
+    const allocatedTotal=chosenAllocations.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+    if(allocatedTotal>gross+0.01)
+     throw new AppError("WORKER_PAYMENT_ALLOCATION_EXCEEDS_GROSS","توزيعات الإنتاج المرتبطة بالدفعة تتجاوز إجماليها؛ أوقفنا العكس",409);
+    if(chosenAllocations.rows.some(row=>row.employee_id!==payment.employee_id||row.status!=="APPROVED"||Number(row.amount)<=0))
+     throw new AppError("WORKER_PAYMENT_ALLOCATION_MISMATCH","يوجد توزيع إنتاج لا يخص العامل أو لم يعد إنتاجًا معتمدًا؛ أوقفنا العكس للمراجعة",409);
+    const productionIds=chosenAllocations.rows.map(row=>row.production_entry_id);
+    if(productionIds.length){
+     const later=await client.query(
+      `SELECT 1 FROM worker_payments later
+        WHERE later.employee_id=$1 AND later.id<>$2 AND later.created_at>(
+          SELECT created_at FROM worker_payments WHERE id=$2
+        ) AND (
+          EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=later.id AND a.production_entry_id=ANY($3::uuid[]))
+          OR EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=later.id AND a.production_entry_id=ANY($3::uuid[]))
+          OR EXISTS(SELECT 1 FROM employee_earnings_settlements s JOIN employee_earnings_settlement_allocations a ON a.settlement_id=s.id WHERE s.worker_payment_id=later.id AND a.production_entry_id=ANY($3::uuid[]))
+        ) LIMIT 1 FOR UPDATE OF later`,[payment.employee_id,input.sourceId,productionIds]);
+     if(later.rowCount)throw new AppError("WORKER_PAYMENT_HAS_DEPENDENT_SETTLEMENT","توجد دفعة لاحقة مرتبطة بسجلات الإنتاج نفسها؛ يلزم مراجعة تسلسل التسويات قبل العكس",409);
+    }
+    for(const allocation of chosenAllocations.rows){
+     allocationReversals.push({workerPaymentId:input.sourceId,source:chosenAllocations.source,sourceAllocationId:allocation.id,
+      productionEntryId:allocation.production_entry_id,amount:Number(allocation.amount)});
+    }
+
+    const expenses=await client.query(
+     `SELECT id,amount,paid_from_employee_id,cash_custody_transaction_id
+        FROM accounting_expenses WHERE source_worker_payment_id=$1
+       ORDER BY id FOR UPDATE`,[input.sourceId]);
+    if(!expenses.rowCount)
+     throw new AppError("WORKER_PAYMENT_EXPENSE_LINK_MISSING","لا توجد مصروفات مرتبطة بمصدر دفعة العامل؛ يلزم استكمال المطابقة التاريخية قبل العكس",409);
+    const expenseTotal=expenses.rows.reduce((sum,row)=>sum+Number(row.amount),0);
+    if(Math.abs(expenseTotal-gross)>0.01)
+     throw new AppError("WORKER_PAYMENT_EXPENSE_MISMATCH","إجمالي مصروفات الطلبات المرتبطة لا يطابق إجمالي الدفعة؛ أوقفنا العكس",409);
+    const priorExpenses=await client.query(
+     "SELECT COALESCE(SUM(er.amount),0) AS amount FROM accounting_expense_reversals er WHERE er.source_worker_payment_id=$1 FOR UPDATE",[input.sourceId]);
+    if(Number(priorExpenses.rows[0].amount)>0.0001)
+     throw new AppError("WORKER_PAYMENT_EXPENSE_ALREADY_REVERSED","يوجد أثر مصروفات مرتبط بالدفعة سبق عكسه؛ يلزم فحص يدوي",409);
+    for(const expense of expenses.rows)expenseReversals.push({expenseId:expense.id,workerPaymentId:input.sourceId,amount:Number(expense.amount)});
+
+    // Only a recorded physical OUT can be restored to custody. Absence of an OUT
+    // is valid for previous-custody settlements and must never create a fictional IN.
+    const custody=await client.query(
+     `SELECT id,employee_id,amount FROM cash_custody_transactions
+       WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'
+       ORDER BY id FOR UPDATE`,[input.sourceId]);
+    if(custody.rowCount>1)throw new AppError("WORKER_PAYMENT_CUSTODY_AMBIGUOUS","توجد أكثر من حركة خروج نقدي مرتبطة بالدفعة؛ أوقفنا العكس",409);
+    const expenseCustodians=[...new Set(expenses.rows.map(row=>row.paid_from_employee_id).filter(Boolean))];
+    if(custody.rowCount===1){
+     if(Math.abs(Number(custody.rows[0].amount)-cashPaid)>0.01||
+        (expenseCustodians.length&& (expenseCustodians.length!==1||expenseCustodians[0]!==custody.rows[0].employee_id)))
+      throw new AppError("WORKER_PAYMENT_CUSTODY_MISMATCH","حركة خروج العهدة أو صاحبها لا يطابق مصروفات الدفعة وصافي النقد؛ أوقفنا العكس",409);
+     if(cashPaid>0.009)custodyMoves.push({employeeId:custody.rows[0].employee_id,direction:"IN",amount:cashPaid,description:"استرداد عكس دفعة العامل "+payment.id});
+    }else if(cashPaid>0.009&&expenseCustodians.length)
+     throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","مصروفات الدفعة تشير إلى عهدة حالية لكن حركة الخروج النقدي غير موجودة؛ أوقفنا العكس",409);
+    else if(cashPaid<=0.009&&custody.rowCount)
+     throw new AppError("WORKER_PAYMENT_CUSTODY_ZERO_MISMATCH","توجد حركة خروج نقدي رغم أن صافي النقد المصروف صفر؛ أوقفنا العكس",409);
+
+    lines.push({source_type:"WORKER_PAYMENT",source_id:input.sourceId,amount:gross});
+    ledgerMoves.push({employeeId:payment.employee_id,credit:gross,debit:0,notes:"عكس دفعة العامل "+payment.id});
+
     const itemResult=await client.query(
      `SELECT i.*,p.status AS period_status
         FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
@@ -232,6 +362,14 @@ export async function accountingRoutes(app:FastifyInstance){
    }
    const header=await client.query("INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[input.idempotencyKey,requestFingerprint,input.reason,reversalDate,request.user!.userId]);
    for(const line of lines)await client.query("INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount) VALUES($1,$2,$3,$4)",[header.rows[0].id,line.source_type,line.source_id,line.amount]);
+   for(const allocation of allocationReversals)await client.query(
+    `INSERT INTO worker_payment_allocation_reversals(reversal_id,worker_payment_id,allocation_source,source_allocation_id,production_entry_id,amount,created_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7)`,
+    [header.rows[0].id,allocation.workerPaymentId,allocation.source,allocation.sourceAllocationId,allocation.productionEntryId,allocation.amount,request.user!.userId]);
+   for(const expense of expenseReversals)await client.query(
+    `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
+     VALUES($1,$2,$3,$4,$5)`,
+    [header.rows[0].id,expense.expenseId,expense.workerPaymentId,expense.amount,request.user!.userId]);
    for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes)
      VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code]);
    for(const move of custodyMoves)await client.query(`INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by)
