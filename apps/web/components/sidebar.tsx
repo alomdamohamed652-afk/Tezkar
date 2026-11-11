@@ -31,7 +31,7 @@ const groups:NavGroup[]=[
   {icon:"▣",label:"التكويد العكسي",href:"/reverse-coding",permissions:["reverse_coding.view"]}
  ]},
  {label:"المالية",items:[
-  {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view"]},
+  {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view","finance.worker_settlement_differences.view"]},
   {icon:"⇄",label:"تصحيح مصروفات الطلبيات القديمة",href:"/finance/worker-settlements",permissions:["finance.expenses.create"]},
   {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","worker_payments.view","worker_payments.pay"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
