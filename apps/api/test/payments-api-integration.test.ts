@@ -2290,7 +2290,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [differenceOrderId]
       )).rows[0];
       assert.ok(differenceStage,"source order must have a production stage");
-      async function insertDifferenceProduction(quantity:number,earning:number){
+      async function insertDifferenceProduction(quantity:number,earning:number,employeeId:string=differenceWorker.id){
         return (await apiPool.query(
           `INSERT INTO production_entries(
              employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
@@ -2299,7 +2299,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
            ) VALUES($1,$2,$3,$4,CURRENT_DATE,$5,$6,$7,10,$8,'PER_PIECE','PER_PIECE',$9,0,0,
              'APPROVED',$10,$10,now(),$11)
            RETURNING id,total_earning_amount`,
-          [differenceWorker.id,differenceStage.output_product_id,differenceStage.stage_id,bonusShift.id,
+          [employeeId,differenceStage.output_product_id,differenceStage.stage_id,bonusShift.id,
            quantity,differenceStage.unit_id,bonusRate.id,perPieceWageType.id,earning,manager.id,differenceStage.id]
         )).rows[0];
       }
@@ -2483,6 +2483,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // 30-day inactivity threshold, but only after all approved worker production
       // on that order has been settled and no production remains pending.
       const closureProduction=await insertDifferenceProduction(5,50);
+      const otherOrderWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Other Order Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const otherOrderProduction=await insertDifferenceProduction(1,10,otherOrderWorker.id);
+      assert.equal(Number(otherOrderProduction.total_earning_amount),10);
       const closurePaymentResponse=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
@@ -2498,6 +2504,28 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(closureDifference);
       assert.equal(Number(closureDifference.original_amount),10);
       await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1",[differenceOrderId]);
+      const blockedClosureClient=await apiPool.connect();
+      try{
+        await blockedClosureClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          blockedClosureClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"closing one worker's production must not transfer a difference while another worker still has unpaid production on the order");
+        await blockedClosureClient.query("COMMIT");
+      }catch(error){await blockedClosureClient.query("ROLLBACK");throw error}
+      finally{blockedClosureClient.release()}
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0].status,"PENDING","the difference must remain pending while any worker's order dues are open");
+
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      const otherWorkerPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:otherOrderWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:10,method:"CASH",
+          advanceRepaymentAmount:0,idempotencyKey:randomUUID()}
+      });
+      assert.equal(otherWorkerPayout.statusCode,201,otherWorkerPayout.body);
+      await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1",[differenceOrderId]);
       const closureClient=await apiPool.connect();
       let closureTransfers=0;
       try{
@@ -2508,7 +2536,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         await closureClient.query("COMMIT");
       }catch(error){await closureClient.query("ROLLBACK");throw error}
       finally{closureClient.release()}
-      assert.equal(closureTransfers,1,"a completed and fully reconciled order must transfer its remaining difference without waiting 30 days");
+      assert.equal(closureTransfers,1,"a completed order may transfer its remaining difference only after every worker's production dues are settled");
       const completedOrderDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
       )).rows[0];
