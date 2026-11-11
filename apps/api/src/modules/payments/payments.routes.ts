@@ -2196,7 +2196,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             [settlement.payment.id]
           )
         : { rows: [] as Array<{id:string}> };
-      if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rowCount !== 1) {
+      if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rows.length !== 1) {
         throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
       }
       const expenseDescription = parsed.data.orderId
