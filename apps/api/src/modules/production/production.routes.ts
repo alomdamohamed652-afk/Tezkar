@@ -164,7 +164,7 @@ export async function productionRoutes(app: FastifyInstance) {
       WHEN EXISTS(SELECT 1 FROM worker_payments wp
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
         JOIN order_stages os2 ON os2.id=p.order_stage_id
-        WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
+        WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_guard JOIN employee_earnings_settlement_allocations esa_guard ON esa_guard.settlement_id=es_guard.id WHERE es_guard.worker_payment_id=wp.id)
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
                     AND (
@@ -215,7 +215,7 @@ export async function productionRoutes(app: FastifyInstance) {
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
                   JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                   JOIN order_stages os2 ON os2.id=p.order_stage_id
-                  WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
+                  WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
                     AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_guard JOIN employee_earnings_settlement_allocations esa_guard ON esa_guard.settlement_id=es_guard.id WHERE es_guard.worker_payment_id=wp.id)
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
                     AND (
