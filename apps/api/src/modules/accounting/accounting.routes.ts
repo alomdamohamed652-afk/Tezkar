@@ -475,7 +475,7 @@ export async function accountingRoutes(app:FastifyInstance){
  app.get("/api/accounting/worker-settlement-differences/:id/events",{
   preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.view")]
  },async(request)=>{
-  const parsed=idSchema.safeParse(request.params);
+  const parsed=z.object({id:z.string().uuid()}).safeParse(request.params);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","معرف فرق التسوية غير صحيح",422);
   const result=await pool.query(`
    SELECT e.*,target.code AS target_order_code,target.order_name AS target_order_name,
