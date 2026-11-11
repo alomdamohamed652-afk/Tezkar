@@ -550,8 +550,59 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
       });
       assert.equal(allocations.statusCode,200,allocations.body);
+
+      // A reversal dated after this period must not rewrite its historical snapshot.
+      const laterReversedExpense=(await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,
+           expense_type,allocation_type,source_worker_payment_id)
+         VALUES('WORKER_PAYMENT','Expense reversed in a later period',25,'2099-02-15','CASH',$1,
+           'DIRECT','GENERAL',$2) RETURNING id`,
+        [manager.id,directPaymentId]
+      )).rows[0].id;
+      const laterReversedAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,
+           repayment_method,repayment_status)
+         VALUES($1,100,'Period snapshot reversal boundary','PAID',$2,$2,'2099-02-10 12:00:00+00',
+           'CUSTOM','OPEN') RETURNING id`,
+        [workerEmployee.id,manager.id]
+      )).rows[0].id;
+      const laterAdvanceRepayment=(await apiPool.query(
+        `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,
+           source_worker_payment_id)
+         VALUES($1,40,'CUSTOM','2099-02-15','Repayment reversed after period end',$2,$3) RETURNING id`,
+        [laterReversedAdvance,manager.id,directPaymentId]
+      )).rows[0].id;
+      const laterReversal=(await apiPool.query(
+        `INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by)
+         VALUES($1,'period-snapshot-boundary','Later-period reversal','2099-03-01',$2) RETURNING id`,
+        [randomUUID(),manager.id]
+      )).rows[0].id;
+      await apiPool.query(
+        `INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount)
+         VALUES($1,'ADVANCE_REPAYMENT',$2,40)`,
+        [laterReversal,laterAdvanceRepayment]
+      );
+      await apiPool.query(
+        `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
+         VALUES($1,$2,$3,25,$4)`,
+        [laterReversal,laterReversedExpense,directPaymentId,manager.id]
+      );
+
       const closePeriod=await closePeriodWithApproval(financePeriod.json().data.id);
       assert.equal(closePeriod.statusCode,200,closePeriod.body);
+      const historicalPeriodReport=await app.inject({
+        method:"GET",url:`/api/accounting/periods/${financePeriod.json().data.id}/report`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalPeriodReport.statusCode,200,historicalPeriodReport.body);
+      assert.equal(historicalPeriodReport.json().data.integrityVerified,true,
+        "period snapshot hash must verify after close");
+      assert.equal(Number(historicalPeriodReport.json().data.report.totals.expenses),55,
+        "a reversal dated after period end must not reduce the earlier period's expenses");
+      const advanceSnapshot=historicalPeriodReport.json().data.report.advances.find((row:any)=>row.id===laterReversedAdvance);
+      assert.ok(advanceSnapshot,"the advance must be included in the period-end snapshot");
+      assert.equal(Number(advanceSnapshot.remaining),60,
+        "a later-period repayment reversal must not restore the advance balance in the earlier period");
       const profitability=await app.inject({
         method:"GET",url:`/api/accounting/orders/${financeOrder.id}/profitability`,
         headers:{cookie:managerCookie}
