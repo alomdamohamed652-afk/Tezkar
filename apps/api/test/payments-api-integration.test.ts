@@ -2189,6 +2189,30 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [reversalSettlement.id]
       )).rows[0];
       assert.ok(originalAllocation,"worker payment must allocate the production entry");
+      const reversalCustodyOut=(await apiPool.query(
+        "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId]
+      )).rows[0];
+      assert.ok(reversalCustodyOut,"current-custody worker payment must retain its original cash OUT");
+      const linkedExpense=(await apiPool.query(
+        "SELECT id,cash_custody_transaction_id FROM accounting_expenses WHERE source_worker_payment_id=$1 AND cash_custody_transaction_id IS NOT NULL",
+        [reversalPaymentId]
+      )).rows[0];
+      assert.ok(linkedExpense,"the worker-payment expense must point to the exact cash custody movement");
+      await apiPool.query("UPDATE accounting_expenses SET cash_custody_transaction_id=NULL WHERE id=$1",[linkedExpense.id]);
+      const brokenCustodyLinkReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,
+          reason:"اختبار منع العكس عند فقد رابط العهدة بالمصروف",idempotencyKey:randomUUID()}
+      });
+      assert.equal(brokenCustodyLinkReversal.statusCode,409,brokenCustodyLinkReversal.body);
+      assert.equal(brokenCustodyLinkReversal.json().error.code,"WORKER_PAYMENT_CUSTODY_MISMATCH");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals r JOIN financial_reversal_lines l ON l.reversal_id=r.id WHERE l.source_type='WORKER_PAYMENT' AND l.source_id=$1",
+        [reversalPaymentId]
+      )).rows[0].count),0,"a broken custody-to-expense link must abort without a partial reversal");
+      await apiPool.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2",
+        [reversalCustodyOut.id,linkedExpense.id]);
       const repaymentLink=(await apiPool.query(
         "SELECT id FROM advance_repayments WHERE source_worker_payment_id=$1",[reversalPaymentId]
       )).rows[0];
