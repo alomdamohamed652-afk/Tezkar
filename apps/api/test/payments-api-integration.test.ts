@@ -2347,6 +2347,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         apiPool.query("DELETE FROM worker_payment_settlement_difference_events WHERE id=$1",[immutableDifferenceEvent.id]),
         /append-only/
       );
+      await assert.rejects(
+        apiPool.query("TRUNCATE worker_payment_settlement_difference_events"),
+        /append-only/
+      );
 
       // Simulate elapsed time in the isolated disposable DB; no wall-clock sleep.
       await apiPool.query(
