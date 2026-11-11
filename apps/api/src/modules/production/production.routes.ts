@@ -1520,7 +1520,8 @@ export async function productionRoutes(app: FastifyInstance) {
                                JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                               WHERE es.worker_payment_id=legacy.worker_payment_id)
                              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
-                              WHERE order_alloc.worker_payment_id=legacy.worker_payment_id)),0) AS paid_amount
+                              WHERE order_alloc.worker_payment_id=legacy.worker_payment_id)),0)
+              + ${differenceAllocatedSql} AS paid_amount
           ) a ON TRUE
          WHERE p.status='APPROVED'
       ),
@@ -1536,14 +1537,16 @@ export async function productionRoutes(app: FastifyInstance) {
                  ),0),0))::numeric(14,2) AS amount
           FROM worker_payments wp
           JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-         WHERE EXISTS(SELECT 1 FROM employee_earnings_settlements es
+         WHERE (EXISTS(SELECT 1 FROM employee_earnings_settlements es
                        WHERE es.worker_payment_id=wp.id)
             OR (
               NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
                           WHERE order_alloc.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy
                               WHERE legacy.worker_payment_id=wp.id)
-            )
+            ))
+           AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_differences d
+                           WHERE d.worker_payment_id=wp.id)
          GROUP BY wp.employee_id,ae.order_id
       )
       SELECT production_due.employee_id,employee_code,employee_name,production_due.order_id,
