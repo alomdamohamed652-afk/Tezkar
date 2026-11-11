@@ -168,6 +168,17 @@ export async function processMaturedWorkerPaymentDifferences(
         AND NOT EXISTS(SELECT 1 FROM production_entries pending
           WHERE pending.employee_id=d.employee_id AND pending.status='PENDING'
             AND pending.work_date>=wp.created_at::date)
+        -- Never transfer an unmatched payment remainder while the same worker
+        -- still has later approved production with an unpaid balance. This matters
+        -- after an independent allocation reversal restores that production due.
+        AND NOT EXISTS(
+          SELECT 1 FROM production_entries unpaid
+           WHERE unpaid.employee_id=d.employee_id
+             AND unpaid.status='APPROVED'
+             AND unpaid.approved_at>wp.created_at
+             AND unpaid.work_date>=wp.created_at::date
+             AND ${productionRemainingSql}>0.009
+        )
         AND (
           COALESCE(activity.last_activity,wp.created_at)+INTERVAL '30 days'<=now()
           OR (
