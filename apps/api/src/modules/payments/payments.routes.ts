@@ -2057,7 +2057,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         allowOverpayment: parsed.data.allowOverpayment,
         skipProductionAllocations: Boolean(parsed.data.orderId),
         availableBalanceOverride: parsed.data.orderId ? (orderProductionCount > 0 ? orderAvailable : available) : null,
-        productionEntryIds: parsed.data.orderId ? null : (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null)
+        productionEntryIds: parsed.data.orderId ? null : parsed.data.productionEntryIds ?? null
       });
       if (parsed.data.orderId) {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
