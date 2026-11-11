@@ -2107,12 +2107,12 @@ export async function paymentsRoutes(app:FastifyInstance){
                  COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned,
                  COALESCE((
                    SELECT SUM(c.amount) FROM (
-                     SELECT esa.production_entry_id,esa.amount
+                     SELECT esa.production_entry_id,GREATEST(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0),0) AS amount
                        FROM employee_earnings_settlement_allocations esa
                        JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
                       WHERE esa.production_entry_id=p.id
                      UNION ALL
-                     SELECT owa.production_entry_id,owa.amount
+                     SELECT owa.production_entry_id,GREATEST(owa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=owa.id),0),0) AS amount
                        FROM worker_payment_order_allocations owa
                       WHERE owa.production_entry_id=p.id
                         AND NOT EXISTS (
@@ -2121,7 +2121,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                           WHERE es.worker_payment_id=owa.worker_payment_id
                         )
                      UNION ALL
-                     SELECT wpa.production_entry_id,wpa.amount
+                     SELECT wpa.production_entry_id,GREATEST(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0),0) AS amount
                        FROM worker_payment_allocations wpa
                       WHERE wpa.production_entry_id=p.id
                         AND NOT EXISTS (
@@ -2143,12 +2143,12 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE p.id=ANY($1::uuid[])
              AND COALESCE((
                SELECT SUM(c.amount) FROM (
-                 SELECT esa.production_entry_id,esa.amount
+                 SELECT esa.production_entry_id,GREATEST(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0),0) AS amount
                    FROM employee_earnings_settlement_allocations esa
                    JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
                   WHERE esa.production_entry_id=p.id
                  UNION ALL
-                 SELECT owa.production_entry_id,owa.amount
+                 SELECT owa.production_entry_id,GREATEST(owa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=owa.id),0),0) AS amount
                    FROM worker_payment_order_allocations owa
                   WHERE owa.production_entry_id=p.id
                     AND NOT EXISTS (
@@ -2157,7 +2157,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                       WHERE es.worker_payment_id=owa.worker_payment_id
                     )
                  UNION ALL
-                 SELECT wpa.production_entry_id,wpa.amount
+                 SELECT wpa.production_entry_id,GREATEST(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0),0) AS amount
                    FROM worker_payment_allocations wpa
                   WHERE wpa.production_entry_id=p.id
                     AND NOT EXISTS (
