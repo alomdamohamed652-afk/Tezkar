@@ -385,8 +385,8 @@ export async function accountingRoutes(app:FastifyInstance){
     `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
      VALUES($1,$2,$3,$4,$5)`,
     [header.rows[0].id,expense.expenseId,expense.workerPaymentId,expense.amount,request.user!.userId]);
-   for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes)
-     VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code]);
+   for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes,financial_reversal_id)
+     VALUES($1,'ADJUSTMENT',$2,$3,$4,$5,$6)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code,header.rows[0].id]);
    for(const move of custodyMoves)await client.query(`INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by)
      VALUES($1,$2,$3,$4,$5,$6,'FINANCIAL_REVERSAL',$7,$8)`,[move.employeeId,move.direction,move.amount,reversalDate,move.description,"سبب العكس: "+input.reason,header.rows[0].id,request.user!.userId]);
    for(const advanceId of advanceIds)await client.query(`UPDATE advance_requests a SET repayment_status=CASE WHEN a.amount<=COALESCE((
@@ -401,7 +401,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const paid=Number(totals.rows[0].effective_paid),net=Number(totals.rows[0].net_amount);
     await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2",[net<=0.0001||paid>=net-0.0001?"PAID":paid>0.0001?"PARTIAL":"UNPAID",payrollItemId]);
    }
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,allocationReversals,expenseReversals,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {replayed:false,reversal:header.rows[0],lines};
   });
   return reply.code(result.replayed?200:201).send({data:{reversal:result.reversal,lines:result.lines}});
