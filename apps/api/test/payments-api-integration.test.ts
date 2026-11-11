@@ -3015,6 +3015,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(parentReversedSummary.statusCode,200,parentReversedSummary.body);
       assert.equal(Number(parentReversedSummary.json().data.availableForSettlement),110,
         "full parent reversal must reopen both source production and the separately allocated later production");
+      const orderSummaryAfterParentReversal=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${parentReverseWorker.id}&orderId=${differenceOrderId}&orderStageId=${differenceStage.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(orderSummaryAfterParentReversal.statusCode,200,orderSummaryAfterParentReversal.body);
+      assert.equal(Number(orderSummaryAfterParentReversal.json().data.availableForSettlement),110,
+        "order-scoped settlement summary must reopen both production amounts after the parent payment and its difference allocation are reversed");
       const parentReversalIntegrity=await app.inject({
         method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
       });
