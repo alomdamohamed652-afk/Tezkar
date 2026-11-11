@@ -2832,6 +2832,68 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [repayoutAfterReversal.json().data.payment.id]
       )).rows[0].amount),100);
 
+      // Parent reversal must also reverse difference allocations stored in the
+      // order-allocation table when the original payment uses settlement allocations.
+      const parentReverseWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Parent Difference Reversal Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      await apiPool.query("UPDATE order_stages SET status='IN_PROGRESS' WHERE id=$1",[differenceStage.id]);
+      const parentSourceProduction=await insertDifferenceProduction(10,100,parentReverseWorker.id);
+      const parentPaymentResponse=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:parentReverseWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:150,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(parentPaymentResponse.statusCode,201,parentPaymentResponse.body);
+      const parentPaymentId=parentPaymentResponse.json().data.payment.id as string;
+      const parentDifference=(await apiPool.query(
+        "SELECT id FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",[parentPaymentId]
+      )).rows[0];
+      assert.ok(parentDifference,"the parent-reversal scenario must create a settlement difference");
+      const parentLaterProduction=await insertDifferenceProduction(1,10,parentReverseWorker.id);
+      const parentAllocationClient=await apiPool.connect();
+      let parentAllocations:any[]=[];
+      try{
+        await parentAllocationClient.query("BEGIN");
+        parentAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+          parentAllocationClient,parentReverseWorker.id,parentLaterProduction.id,manager.id
+        );
+        await parentAllocationClient.query("COMMIT");
+      }catch(error){await parentAllocationClient.query("ROLLBACK");throw error}
+      finally{parentAllocationClient.release()}
+      assert.equal(parentAllocations.length,1);
+      assert.equal(Number(parentAllocations[0].amount),10);
+      const parentDifferenceEvent=(await apiPool.query(
+        "SELECT id,worker_payment_order_allocation_id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION'",
+        [parentDifference.id]
+      )).rows[0];
+      assert.ok(parentDifferenceEvent,"the parent payment must have an active difference allocation event");
+      const parentDifferenceReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:parentPaymentId,amount:150,
+          reason:"اختبار عكس الدفعة الأصلية مع تخصيص فرق التسوية النشط",idempotencyKey:randomUUID()}
+      });
+      assert.equal(parentDifferenceReversal.statusCode,201,parentDifferenceReversal.body);
+      assert.equal(Number((await apiPool.query(
+        `SELECT COUNT(*)::int AS count FROM worker_payment_allocation_reversals
+          WHERE reversal_id=$1 AND allocation_source='WORKER_PAYMENT_ORDER' AND source_allocation_id=$2`,
+        [parentDifferenceReversal.json().data.reversal.id,parentDifferenceEvent.worker_payment_order_allocation_id]
+      )).rows[0].count),1,
+        "reversing the parent payment must append an allocation reversal for its active difference allocation");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[parentDifference.id]
+      )).rows[0].status,"REVERSED");
+      const parentReversedSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${parentReverseWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(parentReversedSummary.statusCode,200,parentReversedSummary.body);
+      assert.equal(Number(parentReversedSummary.json().data.availableForSettlement),110,
+        "full parent reversal must reopen both source production and the separately allocated later production");
+
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
