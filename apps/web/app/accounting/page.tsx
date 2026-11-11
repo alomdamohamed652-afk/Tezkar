@@ -136,6 +136,24 @@ export default function AccountingPage() {
     try{setWorkerDifferenceEvents((await api<{data:WorkerSettlementDifferenceEvent[]}>(`/api/accounting/worker-settlement-differences/${id}/events`)).data)}
     catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل حركات فرق التسوية")}
   }
+  async function reverseWorkerDifferenceEvent(event:WorkerSettlementDifferenceEvent){
+    if(!has("finance.reversals.create")||!["ALLOCATED_TO_PRODUCTION","TRANSFERRED_TO_SOURCE_ORDER"].includes(event.event_type))return;
+    const reason=window.prompt("اكتب سبب عكس حركة فرق التسوية:");
+    if(reason===null)return;
+    if(reason.trim().length<2){setError("سبب العكس مطلوب ويجب ألا يقل عن حرفين.");return;}
+    if(!window.confirm("سيتم عكس الحركة بالكامل من خلال دفتر العكسيات المالي، وسيُوقف الفرق للمراجعة حتى إعادة اعتماده. هل تريد المتابعة؟"))return;
+    setError("");setMessage("");
+    try{
+      await api("/api/accounting/reversals",{method:"POST",body:JSON.stringify({
+        sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:event.id,
+        amount:Number(event.amount),reason:reason.trim(),idempotencyKey:crypto.randomUUID()
+      })});
+      setMessage("تم عكس الحركة وإيقاف فرق التسوية للمراجعة المحاسبية.");
+      await loadWorkerDifferences();
+      await loadWorkerDifferenceEvents(selectedWorkerDifference);
+      await loadReversals();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر عكس حركة فرق التسوية");}
+  }
   async function releaseWorkerDifference(id:string){
     if(!has("finance.worker_settlement_differences.manage"))return;
     const reason=window.prompt("اكتب سبب إعادة اعتماد فرق التسوية بعد المراجعة المحاسبية:");
@@ -374,7 +392,7 @@ export default function AccountingPage() {
        <label style={{gridColumn:"1 / -1"}}>سبب العكس<textarea rows={2} value={reversalForm.reason} onChange={e=>setReversalForm(v=>({...v,reason:e.target.value}))} placeholder="اكتب سبب التصحيح بالتفصيل"/></label>
        <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" type="button" disabled={reversalSaving} onClick={()=>void submitReversal()}>{reversalSaving?"جارٍ التسجيل...":"تسجيل العكس"}</button></div>
       </div>
-      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="WORKER_PAYMENT"?"دفعة عامل":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
+      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="WORKER_PAYMENT"?"دفعة عامل":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":r.source_type==="WORKER_SETTLEMENT_DIFFERENCE_EVENT"?"حدث فرق تسوية":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
      </section>}
       </>}
 
@@ -402,8 +420,8 @@ export default function AccountingPage() {
        </section>
        {selectedWorkerDifference&&<section className="card">
         <div className="card-header"><div><h2 className="card-title">سجل حركات فرق التسوية</h2><div className="form-hint">كل توزيع أو ترحيل أو عكس محفوظ كسجل مستقل دون حذف الحركة الأصلية.</div></div><button className="secondary-button" onClick={()=>{setSelectedWorkerDifference("");setWorkerDifferenceEvents([])}}>إغلاق</button></div>
-        <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>الطلبية المستهدفة</th><th>المرحلة</th><th>الإنتاج</th><th>المبلغ</th><th>المنفذ</th><th>السبب</th></tr></thead><tbody>
-         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":e.event_type==="RELEASED_AFTER_REVIEW"?"إعادة اعتماد بعد المراجعة":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(Number(e.amount))}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td></tr>)}
+        <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>الطلبية المستهدفة</th><th>المرحلة</th><th>الإنتاج</th><th>المبلغ</th><th>المنفذ</th><th>السبب</th><th>إجراء</th></tr></thead><tbody>
+         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":e.event_type==="RELEASED_AFTER_REVIEW"?"إعادة اعتماد بعد المراجعة":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(Number(e.amount))}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td><td>{has("finance.reversals.create")&&["ALLOCATED_TO_PRODUCTION","TRANSFERRED_TO_SOURCE_ORDER"].includes(e.event_type)&&<button className="reject-button" onClick={()=>void reverseWorkerDifferenceEvent(e)}>عكس الحركة</button>}</td></tr>)}
          {!workerDifferenceEvents.length&&<tr><td colSpan={8}>لا توجد حركات لهذا الفرق بعد.</td></tr>}
         </tbody></table></div>
        </section>}
