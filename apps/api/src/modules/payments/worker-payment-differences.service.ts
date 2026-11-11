@@ -51,7 +51,10 @@ export async function allocatePendingWorkerPaymentDifferencesForProduction(
             ${productionRemainingSql} AS remaining
        FROM production_entries p
        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+       LEFT JOIN production_orders o ON o.id=os.order_id
       WHERE p.id=$1 AND p.employee_id=$2 AND p.status='APPROVED'
+        AND (os.id IS NULL OR os.status<>'CANCELLED')
+        AND (o.id IS NULL OR o.status<>'CANCELLED')
       FOR UPDATE OF p`,
     [productionEntryId, employeeId]
   );
