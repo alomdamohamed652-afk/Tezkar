@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { pool } from "../../db/pool.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 type DifferenceActor = { actorUserId: string | null; actorType: "USER" | "SYSTEM" };
 
@@ -181,6 +182,11 @@ export async function processMaturedWorkerPaymentDifferences(
       LIMIT 100
       FOR UPDATE OF d SKIP LOCKED`
   );
+
+  if (candidates.rowCount) {
+    const today = new Date().toISOString().slice(0, 10);
+    await assertAccountingPeriodOpen(client, today);
+  }
 
   let transferred = 0;
   for (const difference of candidates.rows) {
