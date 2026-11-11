@@ -62,6 +62,31 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   return Number(r.rows[0]?.balance ?? 0);
 }
 
+function activeDifferencePaymentProductionAllocationSql(paymentIdExpr:string,settlementIdExpr:string|null,approvedAtCondition="") {
+  const eligible = `p.status='APPROVED' ${approvedAtCondition}`;
+  const net = (alias:string,source:string) =>
+    `GREATEST(${alias}.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+      WHERE r.allocation_source='${source}' AND r.source_allocation_id=${alias}.id),0),0)`;
+  const canonical = settlementIdExpr ? `
+    WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations x WHERE x.settlement_id=${settlementIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","EMPLOYEE_EARNINGS_SETTLEMENT")})
+        FROM employee_earnings_settlement_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.settlement_id=${settlementIdExpr} AND ${eligible}),0)` : "";
+  return `CASE
+    ${canonical}
+    WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations x WHERE x.worker_payment_id=${paymentIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_ORDER")})
+        FROM worker_payment_order_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+    ELSE COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_LEGACY")})
+      FROM worker_payment_allocations a
+      JOIN production_entries p ON p.id=a.production_entry_id
+      WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+  END`;
+}
+
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
   // An explicit employee closure freezes only production approved at closure time.
   // Earnings approved afterwards remain payable and are calculated independently.
@@ -74,9 +99,17 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
     const future=await client.query(`
       SELECT
         COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
-        COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s
+        COALESCE((SELECT SUM(CASE
+          WHEN s.worker_payment_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=s.worker_payment_id)
+            THEN ${activeDifferencePaymentProductionAllocationSql("s.worker_payment_id","s.id","AND p.approved_at>$2")}
+          ELSE s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END
+        END) FROM employee_earnings_settlements s
           WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
-        COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
+        COALESCE((SELECT SUM(CASE
+          WHEN EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=wp.id)
+            THEN ${activeDifferencePaymentProductionAllocationSql("wp.id",null,"AND p.approved_at>$2")}
+          ELSE wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+        END) FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at>$2),0) AS legacy_paid,
         COALESCE((SELECT SUM(m.amount_snapshot)
@@ -119,8 +152,16 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           AND l.payroll_payment_id IS NULL
           AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
-      COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
-      COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
+      COALESCE((SELECT SUM(CASE
+        WHEN s.worker_payment_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=s.worker_payment_id)
+          THEN ${activeDifferencePaymentProductionAllocationSql("s.worker_payment_id","s.id")}
+        ELSE s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END
+      END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+      COALESCE((SELECT SUM(CASE
+        WHEN EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=wp.id)
+          THEN ${activeDifferencePaymentProductionAllocationSql("wp.id",null)}
+        ELSE wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+      END) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
         WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
       COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
