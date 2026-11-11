@@ -589,6 +589,78 @@ export async function accountingRoutes(app:FastifyInstance){
   return {data:result.rows};
  });
 
+ app.post("/api/accounting/worker-settlement-differences/:id/release",{
+  preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.manage")]
+ },async(request,reply)=>{
+  const parsed=z.object({
+   id:z.string().uuid(),
+   reason:z.string().trim().min(2).max(500),
+   idempotencyKey:z.string().uuid()
+  }).safeParse({...request.params,...(request.body as object)});
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات إعادة اعتماد فرق التسوية غير صحيحة",422);
+  const input=parsed.data;
+  const result=await withTransaction(async client=>{
+   const replay=await client.query(
+    "SELECT * FROM worker_payment_settlement_difference_events WHERE idempotency_key=$1",
+    [input.idempotencyKey]);
+   if(replay.rowCount){
+    if(replay.rows[0].difference_id!==input.id||replay.rows[0].event_type!=="RELEASED_AFTER_REVIEW")
+     throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة الاعتماد مستخدم لعملية مختلفة",409);
+    return {replayed:true,event:replay.rows[0],status:"REQUIRES_REVIEW"};
+   }
+   const identity=await client.query(
+    "SELECT employee_id FROM worker_payment_settlement_differences WHERE id=$1",[input.id]);
+   if(!identity.rowCount)throw new AppError("WORKER_DIFFERENCE_NOT_FOUND","فرق التسوية غير موجود",404);
+   await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[identity.rows[0].employee_id]);
+   const difference=await client.query(
+    "SELECT * FROM worker_payment_settlement_differences WHERE id=$1 FOR UPDATE",[input.id]);
+   if(!difference.rowCount)throw new AppError("WORKER_DIFFERENCE_NOT_FOUND","فرق التسوية غير موجود",404);
+   if(difference.rows[0].status!=="REQUIRES_REVIEW")
+    throw new AppError("WORKER_DIFFERENCE_NOT_ON_REVIEW","فرق التسوية ليس في حالة المراجعة المحاسبية",409);
+   const reversal=await client.query(
+    "SELECT 1 FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+    [difference.rows[0].worker_payment_id]);
+   if(reversal.rowCount)throw new AppError("WORKER_PAYMENT_ALREADY_REVERSED","دفعة العامل الأصلية معكوسة؛ لا يمكن إعادة تفعيل فرقها",409);
+   const reversalDate=new Date().toISOString().slice(0,10);
+   await assertAccountingPeriodOpen(client,reversalDate);
+   const totals=await client.query(
+    `SELECT
+      COALESCE(SUM(e.amount) FILTER(WHERE e.event_type='ALLOCATED_TO_PRODUCTION'
+       AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r WHERE r.reverses_event_id=e.id)),0) AS allocated,
+      COALESCE(SUM(e.amount) FILTER(WHERE e.event_type='TRANSFERRED_TO_SOURCE_ORDER'
+       AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r WHERE r.reverses_event_id=e.id)),0) AS transferred
+     FROM worker_payment_settlement_difference_events e WHERE e.difference_id=$1`,
+    [input.id]);
+   const allocated=Number(totals.rows[0].allocated??0);
+   const transferred=Number(totals.rows[0].transferred??0);
+   const remaining=Math.round((Number(difference.rows[0].original_amount)-allocated-transferred)*100)/100;
+   if(remaining<=0.009)
+    throw new AppError("WORKER_DIFFERENCE_NO_REMAINING_BALANCE","لا يوجد رصيد متبقٍ لإعادة تفعيله؛ راجع سجل الحركات",409);
+   const event=await client.query(
+    `INSERT INTO worker_payment_settlement_difference_events(
+      difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,target_order_id,
+      actor_type,actor_user_id,reason,idempotency_key
+     ) VALUES($1,$2,$3,'RELEASED_AFTER_REVIEW',$4,$5,$5,'USER',$6,$7,$8)
+     RETURNING *`,
+    [input.id,difference.rows[0].worker_payment_id,difference.rows[0].source_expense_id,remaining,
+     difference.rows[0].source_order_id,request.user!.userId,input.reason,input.idempotencyKey]);
+   const nextStatus=allocated>0.009?"PARTIALLY_ALLOCATED":"PENDING";
+   await client.query(
+    "UPDATE worker_payment_settlement_differences SET status=$1,updated_at=now() WHERE id=$2",
+    [nextStatus,input.id]);
+   await writeAudit(client,{
+    actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,
+    action:"release_worker_payment_settlement_difference_review",module:"finance",
+    entityType:"worker_payment_settlement_difference",entityId:input.id,
+    afterData:{status:nextStatus,remainingAmount:remaining,releaseEventId:event.rows[0].id,reason:input.reason},
+    metadata:{workerPaymentId:difference.rows[0].worker_payment_id,allocated,transferred,remaining},
+    ipAddress:request.ip,userAgent:request.headers["user-agent"]??null
+   });
+   return {replayed:false,event:event.rows[0],status:nextStatus};
+  });
+  return reply.code(result.replayed?200:201).send({data:result});
+ });
+
  app.post("/api/accounting/worker-settlement-differences/process",{
   preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.manage")]
  },async(request,reply)=>{
