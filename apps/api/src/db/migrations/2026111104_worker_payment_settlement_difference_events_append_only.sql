@@ -18,6 +18,9 @@ BEFORE UPDATE OR DELETE ON worker_payment_settlement_difference_events
 FOR EACH ROW
 EXECUTE FUNCTION prevent_worker_payment_settlement_difference_event_mutation();
 
+DROP TRIGGER IF EXISTS worker_payment_settlement_difference_events_no_truncate
+  ON worker_payment_settlement_difference_events;
+
 CREATE TRIGGER worker_payment_settlement_difference_events_no_truncate
 BEFORE TRUNCATE ON worker_payment_settlement_difference_events
 FOR EACH STATEMENT
