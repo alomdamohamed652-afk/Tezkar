@@ -552,10 +552,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(allocations.statusCode,200,allocations.body);
 
       // A reversal dated after this period must not rewrite its historical snapshot.
+      const periodSnapshotWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Period snapshot reversal worker') RETURNING id"
+      )).rows[0].id;
       const periodSnapshotPayment=(await apiPool.query(
         `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
          VALUES($1,25,25,0,'CASH',$2,$3,'period-snapshot-boundary-payment') RETURNING id`,
-        [workerEmployee.id,manager.id,randomUUID()]
+        [periodSnapshotWorker,manager.id,randomUUID()]
       )).rows[0].id;
       const laterReversedExpense=(await apiPool.query(
         `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,
@@ -569,7 +572,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
            repayment_method,repayment_status)
          VALUES($1,100,'Period snapshot reversal boundary','PAID',$2,$2,'2099-02-10 12:00:00+00',
            'CUSTOM','OPEN') RETURNING id`,
-        [workerEmployee.id,manager.id]
+        [periodSnapshotWorker,manager.id]
       )).rows[0].id;
       const laterAdvanceRepayment=(await apiPool.query(
         `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,
