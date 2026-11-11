@@ -716,7 +716,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{
           employeeId:previousCustodyEmployee.id,
           settlementSource:"PREVIOUS_CUSTODY",
-          orderId:hamzaOrder.json().data.id,
           amount:75,
           method:"CASH",
           idempotencyKey:previousCustodyKey,
@@ -737,16 +736,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       )).rows[0].balance);
       assert.equal(custodyAfterPreviousSettlement,custodyBeforePreviousSettlement,"current custody balance remains unchanged");
       const previousCustodyExpense=await apiPool.query(
-        "SELECT order_id,order_stage_id,category,amount,expense_type,paid_from_employee_id,idempotency_key FROM accounting_expenses WHERE idempotency_key=$1",
+        "SELECT order_id,order_stage_id,category,amount,expense_type,paid_from_employee_id,idempotency_key,allocation_type,source_worker_payment_id FROM accounting_expenses WHERE idempotency_key=$1",
         [previousCustodyKey]
       );
       assert.equal(previousCustodyExpense.rowCount,1,"previous-custody settlement must create exactly one order expense");
-      assert.equal(previousCustodyExpense.rows[0].order_id,hamzaOrder.json().data.id);
+      assert.equal(previousCustodyExpense.rows[0].order_id,null);
       assert.equal(previousCustodyExpense.rows[0].order_stage_id,null);
       assert.equal(previousCustodyExpense.rows[0].category,"WORKER_PAYMENT");
       assert.equal(previousCustodyExpense.rows[0].expense_type,"DIRECT");
       assert.equal(previousCustodyExpense.rows[0].paid_from_employee_id,null,"the expense must not be tied to today's custody");
       assert.equal(previousCustodyExpense.rows[0].idempotency_key,previousCustodyKey);
+      assert.equal(previousCustodyExpense.rows[0].allocation_type,"GENERAL");
+      assert.equal(previousCustodyExpense.rows[0].source_worker_payment_id,previousCustodyPaymentId);
       const previousCustodyRetry=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{
@@ -776,18 +777,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',75,$2,'test current-custody order balance')",[currentOrderWorker.id,manager.id]);
       const currentOrderKey=randomUUID();
       const custodyBeforeCurrent=Number((await apiPool.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",[managerEmployee.id])).rows[0].balance);
-      const currentOrderPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,orderId:hamzaOrder.json().data.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody order"}});
+      const currentOrderPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody general"}});
       assert.equal(currentOrderPayout.statusCode,201,currentOrderPayout.body);
       const currentOrderPaymentId=currentOrderPayout.json().data.payment.id;
-      const currentOrderExpense=await apiPool.query("SELECT order_id,paid_from_employee_id,amount FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey]);
+      const currentOrderExpense=await apiPool.query("SELECT order_id,paid_from_employee_id,amount,allocation_type,source_worker_payment_id,cash_custody_transaction_id FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey]);
       assert.equal(currentOrderExpense.rowCount,1);
-      assert.equal(currentOrderExpense.rows[0].order_id,hamzaOrder.json().data.id);
+      assert.equal(currentOrderExpense.rows[0].order_id,null);
+      assert.equal(currentOrderExpense.rows[0].allocation_type,"GENERAL");
+      assert.equal(currentOrderExpense.rows[0].source_worker_payment_id,currentOrderPaymentId);
       assert.equal(currentOrderExpense.rows[0].paid_from_employee_id,managerEmployee.id);
       assert.equal(Number(currentOrderExpense.rows[0].amount),75);
       const currentOrderOut=await apiPool.query("SELECT employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId]);
       assert.equal(currentOrderOut.rowCount,1,"current-custody settlement must create one custody OUT");
       assert.equal(currentOrderOut.rows[0].employee_id,managerEmployee.id);
       assert.equal(Number(currentOrderOut.rows[0].amount),75);
+      assert.equal(currentOrderExpense.rows[0].cash_custody_transaction_id,currentOrderOut.rows[0].id);
       const currentOrderRetry=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,orderId:hamzaOrder.json().data.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody order"}});
       assert.equal(currentOrderRetry.statusCode,200,currentOrderRetry.body);
       assert.equal(currentOrderRetry.json().data.payment.id,currentOrderPaymentId);
@@ -813,90 +817,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(unrelatedOrderPayout.json().error.code,"ORDER_HAS_NO_WORKER_PRODUCTION");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
-
-      // No-order settlements must still create one general accounting expense.
-      // Previous custody records labor cost without touching today's cash custody.
-      const previousGeneralWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Previous General Worker') RETURNING id")).rows[0];
-      await apiPool.query(
-        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',50,$2,'previous general settlement test')",
-        [previousGeneralWorker.id,manager.id]
-      );
-      const previousGeneralKey=randomUUID();
-      const previousGeneralPayout=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:previousGeneralWorker.id,settlementSource:"PREVIOUS_CUSTODY",
-          amount:50,method:"CASH",idempotencyKey:previousGeneralKey}
-      });
-      assert.equal(previousGeneralPayout.statusCode,201,previousGeneralPayout.body);
-      const previousGeneralExpense=await apiPool.query(
-        "SELECT order_id,order_stage_id,amount,allocation_type,paid_from_employee_id FROM accounting_expenses WHERE idempotency_key=$1",
-        [previousGeneralKey]
-      );
-      assert.equal(previousGeneralExpense.rowCount,1,"no-order previous-custody settlement must create exactly one expense");
-      assert.equal(previousGeneralExpense.rows[0].order_id,null);
-      assert.equal(previousGeneralExpense.rows[0].order_stage_id,null);
-      assert.equal(Number(previousGeneralExpense.rows[0].amount),50);
-      assert.equal(previousGeneralExpense.rows[0].allocation_type,"GENERAL");
-      assert.equal(previousGeneralExpense.rows[0].paid_from_employee_id,null);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
-        [previousGeneralPayout.json().data.payment.id]
-      )).rows[0].count),0,"no-order previous-custody settlement must not create a current-custody movement");
-
-      // Current custody no-order settlement must link its one net cash movement
-      // to the general expense while keeping the labor expense at gross value.
-      const currentGeneralWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Current General Worker') RETURNING id")).rows[0];
-      const generalCustodyHolder=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test General Custody Holder') RETURNING id")).rows[0];
-      await apiPool.query(
-        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',60,$2,'current general settlement test')",
-        [currentGeneralWorker.id,manager.id]
-      );
-      await apiPool.query(
-        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',60,'seed current general custody test',$2)",
-        [generalCustodyHolder.id,manager.id]
-      );
-      const currentGeneralKey=randomUUID();
-      const currentGeneralPayout=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:currentGeneralWorker.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:generalCustodyHolder.id,amount:60,method:"CASH",idempotencyKey:currentGeneralKey}
-      });
-      assert.equal(currentGeneralPayout.statusCode,201,currentGeneralPayout.body);
-      const currentGeneralPaymentId=currentGeneralPayout.json().data.payment.id;
-      const currentGeneralExpense=await apiPool.query(
-        "SELECT order_id,order_stage_id,amount,allocation_type,paid_from_employee_id,cash_custody_transaction_id FROM accounting_expenses WHERE idempotency_key=$1",
-        [currentGeneralKey]
-      );
-      assert.equal(currentGeneralExpense.rowCount,1);
-      assert.equal(currentGeneralExpense.rows[0].order_id,null);
-      assert.equal(currentGeneralExpense.rows[0].order_stage_id,null);
-      assert.equal(Number(currentGeneralExpense.rows[0].amount),60);
-      assert.equal(currentGeneralExpense.rows[0].allocation_type,"GENERAL");
-      assert.equal(currentGeneralExpense.rows[0].paid_from_employee_id,generalCustodyHolder.id);
-      const currentGeneralOut=await apiPool.query(
-        "SELECT id,employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
-        [currentGeneralPaymentId]
-      );
-      assert.equal(currentGeneralOut.rowCount,1);
-      assert.equal(currentGeneralOut.rows[0].employee_id,generalCustodyHolder.id);
-      assert.equal(Number(currentGeneralOut.rows[0].amount),60);
-      assert.equal(currentGeneralExpense.rows[0].cash_custody_transaction_id,currentGeneralOut.rows[0].id,
-        "general worker expense must point to the actual worker-payment custody movement");
-      const currentGeneralRetry=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:currentGeneralWorker.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:generalCustodyHolder.id,amount:60,method:"CASH",idempotencyKey:currentGeneralKey}
-      });
-      assert.equal(currentGeneralRetry.statusCode,200,currentGeneralRetry.body);
-      assert.equal(currentGeneralRetry.json().data.payment.id,currentGeneralPaymentId);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",
-        [currentGeneralKey]
-      )).rows[0].count),1);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
-        [currentGeneralPaymentId]
-      )).rows[0].count),1);
 
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
