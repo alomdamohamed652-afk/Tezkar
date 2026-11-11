@@ -761,7 +761,8 @@ export async function accountingRoutes(app:FastifyInstance){
            COALESCE(allocations.reversed_count,0) AS reversed_allocation_count,
            COALESCE(allocations.source_amount,0) AS source_allocation_amount,
            COALESCE(allocations.reversed_amount,0) AS reversed_allocation_amount,
-           COALESCE(allocations.missing_count,0) AS missing_allocation_reversals
+           COALESCE(allocations.missing_count,0) AS missing_allocation_reversals,
+           COALESCE(difference_events.active_count,0) AS active_difference_events
       FROM financial_reversal_lines line
       JOIN financial_reversals r ON r.id=line.reversal_id
       JOIN worker_payments wp ON wp.id=line.source_id
@@ -815,6 +816,14 @@ export async function accountingRoutes(app:FastifyInstance){
                ))::int AS missing_count
           FROM source_allocations sa
       ) allocations ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS active_count
+          FROM worker_payment_settlement_differences d
+          JOIN worker_payment_settlement_difference_events e ON e.difference_id=d.id
+         WHERE d.worker_payment_id=wp.id
+           AND e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+           AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=e.id)
+      ) difference_events ON TRUE
      WHERE line.source_type='WORKER_PAYMENT'
        AND (
          ABS(COALESCE(ledger.credit_total,0)-wp.gross_amount)>0.01
@@ -828,6 +837,7 @@ export async function accountingRoutes(app:FastifyInstance){
          OR COALESCE(allocations.source_count,0)<>COALESCE(allocations.reversed_count,0)
          OR ABS(COALESCE(allocations.source_amount,0)-COALESCE(allocations.reversed_amount,0))>0.01
          OR COALESCE(allocations.missing_count,0)>0
+         OR COALESCE(difference_events.active_count,0)>0
        )
      ORDER BY r.created_at DESC,wp.created_at DESC`)
   ]);
