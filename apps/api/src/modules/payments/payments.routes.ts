@@ -635,7 +635,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const candidates = await client.query(`
         SELECT wp.id
           FROM worker_payments wp
-          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
@@ -660,7 +660,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           SELECT wp.id,wp.employee_id,wp.gross_amount,wp.created_at::date AS payment_date,e.full_name AS employee_name,
                  ae.order_id,ae.order_stage_id,es.id AS settlement_id
             FROM worker_payments wp
-            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
             JOIN employees e ON e.id=wp.employee_id
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
            WHERE wp.id=$1
@@ -811,7 +811,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
           FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
              (es.id IS NULL AND (
@@ -1056,7 +1056,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         FROM worker_payments wp
         JOIN employees e ON e.id=wp.employee_id
         LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
         LEFT JOIN production_orders o ON o.id=ae.order_id
         LEFT JOIN order_stages original_stage ON original_stage.id=ae.order_stage_id
         LEFT JOIN stages original_stage_lookup ON original_stage_lookup.id=original_stage.stage_id
@@ -1132,7 +1132,7 @@ export async function paymentsRoutes(app:FastifyInstance){
              os.sequence_no,st.name AS stage_name,es.id AS settlement_id
         FROM worker_payments wp
         JOIN employees e ON e.id=wp.employee_id
-        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
         LEFT JOIN production_orders o ON o.id=ae.order_id
         LEFT JOIN order_stages os ON os.id=ae.order_stage_id
         LEFT JOIN stages st ON st.id=os.stage_id
@@ -1244,7 +1244,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                to_char(wp.created_at,'YYYY-MM-DD') AS payment_date
           FROM worker_payments wp
           JOIN employees e ON e.id=wp.employee_id
-          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE wp.id=$1 AND wp.employee_id=$2 FOR UPDATE OF wp
       `,[id,owner.rows[0].employee_id]);
@@ -1463,7 +1463,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                  END AS allocation_status
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
             LEFT JOIN production_orders o ON o.id=ae.order_id
             LEFT JOIN order_stages os ON os.id=ae.order_stage_id
             LEFT JOIN stages s ON s.id=os.stage_id
@@ -1848,7 +1848,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           SELECT wp.id,wp.gross_amount
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL AND ae.source_worker_payment_id IS NULL
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
            WHERE wp.employee_id=$1
              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
              AND (
