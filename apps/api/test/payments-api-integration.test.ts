@@ -2508,6 +2508,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal((await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
       )).rows[0].status,"REVERSED","reversing the second payment must also reverse its completion-transfer event");
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      const repayoutAfterReversal=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:100,method:"CASH",
+          advanceRepaymentAmount:0,idempotencyKey:randomUUID()}
+      });
+      assert.equal(repayoutAfterReversal.statusCode,201,repayoutAfterReversal.body,
+        "a later order-scoped payout must treat reversed historical allocations as available, not as duplicate paid amounts");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_order_allocations WHERE worker_payment_id=$1",
+        [repayoutAfterReversal.json().data.payment.id]
+      )).rows[0].amount),100);
 
       // A completed source order can close its remaining difference immediately
       // once every approved production entry is fully settled.
