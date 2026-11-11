@@ -1676,6 +1676,9 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND ev.event_type='ALLOCATED_TO_PRODUCTION'
                   AND dp.employee_id=$1 AND dos.order_id=$2
                   AND ($3::uuid IS NULL OR dp.order_stage_id=$3)
+                  AND EXISTS(SELECT 1 FROM employee_earnings_settlements es_difference
+                    JOIN employee_earnings_settlement_allocations esa_difference ON esa_difference.settlement_id=es_difference.id
+                    WHERE es_difference.worker_payment_id=ev.worker_payment_id)
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
                     WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
