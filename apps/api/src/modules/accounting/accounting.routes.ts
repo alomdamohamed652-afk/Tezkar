@@ -658,6 +658,9 @@ export async function accountingRoutes(app:FastifyInstance){
            COALESCE(ledger.wrong_employee_count,0) AS wrong_ledger_employee_count,
            COALESCE(expenses.source_total,0) AS source_expense_total,
            COALESCE(expenses.reversed_total,0) AS reversed_expense_total,
+           COALESCE(expenses.source_count,0) AS source_expense_count,
+           COALESCE(expenses.reversed_count,0) AS reversed_expense_count,
+           COALESCE(expenses.missing_count,0) AS missing_expense_reversals,
            COALESCE(custody.original_out,0) AS original_custody_out,
            COALESCE(custody.reversal_in,0) AS reversal_custody_in,
            COALESCE(allocations.source_count,0) AS source_allocation_count,
@@ -675,8 +678,13 @@ export async function accountingRoutes(app:FastifyInstance){
           FROM employee_earnings_ledger l WHERE l.financial_reversal_id=r.id
       ) ledger ON TRUE
       LEFT JOIN LATERAL (
-        SELECT COALESCE(SUM(e.amount),0) AS source_total,
-               COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.reversal_id=r.id),0) AS reversed_total
+        SELECT COALESCE(SUM(e.amount),0) AS source_total,COUNT(*)::int AS source_count,
+               COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.reversal_id=r.id),0) AS reversed_total,
+               (SELECT COUNT(*)::int FROM accounting_expense_reversals er WHERE er.reversal_id=r.id) AS reversed_count,
+               COUNT(*) FILTER(WHERE NOT EXISTS(
+                 SELECT 1 FROM accounting_expense_reversals er
+                  WHERE er.reversal_id=r.id AND er.expense_id=e.id AND er.source_worker_payment_id=wp.id AND ABS(er.amount-e.amount)<=0.0001
+               ))::int AS missing_count
           FROM accounting_expenses e
          WHERE e.source_worker_payment_id=wp.id
             OR (e.source_worker_payment_id IS NULL AND e.idempotency_key=wp.idempotency_key)
@@ -687,17 +695,17 @@ export async function accountingRoutes(app:FastifyInstance){
       ) custody ON TRUE
       LEFT JOIN LATERAL (
         WITH source_allocations AS (
-          SELECT a.id,a.amount,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
+          SELECT a.id,a.amount,a.production_entry_id,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
             FROM employee_earnings_settlement_allocations a
             JOIN employee_earnings_settlements es ON es.id=a.settlement_id
            WHERE es.worker_payment_id=wp.id
           UNION ALL
-          SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text
+          SELECT a.id,a.amount,a.production_entry_id,'WORKER_PAYMENT_ORDER'::text
             FROM worker_payment_order_allocations a
            WHERE a.worker_payment_id=wp.id
              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
           UNION ALL
-          SELECT a.id,a.amount,'WORKER_PAYMENT_LEGACY'::text
+          SELECT a.id,a.amount,a.production_entry_id,'WORKER_PAYMENT_LEGACY'::text
             FROM worker_payment_allocations a
            WHERE a.worker_payment_id=wp.id
              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
@@ -709,6 +717,7 @@ export async function accountingRoutes(app:FastifyInstance){
                COUNT(*) FILTER(WHERE NOT EXISTS(
                  SELECT 1 FROM worker_payment_allocation_reversals wa
                   WHERE wa.reversal_id=r.id AND wa.source_allocation_id=sa.id AND wa.allocation_source=sa.source
+                    AND wa.production_entry_id=sa.production_entry_id AND ABS(wa.amount-sa.amount)<=0.0001
                ))::int AS missing_count
           FROM source_allocations sa
       ) allocations ON TRUE
@@ -719,6 +728,8 @@ export async function accountingRoutes(app:FastifyInstance){
          OR COALESCE(ledger.wrong_employee_count,0)>0
          OR ABS(COALESCE(expenses.source_total,0)-wp.gross_amount)>0.01
          OR ABS(COALESCE(expenses.reversed_total,0)-wp.gross_amount)>0.01
+         OR COALESCE(expenses.source_count,0)<>COALESCE(expenses.reversed_count,0)
+         OR COALESCE(expenses.missing_count,0)>0
          OR ABS(COALESCE(custody.original_out,0)-COALESCE(custody.reversal_in,0))>0.01
          OR COALESCE(allocations.source_count,0)<>COALESCE(allocations.reversed_count,0)
          OR ABS(COALESCE(allocations.source_amount,0)-COALESCE(allocations.reversed_amount,0))>0.01
