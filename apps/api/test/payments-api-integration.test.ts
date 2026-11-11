@@ -2595,6 +2595,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           reason:"اختبار عكس فرق تسوية العامل",idempotencyKey:randomUUID()}
       });
       assert.equal(differenceReversal.statusCode,201,differenceReversal.body);
+      const previousCustodyReversalMovements=await apiPool.query(
+        `SELECT
+          (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT') AS original_out,
+          (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$2 AND direction='IN') AS reversal_in`,
+        [differencePaymentId,differenceReversal.json().data.reversal.id]
+      );
+      assert.equal(Number(previousCustodyReversalMovements.rows[0].original_out),0,
+        "a previous-custody settlement must not invent a current-custody cash OUT");
+      assert.equal(Number(previousCustodyReversalMovements.rows[0].reversal_in),0,
+        "reversing a previous-custody settlement must not credit the current custody");
       const reversedDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0];
