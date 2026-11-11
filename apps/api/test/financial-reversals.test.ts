@@ -181,14 +181,7 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   const partialWorkerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{...workerPayload,amount:99,idempotencyKey:randomUUID()}});
   assert.equal(partialWorkerReversal.statusCode,409,partialWorkerReversal.body);
   assert.equal(partialWorkerReversal.json().error.code,'WORKER_PAYMENT_FULL_REVERSAL_REQUIRED');
-  await db.query(`CREATE OR REPLACE FUNCTION test_fail_worker_reversal_cash_in() RETURNS trigger AS $
-    BEGIN
-      IF NEW.source_type='FINANCIAL_REVERSAL' AND NEW.direction='IN' THEN
-        RAISE EXCEPTION 'forced worker reversal cash-in failure';
-      END IF;
-      RETURN NEW;
-    END;
-  $ LANGUAGE plpgsql`);
+  await db.query("CREATE OR REPLACE FUNCTION test_fail_worker_reversal_cash_in() RETURNS trigger AS 'BEGIN IF NEW.source_type = ''FINANCIAL_REVERSAL'' AND NEW.direction = ''IN'' THEN RAISE EXCEPTION ''forced worker reversal cash-in failure''; END IF; RETURN NEW; END;' LANGUAGE plpgsql");
   await db.query(`CREATE TRIGGER test_fail_worker_reversal_cash_in_trigger
     BEFORE INSERT ON cash_custody_transactions
     FOR EACH ROW EXECUTE FUNCTION test_fail_worker_reversal_cash_in()`);
