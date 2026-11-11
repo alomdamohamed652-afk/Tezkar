@@ -189,6 +189,7 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
       (SELECT COALESCE(SUM(credit_amount),0) FROM employee_earnings_ledger WHERE notes LIKE '%عكس دفعة العامل%' AND notes LIKE '%' || $1::text || '%') AS worker_ledger_credit,
       (SELECT COALESCE(SUM(debit_amount),0) FROM employee_earnings_ledger WHERE notes LIKE '%عكس سداد سلفة%' AND notes LIKE '%' || $2::text || '%') AS advance_ledger_debit,
       (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='IN') AS custody_in,
+      (SELECT COUNT(*)::int FROM employee_earnings_ledger WHERE financial_reversal_id=$3) AS reversal_ledger_count,
       (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status`,
     [workerPayment,workerRepayment,workerReversal.json().data.reversal.id,workerAdvance]
   );
@@ -199,6 +200,8 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   assert.equal(Number(workerState.rows[0].worker_ledger_credit),100);
   assert.equal(Number(workerState.rows[0].advance_ledger_debit),20);
   assert.equal(Number(workerState.rows[0].custody_in),80);
+  assert.equal(Number(workerState.rows[0].reversal_ledger_count),2,
+    "each append-only ledger correction must be linked to its financial reversal header");
   assert.equal(workerState.rows[0].advance_status,'OPEN');
 
   // Previous-custody settlements have no current cash OUT and must not create a
