@@ -15,6 +15,8 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];openingBalances?:Array<{balance_type:string;entity_key:string;balance:Record<string,unknown>;source_period_id:string;created_at:string}>;orders:Order[]};
+type WorkerSettlementDifference = {id:string;worker_payment_id:string;employee_id:string;employee_name:string;payment_code:string;payment_gross_amount:number|string;source_order_id:string;source_order_code:string;source_order_name:string;source_stage_name:string|null;original_amount:number|string;payment_date:string;eligible_at:string;status:"PENDING"|"PARTIALLY_ALLOCATED"|"ALLOCATED"|"TRANSFERRED_TO_SOURCE_ORDER"|"REVERSED";allocated_amount:number|string;transferred_amount:number|string;reversed_amount:number|string;remaining_amount:number|string};
+type WorkerSettlementDifferenceEvent = {id:string;event_type:string;amount:number|string;target_order_code:string|null;target_order_name:string|null;production_code:string|null;target_stage_name:string|null;actor_username:string|null;actor_type:"USER"|"SYSTEM";reason:string;created_at:string};
 type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; reversed_amount?:number; effective_amount?:number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
@@ -42,7 +44,7 @@ const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل 
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody"|"reversals">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody"|"reversals"|"differences">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
@@ -78,6 +80,12 @@ export default function AccountingPage() {
   const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"|"WORKER_PAYMENT",sourceId:"",amount:"",reason:""});
   const [reversalSaving,setReversalSaving]=useState(false);
   const [reversals,setReversals]=useState<Array<{id:string;code:string;reason:string;reversal_date:string;created_at:string;created_by_username:string;source_type:string;source_id:string;amount:string|number}>>([]);
+  const [workerDifferences,setWorkerDifferences]=useState<WorkerSettlementDifference[]>([]);
+  const [workerDifferenceEvents,setWorkerDifferenceEvents]=useState<WorkerSettlementDifferenceEvent[]>([]);
+  const [selectedWorkerDifference,setSelectedWorkerDifference]=useState("");
+  const [workerDifferencesLoading,setWorkerDifferencesLoading]=useState(false);
+  const [workerDifferencesProcessing,setWorkerDifferencesProcessing]=useState(false);
+
 
 
   async function load() {
@@ -95,6 +103,8 @@ export default function AccountingPage() {
   }
   useEffect(()=>{void load()},[]);
   useEffect(()=>{void loadReversals()},[has]);
+  useEffect(()=>{if(tab==="differences")void loadWorkerDifferences()},[tab]);
+
   useEffect(()=>{
     let active=true;
     if(!eForm.orderId||eForm.expenseType!=="DIRECT"){setExpenseStages([]);return;}
@@ -112,6 +122,30 @@ export default function AccountingPage() {
   async function loadReversals(){
     if(!has("finance.expenses.view"))return;
     try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
+  }
+
+  async function loadWorkerDifferences(){
+    if(!has("finance.worker_settlement_differences.view"))return;
+    setWorkerDifferencesLoading(true);
+    try{setWorkerDifferences((await api<{data:WorkerSettlementDifference[]}>("/api/accounting/worker-settlement-differences")).data)}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تحميل فروق تسويات العمال")}
+    finally{setWorkerDifferencesLoading(false)}
+  }
+  async function loadWorkerDifferenceEvents(id:string){
+    setSelectedWorkerDifference(id);setWorkerDifferenceEvents([]);
+    try{setWorkerDifferenceEvents((await api<{data:WorkerSettlementDifferenceEvent[]}>(`/api/accounting/worker-settlement-differences/${id}/events`)).data)}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل حركات فرق التسوية")}
+  }
+  async function processWorkerDifferences(){
+    if(!has("finance.worker_settlement_differences.manage"))return;
+    if(!window.confirm("سيتم ترحيل الفروق التي استوفت شروط الإقفال أو مدة الثلاثين يومًا فقط. هل تريد المتابعة؟"))return;
+    setWorkerDifferencesProcessing(true);setError("");setMessage("");
+    try{
+      const result=await api<{data:{transferred:number}}>("/api/accounting/worker-settlement-differences/process",{method:"POST"});
+      setMessage(`تمت معالجة ${result.data.transferred} فرق تسوية مستحق.`);
+      await loadWorkerDifferences();
+    }catch(e){setError(e instanceof Error?e.message:"تعذرت معالجة فروق التسوية")}
+    finally{setWorkerDifferencesProcessing(false)}
   }
   async function submitReversal(){
     setError("");setMessage("");
@@ -311,6 +345,7 @@ export default function AccountingPage() {
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
       {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
       {has("finance.reversals.create")&&<button className={"tab "+(tab==="reversals"?"active":"")} onClick={()=>setTab("reversals")}>العكس المحاسبي</button>}
+      {has("finance.worker_settlement_differences.view")&&<button className={"tab "+(tab==="differences"?"active":"")} onClick={()=>setTab("differences")}>فروق تسويات العمال</button>}
      </div>
 
      {tab==="reversals"&&has("finance.reversals.create")&&<>
@@ -327,6 +362,34 @@ export default function AccountingPage() {
      </section>}
       </>}
 
+
+      {tab==="differences"&&has("finance.worker_settlement_differences.view")&&<>
+       <section className="card" style={{marginBottom:16}}>
+        <div className="card-header">
+         <div><h2 className="card-title">فروق تسويات العمال</h2><div className="form-hint">متابعة الجزء غير الموزع من تسوية العهدة السابقة. يوزع النظام الفرق على إنتاج العامل المعتمد لاحقًا، ويرحّل المتبقي للطلبية الأصلية بعد استيفاء شروط الثلاثين يومًا أو الإقفال.</div></div>
+         <div className="form-actions">
+          <button className="secondary-button" onClick={()=>void loadWorkerDifferences()} disabled={workerDifferencesLoading}>{workerDifferencesLoading?"جارٍ التحديث…":"تحديث"}</button>
+          {has("finance.worker_settlement_differences.manage")&&<button className="primary-button" onClick={()=>void processWorkerDifferences()} disabled={workerDifferencesProcessing}>{workerDifferencesProcessing?"جارٍ المعالجة…":"معالجة الفروق المستحقة"}</button>}
+         </div>
+        </div>
+        <div className="table-wrap"><table><thead><tr><th>العامل</th><th>الدفعة</th><th>الطلبية الأصلية</th><th>الفرق الأصلي</th><th>تم توزيعه</th><th>تم ترحيله</th><th>المتبقي</th><th>مؤهل من</th><th>الحالة</th><th></th></tr></thead><tbody>
+         {workerDifferences.map(d=><tr key={d.id}>
+          <td>{d.employee_name}</td><td className="mono">{d.payment_code}</td><td>{d.source_order_code} — {d.source_order_name}{d.source_stage_name?" / "+d.source_stage_name:""}</td>
+          <td className="money">{n(d.original_amount)}</td><td className="money">{n(d.allocated_amount)}</td><td className="money">{n(d.transferred_amount)}</td><td className="money strong">{n(d.remaining_amount)}</td><td>{String(d.eligible_at).slice(0,10)}</td>
+          <td>{d.status==="PENDING"?"معلق":d.status==="PARTIALLY_ALLOCATED"?"موزع جزئيًا":d.status==="ALLOCATED"?"موزع بالكامل":d.status==="TRANSFERRED_TO_SOURCE_ORDER"?"مُرحّل للطلبية":"معكوس"}</td>
+          <td><button className="secondary-button" onClick={()=>void loadWorkerDifferenceEvents(d.id)}>الحركات</button></td>
+         </tr>)}
+         {!workerDifferences.length&&<tr><td colSpan={10}>{workerDifferencesLoading?"جارٍ تحميل الفروق…":"لا توجد فروق تسوية مسجلة."}</td></tr>}
+        </tbody></table></div>
+       </section>
+       {selectedWorkerDifference&&<section className="card">
+        <div className="card-header"><div><h2 className="card-title">سجل حركات فرق التسوية</h2><div className="form-hint">كل توزيع أو ترحيل أو عكس محفوظ كسجل مستقل دون حذف الحركة الأصلية.</div></div><button className="secondary-button" onClick={()=>{setSelectedWorkerDifference("");setWorkerDifferenceEvents([])}}>إغلاق</button></div>
+        <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>الطلبية المستهدفة</th><th>المرحلة</th><th>الإنتاج</th><th>المبلغ</th><th>المنفذ</th><th>السبب</th></tr></thead><tbody>
+         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(e.amount)}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td></tr>)}
+         {!workerDifferenceEvents.length&&<tr><td colSpan={8}>لا توجد حركات لهذا الفرق بعد.</td></tr>}
+        </tbody></table></div>
+       </section>}
+      </>}
       {tab==="dashboard"&&<>
       <section className="card" style={{marginBottom:16}}>
        <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));setDashboardTo(localDateInput(new Date()));}}>هذا الشهر</button></div>
