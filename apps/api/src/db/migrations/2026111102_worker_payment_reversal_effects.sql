@@ -20,6 +20,10 @@ ALTER TABLE financial_reversal_lines
     'WORKER_PAYMENT'
   ));
 
+CREATE UNIQUE INDEX IF NOT EXISTS financial_reversal_lines_worker_payment_uq
+  ON financial_reversal_lines(source_id)
+  WHERE source_type='WORKER_PAYMENT';
+
 CREATE TABLE IF NOT EXISTS worker_payment_allocation_reversals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   reversal_id UUID NOT NULL REFERENCES financial_reversals(id) ON DELETE RESTRICT,
