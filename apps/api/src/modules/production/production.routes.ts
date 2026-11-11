@@ -9,6 +9,7 @@ import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
+import { allocatePendingWorkerPaymentDifferencesForProduction } from "../payments/worker-payment-differences.service.js";
 
 const createSchema = z.object({
   employeeId: z.string().uuid().optional(),
@@ -1108,6 +1109,10 @@ export async function productionRoutes(app: FastifyInstance) {
         await client.query("UPDATE employee_earnings_adjustments SET ledger_id=$1 WHERE id=$2",[ledger.rows[0].id,adjustment.id]);
       }
 
+      const workerSettlementDifferenceAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+        client,current.employee_id,id,request.user!.userId
+      );
+
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
@@ -1117,6 +1122,7 @@ export async function productionRoutes(app: FastifyInstance) {
         entityId: id,
         beforeData: current,
         afterData: updated.rows[0],
+        metadata:{workerSettlementDifferenceAllocations},
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
