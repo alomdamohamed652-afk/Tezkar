@@ -230,24 +230,29 @@ export async function accountingRoutes(app:FastifyInstance){
     // Resolve the same canonical allocation source used by production reports:
     // settlement allocations take precedence, then order allocations, then legacy allocations.
     const settlementAllocations=await client.query(
-     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status
+     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status,
+             NOT EXISTS(SELECT 1 FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id) AS active
         FROM employee_earnings_settlement_allocations a
         JOIN employee_earnings_settlements s ON s.id=a.settlement_id
         JOIN production_entries p ON p.id=a.production_entry_id
        WHERE s.worker_payment_id=$1 ORDER BY a.id FOR UPDATE OF a,p`,[input.sourceId]);
     const orderAllocations=await client.query(
-     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status
+     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status,
+             NOT EXISTS(SELECT 1 FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id) AS active
         FROM worker_payment_order_allocations a
         JOIN production_entries p ON p.id=a.production_entry_id
        WHERE a.worker_payment_id=$1 ORDER BY a.id FOR UPDATE OF a,p`,[input.sourceId]);
     const legacyAllocations=await client.query(
-     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status
+     `SELECT a.id,a.production_entry_id,a.amount,p.employee_id,p.status,
+             NOT EXISTS(SELECT 1 FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id) AS active
         FROM worker_payment_allocations a
         JOIN production_entries p ON p.id=a.production_entry_id
        WHERE a.worker_payment_id=$1 ORDER BY a.id FOR UPDATE OF a,p`,[input.sourceId]);
-    const chosenAllocations=settlementAllocations.rowCount?{rows:settlementAllocations.rows,source:"EMPLOYEE_EARNINGS_SETTLEMENT"}:
-     orderAllocations.rowCount?{rows:orderAllocations.rows,source:"WORKER_PAYMENT_ORDER"}:
-     {rows:legacyAllocations.rows,source:"WORKER_PAYMENT_LEGACY"};
+    const chosenSource=settlementAllocations.rowCount?"EMPLOYEE_EARNINGS_SETTLEMENT":
+     orderAllocations.rowCount?"WORKER_PAYMENT_ORDER":"WORKER_PAYMENT_LEGACY";
+    const chosenRows=settlementAllocations.rowCount?settlementAllocations.rows:
+     orderAllocations.rowCount?orderAllocations.rows:legacyAllocations.rows;
+    const chosenAllocations={rows:chosenRows.filter((row:any)=>row.active),source:chosenSource};
     const allocatedTotal=chosenAllocations.rows.reduce((sum,row)=>sum+Number(row.amount),0);
     if(allocatedTotal>gross+0.01)
      throw new AppError("WORKER_PAYMENT_ALLOCATION_EXCEEDS_GROSS","توزيعات الإنتاج المرتبطة بالدفعة تتجاوز إجماليها؛ أوقفنا العكس",409);
@@ -601,12 +606,12 @@ export async function accountingRoutes(app:FastifyInstance){
   const input=parsed.data;
   const result=await withTransaction(async client=>{
    const replay=await client.query(
-    "SELECT * FROM worker_payment_settlement_difference_events WHERE idempotency_key=$1",
+    "SELECT ev.*,d.status AS difference_status FROM worker_payment_settlement_difference_events ev JOIN worker_payment_settlement_differences d ON d.id=ev.difference_id WHERE ev.idempotency_key=$1",
     [input.idempotencyKey]);
    if(replay.rowCount){
     if(replay.rows[0].difference_id!==input.id||replay.rows[0].event_type!=="RELEASED_AFTER_REVIEW")
      throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة الاعتماد مستخدم لعملية مختلفة",409);
-    return {replayed:true,event:replay.rows[0],status:"REQUIRES_REVIEW"};
+    return {replayed:true,event:replay.rows[0],status:replay.rows[0].difference_status};
    }
    const identity=await client.query(
     "SELECT employee_id FROM worker_payment_settlement_differences WHERE id=$1",[input.id]);
@@ -976,11 +981,11 @@ export async function accountingRoutes(app:FastifyInstance){
              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
         )
         SELECT COUNT(*)::int AS source_count,COALESCE(SUM(sa.amount),0) AS source_amount,
-               (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals wa WHERE wa.reversal_id=r.id) AS reversed_count,
-               (SELECT COALESCE(SUM(wa.amount),0) FROM worker_payment_allocation_reversals wa WHERE wa.reversal_id=r.id) AS reversed_amount,
+               (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals wa WHERE wa.worker_payment_id=wp.id) AS reversed_count,
+               (SELECT COALESCE(SUM(wa.amount),0) FROM worker_payment_allocation_reversals wa WHERE wa.worker_payment_id=wp.id) AS reversed_amount,
                COUNT(*) FILTER(WHERE NOT EXISTS(
                  SELECT 1 FROM worker_payment_allocation_reversals wa
-                  WHERE wa.reversal_id=r.id AND wa.source_allocation_id=sa.id AND wa.allocation_source=sa.source
+                  WHERE wa.worker_payment_id=wp.id AND wa.source_allocation_id=sa.id AND wa.allocation_source=sa.source
                     AND wa.production_entry_id=sa.production_entry_id AND ABS(wa.amount-sa.amount)<=0.0001
                ))::int AS missing_count
           FROM source_allocations sa
