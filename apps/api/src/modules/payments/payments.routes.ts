@@ -74,7 +74,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
     const future=await client.query(`
       SELECT
         COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
-        COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+        COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s
           WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
         COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
@@ -119,7 +119,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           AND l.payroll_payment_id IS NULL
           AND l.settlement_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
-      COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+      COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
         WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
@@ -1500,7 +1500,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='PENDING'),0) AS pending_earnings,
             COUNT(p.id) FILTER(WHERE p.status='APPROVED')::int AS approved_count,
             COUNT(p.id) FILTER(WHERE p.status='PENDING')::int AS pending_count,
-            COALESCE((SELECT SUM(es.gross_amount) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
+            COALESCE((SELECT SUM(es.gross_amount-CASE WHEN es.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=es.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
               + COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                            WHERE wp.employee_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)),0)
               + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
@@ -1671,7 +1671,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.settlement_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)
             ),'[]'::json) AS ledger_only_adjustment_entries,
-            COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+            COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
             COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
               LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
               WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
