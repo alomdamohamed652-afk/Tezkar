@@ -175,6 +175,9 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
     [user,emp,randomUUID(),workerCustodyOut,workerPayment]
   );
   const workerPayload={sourceType:'WORKER_PAYMENT',sourceId:workerPayment,amount:100,reason:'عكس دفعة عامل اختبارية',idempotencyKey:randomUUID()};
+  const partialWorkerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{...workerPayload,amount:99,idempotencyKey:randomUUID()}});
+  assert.equal(partialWorkerReversal.statusCode,409,partialWorkerReversal.body);
+  assert.equal(partialWorkerReversal.json().error.code,'WORKER_PAYMENT_FULL_REVERSAL_REQUIRED');
   const workerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:workerPayload});
   assert.equal(workerReversal.statusCode,201,workerReversal.body);
   assert.equal(workerReversal.json().data.lines.length,2,'worker payment and linked advance repayment must be reversed together');
