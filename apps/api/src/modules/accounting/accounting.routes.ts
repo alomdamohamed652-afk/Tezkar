@@ -194,7 +194,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const repayments=await client.query(
      `SELECT ar.id,ar.advance_id,ar.amount,a.employee_id,a.code
         FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
-       WHERE ar.source_worker_payment_id=$1 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId]);
+       WHERE ar.source_worker_payment_id=$1 OR ar.settlement_id=$2 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId,settlement.rows[0].id]);
     const repaymentTotal=repayments.rows.reduce((sum,row)=>sum+Number(row.amount),0);
     if(Math.abs(repaymentTotal-advanceAmount)>0.01)
      throw new AppError("WORKER_PAYMENT_ADVANCE_MISMATCH","مجموع سداد السلف المرتبط بالدفعة لا يطابق مبلغ سداد السلف المسجل؛ أوقفنا العكس",409);
@@ -260,8 +260,9 @@ export async function accountingRoutes(app:FastifyInstance){
 
     const expenses=await client.query(
      `SELECT id,amount,paid_from_employee_id,cash_custody_transaction_id
-        FROM accounting_expenses WHERE source_worker_payment_id=$1
-       ORDER BY id FOR UPDATE`,[input.sourceId]);
+        FROM accounting_expenses
+       WHERE source_worker_payment_id=$1 OR (source_worker_payment_id IS NULL AND idempotency_key=$2)
+       ORDER BY id FOR UPDATE`,[input.sourceId,payment.idempotency_key]);
     if(!expenses.rowCount)
      throw new AppError("WORKER_PAYMENT_EXPENSE_LINK_MISSING","لا توجد مصروفات مرتبطة بمصدر دفعة العامل؛ يلزم استكمال المطابقة التاريخية قبل العكس",409);
     const expenseTotal=expenses.rows.reduce((sum,row)=>sum+Number(row.amount),0);
