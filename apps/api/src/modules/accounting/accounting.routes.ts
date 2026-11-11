@@ -466,10 +466,6 @@ export async function accountingRoutes(app:FastifyInstance){
    }
    const header=await client.query("INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[input.idempotencyKey,requestFingerprint,input.reason,reversalDate,request.user!.userId]);
    for(const line of lines)await client.query("INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount) VALUES($1,$2,$3,$4)",[header.rows[0].id,line.source_type,line.source_id,line.amount]);
-   for(const allocation of allocationReversals)await client.query(
-    `INSERT INTO worker_payment_allocation_reversals(reversal_id,worker_payment_id,allocation_source,source_allocation_id,production_entry_id,amount,created_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7)`,
-    [header.rows[0].id,allocation.workerPaymentId,allocation.source,allocation.sourceAllocationId,allocation.productionEntryId,allocation.amount,request.user!.userId]);
    if(settlementDifferenceEventReversal){
     const event=settlementDifferenceEventReversal.event;
     await client.query(
@@ -537,6 +533,10 @@ export async function accountingRoutes(app:FastifyInstance){
      await client.query("UPDATE worker_payment_settlement_differences SET status='REVERSED',updated_at=now() WHERE id=$1",[difference.rows[0].id]);
     }
    }
+   for(const allocation of allocationReversals)await client.query(
+    `INSERT INTO worker_payment_allocation_reversals(reversal_id,worker_payment_id,allocation_source,source_allocation_id,production_entry_id,amount,created_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7)`,
+    [header.rows[0].id,allocation.workerPaymentId,allocation.source,allocation.sourceAllocationId,allocation.productionEntryId,allocation.amount,request.user!.userId]);
    for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes,financial_reversal_id)
      VALUES($1,'ADJUSTMENT',$2,$3,$4,$5,$6)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code,header.rows[0].id]);
    for(const move of custodyMoves)await client.query(`INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by)
