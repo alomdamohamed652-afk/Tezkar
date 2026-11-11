@@ -1504,12 +1504,14 @@ export async function productionRoutes(app: FastifyInstance) {
       ),
       unallocated_order_payments AS (
         SELECT wp.employee_id,ae.order_id,
-               SUM(GREATEST(wp.gross_amount-COALESCE((
-                 SELECT SUM(esa.amount)
-                   FROM employee_earnings_settlements es
-                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-                  WHERE es.worker_payment_id=wp.id
-               ),0),0))::numeric(14,2) AS amount
+               SUM(GREATEST(wp.gross_amount
+                 -COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+                 -COALESCE((
+                   SELECT SUM(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0))
+                     FROM employee_earnings_settlements es
+                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+                    WHERE es.worker_payment_id=wp.id
+                 ),0),0))::numeric(14,2) AS amount
           FROM worker_payments wp
           JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
          WHERE EXISTS(SELECT 1 FROM employee_earnings_settlements es
