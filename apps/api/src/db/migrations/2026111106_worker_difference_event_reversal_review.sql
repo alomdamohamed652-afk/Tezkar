@@ -29,9 +29,11 @@ ALTER TABLE worker_payment_settlement_difference_events
 ALTER TABLE worker_payment_settlement_difference_events
   ADD CONSTRAINT worker_payment_settlement_difference_events_shape_check
   CHECK (
-    (actor_type='USER' AND actor_user_id IS NOT NULL)
-    OR (actor_type='SYSTEM' AND actor_user_id IS NULL)
-  ) AND (
+    (
+      (actor_type='USER' AND actor_user_id IS NOT NULL)
+      OR (actor_type='SYSTEM' AND actor_user_id IS NULL)
+    )
+    AND (
     (event_type='ALLOCATED_TO_PRODUCTION'
       AND production_entry_id IS NOT NULL
       AND worker_payment_order_allocation_id IS NOT NULL
