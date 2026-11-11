@@ -1701,7 +1701,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_legacy WHERE es_legacy.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]}),
         client.query(`
           SELECT
@@ -2035,7 +2036,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_legacy WHERE es_legacy.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
