@@ -637,6 +637,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+           AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
            AND (
              (ae.order_id IS NOT NULL AND (
                es.id IS NULL
@@ -812,6 +813,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+           AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
            AND (
              (es.id IS NULL AND (
                NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
@@ -1060,6 +1062,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         LEFT JOIN order_stages original_stage ON original_stage.id=ae.order_stage_id
         LEFT JOIN stages original_stage_lookup ON original_stage_lookup.id=original_stage.stage_id
        WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
          AND (
            (es.id IS NOT NULL AND (
              ABS(COALESCE((SELECT SUM(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0)) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-LEAST(wp.gross_amount,GREATEST(0,
@@ -1455,6 +1458,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                  WHERE prior_wp.employee_id=wp.employee_id
                    AND (prior_wp.created_at<wp.created_at OR (prior_wp.created_at=wp.created_at AND prior_wp.id<wp.id))),0)
              ))-0.009 THEN 'SETTLED'
+                   WHEN EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id) THEN 'REVERSED'
                    WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
                    WHEN EXISTS(SELECT 1 FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id) THEN 'ALLOCATED'
                    WHEN es.id IS NOT NULL THEN 'UNALLOCATED'
