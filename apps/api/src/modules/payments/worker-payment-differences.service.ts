@@ -144,6 +144,8 @@ export async function processMaturedWorkerPaymentDifferences(
             GREATEST(d.original_amount-COALESCE((
               SELECT SUM(e.amount) FROM worker_payment_settlement_difference_events e
                WHERE e.difference_id=d.id AND e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+                 AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r
+                   WHERE r.reverses_event_id=e.id AND r.event_type='REVERSED')
             ),0),0) AS remaining,
             COALESCE(activity.last_activity,wp.created_at) AS last_activity,
             po.status AS source_order_status
