@@ -1778,9 +1778,6 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.settlementSource === "CURRENT_CUSTODY" && !value.cashCustodyEmployeeId) {
         ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
       }
-      if (value.settlementSource === "PREVIOUS_CUSTODY" && !value.orderId) {
-        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب عند تسجيل صرف سابق" });
-      }
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
       }
@@ -2033,7 +2030,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
         if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
-        if(selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
+        if(parsed.data.orderId && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
         if(parsed.data.settlementMode==="SELECTED_PRODUCTION"){
           const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
           if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المختارة تمت تسويتها بالفعل",409);
