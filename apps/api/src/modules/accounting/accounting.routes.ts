@@ -1000,6 +1000,20 @@ export async function accountingRoutes(app:FastifyInstance){
            WHERE a.worker_payment_id=wp.id
              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
           UNION ALL
+          -- Difference allocations are stored in WORKER_PAYMENT_ORDER even when
+          -- the parent payment's canonical production allocations use settlements.
+          -- Include only event-backed rows in that mixed-source case so the
+          -- reversal reconciliation compares like-for-like source allocations.
+          SELECT a.id,a.amount,a.production_entry_id,'WORKER_PAYMENT_ORDER'::text
+            FROM worker_payment_order_allocations a
+            JOIN worker_payment_settlement_difference_events de
+              ON de.worker_payment_order_allocation_id=a.id
+             AND de.event_type='ALLOCATED_TO_PRODUCTION'
+           WHERE a.worker_payment_id=wp.id
+             AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+               WHERE es.worker_payment_id=wp.id)
+          UNION ALL
           SELECT a.id,a.amount,a.production_entry_id,'WORKER_PAYMENT_LEGACY'::text
             FROM worker_payment_allocations a
            WHERE a.worker_payment_id=wp.id
