@@ -276,9 +276,9 @@ export async function accountingRoutes(app:FastifyInstance){
      `SELECT id,employee_id,amount FROM cash_custody_transactions
        WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'
        ORDER BY id FOR UPDATE`,[input.sourceId]);
-    if(custody.rowCount>1)throw new AppError("WORKER_PAYMENT_CUSTODY_AMBIGUOUS","توجد أكثر من حركة خروج نقدي مرتبطة بالدفعة؛ أوقفنا العكس",409);
+    if(Number(custody.rowCount??0)>1)throw new AppError("WORKER_PAYMENT_CUSTODY_AMBIGUOUS","توجد أكثر من حركة خروج نقدي مرتبطة بالدفعة؛ أوقفنا العكس",409);
     const expenseCustodians=[...new Set(expenses.rows.map(row=>row.paid_from_employee_id).filter(Boolean))];
-    if(custody.rowCount===1){
+    if(Number(custody.rowCount??0)===1){
      if(previousCustodySettlement)
       throw new AppError("WORKER_PAYMENT_PREVIOUS_CUSTODY_CONFLICT","التسوية موثقة كعهدة سابقة رغم وجود خروج نقدي حالي؛ أوقفنا العكس",409);
      if(Math.abs(Number(custody.rows[0].amount)-cashPaid)>0.01||
@@ -287,12 +287,12 @@ export async function accountingRoutes(app:FastifyInstance){
      if(cashPaid>0.009)custodyMoves.push({employeeId:custody.rows[0].employee_id,direction:"IN",amount:cashPaid,description:"استرداد عكس دفعة العامل "+payment.id});
     }else if(cashPaid>0.009&&(!previousCustodySettlement||expenseCustodians.length))
      throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","لا توجد حركة خروج نقدي موثقة، كما لا يوجد إثبات أن التسوية تمت من عهدة سابقة؛ أوقفنا العكس",409);
-    else if(cashPaid<=0.009&&custody.rowCount)
+    else if(cashPaid<=0.009&&Number(custody.rowCount??0)>0)
      throw new AppError("WORKER_PAYMENT_CUSTODY_ZERO_MISMATCH","توجد حركة خروج نقدي رغم أن صافي النقد المصروف صفر؛ أوقفنا العكس",409);
 
     lines.push({source_type:"WORKER_PAYMENT",source_id:input.sourceId,amount:gross});
     ledgerMoves.push({employeeId:payment.employee_id,credit:gross,debit:0,notes:"عكس دفعة العامل "+payment.id});
-
+   }else if(input.sourceType==="ZERO_NET_PAYROLL_SETTLEMENT"){
     const itemResult=await client.query(
      `SELECT i.*,p.status AS period_status
         FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
