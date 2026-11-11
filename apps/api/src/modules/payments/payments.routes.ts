@@ -2256,7 +2256,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
       }
       for(let index=0;index<expenseBuckets.length;index++){
-        const bucket=expenseBuckets[index];
+        const bucket=expenseBuckets[index]!;
         const bucketHash=createHash("sha256").update(`${parsed.data.idempotencyKey}:${bucket.scope}`).digest("hex");
         const expenseIdempotencyKey=index===0
           ? parsed.data.idempotencyKey
