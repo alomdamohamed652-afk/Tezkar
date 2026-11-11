@@ -164,6 +164,15 @@ export async function accountingRoutes(app:FastifyInstance){
     if(!Number.isFinite(gross)||!Number.isFinite(cashPaid)||!Number.isFinite(advanceAmount)||
        gross<=0||cashPaid<0||advanceAmount<0||Math.abs(gross-cashPaid-advanceAmount)>0.01)
      throw new AppError("WORKER_PAYMENT_AMOUNT_MISMATCH","إجمالي الدفعة لا يساوي النقد المصروف مضافًا إليه سداد السلف؛ أوقفنا العكس",409);
+    const settlement=await client.query(
+     `SELECT id,gross_amount,cash_paid_amount,advance_repayment_amount,notes
+        FROM employee_earnings_settlements WHERE worker_payment_id=$1 FOR UPDATE`,[input.sourceId]);
+    if(settlement.rowCount!==1||
+       Math.abs(Number(settlement.rows[0].gross_amount)-gross)>0.01||
+       Math.abs(Number(settlement.rows[0].cash_paid_amount)-cashPaid)>0.01||
+       Math.abs(Number(settlement.rows[0].advance_repayment_amount)-advanceAmount)>0.01)
+     throw new AppError("WORKER_PAYMENT_SETTLEMENT_MISMATCH","تسوية العامل المرتبطة بالدفعة غير موجودة أو لا تطابق مبالغ الدفعة؛ أوقفنا العكس",409);
+    const previousCustodySettlement=String(settlement.rows[0].notes??"").includes("تسوية من عهدة سابقة");
     if(Math.abs(input.amount-gross)>0.01)
      throw new AppError("WORKER_PAYMENT_FULL_REVERSAL_REQUIRED","عكس دفعة العامل يتطلب عكس إجمالي الدفعة بالكامل؛ العكس الجزئي غير متاح قبل مطابقة جميع آثارها",409);
     const priorPayment=await client.query(
@@ -274,8 +283,10 @@ export async function accountingRoutes(app:FastifyInstance){
         (expenseCustodians.length&& (expenseCustodians.length!==1||expenseCustodians[0]!==custody.rows[0].employee_id)))
       throw new AppError("WORKER_PAYMENT_CUSTODY_MISMATCH","حركة خروج العهدة أو صاحبها لا يطابق مصروفات الدفعة وصافي النقد؛ أوقفنا العكس",409);
      if(cashPaid>0.009)custodyMoves.push({employeeId:custody.rows[0].employee_id,direction:"IN",amount:cashPaid,description:"استرداد عكس دفعة العامل "+payment.id});
-    }else if(cashPaid>0.009&&expenseCustodians.length)
-     throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","مصروفات الدفعة تشير إلى عهدة حالية لكن حركة الخروج النقدي غير موجودة؛ أوقفنا العكس",409);
+    }else if(cashPaid>0.009&&(!previousCustodySettlement||expenseCustodians.length))
+     throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","لا توجد حركة خروج نقدي موثقة، كما لا يوجد إثبات أن التسوية تمت من عهدة سابقة؛ أوقفنا العكس",409);
+    else if(cashPaid>0.009&&custody.rowCount&&previousCustodySettlement)
+     throw new AppError("WORKER_PAYMENT_PREVIOUS_CUSTODY_CONFLICT","التسوية موثقة كعهدة سابقة رغم وجود خروج نقدي حالي؛ أوقفنا العكس",409);
     else if(cashPaid<=0.009&&custody.rowCount)
      throw new AppError("WORKER_PAYMENT_CUSTODY_ZERO_MISMATCH","توجد حركة خروج نقدي رغم أن صافي النقد المصروف صفر؛ أوقفنا العكس",409);
 
