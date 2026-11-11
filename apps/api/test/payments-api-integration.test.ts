@@ -2841,6 +2841,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
       await apiPool.query("UPDATE order_stages SET status='IN_PROGRESS' WHERE id=$1",[differenceStage.id]);
       const parentSourceProduction=await insertDifferenceProduction(10,100,parentReverseWorker.id);
+      assert.equal(Number(parentSourceProduction.total_earning_amount),100);
       const parentPaymentResponse=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:parentReverseWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
