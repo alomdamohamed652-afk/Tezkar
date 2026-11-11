@@ -94,7 +94,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
             AND l.payroll_item_id IS NULL
             AND l.payroll_adjustment_line_id IS NULL
             AND l.payroll_payment_id IS NULL
-            AND l.settlement_id IS NULL
+            AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
             AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments
       FROM production_entries pe
       WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.approved_at>$2
@@ -117,7 +117,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           AND l.payroll_item_id IS NULL
           AND l.payroll_adjustment_line_id IS NULL
           AND l.payroll_payment_id IS NULL
-          AND l.settlement_id IS NULL
+          AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
       COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
@@ -1659,7 +1659,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.payroll_item_id IS NULL
                 AND l.payroll_adjustment_line_id IS NULL
                 AND l.payroll_payment_id IS NULL
-                AND l.settlement_id IS NULL
+                AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
             COALESCE((SELECT json_agg(json_build_object(
               'id',l.id,'code',l.code,'createdAt',l.created_at,
@@ -1672,7 +1672,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.payroll_item_id IS NULL
                 AND l.payroll_adjustment_line_id IS NULL
                 AND l.payroll_payment_id IS NULL
-                AND l.settlement_id IS NULL
+                AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)
             ),'[]'::json) AS ledger_only_adjustment_entries,
             COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
