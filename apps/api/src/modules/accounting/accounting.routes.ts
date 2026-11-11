@@ -176,9 +176,9 @@ export async function accountingRoutes(app:FastifyInstance){
        gross<=0||cashPaid<0||advanceAmount<0||Math.abs(gross-cashPaid-advanceAmount)>0.01)
      throw new AppError("WORKER_PAYMENT_AMOUNT_MISMATCH","إجمالي الدفعة لا يساوي النقد المصروف مضافًا إليه سداد السلف؛ أوقفنا العكس",409);
     const settlement=await client.query(
-     `SELECT id,gross_amount,cash_paid_amount,advance_repayment_amount,notes
+     `SELECT id,employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,notes
         FROM employee_earnings_settlements WHERE worker_payment_id=$1 FOR UPDATE`,[input.sourceId]);
-    if(settlement.rowCount!==1||
+    if(settlement.rowCount!==1||settlement.rows[0].employee_id!==payment.employee_id||
        Math.abs(Number(settlement.rows[0].gross_amount)-gross)>0.01||
        Math.abs(Number(settlement.rows[0].cash_paid_amount)-cashPaid)>0.01||
        Math.abs(Number(settlement.rows[0].advance_repayment_amount)-advanceAmount)>0.01)
@@ -200,13 +200,17 @@ export async function accountingRoutes(app:FastifyInstance){
      throw new AppError("WORKER_PAYMENT_LEDGER_MISMATCH","قيد مستحقات العامل الأصلي غير موجود أو لا يطابق الموظف وإجمالي الدفعة؛ أوقفنا العكس",409);
 
     const repayments=await client.query(
-     `SELECT ar.id,ar.advance_id,ar.amount,a.employee_id,a.code
+     `SELECT ar.id,ar.advance_id,ar.amount,ar.source_worker_payment_id,ar.settlement_id,a.employee_id,a.code
         FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
        WHERE ar.source_worker_payment_id=$1 OR ar.settlement_id=$2 ORDER BY ar.id FOR UPDATE OF ar,a`,[input.sourceId,settlement.rows[0].id]);
     const repaymentTotal=repayments.rows.reduce((sum,row)=>sum+Number(row.amount),0);
     if(Math.abs(repaymentTotal-advanceAmount)>0.01)
      throw new AppError("WORKER_PAYMENT_ADVANCE_MISMATCH","مجموع سداد السلف المرتبط بالدفعة لا يطابق مبلغ سداد السلف المسجل؛ أوقفنا العكس",409);
     for(const repayment of repayments.rows){
+     if(repayment.employee_id!==payment.employee_id||
+        (repayment.source_worker_payment_id&&repayment.source_worker_payment_id!==input.sourceId)||
+        (repayment.settlement_id&&repayment.settlement_id!==settlement.rows[0].id))
+      throw new AppError("WORKER_PAYMENT_ADVANCE_OWNER_MISMATCH","سداد سلفة مرتبط لا يخص العامل صاحب الدفعة أو يشير إلى تسوية مختلفة؛ أوقفنا العكس للمراجعة",409);
      const repaymentLedger=await client.query(
       "SELECT employee_id,credit_amount,debit_amount FROM employee_earnings_ledger WHERE advance_repayment_id=$1 FOR UPDATE",[repayment.id]);
      if(repaymentLedger.rowCount!==1||repaymentLedger.rows[0].employee_id!==repayment.employee_id||
