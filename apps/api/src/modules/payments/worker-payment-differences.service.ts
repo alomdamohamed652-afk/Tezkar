@@ -144,6 +144,7 @@ export async function processMaturedWorkerPaymentDifferences(
             COALESCE(activity.last_activity,wp.created_at) AS last_activity,
             po.status AS source_order_status
        FROM worker_payment_settlement_differences d
+       JOIN employees e ON e.id=d.employee_id
        JOIN worker_payments wp ON wp.id=d.worker_payment_id
        JOIN production_orders po ON po.id=d.source_order_id
        LEFT JOIN LATERAL (
@@ -181,7 +182,7 @@ export async function processMaturedWorkerPaymentDifferences(
         )
       ORDER BY d.eligible_at,d.created_at,d.id
       LIMIT 100
-      FOR UPDATE OF d SKIP LOCKED`
+      FOR UPDATE OF e,d SKIP LOCKED`
   );
 
   if (candidates.rowCount) {
