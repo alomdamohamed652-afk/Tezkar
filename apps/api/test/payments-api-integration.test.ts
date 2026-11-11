@@ -2300,6 +2300,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [differencePaymentId]
       )).rows[0].amount),100,"the source production portion must remain allocated to its original order");
 
+      await apiPool.query("UPDATE production_orders SET status='CANCELLED' WHERE id=$1",[differenceOrderId]);
+      const cancelledTargetProduction=await insertDifferenceProduction(1,10);
+      const cancelledTargetClient=await apiPool.connect();
+      try{
+        await cancelledTargetClient.query("BEGIN");
+        assert.deepEqual(await allocatePendingWorkerPaymentDifferencesForProduction(
+          cancelledTargetClient,differenceWorker.id,cancelledTargetProduction.id,manager.id
+        ),[],"cancelled orders must never receive worker settlement difference allocations");
+        await cancelledTargetClient.query("COMMIT");
+      }catch(error){await cancelledTargetClient.query("ROLLBACK");throw error}
+      finally{cancelledTargetClient.release()}
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledTargetProduction.id]);
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+
       const laterProduction=await insertDifferenceProduction(2,20);
       const differenceClient=await apiPool.connect();
       let laterAllocations:any[]=[];
@@ -2396,6 +2410,45 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }catch(error){await duplicateMaturityClient.query("ROLLBACK");throw error}
       finally{duplicateMaturityClient.release()}
 
+      // A completed source order may close the remaining difference before the
+      // 30-day inactivity threshold, but only after all approved worker production
+      // on that order has been settled and no production remains pending.
+      const closureProduction=await insertDifferenceProduction(5,50);
+      const closurePaymentResponse=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:60,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(closurePaymentResponse.statusCode,201,closurePaymentResponse.body);
+      const closurePaymentId=closurePaymentResponse.json().data.payment.id as string;
+      const closureDifference=(await apiPool.query(
+        "SELECT id,original_amount,status FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",
+        [closurePaymentId]
+      )).rows[0];
+      assert.ok(closureDifference);
+      assert.equal(Number(closureDifference.original_amount),10);
+      await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1",[differenceOrderId]);
+      const closureClient=await apiPool.connect();
+      let closureTransfers=0;
+      try{
+        await closureClient.query("BEGIN");
+        closureTransfers=await processMaturedWorkerPaymentDifferences(
+          closureClient,{actorUserId:manager.id,actorType:"USER"}
+        );
+        await closureClient.query("COMMIT");
+      }catch(error){await closureClient.query("ROLLBACK");throw error}
+      finally{closureClient.release()}
+      assert.equal(closureTransfers,1,"a completed and fully reconciled order must transfer its remaining difference without waiting 30 days");
+      const completedOrderDifference=(await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0];
+      assert.equal(completedOrderDifference.status,"TRANSFERRED_TO_SOURCE_ORDER");
+      assert.equal(Number((await apiPool.query(
+        "SELECT SUM(amount) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER'",
+        [closureDifference.id]
+      )).rows[0].amount),10);
+
       const differenceReversal=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
         payload:{sourceType:"WORKER_PAYMENT",sourceId:differencePaymentId,amount:150,
@@ -2430,6 +2483,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(differenceEventsApi.statusCode,200,differenceEventsApi.body);
       assert.equal(differenceEventsApi.json().data.length,4,"the audit endpoint must expose allocation, transfer and both reversal events");
+      const closureDifferenceReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:closurePaymentId,amount:60,
+          reason:"عكس دفعة فرق طلبية مكتملة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(closureDifferenceReversal.statusCode,201,closureDifferenceReversal.body);
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0].status,"REVERSED","reversing the second payment must also reverse its completion-transfer event");
 
       // A completed source order can close its remaining difference immediately
       // once every approved production entry is fully settled.
