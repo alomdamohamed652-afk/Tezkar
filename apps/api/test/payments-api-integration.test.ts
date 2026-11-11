@@ -786,7 +786,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(currentOrderExpense.rows[0].source_worker_payment_id,currentOrderPaymentId);
       assert.equal(currentOrderExpense.rows[0].paid_from_employee_id,managerEmployee.id);
       assert.equal(Number(currentOrderExpense.rows[0].amount),75);
-      const currentOrderOut=await apiPool.query("SELECT employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId]);
+      const currentOrderOut=await apiPool.query("SELECT id,employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId]);
       assert.equal(currentOrderOut.rowCount,1,"current-custody settlement must create one custody OUT");
       assert.equal(currentOrderOut.rows[0].employee_id,managerEmployee.id);
       assert.equal(Number(currentOrderOut.rows[0].amount),75);
