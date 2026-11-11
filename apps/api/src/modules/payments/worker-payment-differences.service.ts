@@ -70,7 +70,7 @@ export async function allocatePendingWorkerPaymentDifferencesForProduction(
        JOIN worker_payments wp ON wp.id=d.worker_payment_id
       WHERE d.employee_id=$1
         AND d.status IN ('PENDING','PARTIALLY_ALLOCATED')
-        AND pgbouncer_safe_timestamp($2::timestamptz) > wp.created_at
+        AND $2::timestamptz > wp.created_at
         AND $3::date >= wp.created_at::date
         AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr
           WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
@@ -175,8 +175,8 @@ export async function processMaturedWorkerPaymentDifferences(
           )
         )
       ORDER BY d.eligible_at,d.created_at,d.id
-      FOR UPDATE OF d SKIP LOCKED
-      LIMIT 100`
+      LIMIT 100
+      FOR UPDATE OF d SKIP LOCKED`
   );
 
   let transferred = 0;
