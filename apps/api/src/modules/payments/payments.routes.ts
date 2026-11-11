@@ -1667,7 +1667,17 @@ export async function paymentsRoutes(app:FastifyInstance){
                  JOIN production_entries hp ON hp.id=hm.production_entry_id
                  LEFT JOIN order_stages hos ON hos.id=hp.order_stage_id
                 WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
-                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0) AS allocated_paid,
+                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0)
+              + COALESCE((SELECT SUM(ev.amount)
+                FROM worker_payment_settlement_difference_events ev
+                JOIN production_entries dp ON dp.id=ev.production_entry_id
+                LEFT JOIN order_stages dos ON dos.id=dp.order_stage_id
+                WHERE ev.worker_payment_id IN (SELECT worker_payment_id FROM worker_payment_settlement_differences WHERE employee_id=$1)
+                  AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+                  AND dp.employee_id=$1 AND dos.order_id=$2
+                  AND ($3::uuid IS NULL OR dp.order_stage_id=$3)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+                    WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
               -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
