@@ -386,22 +386,32 @@ export async function accountingRoutes(app:FastifyInstance){
            movements.holder_id AS custody_employee_id
       FROM accounting_expenses e
       LEFT JOIN employees emp ON emp.id=e.paid_from_employee_id
+      LEFT JOIN worker_payments wp
+        ON e.category='WORKER_PAYMENT' AND wp.idempotency_key=e.idempotency_key
       LEFT JOIN cash_custody_transactions linked
         ON linked.id=e.cash_custody_transaction_id
-       AND linked.source_type='ACCOUNTING_EXPENSE' AND linked.source_id=e.id AND linked.direction='OUT'
+       AND linked.direction='OUT'
+       AND (
+         (linked.source_type='ACCOUNTING_EXPENSE' AND linked.source_id=e.id)
+         OR (e.category='WORKER_PAYMENT' AND linked.source_type='WORKER_PAYMENT' AND linked.source_id=wp.id)
+       )
       LEFT JOIN LATERAL (
         SELECT COUNT(*)::int AS movement_count,
                COALESCE(SUM(c.amount),0) AS movement_amount,
                COUNT(DISTINCT c.employee_id)::int AS holder_count,
                MIN(c.employee_id::text) AS holder_id
           FROM cash_custody_transactions c
-         WHERE c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=e.id AND c.direction='OUT'
+         WHERE c.direction='OUT'
+           AND (
+             (c.source_type='ACCOUNTING_EXPENSE' AND c.source_id=e.id)
+             OR (e.category='WORKER_PAYMENT' AND c.source_type='WORKER_PAYMENT' AND c.source_id=wp.id)
+           )
       ) movements ON TRUE
      WHERE e.paid_from_employee_id IS NOT NULL
        AND (linked.id IS NULL OR movements.movement_count<>1
             OR movements.holder_count<>1
             OR movements.holder_id IS DISTINCT FROM e.paid_from_employee_id::text
-            OR ROUND(movements.movement_amount::numeric,2)<>ROUND(e.amount::numeric,2))
+            OR ROUND(movements.movement_amount::numeric,2)<>ROUND(COALESCE(wp.amount,e.amount)::numeric,2))
      ORDER BY e.expense_date DESC,e.created_at DESC`),
    pool.query(`
     SELECT ar.id AS repayment_id,ar.advance_id,a.code AS advance_code,
