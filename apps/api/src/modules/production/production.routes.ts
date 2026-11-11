@@ -1453,7 +1453,7 @@ export async function productionRoutes(app: FastifyInstance) {
         + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                      FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
                     WHERE a.employee_id=e.id AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
-        - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id),0)
+        - COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=e.id),0)
         - COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
                     WHERE wp.employee_id=e.id AND s.id IS NULL),0) AS available_earnings,
@@ -1540,7 +1540,7 @@ export async function productionRoutes(app: FastifyInstance) {
     `,values);
     const unallocated=await pool.query(`
       SELECT e.id AS employee_id,e.full_name AS employee_name,
-             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+             COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s
                         WHERE s.employee_id=e.id AND NOT EXISTS(
                           SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                         )),0)
@@ -1606,7 +1606,7 @@ export async function productionRoutes(app: FastifyInstance) {
       }
       if(parsed.data.orderId){
         const legacy=await client.query(`
-          SELECT COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+          SELECT COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s
                             WHERE s.employee_id=$1 AND NOT EXISTS(
                               SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                             )),0)
@@ -1635,7 +1635,7 @@ export async function productionRoutes(app: FastifyInstance) {
           + COALESCE((SELECT SUM(CASE WHEN a.adjustment_type='BONUS' THEN a.amount ELSE -a.amount END)
                        FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
                       WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
-          - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0)
+          - COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0)
           - COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                        LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
                       WHERE wp.employee_id=$1 AND s.id IS NULL),0)
@@ -1698,7 +1698,7 @@ export async function productionRoutes(app: FastifyInstance) {
         const production=await client.query(
           `SELECT GREATEST(0,
              COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)),0)
-             -COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
+             -COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1 AND s.settlement_date>$2::date AND s.settlement_date<=$3::date),0)
            ) AS amount
              FROM production_entries p
             WHERE p.employee_id=$1 AND p.status='APPROVED' AND p.work_date>$2::date AND p.work_date<=$3::date`,
