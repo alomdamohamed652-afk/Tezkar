@@ -184,8 +184,7 @@ export async function processMaturedWorkerPaymentDifferences(
   );
 
   if (candidates.rowCount) {
-    const today = new Date().toISOString().slice(0, 10);
-    await assertAccountingPeriodOpen(client, today);
+    await assertAccountingPeriodOpen(client);
   }
 
   let transferred = 0;
