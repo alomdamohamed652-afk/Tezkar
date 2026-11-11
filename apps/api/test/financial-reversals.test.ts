@@ -181,6 +181,31 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   const partialWorkerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{...workerPayload,amount:99,idempotencyKey:randomUUID()}});
   assert.equal(partialWorkerReversal.statusCode,409,partialWorkerReversal.body);
   assert.equal(partialWorkerReversal.json().error.code,'WORKER_PAYMENT_FULL_REVERSAL_REQUIRED');
+  await db.query(`CREATE OR REPLACE FUNCTION test_fail_worker_reversal_cash_in() RETURNS trigger AS $
+    BEGIN
+      IF NEW.source_type='FINANCIAL_REVERSAL' AND NEW.direction='IN' THEN
+        RAISE EXCEPTION 'forced worker reversal cash-in failure';
+      END IF;
+      RETURN NEW;
+    END;
+  $ LANGUAGE plpgsql`);
+  await db.query(`CREATE TRIGGER test_fail_worker_reversal_cash_in_trigger
+    BEFORE INSERT ON cash_custody_transactions
+    FOR EACH ROW EXECUTE FUNCTION test_fail_worker_reversal_cash_in()`);
+  const rollbackAttempt=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:workerPayload});
+  assert.equal(rollbackAttempt.statusCode,500,rollbackAttempt.body);
+  const rollbackState=await db.query(
+    `SELECT
+      (SELECT COUNT(*)::int FROM financial_reversals WHERE idempotency_key=$1) AS reversal_headers,
+      (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$2) AS payment_lines,
+      (SELECT COUNT(*)::int FROM accounting_expense_reversals WHERE source_worker_payment_id=$2) AS expense_effects,
+      (SELECT COUNT(*)::int FROM employee_earnings_ledger WHERE employee_id=$3 AND entry_type='ADJUSTMENT' AND financial_reversal_id IS NOT NULL AND notes LIKE '%' || $2::text || '%') AS ledger_effects,
+      (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN' AND description LIKE '%' || $2::text || '%') AS custody_effects`,
+    [workerPayload.idempotencyKey,workerPayment,emp]
+  );
+  for(const value of Object.values(rollbackState.rows[0]))assert.equal(Number(value),0,"failed worker reversal must roll back every financial effect");
+  await db.query("DROP TRIGGER test_fail_worker_reversal_cash_in_trigger ON cash_custody_transactions");
+  await db.query("DROP FUNCTION test_fail_worker_reversal_cash_in()");
   const workerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:workerPayload});
   assert.equal(workerReversal.statusCode,201,workerReversal.body);
   assert.equal(workerReversal.json().data.lines.length,2,'worker payment and linked advance repayment must be reversed together');
