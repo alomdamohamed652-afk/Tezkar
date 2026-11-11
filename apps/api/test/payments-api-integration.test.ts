@@ -2672,6 +2672,51 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [closureDifference.id]
       )).rows[0].amount),10);
 
+      const independentTransferEvent=(await apiPool.query(
+        "SELECT id,amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER'",
+        [closureDifference.id]
+      )).rows[0];
+      const independentTransferReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentTransferEvent.id,
+          amount:Number(independentTransferEvent.amount),reason:"اختبار عكس ترحيل فرق التسوية منفردًا",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(independentTransferReversal.statusCode,201,independentTransferReversal.body);
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0].status,"REQUIRES_REVIEW");
+      const heldTransferClient=await apiPool.connect();
+      try{
+        await heldTransferClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          heldTransferClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"a reversed transfer must not be recreated while the difference awaits review");
+        await heldTransferClient.query("COMMIT");
+      }catch(error){await heldTransferClient.query("ROLLBACK");throw error}
+      finally{heldTransferClient.release()}
+      const releaseTransferDifference=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${closureDifference.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"اعتماد إعادة ترحيل الفرق بعد المراجعة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(releaseTransferDifference.statusCode,201,releaseTransferDifference.body);
+      const retranferClient=await apiPool.connect();
+      try{
+        await retranferClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          retranferClient,{actorUserId:manager.id,actorType:"USER"}
+        ),1,"an explicitly released completed-order difference may be transferred again exactly once");
+        await retranferClient.query("COMMIT");
+      }catch(error){await retranferClient.query("ROLLBACK");throw error}
+      finally{retranferClient.release()}
+      assert.equal(Number((await apiPool.query(
+        `SELECT COALESCE(SUM(ev.amount),0) AS amount FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='TRANSFERRED_TO_SOURCE_ORDER'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)`,
+        [closureDifference.id]
+      )).rows[0].amount),10,"the re-transferred amount must be active once, while the original transfer remains reversed");
+
       const differenceReversal=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
         payload:{sourceType:"WORKER_PAYMENT",sourceId:differencePaymentId,amount:150,
