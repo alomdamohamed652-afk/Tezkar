@@ -770,6 +770,32 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [previousCustodyPaymentId]
       )).rows[0].count),0,"retry must not create a custody debit");
 
+      // A current-custody settlement uses the same order-scoped settlement path,
+      // but posts exactly one cash OUT and attributes the order expense to that custody.
+      const currentOrderWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Current Order Worker') RETURNING id")).rows[0];
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',75,$2,'test current-custody order balance')",[currentOrderWorker.id,manager.id]);
+      const currentOrderKey=randomUUID();
+      const custodyBeforeCurrent=Number((await apiPool.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",[managerEmployee.id])).rows[0].balance);
+      const currentOrderPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,orderId:hamzaOrder.json().data.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody order"}});
+      assert.equal(currentOrderPayout.statusCode,201,currentOrderPayout.body);
+      const currentOrderPaymentId=currentOrderPayout.json().data.payment.id;
+      const currentOrderExpense=await apiPool.query("SELECT order_id,paid_from_employee_id,amount FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey]);
+      assert.equal(currentOrderExpense.rowCount,1);
+      assert.equal(currentOrderExpense.rows[0].order_id,hamzaOrder.json().data.id);
+      assert.equal(currentOrderExpense.rows[0].paid_from_employee_id,managerEmployee.id);
+      assert.equal(Number(currentOrderExpense.rows[0].amount),75);
+      const currentOrderOut=await apiPool.query("SELECT employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId]);
+      assert.equal(currentOrderOut.rowCount,1,"current-custody settlement must create one custody OUT");
+      assert.equal(currentOrderOut.rows[0].employee_id,managerEmployee.id);
+      assert.equal(Number(currentOrderOut.rows[0].amount),75);
+      const currentOrderRetry=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,orderId:hamzaOrder.json().data.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody order"}});
+      assert.equal(currentOrderRetry.statusCode,200,currentOrderRetry.body);
+      assert.equal(currentOrderRetry.json().data.payment.id,currentOrderPaymentId);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey])).rows[0].count),1);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId])).rows[0].count),1);
+      const custodyAfterCurrent=Number((await apiPool.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",[managerEmployee.id])).rows[0].balance);
+      assert.equal(custodyAfterCurrent,custodyBeforeCurrent-75,"current custody must be debited once only");
+
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
       // base 100 + bonus 50 - deduction 20 = 130, not the base amount alone.

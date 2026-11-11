@@ -1778,7 +1778,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.settlementSource === "CURRENT_CUSTODY" && !value.cashCustodyEmployeeId) {
         ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
       }
-      if (value.settlementSource === "PREVIOUS_CUSTODY" && !value.orderId) {
+      if (!value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب عند التسوية من عهدة سابقة" });
       }
       if (value.orderStageId && !value.orderId) {
@@ -1836,8 +1836,8 @@ export async function paymentsRoutes(app:FastifyInstance){
         const payment = prior.rows[0];
         const sameRequest = payment.employee_id === parsed.data.employeeId
           && payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null)
-          && payment.expense_order_id === (parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderId ?? null : null)
-          && payment.expense_order_stage_id === (parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderStageId ?? null : null)
+          && payment.expense_order_id === (parsed.data.orderId ?? null)
+          && payment.expense_order_stage_id === (parsed.data.orderStageId ?? null)
           && payment.idempotency_fingerprint === fingerprint;
         if (!sameRequest) throw new AppError("IDEMPOTENCY_KEY_REUSED", "مفتاح العملية مستخدم مع بيانات صرف مختلفة", 409);
         return {
@@ -1851,7 +1851,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       }
 
       await assertAccountingPeriodOpen(client);
-      if(parsed.data.settlementSource==="CURRENT_CUSTODY" && (parsed.data.productionEntryIds?.length??0)>0){
+      if((parsed.data.productionEntryIds?.length??0)>0){
         const unresolvedHistory=await client.query(`
           SELECT wp.id,wp.gross_amount
             FROM worker_payments wp
@@ -1920,7 +1920,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       let orderAvailable: number | null = null;
       let orderLegacyPaid = 0;
       let orderProductionCount = 0;
-      if(parsed.data.settlementSource==="PREVIOUS_CUSTODY"){
+      if(parsed.data.orderId){
         const orderDue=await client.query(`
           SELECT
             COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
@@ -1995,7 +1995,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
       }
 
-      if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
+      if (parsed.data.orderId) {
         const order = await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE", [parsed.data.orderId]);
         if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND", "الطلبية غير موجودة", 404);
         if (order.rows[0].status === "CANCELLED") throw new AppError("ORDER_CANCELLED", "لا يمكن تحميل تسوية على طلبية ملغاة", 409);
@@ -2033,7 +2033,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
         if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
-        if(parsed.data.settlementSource==="PREVIOUS_CUSTODY" && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
+        if(selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
         if(parsed.data.settlementMode==="SELECTED_PRODUCTION"){
           const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
           if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المختارة تمت تسويتها بالفعل",409);
@@ -2058,11 +2058,11 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
-        skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
-        availableBalanceOverride: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? (orderProductionCount > 0 ? orderAvailable : available) : null,
-        productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null
+        skipProductionAllocations: true,
+        availableBalanceOverride: parsed.data.orderId ? (orderProductionCount > 0 ? orderAvailable : available) : null,
+        productionEntryIds: null
       });
-      if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
+      if (parsed.data.orderId) {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
         const productionRows=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
@@ -2190,7 +2190,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
         await client.query(
           `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',NULL,$7,$8)`,
+           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$9,$7,$8)`,
           [
             parsed.data.orderId,
             parsed.data.orderStageId ?? null,
@@ -2199,7 +2199,8 @@ export async function paymentsRoutes(app:FastifyInstance){
             parsed.data.method,
             request.user!.userId,
             parsed.data.idempotencyKey,
-            createHash("sha256").update(fingerprint).digest("hex")
+            createHash("sha256").update(fingerprint).digest("hex"),
+            parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null
           ]
         );
       }
