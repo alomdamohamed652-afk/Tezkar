@@ -162,7 +162,7 @@ export async function productionRoutes(app: FastifyInstance) {
 
     const paymentStatusSql = `CASE
       WHEN EXISTS(SELECT 1 FROM worker_payments wp
-        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
         JOIN order_stages os2 ON os2.id=p.order_stage_id
         WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_guard JOIN employee_earnings_settlement_allocations esa_guard ON esa_guard.settlement_id=es_guard.id WHERE es_guard.worker_payment_id=wp.id)
@@ -213,7 +213,7 @@ export async function productionRoutes(app: FastifyInstance) {
                 - COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0),0) AS remaining_amount,
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
-                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                   JOIN order_stages os2 ON os2.id=p.order_stage_id
                   WHERE wp.employee_id=p.employee_id AND ae.order_id=os2.order_id
                     AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_guard JOIN employee_earnings_settlement_allocations esa_guard ON esa_guard.settlement_id=es_guard.id WHERE es_guard.worker_payment_id=wp.id)
@@ -1511,7 +1511,7 @@ export async function productionRoutes(app: FastifyInstance) {
                   WHERE es.worker_payment_id=wp.id
                ),0),0))::numeric(14,2) AS amount
           FROM worker_payments wp
-          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
          WHERE EXISTS(SELECT 1 FROM employee_earnings_settlements es
                        WHERE es.worker_payment_id=wp.id)
             OR (
@@ -1555,7 +1555,7 @@ export async function productionRoutes(app: FastifyInstance) {
                               OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
                                 LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
                                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
-                                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                                JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                                 WHERE wpa.worker_payment_id=wp.id AND ae.order_id IS NOT NULL
                                   AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
                                     OR (ae.order_stage_id IS NOT NULL AND p.order_stage_id IS DISTINCT FROM ae.order_stage_id)))
@@ -1620,7 +1620,7 @@ export async function productionRoutes(app: FastifyInstance) {
                                 OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
                                   LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
                                   LEFT JOIN order_stages os ON os.id=p.order_stage_id
-                                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                                  JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                                   WHERE wpa.worker_payment_id=wp.id
                                     AND ae.order_id IS NOT NULL
                                     AND (p.id IS NULL OR os.order_id IS DISTINCT FROM ae.order_id
@@ -1664,7 +1664,7 @@ export async function productionRoutes(app: FastifyInstance) {
                         AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
                          WHERE order_alloc.worker_payment_id=legacy.worker_payment_id)),0)
           - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
-                       JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+                       JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                       WHERE wp.employee_id=$1 AND ae.order_id=$2
                         AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                           JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
