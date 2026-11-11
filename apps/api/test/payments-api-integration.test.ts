@@ -2455,6 +2455,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(listedLaterProduction.paid_amount),20);
       assert.equal(Number(listedLaterProduction.remaining_amount),0);
       assert.equal(listedLaterProduction.payment_status,"PAID");
+      const workerOrderSummary=await app.inject({
+        method:"GET",url:`/api/production/earnings/order-summary?orderId=${differenceOrderId}&employeeId=${differenceWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(workerOrderSummary.statusCode,200,workerOrderSummary.body);
+      const workerOrderSummaryRow=workerOrderSummary.json().data.find((row:any)=>row.order_id===differenceOrderId);
+      assert.ok(workerOrderSummaryRow,"the source order must appear in the worker order summary");
+      assert.equal(Number(workerOrderSummaryRow.total_earned),120);
+      assert.equal(Number(workerOrderSummaryRow.paid_amount),120,
+        "tracked difference allocations must count as production-paid without reclassifying the remaining difference as a production payment");
+      assert.equal(Number(workerOrderSummaryRow.remaining_amount),0);
       const partialDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0];
