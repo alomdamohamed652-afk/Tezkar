@@ -1704,6 +1704,47 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(orderScopedPayout.statusCode,201,orderScopedPayout.body,
         "previous-custody payout must validate and execute against selected order balance, not global available balance");
       assert.equal(Number(orderScopedPayout.json().data.grossAmount),100);
+      const currentOrderScopedWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Current Order Scoped Worker') RETURNING id"
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())`,
+        [currentOrderScopedWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      );
+      const currentOrderScopedKey=randomUUID();
+      const currentOrderScopedPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:currentOrderScopedWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,orderId:multiOrderId,
+          orderStageId:reconcileOrderStage.id,amount:10,method:"CASH",idempotencyKey:currentOrderScopedKey}
+      });
+      assert.equal(currentOrderScopedPayout.statusCode,201,currentOrderScopedPayout.body);
+      const currentOrderScopedPaymentId=currentOrderScopedPayout.json().data.payment.id;
+      const currentOrderScopedExpense=await apiPool.query(
+        "SELECT order_id,order_stage_id,amount,paid_from_employee_id,cash_custody_transaction_id,source_worker_payment_id FROM accounting_expenses WHERE source_worker_payment_id=$1",
+        [currentOrderScopedPaymentId]
+      );
+      assert.equal(currentOrderScopedExpense.rowCount,1);
+      assert.equal(currentOrderScopedExpense.rows[0].order_id,multiOrderId);
+      assert.equal(currentOrderScopedExpense.rows[0].order_stage_id,reconcileOrderStage.id);
+      assert.equal(Number(currentOrderScopedExpense.rows[0].amount),10);
+      assert.equal(currentOrderScopedExpense.rows[0].paid_from_employee_id,managerEmployee.id);
+      assert.equal(currentOrderScopedExpense.rows[0].source_worker_payment_id,currentOrderScopedPaymentId);
+      const currentOrderScopedOut=await apiPool.query(
+        "SELECT id,employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [currentOrderScopedPaymentId]
+      );
+      assert.equal(currentOrderScopedOut.rowCount,1);
+      assert.equal(currentOrderScopedOut.rows[0].employee_id,managerEmployee.id);
+      assert.equal(Number(currentOrderScopedOut.rows[0].amount),10);
+      assert.equal(currentOrderScopedExpense.rows[0].cash_custody_transaction_id,currentOrderScopedOut.rows[0].id);
+
       // An all-orders settlement must split labor expense by the real production
       // order/stage allocations and leave independent ledger adjustments general.
       const splitExpenseWorker=(await apiPool.query(
