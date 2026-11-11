@@ -1458,7 +1458,7 @@ export async function productionRoutes(app: FastifyInstance) {
                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
                     WHERE wp.employee_id=e.id AND s.id IS NULL),0) AS available_earnings,
         COALESCE((SELECT SUM(l.credit_amount-l.debit_amount) FROM employee_earnings_ledger l WHERE l.employee_id=e.id),0) AS account_balance,
-        COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0))
+        COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0))
                     FROM advance_requests a WHERE a.employee_id=e.id AND a.status='PAID' AND a.repayment_status='OPEN'),0) AS outstanding_advances
       FROM employees e WHERE e.is_active=TRUE
       ORDER BY e.full_name
@@ -1678,7 +1678,7 @@ export async function productionRoutes(app: FastifyInstance) {
       const date=parsed.data.settlementDate??new Date().toISOString().slice(0,10);
       const advances=await client.query(`
         SELECT a.*,
-          GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+          GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
           (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
         FROM advance_requests a
         WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
@@ -1723,7 +1723,7 @@ export async function productionRoutes(app: FastifyInstance) {
       for(const manual of parsed.data.repayments??[]){
         if(remaining<=0)throw new AppError("REPAYMENT_EXCEEDS_SETTLEMENT","مبلغ سداد السلف أكبر من المستحق المتاح",422);
         if(repaymentPlan.some(x=>x.advance.id===manual.advanceId))throw new AppError("DUPLICATE_ADVANCE_REPAYMENT","السلفة محددة أكثر من مرة",422);
-        const advance=await client.query("SELECT a.*,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding FROM advance_requests a WHERE a.id=$1 AND a.employee_id=$2 AND a.status='PAID' AND a.repayment_status='OPEN' FOR UPDATE",[manual.advanceId,parsed.data.employeeId]);
+        const advance=await client.query("SELECT a.*,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding FROM advance_requests a WHERE a.id=$1 AND a.employee_id=$2 AND a.status='PAID' AND a.repayment_status='OPEN' FOR UPDATE",[manual.advanceId,parsed.data.employeeId]);
         if(!advance.rowCount)throw new AppError("ADVANCE_NOT_OPEN","السلفة المحددة غير مفتوحة أو لا تخص العامل",409);
         if(manual.amount>Number(advance.rows[0].outstanding)+0.009)throw new AppError("REPAYMENT_EXCEEDS_BALANCE","مبلغ السداد أكبر من باقي السلفة",409);
         if(manual.amount>remaining+0.009)throw new AppError("REPAYMENT_EXCEEDS_SETTLEMENT","مبلغ السداد أكبر من المستحق المتاح",409);
