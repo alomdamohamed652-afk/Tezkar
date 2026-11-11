@@ -1710,10 +1710,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "INSERT INTO employees(full_name) VALUES('Test Split Expense Worker') RETURNING id"
       )).rows[0];
       const secondExpenseStage=(await apiPool.query(
-        "SELECT id,stage_id FROM order_stages WHERE order_id=$1 AND id<>$2 ORDER BY sequence_no LIMIT 1",
-        [hamzaOrder.json().data.id,reconcileOrderStage.id]
+        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 AND id<>$2 ORDER BY sequence_no LIMIT 1",
+        [multiOrderId,reconcileOrderStage.id]
       )).rows[0];
       assert.ok(secondExpenseStage,"split expense test requires a second order stage");
+      const secondExpenseProduct=(await apiPool.query(
+        "SELECT id,unit_id FROM products WHERE id=$1",
+        [secondExpenseStage.output_product_id]
+      )).rows[0];
+      const secondExpenseRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,10,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id`,
+        [secondExpenseProduct.id,secondExpenseStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,secondExpenseProduct.unit_id,manager.id]
+      )).rows[0];
       await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
@@ -1733,8 +1743,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          )
          VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
          RETURNING id`,
-        [splitExpenseWorker.id,secondExpenseStage.id,reconcileProduct.id,secondExpenseStage.stage_id,
-         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+        [splitExpenseWorker.id,secondExpenseStage.id,secondExpenseProduct.id,secondExpenseStage.stage_id,
+         reconcileShift.id,secondExpenseProduct.unit_id,secondExpenseRate.id,perPieceWageType.id,manager.id]
       );
       await apiPool.query(
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',5,$2,'split expense standalone adjustment')",
@@ -1762,9 +1772,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(orderExpenseRows.length,2);
       assert.equal(generalExpenseRows.length,1);
       assert.equal(Number(generalExpenseRows[0].amount),5,"standalone ledger adjustment must remain unallocated");
-      assert.notEqual(orderExpenseRows[0].order_id,orderExpenseRows[1].order_id,"the two production expenses must retain distinct source orders");
-      assert.equal(orderExpenseRows[0].order_stage_id===orderExpenseRows[1].order_stage_id,false,
-        "production expenses must preserve their actual stages");
+      assert.equal(orderExpenseRows[0].order_id,orderExpenseRows[1].order_id,"both expense rows should retain their shared source order");
+      assert.notEqual(orderExpenseRows[0].order_stage_id,orderExpenseRows[1].order_stage_id,
+        "production expenses must preserve their distinct actual stages");
       assert.ok(orderExpenseRows.every((row:any)=>Number(row.amount)===10));
       assert.ok(splitExpenseRows.rows.every((row:any)=>row.source_worker_payment_id===splitExpensePayout.json().data.payment.id));
       const linkedExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.cash_custody_transaction_id!==null);
