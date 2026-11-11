@@ -140,7 +140,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
 }
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
   const r=await client.query(`
-    SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
+    SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
       FROM advance_requests a WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
   `,[employeeId]);
   return Number(r.rows[0]?.outstanding??0);
@@ -151,7 +151,7 @@ type PlannedAdvanceRepayment={advance:any;amount:number;repaymentType:"CUSTOM"|"
 async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:string,grossAmount:number,manualAmount:number,paymentDate:string) {
   const advances=await client.query(`
     SELECT a.*,
-      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
       (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
     FROM advance_requests a
     WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
@@ -193,7 +193,7 @@ async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:s
 async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,employeeId:string,paymentDate:string){
   const advances=await client.query(`
     SELECT a.*,
-      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
       (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
     FROM advance_requests a
     WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
@@ -437,7 +437,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     if(q.data.status){params.push(q.data.status);where.push(`pr.status=$${params.length}`);}
     const r=await pool.query(
       `SELECT pr.*,e.code employee_code,e.full_name employee_name,
-         COALESCE((SELECT SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0))
+         COALESCE((SELECT SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0))
            FROM advance_requests a WHERE a.employee_id=pr.employee_id AND a.status='PAID' AND a.repayment_status='OPEN'),0) AS outstanding_advance_amount,
          wp.amount AS net_paid_amount,wp.gross_amount AS gross_paid_amount,wp.advance_repayment_amount
        FROM payment_requests pr JOIN employees e ON e.id=pr.employee_id
