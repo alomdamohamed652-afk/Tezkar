@@ -2520,6 +2520,49 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         blockedMaturityClient.release();
         employeeLockClient.release();
       }
+      const independentAllocationEvent=(await apiPool.query(
+        "SELECT id,worker_payment_order_allocation_id,amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION' AND production_entry_id=$2",
+        [differenceRecord.id,laterProduction.id]
+      )).rows[0];
+      assert.ok(independentAllocationEvent,"the later production allocation must have an immutable event");
+      const independentAllocationReversalKey=randomUUID();
+      const independentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount),reason:"اختبار عكس توزيع فرق التسوية منفردًا",
+          idempotencyKey:independentAllocationReversalKey}
+      });
+      assert.equal(independentAllocationReversal.statusCode,201,independentAllocationReversal.body);
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0].status,"REQUIRES_REVIEW","an independently reversed allocation must be held for accounting review");
+      const heldMaturityClient=await apiPool.connect();
+      try{
+        await heldMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          heldMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"a difference under accounting review must be excluded from automatic maturity");
+        await heldMaturityClient.query("COMMIT");
+      }catch(error){await heldMaturityClient.query("ROLLBACK");throw error}
+      finally{heldMaturityClient.release()}
+      const releaseDifference=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"تمت مراجعة عكس التوزيع واعتماد إعادة المعالجة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(releaseDifference.statusCode,201,releaseDifference.body);
+      assert.equal(releaseDifference.json().data.status,"PENDING");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0].status,"PENDING");
+      const repeatedRelease=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"إعادة المحاولة بنفس المفتاح",idempotencyKey:releaseDifference.json().data.event.idempotency_key}
+      });
+      assert.equal(repeatedRelease.statusCode,200,repeatedRelease.body,
+        "replaying the same release idempotency key must return the original release event");
+
       const matureClient=await apiPool.connect();
       let transferredCount=0;
       try{
@@ -2536,18 +2579,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       )).rows[0];
       assert.equal(maturedDifference.status,"TRANSFERRED_TO_SOURCE_ORDER");
       assert.equal(Number((await apiPool.query(
-        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER'",
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER' AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=worker_payment_settlement_difference_events.id)",
         [differenceRecord.id]
-      )).rows[0].amount),30);
+      )).rows[0].amount),50);
       const maturedProfitability=await app.inject({
         method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
         headers:{cookie:managerCookie}
       });
       assert.equal(maturedProfitability.statusCode,200,maturedProfitability.body);
       assert.equal(Number(maturedProfitability.json().data.laborCost),120);
-      assert.equal(Number(maturedProfitability.json().data.expenses),30,
-        "only the unmatched remainder transferred to the source order is an additional expense");
-      assert.equal(Number(maturedProfitability.json().data.totalCost),150);
+      assert.equal(Number(maturedProfitability.json().data.expenses),50,
+        "reversing the later allocation restores that amount to the unmatched remainder before maturity");
+      assert.equal(Number(maturedProfitability.json().data.totalCost),170);
       const maturedDashboardOrder=await readDifferenceOrderDashboard();
       assert.equal(Number(maturedDashboardOrder.labor_cost),120);
       assert.equal(Number(maturedDashboardOrder.direct_expenses),30);
@@ -2687,7 +2730,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie}
       });
       assert.equal(differenceEventsApi.statusCode,200,differenceEventsApi.body);
-      assert.equal(differenceEventsApi.json().data.length,4,"the audit endpoint must expose allocation, transfer and both reversal events");
+      assert.equal(differenceEventsApi.json().data.length,5,"the audit endpoint must expose the allocation, its reversal, review release, maturity transfer and transfer reversal");
       const closureDifferenceReversal=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
         payload:{sourceType:"WORKER_PAYMENT",sourceId:closurePaymentId,amount:60,
