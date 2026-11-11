@@ -2650,6 +2650,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal((await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0].status,"REQUIRES_REVIEW","an independently reversed allocation must be held for accounting review");
+       const reviewDifferenceReport=await app.inject({
+         method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}&paymentStatus=UNALLOCATED`,
+         headers:{cookie:managerCookie}
+       });
+       assert.equal(reviewDifferenceReport.statusCode,200,reviewDifferenceReport.body);
+       assert.ok(reviewDifferenceReport.json().data.some((row:any)=>row.id===sourceProduction.id),
+         "production reporting must keep a worker's source order visible as unallocated while its reversed difference awaits accounting review");
       const heldMaturityClient=await apiPool.connect();
       try{
         await heldMaturityClient.query("BEGIN");
