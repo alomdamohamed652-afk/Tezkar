@@ -265,6 +265,7 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
 }
 
 async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,netAmount:number,requestCode:string,paymentId:string,grossAmount=netAmount,repaymentAmount=0){
+  if(netAmount<=0.009)return null;
   const canAll=await hasPermission(client,userId,"cash_custody.worker_payment_out","all");
   const canOwn=await hasPermission(client,userId,"cash_custody.worker_payment_out_own","own");
   if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","يلزم منح صلاحية مستقلة لخصم صرف العامل من العهدة النقدية",403);
@@ -2184,23 +2185,43 @@ export async function paymentsRoutes(app:FastifyInstance){
             `تم إيقاف التسوية: سجل الإنتاج ${conflict.code} وصل إلى ${Number(conflict.paid).toFixed(2)} ج.م من أصل ${Number(conflict.earned).toFixed(2)} ج.م بعد جمع كل الدفعات؛ راجع توزيع الدفعات القديمة.`,409);
         }
         if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0 && !parsed.data.allowOverpayment)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
-        const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
-        await client.query(
-          `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$9,$7,$8)`,
-          [
-            parsed.data.orderId,
-            parsed.data.orderStageId ?? null,
-            `تسوية مستحقات العامل ${String(settlement.payment.code)} ${parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? "من عهدة سابقة" : "من العهدة الحالية"} — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`,
-            parsed.data.amount,
-            parsed.data.method,
-            request.user!.userId,
-            parsed.data.idempotencyKey,
-            createHash("sha256").update(fingerprint).digest("hex"),
-            parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null
-          ]
-        );
       }
+      const expenseOrder = parsed.data.orderId
+        ? await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId])
+        : { rows: [] as Array<{code:string;order_name:string|null}> };
+      const custodyMovement = parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : { rows: [] as Array<{id:string}> };
+      if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rowCount !== 1) {
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      const expenseDescription = parsed.data.orderId
+        ? `تسوية مستحقات العامل ${String(settlement.payment.code)} ${parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? "من عهدة سابقة" : "من العهدة الحالية"} — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`
+        : `تسوية مستحقات العامل ${String(settlement.payment.code)} — جميع الطلبيات / مستحقات عامة`;
+      await client.query(
+        `INSERT INTO accounting_expenses(
+           order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
+           cash_custody_transaction_id,allocation_type
+         )
+         VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11)`,
+        [
+          parsed.data.orderId ?? null,
+          parsed.data.orderId ? parsed.data.orderStageId ?? null : null,
+          expenseDescription,
+          parsed.data.amount,
+          parsed.data.method,
+          request.user!.userId,
+          parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 ? parsed.data.cashCustodyEmployeeId : null,
+          parsed.data.idempotencyKey,
+          createHash("sha256").update(fingerprint).digest("hex"),
+          custodyMovement.rows[0]?.id ?? null,
+          parsed.data.orderId ? "DIRECT" : "GENERAL"
+        ]
+      );
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
       }
