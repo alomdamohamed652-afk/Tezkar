@@ -2331,6 +2331,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [laterProduction.id]
       );
       await apiPool.query(
+        "UPDATE production_entries SET approved_at=now()-INTERVAL '75 days',work_date=CURRENT_DATE-75 WHERE id=$1",
+        [sourceProduction.id]
+      );
+      await apiPool.query(
         "UPDATE worker_payment_settlement_differences SET eligible_at=CURRENT_DATE-40 WHERE id=$1",[differenceRecord.id]
       );
       const matureClient=await apiPool.connect();
