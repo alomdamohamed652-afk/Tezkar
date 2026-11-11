@@ -2314,6 +2314,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledTargetProduction.id]);
       await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
 
+      const initialProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(initialProfitability.statusCode,200,initialProfitability.body);
+      assert.equal(Number(initialProfitability.json().data.laborCost),100);
+      assert.equal(Number(initialProfitability.json().data.expenses),0,
+        "worker-payment cash expense must not be counted again on top of production labor cost");
+      assert.equal(Number(initialProfitability.json().data.totalCost),100);
+
       const laterProduction=await insertDifferenceProduction(2,20);
       const differenceClient=await apiPool.connect();
       let laterAllocations:any[]=[];
@@ -2335,6 +2345,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION'",
         [differenceRecord.id]
       )).rows[0].amount),20);
+      const partialProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(partialProfitability.statusCode,200,partialProfitability.body);
+      assert.equal(Number(partialProfitability.json().data.laborCost),120);
+      assert.equal(Number(partialProfitability.json().data.expenses),0,
+        "an allocation to later approved production is already included in labor cost");
+      assert.equal(Number(partialProfitability.json().data.totalCost),120);
       const immutableDifferenceEvent=(await apiPool.query(
         "SELECT id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 ORDER BY created_at,id LIMIT 1",
         [differenceRecord.id]
@@ -2416,6 +2435,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER'",
         [differenceRecord.id]
       )).rows[0].amount),30);
+      const maturedProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(maturedProfitability.statusCode,200,maturedProfitability.body);
+      assert.equal(Number(maturedProfitability.json().data.laborCost),120);
+      assert.equal(Number(maturedProfitability.json().data.expenses),30,
+        "only the unmatched remainder transferred to the source order is an additional expense");
+      assert.equal(Number(maturedProfitability.json().data.totalCost),150);
       const duplicateMaturityClient=await apiPool.connect();
       try{
         await duplicateMaturityClient.query("BEGIN");
@@ -2493,6 +2521,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [differencePaymentId]
       );
       assert.equal(Number(differenceExpenseNet.rows[0].net),0,"reversing the parent payment must reverse its source expenses and all transferred cost effects");
+      const reversedProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedProfitability.statusCode,200,reversedProfitability.body);
+      assert.equal(Number(reversedProfitability.json().data.laborCost),120);
+      assert.equal(Number(reversedProfitability.json().data.expenses),0);
+      assert.equal(Number(reversedProfitability.json().data.totalCost),120,
+        "reversing payment cash must not erase earned labor cost or leave duplicate transferred expense");
       const differenceEventsApi=await app.inject({
         method:"GET",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/events`,
         headers:{cookie:managerCookie}
