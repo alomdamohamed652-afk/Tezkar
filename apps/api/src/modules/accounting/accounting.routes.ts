@@ -167,7 +167,7 @@ export async function accountingRoutes(app:FastifyInstance){
     if(Math.abs(input.amount-gross)>0.01)
      throw new AppError("WORKER_PAYMENT_FULL_REVERSAL_REQUIRED","عكس دفعة العامل يتطلب عكس إجمالي الدفعة بالكامل؛ العكس الجزئي غير متاح قبل مطابقة جميع آثارها",409);
     const priorPayment=await client.query(
-     "SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1 FOR UPDATE",[input.sourceId]);
+     "SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[input.sourceId]);
     if(Number(priorPayment.rows[0].amount)>0.0001)
      throw new AppError("WORKER_PAYMENT_ALREADY_REVERSED","دفعة العامل سبق عكسها؛ لا يمكن تكرار العكس",409);
 
@@ -256,7 +256,7 @@ export async function accountingRoutes(app:FastifyInstance){
     if(Math.abs(expenseTotal-gross)>0.01)
      throw new AppError("WORKER_PAYMENT_EXPENSE_MISMATCH","إجمالي مصروفات الطلبات المرتبطة لا يطابق إجمالي الدفعة؛ أوقفنا العكس",409);
     const priorExpenses=await client.query(
-     "SELECT COALESCE(SUM(er.amount),0) AS amount FROM accounting_expense_reversals er WHERE er.source_worker_payment_id=$1 FOR UPDATE",[input.sourceId]);
+     "SELECT COALESCE(SUM(er.amount),0) AS amount FROM accounting_expense_reversals er WHERE er.source_worker_payment_id=$1",[input.sourceId]);
     if(Number(priorExpenses.rows[0].amount)>0.0001)
      throw new AppError("WORKER_PAYMENT_EXPENSE_ALREADY_REVERSED","يوجد أثر مصروفات مرتبط بالدفعة سبق عكسه؛ يلزم فحص يدوي",409);
     for(const expense of expenses.rows)expenseReversals.push({expenseId:expense.id,workerPaymentId:input.sourceId,amount:Number(expense.amount)});
