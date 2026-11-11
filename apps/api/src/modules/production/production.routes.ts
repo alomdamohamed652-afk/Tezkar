@@ -1454,7 +1454,7 @@ export async function productionRoutes(app: FastifyInstance) {
                      FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
                     WHERE a.employee_id=e.id AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
         - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=e.id),0)
-        - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+        - COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                      LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
                     WHERE wp.employee_id=e.id AND s.id IS NULL),0) AS available_earnings,
         COALESCE((SELECT SUM(l.credit_amount-l.debit_amount) FROM employee_earnings_ledger l WHERE l.employee_id=e.id),0) AS account_balance,
@@ -1544,7 +1544,7 @@ export async function productionRoutes(app: FastifyInstance) {
                         WHERE s.employee_id=e.id AND NOT EXISTS(
                           SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                         )),0)
-             + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+             + COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                           WHERE wp.employee_id=e.id
                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_guard JOIN employee_earnings_settlement_allocations esa_guard ON esa_guard.settlement_id=es_guard.id WHERE es_guard.worker_payment_id=wp.id)
@@ -1610,7 +1610,7 @@ export async function productionRoutes(app: FastifyInstance) {
                             WHERE s.employee_id=$1 AND NOT EXISTS(
                               SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=s.id
                             )),0)
-               + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+               + COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                             WHERE wp.employee_id=$1
                               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements s WHERE s.worker_payment_id=wp.id)
                               AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
@@ -1636,7 +1636,7 @@ export async function productionRoutes(app: FastifyInstance) {
                        FROM employee_earnings_adjustments a LEFT JOIN production_entries p ON p.id=a.production_entry_id
                       WHERE a.employee_id=$1 AND (a.production_entry_id IS NULL OR p.status='APPROVED')),0)
           - COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0)
-          - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+          - COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                        LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
                       WHERE wp.employee_id=$1 AND s.id IS NULL),0)
         ELSE
@@ -1663,7 +1663,7 @@ export async function productionRoutes(app: FastifyInstance) {
                          WHERE es.worker_payment_id=legacy.worker_payment_id)
                         AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
                          WHERE order_alloc.worker_payment_id=legacy.worker_payment_id)),0)
-          - COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+          - COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                       WHERE wp.employee_id=$1 AND ae.order_id=$2
                         AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -1705,7 +1705,7 @@ export async function productionRoutes(app: FastifyInstance) {
           [parsed.data.employeeId,startDate,date]
         );
         const legacyPaid=await client.query(
-          `SELECT COALESCE(SUM(wp.gross_amount),0) AS amount FROM worker_payments wp
+          `SELECT COALESCE(SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)),0) AS amount FROM worker_payments wp
              LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
             WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at::date>$2::date AND wp.created_at::date<=$3::date`,
           [parsed.data.employeeId,startDate,date]
