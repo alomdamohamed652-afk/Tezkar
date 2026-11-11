@@ -54,8 +54,8 @@ export async function allocatePendingWorkerPaymentDifferencesForProduction(
        LEFT JOIN order_stages os ON os.id=p.order_stage_id
        LEFT JOIN production_orders o ON o.id=os.order_id
       WHERE p.id=$1 AND p.employee_id=$2 AND p.status='APPROVED'
-        AND (os.id IS NULL OR os.status<>'CANCELLED')
-        AND (o.id IS NULL OR o.status<>'CANCELLED')
+        AND (os.id IS NULL OR os.status NOT IN ('CANCELLED','COMPLETED'))
+        AND (o.id IS NULL OR o.status NOT IN ('CANCELLED','COMPLETED'))
       FOR UPDATE OF p`,
     [productionEntryId, employeeId]
   );
@@ -155,6 +155,7 @@ export async function processMaturedWorkerPaymentDifferences(
             AND p.work_date>=wp.created_at::date
        ) activity ON TRUE
       WHERE d.status IN ('PENDING','PARTIALLY_ALLOCATED')
+        AND po.status<>'CANCELLED'
         AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr
           WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
         AND NOT EXISTS(SELECT 1 FROM production_entries pending
