@@ -76,7 +76,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
         COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
         COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
           WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
-        COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+        COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at>$2),0) AS legacy_paid,
         COALESCE((SELECT SUM(m.amount_snapshot)
@@ -120,7 +120,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           AND l.settlement_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
       COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
-      COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+      COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
         WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
       COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
@@ -807,7 +807,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         reconciledCount++;
       }
       const unresolved = await client.query(`
-        SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
+        SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)),0)::numeric(14,2) AS amount
           FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
@@ -1501,7 +1501,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             COUNT(p.id) FILTER(WHERE p.status='APPROVED')::int AS approved_count,
             COUNT(p.id) FILTER(WHERE p.status='PENDING')::int AS pending_count,
             COALESCE((SELECT SUM(es.gross_amount) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
-              + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+              + COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                            WHERE wp.employee_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)),0)
               + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
                 JOIN production_entries hp ON hp.id=hm.production_entry_id
@@ -1568,7 +1568,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             AND ($3::uuid IS NULL OR p.order_stage_id=$3)`, [parsed.data.employeeId,parsed.data.orderId??null,parsed.data.orderStageId??null]),
         client.query(`SELECT COALESCE(SUM(gross_amount),0) AS amount
           FROM employee_earnings_settlements WHERE employee_id=$1`, [parsed.data.employeeId]),
-        client.query(`SELECT COALESCE(SUM(wp.gross_amount),0) AS amount
+        client.query(`SELECT COALESCE(SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)),0) AS amount
           FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL`, [parsed.data.employeeId]),
         client.query(`SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE(r.paid,0),0)),0) AS amount
@@ -1672,7 +1672,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)
             ),'[]'::json) AS ledger_only_adjustment_entries,
             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
-            COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+            COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
               LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
               WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
             COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
