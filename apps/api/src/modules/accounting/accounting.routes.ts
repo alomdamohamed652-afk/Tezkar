@@ -324,7 +324,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const repayments=await client.query(
      `SELECT ar.id,ar.advance_id,ar.amount,a.employee_id,a.code
         FROM advance_repayments ar JOIN advance_requests a ON a.id=ar.advance_id
-       WHERE ar.source_payroll_item_id=$1 AND ar.source_payroll_payment_id IS NULL
+       WHERE ar.source_payroll_item_id=$1 AND ar.source_payroll_payment_id IS NULL AND ar.source_worker_payment_id IS NULL
        ORDER BY ar.id FOR UPDATE OF ar,a`,[item.id]);
     if(!repayments.rowCount)throw new AppError("ZERO_NET_REPAYMENTS_MISSING","لا توجد أقساط سلف مرتبطة بتسوية الراتب؛ أوقفنا العكس",409);
     const deductions=await client.query(
@@ -362,6 +362,7 @@ export async function accountingRoutes(app:FastifyInstance){
       JOIN advance_requests a ON a.id=ar.advance_id WHERE ar.id=$1 FOR UPDATE OF ar,a`,[input.sourceId]);
     if(!q.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","عملية سداد السلفة الأصلية غير موجودة",404);
     const ar=q.rows[0];
+    if(ar.source_worker_payment_id)throw new AppError("WORKER_PAYMENT_REPAYMENT_REQUIRES_PAYMENT_REVERSAL","قسط السلفة المرتبط بدفعة عامل يُعكس بعكس دفعة العامل كاملة",409);
     if(ar.source_payroll_item_id||ar.source_payroll_payment_id)throw new AppError("PAYROLL_REPAYMENT_REQUIRES_PAYMENT_REVERSAL","قسط السلفة المسدد من الراتب يُعكس بعكس دفعة الراتب المرتبطة به",409);
     advanceIds.add(ar.advance_id);
     const prior=await client.query("SELECT COALESCE(SUM(amount),0) AS amount FROM financial_reversal_lines WHERE source_type='ADVANCE_REPAYMENT' AND source_id=$1",[input.sourceId]);
