@@ -57,6 +57,7 @@ ALTER TABLE worker_payment_settlement_difference_events
       AND target_order_id=source_order_id
       AND reverses_event_id IS NULL
       AND financial_reversal_id IS NULL)
+    )
   );
 
 ALTER TABLE financial_reversal_lines
