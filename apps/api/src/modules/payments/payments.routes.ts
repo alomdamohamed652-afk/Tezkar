@@ -1778,8 +1778,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.settlementSource === "CURRENT_CUSTODY" && !value.cashCustodyEmployeeId) {
         ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
       }
-      if (!value.orderId) {
-        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب لتحديد تكلفة التسوية" });
+      if (value.settlementSource === "PREVIOUS_CUSTODY" && !value.orderId) {
+        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب عند تسجيل صرف سابق" });
       }
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
@@ -2058,9 +2058,9 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
-        skipProductionAllocations: true,
+        skipProductionAllocations: Boolean(parsed.data.orderId),
         availableBalanceOverride: parsed.data.orderId ? (orderProductionCount > 0 ? orderAvailable : available) : null,
-        productionEntryIds: null
+        productionEntryIds: parsed.data.orderId ? null : (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null)
       });
       if (parsed.data.orderId) {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
