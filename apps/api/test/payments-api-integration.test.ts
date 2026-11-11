@@ -2981,6 +2981,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       finally{parentAllocationClient.release()}
       assert.equal(parentAllocations.length,1);
       assert.equal(Number(parentAllocations[0].amount),10);
+      const orderSummaryAfterDifferenceAllocation=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${parentReverseWorker.id}&orderId=${differenceOrderId}&orderStageId=${differenceStage.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(orderSummaryAfterDifferenceAllocation.statusCode,200,orderSummaryAfterDifferenceAllocation.body);
+      assert.equal(Number(orderSummaryAfterDifferenceAllocation.json().data.availableForSettlement),0,
+        "order-scoped settlement summary must include active difference allocations to prevent paying the same production twice");
       const parentDifferenceEvent=(await apiPool.query(
         "SELECT id,worker_payment_order_allocation_id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION'",
         [parentDifference.id]
