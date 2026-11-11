@@ -2335,6 +2335,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION'",
         [differenceRecord.id]
       )).rows[0].amount),20);
+      const immutableDifferenceEvent=(await apiPool.query(
+        "SELECT id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 ORDER BY created_at,id LIMIT 1",
+        [differenceRecord.id]
+      )).rows[0];
+      await assert.rejects(
+        apiPool.query("UPDATE worker_payment_settlement_difference_events SET reason='tampered' WHERE id=$1",[immutableDifferenceEvent.id]),
+        /append-only/
+      );
+      await assert.rejects(
+        apiPool.query("DELETE FROM worker_payment_settlement_difference_events WHERE id=$1",[immutableDifferenceEvent.id]),
+        /append-only/
+      );
 
       // Simulate elapsed time in the isolated disposable DB; no wall-clock sleep.
       await apiPool.query(
