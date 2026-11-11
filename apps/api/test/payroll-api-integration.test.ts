@@ -899,7 +899,8 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         advanceDeductionMismatches:0,
         paidPayrollMissingAdvanceRepayments:0,
         expensesMissingCustodyLink:0,
-        advanceRepaymentsMissingCustodyIn:0
+        advanceRepaymentsMissingCustodyIn:0,
+        workerPaymentReversalMismatches:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
