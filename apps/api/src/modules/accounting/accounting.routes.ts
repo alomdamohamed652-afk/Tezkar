@@ -386,6 +386,30 @@ export async function accountingRoutes(app:FastifyInstance){
     `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
      VALUES($1,$2,$3,$4,$5)`,
     [header.rows[0].id,expense.expenseId,expense.workerPaymentId,expense.amount,request.user!.userId]);
+   const settlementDifferenceReversals:Array<{differenceId:string;eventId:string;amount:number}>=[];
+   if(input.sourceType==="WORKER_PAYMENT"){
+    const difference=await client.query("SELECT id FROM worker_payment_settlement_differences WHERE worker_payment_id=$1 FOR UPDATE",[input.sourceId]);
+    if(difference.rowCount){
+     const activeEvents=await client.query(`
+       SELECT e.* FROM worker_payment_settlement_difference_events e
+        WHERE e.difference_id=$1 AND e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+          AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r WHERE r.reverses_event_id=e.id AND r.event_type='REVERSED')
+        ORDER BY e.created_at,e.id FOR UPDATE OF e`,[difference.rows[0].id]);
+     for(const event of activeEvents.rows){
+      await client.query(`
+       INSERT INTO worker_payment_settlement_difference_events(
+        difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,target_order_id,
+        target_order_stage_id,production_entry_id,worker_payment_order_allocation_id,reverses_event_id,
+        financial_reversal_id,actor_type,actor_user_id,reason
+       ) VALUES($1,$2,$3,'REVERSED',$4,$5,$6,$7,$8,$9,$10,$11,'USER',$12,$13)`,
+       [event.difference_id,event.worker_payment_id,event.source_expense_id,event.amount,event.source_order_id,
+        event.target_order_id,event.target_order_stage_id,event.production_entry_id,event.worker_payment_order_allocation_id,
+        event.id,header.rows[0].id,request.user!.userId,"عكس فرق التسوية ضمن عكس دفعة العامل"]);
+      settlementDifferenceReversals.push({differenceId:event.difference_id,eventId:event.id,amount:Number(event.amount)});
+     }
+     await client.query("UPDATE worker_payment_settlement_differences SET status='REVERSED',updated_at=now() WHERE id=$1",[difference.rows[0].id]);
+    }
+   }
    for(const move of ledgerMoves)await client.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes,financial_reversal_id)
      VALUES($1,'ADJUSTMENT',$2,$3,$4,$5,$6)`,[move.employeeId,move.credit,move.debit,request.user!.userId,move.notes+" · "+header.rows[0].code,header.rows[0].id]);
    for(const move of custodyMoves)await client.query(`INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,notes,source_type,source_id,created_by)
@@ -402,7 +426,7 @@ export async function accountingRoutes(app:FastifyInstance){
     const paid=Number(totals.rows[0].effective_paid),net=Number(totals.rows[0].net_amount);
     await client.query("UPDATE payroll_items SET status=$1 WHERE id=$2",[net<=0.0001||paid>=net-0.0001?"PAID":paid>0.0001?"PARTIAL":"UNPAID",payrollItemId]);
    }
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,allocationReversals,expenseReversals,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"finance",entityType:"financial_reversal",entityId:header.rows[0].id,afterData:header.rows[0],metadata:{lines,allocationReversals,expenseReversals,settlementDifferenceReversals,reason:input.reason},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return {replayed:false,reversal:header.rows[0],lines};
   });
   return reply.code(result.replayed?200:201).send({data:{reversal:result.reversal,lines:result.lines}});
