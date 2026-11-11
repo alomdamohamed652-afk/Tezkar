@@ -2189,6 +2189,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [reversalSettlement.id]
       )).rows[0];
       assert.ok(originalAllocation,"worker payment must allocate the production entry");
+      await apiPool.query(
+        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,100) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
+        [reversalPaymentId,reversalProduction.id]
+      );
       const reversalCustodyOut=(await apiPool.query(
         "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
         [reversalPaymentId]
