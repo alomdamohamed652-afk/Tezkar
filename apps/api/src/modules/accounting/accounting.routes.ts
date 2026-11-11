@@ -158,6 +158,13 @@ export async function accountingRoutes(app:FastifyInstance){
      if(linkedAmount>0.0001)custodyMoves.push({employeeId:out.rows[0].employee_id,direction:"OUT",amount:linkedAmount,description:"عكس استرداد أقساط السلف من الراتب "+input.sourceId});
     }else if(offset.rowCount)throw new AppError("REVERSAL_CUSTODY_INCOMPLETE","يوجد استرداد عهدة دون حركة الصرف المقابلة؛ راجع المطابقة قبل العكس",409);
    }else if(input.sourceType==="WORKER_PAYMENT"){
+    // Match production approval's employee-first lock order. This serializes
+    // reversal against a concurrent approval that may allocate an old difference
+    // to the newly approved production entry.
+    const paymentIdentity=await client.query(
+     "SELECT employee_id FROM worker_payments WHERE id=$1",[input.sourceId]);
+    if(!paymentIdentity.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","دفعة العامل الأصلية غير موجودة",404);
+    await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[paymentIdentity.rows[0].employee_id]);
     const paymentResult=await client.query(
      `SELECT wp.*,e.full_name AS employee_name
         FROM worker_payments wp JOIN employees e ON e.id=wp.employee_id
