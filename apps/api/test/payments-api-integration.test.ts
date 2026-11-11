@@ -2562,6 +2562,24 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(repeatedRelease.statusCode,200,repeatedRelease.body,
         "replaying the same release idempotency key must return the original release event");
+      const unpaidAfterReviewClient=await apiPool.connect();
+      try{
+        await unpaidAfterReviewClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          unpaidAfterReviewClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"maturity must not move the remainder to the source order while the reversed allocation has reopened unpaid approved production");
+        await unpaidAfterReviewClient.query("COMMIT");
+      }catch(error){await unpaidAfterReviewClient.query("ROLLBACK");throw error}
+      finally{unpaidAfterReviewClient.release()}
+      const replacementProductionPayment=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:differenceWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,settlementMode:"SELECTED_PRODUCTION",
+          productionEntryIds:[laterProduction.id],amount:20,method:"CASH",advanceRepaymentAmount:0,
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(replacementProductionPayment.statusCode,201,replacementProductionPayment.body,
+        "the reopened later production must be settled by a separate verified payment before its unmatched remainder can mature");
 
       const matureClient=await apiPool.connect();
       let transferredCount=0;
@@ -2593,8 +2611,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(maturedProfitability.json().data.totalCost),170);
       const maturedDashboardOrder=await readDifferenceOrderDashboard();
       assert.equal(Number(maturedDashboardOrder.labor_cost),120);
-      assert.equal(Number(maturedDashboardOrder.direct_expenses),30);
-      assert.equal(Number(maturedDashboardOrder.total_cost),150);
+      assert.equal(Number(maturedDashboardOrder.direct_expenses),50);
+      assert.equal(Number(maturedDashboardOrder.total_cost),170);
       const duplicateMaturityClient=await apiPool.connect();
       try{
         await duplicateMaturityClient.query("BEGIN");
