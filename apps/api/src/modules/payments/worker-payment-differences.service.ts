@@ -168,13 +168,13 @@ export async function processMaturedWorkerPaymentDifferences(
             AND NOT EXISTS(
               SELECT 1 FROM production_entries pending_order
               JOIN order_stages os ON os.id=pending_order.order_stage_id
-               WHERE os.order_id=d.source_order_id AND pending_order.employee_id=d.employee_id
+               WHERE os.order_id=d.source_order_id
                  AND pending_order.status='PENDING'
             )
             AND NOT EXISTS(
               SELECT 1 FROM production_entries p
               JOIN order_stages os ON os.id=p.order_stage_id
-               WHERE os.order_id=d.source_order_id AND p.employee_id=d.employee_id
+               WHERE os.order_id=d.source_order_id
                  AND p.status='APPROVED' AND ${productionRemainingSql}>0.009
             )
           )
