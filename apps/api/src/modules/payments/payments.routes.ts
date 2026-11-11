@@ -265,7 +265,6 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
 }
 
 async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string,custodyEmployeeId:string,netAmount:number,requestCode:string,paymentId:string,grossAmount=netAmount,repaymentAmount=0){
-  if(netAmount<=0.009)return null;
   const canAll=await hasPermission(client,userId,"cash_custody.worker_payment_out","all");
   const canOwn=await hasPermission(client,userId,"cash_custody.worker_payment_out_own","own");
   if(!canAll&&!canOwn)throw new AppError("CASH_CUSTODY_PERMISSION_REQUIRED","يلزم منح صلاحية مستقلة لخصم صرف العامل من العهدة النقدية",403);
