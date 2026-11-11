@@ -174,6 +174,9 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
      VALUES('WORKER_PAYMENT','worker payment reversal expense',100,'2099-07-01','CASH',$1,'DIRECT',$2,$3,'worker-payment-expense-test',$4,'GENERAL',$5)`,
     [user,emp,randomUUID(),workerCustodyOut,workerPayment]
   );
+  const standaloneWorkerAdvanceReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{sourceType:'ADVANCE_REPAYMENT',sourceId:workerRepayment,amount:20,reason:'محاولة عكس قسط مرتبط بدفعة عامل',idempotencyKey:randomUUID()}});
+  assert.equal(standaloneWorkerAdvanceReversal.statusCode,409,standaloneWorkerAdvanceReversal.body);
+  assert.equal(standaloneWorkerAdvanceReversal.json().error.code,'WORKER_PAYMENT_REPAYMENT_REQUIRES_PAYMENT_REVERSAL');
   const workerPayload={sourceType:'WORKER_PAYMENT',sourceId:workerPayment,amount:100,reason:'عكس دفعة عامل اختبارية',idempotencyKey:randomUUID()};
   const partialWorkerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{...workerPayload,amount:99,idempotencyKey:randomUUID()}});
   assert.equal(partialWorkerReversal.statusCode,409,partialWorkerReversal.body);
