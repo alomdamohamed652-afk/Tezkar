@@ -1441,13 +1441,13 @@ export async function paymentsRoutes(app:FastifyInstance){
                    ELSE COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0)
                  END AS allocated_amount,
                  CASE
+                   WHEN EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id) THEN 'REVERSED'
                    WHEN es.id IS NOT NULL AND COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)>=LEAST(wp.gross_amount,GREATEST(0,
                COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
                  FROM production_entries p
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id) THEN 'REVERSED'
                    WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
                        THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
