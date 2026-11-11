@@ -3046,6 +3046,110 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(throttledPassword.statusCode,429,
         "five failed closure password attempts must temporarily lock the caller out");
+
+      // Administrative allocation must use the same order-cost classification as
+      // profitability: do not count worker-payment expenses twice, and include a
+      // matured settlement-difference transfer as a direct cost of its target order.
+      const adminCostWorkerA=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Admin Cost Basis Worker A "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      const adminCostWorkerB=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Admin Cost Basis Worker B "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      async function createAdminCostOrder(label:string){
+        const response=await app.inject({
+          method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+          payload:{orderName:label+" "+randomBytes(4).toString("hex"),
+            stages:[{stageName:label+" stage",sequenceNo:1,outputProductName:label+" product "+randomBytes(4).toString("hex"),
+              plannedQuantity:1,stageRate:100,stageRateMethod:"PER_PIECE",isFinalProduct:true}]}
+        });
+        assert.equal(response.statusCode,201,response.body);
+        const stage=(await apiPool.query(
+          "SELECT os.id,os.stage_id,os.output_product_id,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1",
+          [response.json().data.id]
+        )).rows[0];
+        return {orderId:response.json().data.id as string,stage};
+      }
+      const adminCostA=await createAdminCostOrder("Admin allocation basis A");
+      const adminCostB=await createAdminCostOrder("Admin allocation basis B");
+      async function insertAdminCostProduction(employeeId:string,stage:any){
+        await apiPool.query(
+          `INSERT INTO production_entries(
+             employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+             wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+             status,submitted_by,approved_by,approved_at
+           ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())`,
+          [employeeId,stage.id,stage.output_product_id,stage.stage_id,bonusShift.id,
+           stage.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+        );
+      }
+      await insertAdminCostProduction(adminCostWorkerA,adminCostA.stage);
+      await insertAdminCostProduction(adminCostWorkerB,adminCostB.stage);
+      const adminCostPaymentA=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,100,100,0,'CASH',$2,$3,'admin-cost-worker-payment-a') RETURNING id`,
+        [adminCostWorkerA,manager.id,randomUUID()]
+      )).rows[0].id;
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,allocation_type,source_worker_payment_id)
+         VALUES($1,$2,'WORKER_PAYMENT','Worker payment already included in labor cost',100,CURRENT_DATE,'CASH',$3,'DIRECT','DIRECT',$4)`,
+        [adminCostA.orderId,adminCostA.stage.id,manager.id,adminCostPaymentA]
+      );
+      const adminCostPaymentB=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,50,50,0,'CASH',$2,$3,'admin-cost-difference-payment-b') RETURNING id`,
+        [adminCostWorkerB,manager.id,randomUUID()]
+      )).rows[0].id;
+      const adminCostSourceExpense=(await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,
+           expense_type,allocation_type,source_worker_payment_id)
+         VALUES('WORKER_PAYMENT','Matured worker difference source expense',50,CURRENT_DATE,'CASH',$1,
+           'DIRECT','GENERAL',$2) RETURNING id`,
+        [manager.id,adminCostPaymentB]
+      )).rows[0].id;
+      const adminCostDifference=(await apiPool.query(
+        `INSERT INTO worker_payment_settlement_differences(
+           worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+           original_amount,payment_date,eligible_at,status,created_by
+         ) VALUES($1,$2,$3,$4,$5,50,CURRENT_DATE,CURRENT_DATE,'TRANSFERRED_TO_SOURCE_ORDER',$6) RETURNING id`,
+        [adminCostPaymentB,adminCostWorkerB,adminCostB.orderId,adminCostB.stage.id,adminCostSourceExpense,manager.id]
+      )).rows[0].id;
+      await apiPool.query(
+        `INSERT INTO worker_payment_settlement_difference_events(
+           difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,target_order_id,
+           target_order_stage_id,actor_type,actor_user_id,reason,idempotency_key
+         ) VALUES($1,$2,$3,'TRANSFERRED_TO_SOURCE_ORDER',50,$4,$4,$5,'USER',$6,
+           'مراجعة أساس توزيع المصروفات الإدارية',$7)`,
+        [adminCostDifference,adminCostPaymentB,adminCostSourceExpense,adminCostB.orderId,adminCostB.stage.id,manager.id,randomUUID()]
+      );
+      const adminCostPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Administrative allocation basis regression",periodStart:"2099-12-01",periodEnd:"2099-12-31"}
+      });
+      assert.equal(adminCostPeriod.statusCode,201,adminCostPeriod.body);
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,expense_type)
+         VALUES('ADMIN_TEST','Administrative allocation basis test',1000,'2099-12-15','CASH',$1,'ADMINISTRATIVE')`,
+        [manager.id]
+      );
+      const adminCostAllocation=await app.inject({
+        method:"POST",url:`/api/accounting/periods/${adminCostPeriod.json().data.id}/auto-allocate`,
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(adminCostAllocation.statusCode,200,adminCostAllocation.body);
+      const adminCostShares=await apiPool.query(
+        "SELECT order_id,amount FROM accounting_expense_allocations WHERE period_id=$1 AND order_id=ANY($2::uuid[])",
+        [adminCostPeriod.json().data.id,[adminCostA.orderId,adminCostB.orderId]]
+      );
+      assert.equal(adminCostShares.rowCount,2,"both test orders must receive an administrative cost allocation");
+      const shareA=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostA.orderId).amount);
+      const shareB=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostB.orderId).amount);
+      assert.ok(Math.abs(shareA/shareB-2/3)<0.02,
+        `administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got ${shareA} and ${shareB}`);
+
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
