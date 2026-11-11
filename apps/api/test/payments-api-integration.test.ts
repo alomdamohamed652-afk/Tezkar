@@ -2199,6 +2199,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           (SELECT COALESCE(SUM(amount),0) FROM worker_payment_allocation_reversals WHERE reversal_id=$1) AS allocation_amount,
           (SELECT COALESCE(SUM(amount),0) FROM accounting_expense_reversals WHERE reversal_id=$1) AS expense_amount,
           (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS custody_in,
+          (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS reversal_custody_holder,
+          (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$3 AND direction='OUT') AS original_custody_holder,
           (SELECT COUNT(*)::int FROM employee_earnings_settlement_allocations WHERE id=$2) AS original_allocation_count,
           (SELECT repayment_status FROM advance_requests WHERE id=$3) AS advance_status,
           (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$1 AND source_type='ADVANCE_REPAYMENT') AS advance_reversal_lines`,
@@ -2208,6 +2210,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reversalEffects.rows[0].allocation_amount),100);
       assert.equal(Number(reversalEffects.rows[0].expense_amount),100);
       assert.equal(Number(reversalEffects.rows[0].custody_in),80);
+      assert.equal(reversalEffects.rows[0].reversal_custody_holder,reversalEffects.rows[0].original_custody_holder,
+        "cash must return to the exact custodian who funded the original worker payment");
+      assert.equal(reversalEffects.rows[0].reversal_custody_holder,managerEmployee.id);
       assert.equal(Number(reversalEffects.rows[0].original_allocation_count),1,
         "original production allocation must remain immutable after reversal");
       assert.equal(reversalEffects.rows[0].advance_status,"OPEN",
