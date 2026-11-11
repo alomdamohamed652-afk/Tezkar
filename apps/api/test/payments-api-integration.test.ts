@@ -2189,6 +2189,31 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [reversalSettlement.id]
       )).rows[0];
       assert.ok(originalAllocation,"worker payment must allocate the production entry");
+      const repaymentLink=(await apiPool.query(
+        "SELECT id FROM advance_repayments WHERE source_worker_payment_id=$1",[reversalPaymentId]
+      )).rows[0];
+      assert.ok(repaymentLink,"the payment must retain its linked advance repayment");
+      const unrelatedAdvanceOwner=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Unrelated Advance Owner "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      await apiPool.query("UPDATE advance_requests SET employee_id=$1 WHERE id=$2",[unrelatedAdvanceOwner,reversalAdvance]);
+      await apiPool.query("UPDATE employee_earnings_ledger SET employee_id=$1 WHERE advance_repayment_id=$2",
+        [unrelatedAdvanceOwner,repaymentLink.id]);
+      const unsafeOwnerReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,
+          reason:"اختبار منع عكس سلفة تخص عاملًا آخر",idempotencyKey:randomUUID()}
+      });
+      assert.equal(unsafeOwnerReversal.statusCode,409,unsafeOwnerReversal.body);
+      assert.equal(unsafeOwnerReversal.json().error.code,"WORKER_PAYMENT_ADVANCE_OWNER_MISMATCH");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals r JOIN financial_reversal_lines l ON l.reversal_id=r.id WHERE l.source_type='WORKER_PAYMENT' AND l.source_id=$1",
+        [reversalPaymentId]
+      )).rows[0].count),0,"mismatched advance ownership must abort the entire reversal");
+      await apiPool.query("UPDATE advance_requests SET employee_id=$1 WHERE id=$2",[reversalAllocationWorker.id,reversalAdvance]);
+      await apiPool.query("UPDATE employee_earnings_ledger SET employee_id=$1 WHERE advance_repayment_id=$2",
+        [reversalAllocationWorker.id,repaymentLink.id]);
       const reversalResponse=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
         payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,reason:"عكس دفعة عامل مع توزيع إنتاج",idempotencyKey:randomUUID()}
