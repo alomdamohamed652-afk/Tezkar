@@ -1,4 +1,10 @@
 import type { FastifyInstance } from "fastify";
+
+const differenceAllocatedSql = `COALESCE((SELECT SUM(ev.amount)
+  FROM worker_payment_settlement_difference_events ev
+  WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+    AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+      WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)`;
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -161,11 +167,6 @@ export async function productionRoutes(app: FastifyInstance) {
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
 
-    const differenceAllocatedSql = `COALESCE((SELECT SUM(ev.amount)
-      FROM worker_payment_settlement_difference_events ev
-      WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-        AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
-          WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)`;
     const paymentStatusSql = `CASE
       WHEN EXISTS(SELECT 1 FROM worker_payments wp
         JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
