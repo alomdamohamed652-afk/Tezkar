@@ -1328,7 +1328,15 @@ export async function accountingRoutes(app:FastifyInstance){
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
    if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
    const orders=await client.query(`SELECT o.id,
-    COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0)
+    -- Worker-payment expenses are already represented by approved production labor.
+    -- Keep them out of the allocation basis and add only matured difference transfers,
+    -- which are reclassified as direct order costs by the profitability reports.
+    COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0))
+      FROM accounting_expenses e
+     WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND e.category IS DISTINCT FROM 'WORKER_PAYMENT'),0)
+    +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+      WHERE ev.target_order_id=o.id AND ev.event_type='TRANSFERRED_TO_SOURCE_ORDER'
+        AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)),0)
     +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
     +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0)
     +COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS cost
