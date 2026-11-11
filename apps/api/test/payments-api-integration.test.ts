@@ -117,7 +117,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const integrityCounts=integrityOverview.json().data.counts;
       for(const key of [
         "missingPayrollExpenses","missingAdjustmentLedgerEntries","cashPaymentsMissingCustodyOut",
-        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink"
+        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink",
+        "workerPaymentReversalMismatches"
       ]){
         assert.equal(typeof integrityCounts[key],"number",`financial integrity overview must return numeric count for ${key}`);
       }
@@ -2309,6 +2310,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(balanceAfterReversal.statusCode,200,balanceAfterReversal.body);
       assert.equal(Number(balanceAfterReversal.json().data.availableForSettlement),100,
         "reversing the payout must restore the worker's payable production balance");
+      const reversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(reversalIntegrity.statusCode,200,reversalIntegrity.body);
+      assert.equal(reversalIntegrity.json().data.counts.workerPaymentReversalMismatches,0,
+        "the read-only reconciliation report must confirm the reversal's ledger, custody, expense and allocation effects");
       for(let attempt=0;attempt<5;attempt++){
         const invalidPassword=await app.inject({
           method:"GET",url:"/api/worker-payments/employee-production-closures",
