@@ -825,11 +825,11 @@ export async function accountingRoutes(app:FastifyInstance){
   const r=await pool.query(`
     SELECT
       COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS total_in,
-      COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS total_out,
-      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(amount) FROM accounting_expenses),0) AS net,
+      COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e),0) AS total_out,
+      COALESCE((SELECT SUM(amount) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)-COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e),0) AS net,
       COALESCE((SELECT COUNT(*) FROM order_revenues WHERE UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0)::int AS revenue_count,
       COALESCE((SELECT COUNT(*) FROM accounting_expenses),0)::int AS expense_count,
-      COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id IS NULL),0) AS general_expenses,
+      COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id IS NULL),0) AS general_expenses,
       COALESCE((SELECT SUM(amount) FROM order_revenues WHERE order_id IS NULL AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'),0) AS general_income`);
   return {data:r.rows[0]};
  });
@@ -902,7 +902,7 @@ export async function accountingRoutes(app:FastifyInstance){
    const expenses=await client.query("SELECT id,amount FROM accounting_expenses WHERE expense_type='ADMINISTRATIVE' AND expense_date BETWEEN $1 AND $2 ORDER BY id",[period.rows[0].period_start,period.rows[0].period_end]);
    if(!expenses.rowCount)throw new AppError("NO_ADMIN_EXPENSES","لا توجد مصروفات إدارية في هذه الفترة",409);
    const orders=await client.query(`SELECT o.id,
-    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0)
+    COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT'),0)
     +COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY'),0)
     +COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED'),0)
     +COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS cost
@@ -1043,7 +1043,7 @@ export async function accountingRoutes(app:FastifyInstance){
     client.query("SELECT a.id,a.code,a.employee_id,e.code AS employee_code,e.full_name,a.amount,GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id AND ar.payment_date<=$1::date),0),0) AS remaining FROM advance_requests a JOIN employees e ON e.id=a.employee_id WHERE a.status='PAID' AND a.paid_at::date<=$1::date ORDER BY e.code,a.code",[end]),
     client.query("SELECT sm.product_id,sm.warehouse_id,sm.location_id,COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') OR (sm.movement_type='ADJUSTMENT' AND sm.reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN sm.quantity ELSE -sm.quantity END),0) AS quantity,COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') OR (sm.movement_type='ADJUSTMENT' AND sm.reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN sm.total_cost ELSE -sm.total_cost END),0) AS inventory_value FROM stock_movements sm WHERE sm.created_at::date<=$1::date GROUP BY sm.product_id,sm.warehouse_id,sm.location_id HAVING ABS(COALESCE(SUM(CASE WHEN sm.movement_type IN ('IN','RETURN','TRANSFER_IN') OR (sm.movement_type='ADJUSTMENT' AND sm.reference_type IS DISTINCT FROM 'ADJUSTMENT_OUT') THEN sm.quantity ELSE -sm.quantity END),0))>0.000001 ORDER BY sm.product_id,sm.warehouse_id,sm.location_id",[end]),
     client.query("SELECT COALESCE(SUM(amount),0) AS total FROM order_revenues WHERE revenue_date BETWEEN $1::date AND $2::date AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[start,end]),
-    client.query("SELECT COALESCE(SUM(amount),0) AS total FROM accounting_expenses WHERE expense_date BETWEEN $1::date AND $2::date",[start,end]),
+    client.query("SELECT COALESCE(SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)),0) AS total FROM accounting_expenses e WHERE e.expense_date BETWEEN $1::date AND $2::date",[start,end]),
     client.query("SELECT (SELECT COUNT(*)::int FROM advance_requests WHERE status IN ('PENDING','APPROVED') AND created_at::date<=$1::date) AS pending_advances,(SELECT COUNT(*)::int FROM payroll_items pi JOIN payroll_periods pp ON pp.id=pi.period_id WHERE pi.status IN ('UNPAID','PARTIAL') AND pp.period_month<=$1::date) AS unpaid_payroll_items,(SELECT COUNT(*)::int FROM production_orders WHERE status IN ('DRAFT','PLANNED','IN_PROGRESS')) AS open_production_orders",[end])
    ]);
    const report={period:{id,name:period.rows[0].name,start,end},generatedAt:new Date().toISOString(),totals:{revenue:Number(revenue.rows[0].total),expenses:Number(expense.rows[0].total)},cashCustody:cash.rows,custodyMovements:custodyMovements.rows,workerDues:workerDues.rows,earningsAdjustments:adjustments.rows,workerSettlements:workerSettlements.rows,payrollPayments:payrollPayments.rows,advances:advances.rows,inventory:inventory.rows,pending:pending.rows[0],reviewFlags:{negativeCustodyBalances:cash.rows.filter((row:any)=>Number(row.balance)<0).map((row:any)=>({employeeId:row.employee_id,employeeCode:row.code,employeeName:row.full_name,balance:Number(row.balance),requiresExplanation:true}))}};
@@ -1142,7 +1142,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const result=await pool.query(`SELECT o.id,o.code,o.order_name,o.customer_name,o.status,o.order_date,o.due_date,o.contract_value,
     COALESCE(o.contract_value,0) AS accrued_revenue,
     COALESCE((SELECT SUM(r.amount) FROM order_revenues r WHERE r.order_id=o.id AND UPPER(r.source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP' AND ($1::date IS NULL OR r.revenue_date BETWEEN $1::date AND $2::date)),0) AS revenue,
-    COALESCE((SELECT SUM(e.amount) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
+    COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=o.id AND e.expense_type='DIRECT' AND ($1::date IS NULL OR e.expense_date BETWEEN $1::date AND $2::date)),0) AS direct_expenses,
     COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=o.id AND ap.status='CLOSED' AND ($4::uuid IS NULL OR a.period_id=$4::uuid)),0) AS administrative_allocation,
     COALESCE((SELECT SUM(sm.total_cost) FROM stock_movements sm WHERE sm.order_id=o.id AND sm.movement_type='OUT' AND sm.reference_type IS DISTINCT FROM 'DELIVERY' AND ($1::date IS NULL OR sm.created_at::date BETWEEN $1::date AND $2::date)),0) AS material_cost,
     COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=o.id AND pe.status='APPROVED' AND ($1::date IS NULL OR pe.work_date BETWEEN $1::date AND $2::date)),0)
@@ -1163,7 +1163,7 @@ export async function accountingRoutes(app:FastifyInstance){
   const [revenue,expenses,stockOut,labor]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE order_id=$1 AND UPPER(source) IS DISTINCT FROM 'EXTERNAL_CUSTODY_TOP_UP'",[p.data.orderId]),
    pool.query(`SELECT
-     COALESCE((SELECT SUM(amount) FROM accounting_expenses WHERE order_id=$1 AND expense_type='DIRECT'),0) AS value,
+     COALESCE((SELECT SUM(e.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)) FROM accounting_expenses e WHERE e.order_id=$1 AND e.expense_type='DIRECT'),0) AS value,
      COALESCE((SELECT SUM(a.amount) FROM accounting_expense_allocations a JOIN accounting_periods ap ON ap.id=a.period_id WHERE a.order_id=$1 AND ap.status='CLOSED'),0) AS administrative_allocation`,[p.data.orderId]),
    pool.query("SELECT COALESCE(SUM(total_cost),0) AS value FROM stock_movements WHERE order_id=$1 AND movement_type='OUT' AND reference_type IS DISTINCT FROM 'DELIVERY'",[p.data.orderId]),
    pool.query("SELECT COALESCE((SELECT SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)) FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED'),0)+COALESCE((SELECT SUM(pci.delta_amount) FROM order_price_change_items pci JOIN production_entries pe ON pe.id=pci.production_entry_id JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status='APPROVED' AND pci.ledger_adjustment=TRUE),0) AS value",[p.data.orderId])
