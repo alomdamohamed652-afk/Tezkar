@@ -1757,6 +1757,32 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [splitExpenseWorker.id,secondExpenseStage.id,secondExpenseProduct.id,secondExpenseStage.stage_id,
          reconcileShift.id,secondExpenseProduct.unit_id,secondExpenseRate.id,perPieceWageType.id,manager.id]
       );
+      const thirdExpenseStage=(await apiPool.query(
+        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 AND id<>$2 ORDER BY sequence_no DESC LIMIT 1",
+        [multiOrderId,reconcileOrderStage.id]
+      )).rows[0];
+      assert.ok(thirdExpenseStage,"split expense test requires a second stage on the first order");
+      const thirdExpenseProduct=(await apiPool.query(
+        "SELECT id,unit_id FROM products WHERE id=$1",
+        [thirdExpenseStage.output_product_id]
+      )).rows[0];
+      const thirdExpenseRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,10,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id`,
+        [thirdExpenseProduct.id,thirdExpenseStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,thirdExpenseProduct.unit_id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [splitExpenseWorker.id,thirdExpenseStage.id,thirdExpenseProduct.id,thirdExpenseStage.stage_id,
+         reconcileShift.id,thirdExpenseProduct.unit_id,thirdExpenseRate.id,perPieceWageType.id,manager.id]
+      );
       await apiPool.query(
         "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',5,$2,'split expense standalone adjustment')",
         [splitExpenseWorker.id,manager.id]
@@ -1765,7 +1791,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const splitExpensePayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:splitExpenseWorker.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:managerEmployee.id,amount:25,method:"CASH",idempotencyKey:splitExpenseKey}
+          cashCustodyEmployeeId:managerEmployee.id,amount:35,method:"CASH",idempotencyKey:splitExpenseKey}
       });
       assert.equal(splitExpensePayout.statusCode,201,splitExpensePayout.body);
       const splitExpenseRows=await apiPool.query(
@@ -1776,16 +1802,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           ORDER BY order_id NULLS LAST,order_stage_id NULLS LAST`,
         [splitExpensePayout.json().data.payment.id]
       );
-      assert.equal(splitExpenseRows.rowCount,3,"two production scopes plus one standalone general amount");
-      assert.equal(Number(splitExpenseRows.rows.reduce((sum:any,row:any)=>sum+Number(row.amount),0)),25);
+      assert.equal(splitExpenseRows.rowCount,4,"three production order/stage scopes plus one standalone general amount");
+      assert.equal(Number(splitExpenseRows.rows.reduce((sum:any,row:any)=>sum+Number(row.amount),0)),35);
       const orderExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.order_id!==null);
       const generalExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.order_id===null);
-      assert.equal(orderExpenseRows.length,2);
+      assert.equal(orderExpenseRows.length,3);
       assert.equal(generalExpenseRows.length,1);
       assert.equal(Number(generalExpenseRows[0].amount),5,"standalone ledger adjustment must remain unallocated");
-      assert.notEqual(orderExpenseRows[0].order_id,orderExpenseRows[1].order_id,"the two production expenses must retain their actual distinct orders");
-      assert.notEqual(orderExpenseRows[0].order_stage_id,orderExpenseRows[1].order_stage_id,
-        "production expenses must preserve their distinct actual stages");
+      assert.equal(new Set(orderExpenseRows.map((row:any)=>row.order_id)).size,2,"the production expenses must retain two actual orders");
+      assert.equal(new Set(orderExpenseRows.map((row:any)=>row.order_stage_id)).size,3,"production expenses must preserve three actual stages");
       assert.ok(orderExpenseRows.every((row:any)=>Number(row.amount)===10));
       assert.ok(splitExpenseRows.rows.every((row:any)=>row.source_worker_payment_id===splitExpensePayout.json().data.payment.id));
       const linkedExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.cash_custody_transaction_id!==null);
@@ -1796,19 +1821,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [splitExpensePayout.json().data.payment.id]
       );
       assert.equal(splitExpenseMovement.rowCount,1);
-      assert.equal(Number(splitExpenseMovement.rows[0].amount),25);
+      assert.equal(Number(splitExpenseMovement.rows[0].amount),35);
       assert.equal(linkedExpenseRows[0].cash_custody_transaction_id,splitExpenseMovement.rows[0].id);
       const splitExpenseRetry=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{employeeId:splitExpenseWorker.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:managerEmployee.id,amount:25,method:"CASH",idempotencyKey:splitExpenseKey}
+          cashCustodyEmployeeId:managerEmployee.id,amount:35,method:"CASH",idempotencyKey:splitExpenseKey}
       });
       assert.equal(splitExpenseRetry.statusCode,200,splitExpenseRetry.body);
       assert.equal(splitExpenseRetry.json().data.payment.id,splitExpensePayout.json().data.payment.id);
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE source_worker_payment_id=$1",
         [splitExpensePayout.json().data.payment.id]
-      )).rows[0].count),3,"retry must preserve the same three expense allocations");
+      )).rows[0].count),4,"retry must preserve the same four expense allocations");
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [splitExpensePayout.json().data.payment.id]
