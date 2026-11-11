@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
+import { processMaturedWorkerPaymentDifferences } from "../payments/worker-payment-differences.service.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
@@ -430,6 +431,75 @@ export async function accountingRoutes(app:FastifyInstance){
    return {replayed:false,reversal:header.rows[0],lines};
   });
   return reply.code(result.replayed?200:201).send({data:{reversal:result.reversal,lines:result.lines}});
+ });
+
+ app.get("/api/accounting/worker-settlement-differences",{
+  preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.view")]
+ },async()=>{
+  const result=await pool.query(`
+   SELECT d.id,d.worker_payment_id,d.employee_id,emp.full_name AS employee_name,
+          wp.code AS payment_code,wp.gross_amount AS payment_gross_amount,
+          d.source_order_id,o.code AS source_order_code,o.order_name AS source_order_name,
+          d.source_order_stage_id,st.name AS source_stage_name,
+          d.source_expense_id,e.amount AS source_expense_amount,
+          d.original_amount,d.payment_date,d.eligible_at,d.status,d.created_at,
+          COALESCE(events.allocated_amount,0) AS allocated_amount,
+          COALESCE(events.transferred_amount,0) AS transferred_amount,
+          COALESCE(events.reversed_amount,0) AS reversed_amount,
+          CASE WHEN d.status='REVERSED' THEN 0
+               ELSE GREATEST(d.original_amount-COALESCE(events.allocated_amount,0)-COALESCE(events.transferred_amount,0),0)
+          END AS remaining_amount
+     FROM worker_payment_settlement_differences d
+     JOIN worker_payments wp ON wp.id=d.worker_payment_id
+     JOIN employees emp ON emp.id=d.employee_id
+     JOIN production_orders o ON o.id=d.source_order_id
+     LEFT JOIN order_stages os ON os.id=d.source_order_stage_id
+     LEFT JOIN stages st ON st.id=os.stage_id
+     JOIN accounting_expenses e ON e.id=d.source_expense_id
+     LEFT JOIN LATERAL (
+       SELECT
+         COALESCE(SUM(ev.amount) FILTER(WHERE ev.event_type='ALLOCATED_TO_PRODUCTION' AND NOT EXISTS(
+           SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id
+         )),0) AS allocated_amount,
+         COALESCE(SUM(ev.amount) FILTER(WHERE ev.event_type='TRANSFERRED_TO_SOURCE_ORDER' AND NOT EXISTS(
+           SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id
+         )),0) AS transferred_amount,
+         COALESCE(SUM(ev.amount) FILTER(WHERE ev.event_type='REVERSED'),0) AS reversed_amount
+       FROM worker_payment_settlement_difference_events ev WHERE ev.difference_id=d.id
+     ) events ON TRUE
+    ORDER BY CASE d.status WHEN 'PENDING' THEN 1 WHEN 'PARTIALLY_ALLOCATED' THEN 2 ELSE 3 END,d.eligible_at,d.created_at DESC
+  `);
+  return {data:result.rows};
+ });
+
+ app.get("/api/accounting/worker-settlement-differences/:id/events",{
+  preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.view")]
+ },async(request)=>{
+  const parsed=idSchema.safeParse(request.params);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","معرف فرق التسوية غير صحيح",422);
+  const result=await pool.query(`
+   SELECT e.*,target.code AS target_order_code,target.order_name AS target_order_name,
+          p.code AS production_code,st.name AS target_stage_name,u.username AS actor_username
+     FROM worker_payment_settlement_difference_events e
+     LEFT JOIN production_orders target ON target.id=e.target_order_id
+     LEFT JOIN production_entries p ON p.id=e.production_entry_id
+     LEFT JOIN order_stages os ON os.id=e.target_order_stage_id
+     LEFT JOIN stages st ON st.id=os.stage_id
+     LEFT JOIN users u ON u.id=e.actor_user_id
+    WHERE e.difference_id=$1
+    ORDER BY e.created_at,e.id
+  `,[parsed.data.id]);
+  return {data:result.rows};
+ });
+
+ app.post("/api/accounting/worker-settlement-differences/process",{
+  preHandler:[authenticateRequest,requirePermission("finance.worker_settlement_differences.manage")]
+ },async(request,reply)=>{
+  const result=await withTransaction(async client=>{
+   const transferred=await processMaturedWorkerPaymentDifferences(client,{actorUserId:request.user!.userId,actorType:"USER"});
+   return {transferred};
+  });
+  return reply.code(200).send({data:result});
  });
 
  app.get("/api/accounting/historical-expense-orders",{preHandler:[authenticateRequest,requirePermission("finance.expenses.create")]},async()=>{
