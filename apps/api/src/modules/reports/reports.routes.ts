@@ -68,7 +68,9 @@ export async function reportsRoutes(app: FastifyInstance) {
       LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=ev.worker_payment_id)
+            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+              WHERE es.worker_payment_id=ev.worker_payment_id)
             AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
               WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS paid_amount
         FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) pa ON TRUE
@@ -95,7 +97,9 @@ export async function reportsRoutes(app: FastifyInstance) {
       LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=ev.worker_payment_id)
+            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+              WHERE es.worker_payment_id=ev.worker_payment_id)
             AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
               WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS paid_amount
         FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) pa ON TRUE
@@ -175,7 +179,9 @@ export async function reportsRoutes(app: FastifyInstance) {
          LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=ev.worker_payment_id)
+            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+              WHERE es.worker_payment_id=ev.worker_payment_id)
             AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
               WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS paid_amount
         FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) pa ON TRUE
@@ -222,7 +228,9 @@ export async function reportsRoutes(app: FastifyInstance) {
          LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=ev.worker_payment_id)
+            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+              WHERE es.worker_payment_id=ev.worker_payment_id)
             AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
               WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS paid_amount
         FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) pa ON TRUE
