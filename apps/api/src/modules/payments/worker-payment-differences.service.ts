@@ -33,9 +33,11 @@ const productionRemainingSql = `
 
 async function remainingDifferenceAmount(client: PoolClient, differenceId: string, originalAmount: number) {
   const result = await client.query(
-    `SELECT GREATEST($2::numeric-COALESCE(SUM(amount) FILTER(WHERE event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')),0),0) AS remaining
-       FROM worker_payment_settlement_difference_events
-      WHERE difference_id=$1`,
+    `SELECT GREATEST($2::numeric-COALESCE(SUM(e.amount) FILTER(WHERE e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+         AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r
+           WHERE r.reverses_event_id=e.id AND r.event_type='REVERSED')),0),0) AS remaining
+       FROM worker_payment_settlement_difference_events e
+      WHERE e.difference_id=$1`,
     [differenceId, originalAmount]
   );
   return Number(result.rows[0]?.remaining ?? 0);
@@ -69,6 +71,8 @@ export async function allocatePendingWorkerPaymentDifferencesForProduction(
             GREATEST(d.original_amount-COALESCE((
               SELECT SUM(e.amount) FROM worker_payment_settlement_difference_events e
                WHERE e.difference_id=d.id AND e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+                 AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events r
+                   WHERE r.reverses_event_id=e.id AND r.event_type='REVERSED')
             ),0),0) AS remaining
        FROM worker_payment_settlement_differences d
        JOIN worker_payments wp ON wp.id=d.worker_payment_id
