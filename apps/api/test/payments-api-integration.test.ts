@@ -2425,6 +2425,36 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(settledAfterDifferenceAllocation.statusCode,200,settledAfterDifferenceAllocation.body);
       assert.equal(Number(settledAfterDifferenceAllocation.json().data.availableForSettlement),0,
         "an active difference allocation must count as settled even when its original payment has canonical settlement allocations");
+      const productionReport=await app.inject({
+        method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionReport.statusCode,200,productionReport.body);
+      const reportedLaterProduction=productionReport.json().data.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(reportedLaterProduction,"the later production must appear in the production report");
+      assert.equal(Number(reportedLaterProduction.paid_amount),20,
+        "production reports must include active difference allocations backed by canonical worker settlements");
+      assert.equal(Number(reportedLaterProduction.remaining_amount),0);
+      assert.equal(reportedLaterProduction.payment_status,"PAID");
+      const orderDashboardAfterDifference=await app.inject({
+        method:"GET",url:`/api/orders/${differenceOrderId}/dashboard`,headers:{cookie:managerCookie}
+      });
+      assert.equal(orderDashboardAfterDifference.statusCode,200,orderDashboardAfterDifference.body);
+      const orderProductionAfterDifference=orderDashboardAfterDifference.json().data.production.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(orderProductionAfterDifference,"the later production must appear in the order dashboard");
+      assert.equal(Number(orderProductionAfterDifference.paid_amount),20,
+        "order dashboards must include the same active difference allocation as the settlement summary");
+      assert.equal(Number(orderProductionAfterDifference.remaining_amount),0);
+      const productionListAfterDifference=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionListAfterDifference.statusCode,200,productionListAfterDifference.body);
+      const listedLaterProduction=productionListAfterDifference.json().data.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(listedLaterProduction);
+      assert.equal(Number(listedLaterProduction.paid_amount),20);
+      assert.equal(Number(listedLaterProduction.remaining_amount),0);
+      assert.equal(listedLaterProduction.payment_status,"PAID");
       const partialDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0];
