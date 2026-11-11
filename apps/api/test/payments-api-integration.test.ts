@@ -2194,7 +2194,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [reversalPaymentId,reversalProduction.id]
       );
       const reversalCustodyOut=(await apiPool.query(
-        "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        "SELECT id,transaction_date::text AS transaction_date FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
         [reversalPaymentId]
       )).rows[0];
       assert.ok(reversalCustodyOut,"current-custody worker payment must retain its original cash OUT");
@@ -2217,6 +2217,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       )).rows[0].count),0,"a broken custody-to-expense link must abort without a partial reversal");
       await apiPool.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2",
         [reversalCustodyOut.id,linkedExpense.id]);
+      await apiPool.query("UPDATE cash_custody_transactions SET transaction_date=transaction_date-1 WHERE id=$1",
+        [reversalCustodyOut.id]);
+      const brokenCustodyDateReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,
+          reason:"اختبار منع العكس عند اختلاف تاريخ حركة العهدة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(brokenCustodyDateReversal.statusCode,409,brokenCustodyDateReversal.body);
+      assert.equal(brokenCustodyDateReversal.json().error.code,"WORKER_PAYMENT_CUSTODY_MISMATCH");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals r JOIN financial_reversal_lines l ON l.reversal_id=r.id WHERE l.source_type='WORKER_PAYMENT' AND l.source_id=$1",
+        [reversalPaymentId]
+      )).rows[0].count),0,"a custody date mismatch must abort without a partial reversal");
+      await apiPool.query("UPDATE cash_custody_transactions SET transaction_date=$1::date WHERE id=$2",
+        [reversalCustodyOut.transaction_date,reversalCustodyOut.id]);
       const repaymentLink=(await apiPool.query(
         "SELECT id FROM advance_repayments WHERE source_worker_payment_id=$1",[reversalPaymentId]
       )).rows[0];
