@@ -602,8 +602,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(historicalPeriodReport.statusCode,200,historicalPeriodReport.body);
       assert.equal(historicalPeriodReport.json().data.integrityVerified,true,
         "period snapshot hash must verify after close");
-      assert.equal(Number(historicalPeriodReport.json().data.report.totals.expenses),55,
-        "a reversal dated after period end must not reduce the earlier period's expenses");
+      assert.equal(Number(historicalPeriodReport.json().data.report.totals.expenses),80,
+        "the earlier period must retain its 25 direct cost, 30 administrative cost, and 25 expense reversed only in a later period");
       const advanceSnapshot=historicalPeriodReport.json().data.report.advances.find((row:any)=>row.id===laterReversedAdvance);
       assert.ok(advanceSnapshot,"the advance must be included in the period-end snapshot");
       assert.equal(Number(advanceSnapshot.remaining),60,
