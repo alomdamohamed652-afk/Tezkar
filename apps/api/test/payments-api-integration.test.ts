@@ -1709,9 +1709,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const splitExpenseWorker=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES('Test Split Expense Worker') RETURNING id"
       )).rows[0];
+      const splitOtherOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{
+          orderName:"Split worker expense second order "+productSuffix,
+          customerName:"Isolated integration test",
+          stages:[{stageName:"Split worker expense stage "+productSuffix,
+            outputProductName:"Split worker expense product "+productSuffix,sequenceNo:1,
+            plannedQuantity:1,stageRate:10,stageRateMethod:"PER_PIECE",isFinalProduct:true}]
+        }
+      });
+      assert.equal(splitOtherOrder.statusCode,201,splitOtherOrder.body);
       const secondExpenseStage=(await apiPool.query(
-        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 AND id<>$2 ORDER BY sequence_no LIMIT 1",
-        [multiOrderId,reconcileOrderStage.id]
+        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 ORDER BY sequence_no LIMIT 1",
+        [splitOtherOrder.json().data.id]
       )).rows[0];
       assert.ok(secondExpenseStage,"split expense test requires a second order stage");
       const secondExpenseProduct=(await apiPool.query(
@@ -1772,7 +1783,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(orderExpenseRows.length,2);
       assert.equal(generalExpenseRows.length,1);
       assert.equal(Number(generalExpenseRows[0].amount),5,"standalone ledger adjustment must remain unallocated");
-      assert.equal(orderExpenseRows[0].order_id,orderExpenseRows[1].order_id,"both expense rows should retain their shared source order");
+      assert.notEqual(orderExpenseRows[0].order_id,orderExpenseRows[1].order_id,"the two production expenses must retain their actual distinct orders");
       assert.notEqual(orderExpenseRows[0].order_stage_id,orderExpenseRows[1].order_stage_id,
         "production expenses must preserve their distinct actual stages");
       assert.ok(orderExpenseRows.every((row:any)=>Number(row.amount)===10));
