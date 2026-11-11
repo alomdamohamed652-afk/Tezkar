@@ -40,6 +40,9 @@ CREATE INDEX IF NOT EXISTS worker_payment_allocation_reversals_production_idx
 CREATE INDEX IF NOT EXISTS worker_payment_allocation_reversals_payment_idx
   ON worker_payment_allocation_reversals(worker_payment_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS worker_payment_allocation_reversals_source_uq
+  ON worker_payment_allocation_reversals(allocation_source, source_allocation_id);
+
 CREATE TABLE IF NOT EXISTS accounting_expense_reversals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   reversal_id UUID NOT NULL REFERENCES financial_reversals(id) ON DELETE RESTRICT,
@@ -56,6 +59,9 @@ CREATE INDEX IF NOT EXISTS accounting_expense_reversals_expense_idx
 
 CREATE INDEX IF NOT EXISTS accounting_expense_reversals_payment_idx
   ON accounting_expense_reversals(source_worker_payment_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS accounting_expense_reversals_expense_uq
+  ON accounting_expense_reversals(expense_id);
 
 INSERT INTO schema_migrations(version)
 VALUES ('2026111102_worker_payment_reversal_effects')
