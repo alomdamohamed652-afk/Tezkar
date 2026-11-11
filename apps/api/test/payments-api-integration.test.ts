@@ -2155,6 +2155,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',5000,'worker reversal test cash top-up',$2)",
         [managerEmployee.id,manager.id]
       );
+      const reversalAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,requested_by,status,paid_by,paid_at,repayment_status)
+         VALUES($1,20,'worker payment reversal integration advance',$2,'PAID',$2,now(),'OPEN') RETURNING id`,
+        [reversalAllocationWorker.id,manager.id]
+      )).rows[0].id;
       const reversalProduction=(await apiPool.query(
         `INSERT INTO production_entries(
            employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
@@ -2169,7 +2174,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(reversalProduction.total_earning_amount),100);
       const reversalPayout=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:reversalAllocationWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()}
+        payload:{employeeId:reversalAllocationWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,advanceRepaymentAmount:20,method:"CASH",idempotencyKey:randomUUID()}
       });
       assert.equal(reversalPayout.statusCode,201,reversalPayout.body);
       const reversalPaymentId=reversalPayout.json().data.payment.id;
@@ -2194,15 +2199,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           (SELECT COALESCE(SUM(amount),0) FROM worker_payment_allocation_reversals WHERE reversal_id=$1) AS allocation_amount,
           (SELECT COALESCE(SUM(amount),0) FROM accounting_expense_reversals WHERE reversal_id=$1) AS expense_amount,
           (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS custody_in,
-          (SELECT COUNT(*)::int FROM employee_earnings_settlement_allocations WHERE id=$2) AS original_allocation_count`,
-        [reversalResponse.json().data.reversal.id,originalAllocation.id]
+          (SELECT COUNT(*)::int FROM employee_earnings_settlement_allocations WHERE id=$2) AS original_allocation_count,
+          (SELECT repayment_status FROM advance_requests WHERE id=$3) AS advance_status,
+          (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$1 AND source_type='ADVANCE_REPAYMENT') AS advance_reversal_lines`,
+        [reversalResponse.json().data.reversal.id,originalAllocation.id,reversalAdvance]
       );
       assert.equal(Number(reversalEffects.rows[0].allocation_count),1);
       assert.equal(Number(reversalEffects.rows[0].allocation_amount),100);
       assert.equal(Number(reversalEffects.rows[0].expense_amount),100);
-      assert.equal(Number(reversalEffects.rows[0].custody_in),100);
+      assert.equal(Number(reversalEffects.rows[0].custody_in),80);
       assert.equal(Number(reversalEffects.rows[0].original_allocation_count),1,
         "original production allocation must remain immutable after reversal");
+      assert.equal(reversalEffects.rows[0].advance_status,"OPEN",
+        "reversing a worker payout must restore the advance outstanding status");
+      assert.equal(Number(reversalEffects.rows[0].advance_reversal_lines),1,
+        "the linked advance repayment must be reversed in the same financial transaction");
       const productionAfterReversal=await app.inject({
         method:"GET",url:`/api/production?employeeId=${reversalAllocationWorker.id}&status=APPROVED&limit=100`,
         headers:{cookie:managerCookie}
