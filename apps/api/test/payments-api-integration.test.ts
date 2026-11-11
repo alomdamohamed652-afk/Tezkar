@@ -2418,6 +2418,13 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       finally{differenceClient.release()}
       assert.equal(laterAllocations.length,1);
       assert.equal(Number(laterAllocations[0].amount),20);
+      const settledAfterDifferenceAllocation=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${differenceWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(settledAfterDifferenceAllocation.statusCode,200,settledAfterDifferenceAllocation.body);
+      assert.equal(Number(settledAfterDifferenceAllocation.json().data.availableForSettlement),0,
+        "an active difference allocation must count as settled even when its original payment has canonical settlement allocations");
       const partialDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0];
