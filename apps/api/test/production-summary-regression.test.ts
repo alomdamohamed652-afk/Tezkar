@@ -14,17 +14,17 @@ test("production report remaining summary subtracts all allocated payments", () 
 
   assert.match(
     expression,
-    /-\s*COALESCE\(\(SELECT SUM\(a\.amount\) FROM worker_payment_order_allocations/,
+    /-\\s*COALESCE\\(\\(SELECT SUM\\(a\\.amount-COALESCE\\(\\(SELECT SUM\\(r\\.amount\\) FROM worker_payment_allocation_reversals r WHERE r\\.allocation_source='WORKER_PAYMENT_ORDER'//,
     "order-scoped payment allocations must reduce the remaining balance",
   );
   assert.match(
     expression,
-    /-\s*COALESCE\(\(SELECT SUM\(wpa\.amount\) FROM worker_payment_allocations/,
+    /-\\s*COALESCE\\(\\(SELECT SUM\\(wpa\\.amount-COALESCE\\(\\(SELECT SUM\\(r\\.amount\\) FROM worker_payment_allocation_reversals r WHERE r\\.allocation_source='WORKER_PAYMENT_LEGACY'//,
     "legacy payment allocations must reduce the remaining balance",
   );
   assert.match(
     expression,
-    /-\s*COALESCE\(\(SELECT SUM\(a\.amount\) FROM employee_earnings_settlement_allocations/,
+    /-\\s*COALESCE\\(\\(SELECT SUM\\(a\\.amount-COALESCE\\(\\(SELECT SUM\\(r\\.amount\\) FROM worker_payment_allocation_reversals r WHERE r\\.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT'//,
     "settlement allocations must reduce the remaining balance",
   );
   assert.doesNotMatch(
