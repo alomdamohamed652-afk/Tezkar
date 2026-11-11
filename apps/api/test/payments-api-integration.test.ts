@@ -2579,10 +2579,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie}
       });
       assert.equal(reversedProfitability.statusCode,200,reversedProfitability.body);
-      assert.equal(Number(reversedProfitability.json().data.laborCost),120);
-      assert.equal(Number(reversedProfitability.json().data.expenses),0);
-      assert.equal(Number(reversedProfitability.json().data.totalCost),120,
-        "reversing payment cash must not erase earned labor cost or leave duplicate transferred expense");
+      assert.equal(Number(reversedProfitability.json().data.laborCost),180,
+        "earned labor for the source, later, closure and other-worker production must remain visible");
+      assert.equal(Number(reversedProfitability.json().data.expenses),10,
+        "the separate closure difference remains charged until its own payment is reversed");
+      assert.equal(Number(reversedProfitability.json().data.totalCost),190,
+        "reversing one payment must not erase other workers' earned labor or leave duplicate transferred expense");
       const differenceEventsApi=await app.inject({
         method:"GET",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/events`,
         headers:{cookie:managerCookie}
