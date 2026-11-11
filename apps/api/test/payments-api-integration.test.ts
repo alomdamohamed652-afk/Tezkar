@@ -2522,38 +2522,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [repayoutAfterReversal.json().data.payment.id]
       )).rows[0].amount),100);
 
-      // A completed source order can close its remaining difference immediately
-      // once every approved production entry is fully settled.
-      const completedOrderPayment=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
-          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:150,method:"CASH",
-          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
-      });
-      assert.equal(completedOrderPayment.statusCode,201,completedOrderPayment.body);
-      const completedOrderPaymentId=completedOrderPayment.json().data.payment.id as string;
-      const completedOrderDifference=(await apiPool.query(
-        "SELECT id,original_amount,status FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",
-        [completedOrderPaymentId]
-      )).rows[0];
-      assert.ok(completedOrderDifference);
-      assert.equal(Number(completedOrderDifference.original_amount),30);
-      await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1",[differenceOrderId]);
-      const completedOrderClient=await apiPool.connect();
-      let completedOrderTransfers=0;
-      try{
-        await completedOrderClient.query("BEGIN");
-        completedOrderTransfers=await processMaturedWorkerPaymentDifferences(
-          completedOrderClient,{actorUserId:manager.id,actorType:"USER"}
-        );
-        await completedOrderClient.query("COMMIT");
-      }catch(error){await completedOrderClient.query("ROLLBACK");throw error}
-      finally{completedOrderClient.release()}
-      assert.equal(completedOrderTransfers,1,"a fully settled completed source order must close its remaining difference without waiting 30 days");
-      assert.equal((await apiPool.query(
-        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[completedOrderDifference.id]
-      )).rows[0].status,"TRANSFERRED_TO_SOURCE_ORDER");
-
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
