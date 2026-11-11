@@ -166,7 +166,7 @@ export async function accountingRoutes(app:FastifyInstance){
     if(!paymentIdentity.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","دفعة العامل الأصلية غير موجودة",404);
     await client.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[paymentIdentity.rows[0].employee_id]);
     const paymentResult=await client.query(
-     `SELECT wp.*,e.full_name AS employee_name
+     `SELECT wp.*,e.full_name AS employee_name,wp.created_at::date::text AS payment_created_date
         FROM worker_payments wp JOIN employees e ON e.id=wp.employee_id
        WHERE wp.id=$1 FOR UPDATE OF wp`,[input.sourceId]);
     if(!paymentResult.rowCount)throw new AppError("REVERSAL_SOURCE_NOT_FOUND","دفعة العامل الأصلية غير موجودة",404);
@@ -289,7 +289,7 @@ export async function accountingRoutes(app:FastifyInstance){
     // Only a recorded physical OUT can be restored to custody. Absence of an OUT
     // is valid for previous-custody settlements and must never create a fictional IN.
     const custody=await client.query(
-     `SELECT id,employee_id,amount FROM cash_custody_transactions
+     `SELECT id,employee_id,amount,transaction_date::text AS transaction_date FROM cash_custody_transactions
        WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'
        ORDER BY id FOR UPDATE`,[input.sourceId]);
     if(Number(custody.rowCount??0)>1)throw new AppError("WORKER_PAYMENT_CUSTODY_AMBIGUOUS","توجد أكثر من حركة خروج نقدي مرتبطة بالدفعة؛ أوقفنا العكس",409);
@@ -299,9 +299,10 @@ export async function accountingRoutes(app:FastifyInstance){
      if(previousCustodySettlement)
       throw new AppError("WORKER_PAYMENT_PREVIOUS_CUSTODY_CONFLICT","التسوية موثقة كعهدة سابقة رغم وجود خروج نقدي مرتبط بالدفعة؛ أوقفنا العكس",409);
      if(Math.abs(Number(custody.rows[0].amount)-cashPaid)>0.01||
+        custody.rows[0].transaction_date!==payment.payment_created_date||
         expenseCustodyRows.length!==1||expenseCustodyRows[0].paid_from_employee_id!==custody.rows[0].employee_id||
         expenseCustodyLinks.length!==1||expenseCustodyLinks[0].cash_custody_transaction_id!==custody.rows[0].id)
-      throw new AppError("WORKER_PAYMENT_CUSTODY_MISMATCH","حركة خروج العهدة وربطها بالمصروف وصاحب العهدة لا تطابق صافي النقد المصروف؛ أوقفنا العكس",409);
+      throw new AppError("WORKER_PAYMENT_CUSTODY_MISMATCH","حركة خروج العهدة وتاريخها وربطها بالمصروف وصاحب العهدة لا تطابق الدفعة؛ أوقفنا العكس",409);
      if(cashPaid>0.009)custodyMoves.push({employeeId:custody.rows[0].employee_id,direction:"IN",amount:cashPaid,description:"استرداد عكس دفعة العامل "+payment.id});
     }else if(cashPaid>0.009){
      if(!previousCustodySettlement||expenseCustodyRows.length||expenseCustodyLinks.length)
