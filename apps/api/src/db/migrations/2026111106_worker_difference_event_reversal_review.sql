@@ -71,6 +71,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS financial_reversal_lines_worker_difference_eve
   ON financial_reversal_lines(source_id)
   WHERE source_type='WORKER_SETTLEMENT_DIFFERENCE_EVENT';
 
+-- A reviewed reversal may be released and matured again; the event ledger is the
+-- source of truth, so multiple historical transfers are allowed and remain reversible.
+DROP INDEX IF EXISTS worker_payment_settlement_difference_transfer_uq;
+
 CREATE INDEX IF NOT EXISTS worker_payment_settlement_difference_review_idx
   ON worker_payment_settlement_differences(status, updated_at)
   WHERE status='REQUIRES_REVIEW';
