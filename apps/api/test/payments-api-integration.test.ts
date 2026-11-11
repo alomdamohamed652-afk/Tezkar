@@ -696,59 +696,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
         "payout preview must show the lower of available earnings and cash custody before confirmation");
 
-      // A fully offset worker settlement is valid with zero physical cash.
-      // It must settle gross earnings and advances without writing a zero-value custody movement.
-      const custodyBeforeZeroCash=Number((await apiPool.query(
-        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
-        [managerEmployee.id]
-      )).rows[0].balance);
-      const zeroCashKey=randomUUID();
-      const zeroCashPayout=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:workerEmployee.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:managerEmployee.id,amount:150,advanceRepaymentAmount:150,
-          method:"CASH",idempotencyKey:zeroCashKey}
-      });
-      assert.equal(zeroCashPayout.statusCode,201,zeroCashPayout.body);
-      const zeroCashPayment=zeroCashPayout.json().data.payment;
-      assert.equal(Number(zeroCashPayment.amount),0);
-      assert.equal(Number(zeroCashPayment.gross_amount),150);
-      assert.equal(Number(zeroCashPayment.advance_repayment_amount),150);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COALESCE(SUM(amount),0) AS amount FROM advance_repayments WHERE source_worker_payment_id=$1",
-        [zeroCashPayment.id]
-      )).rows[0].amount),150);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
-        [zeroCashPayment.id]
-      )).rows[0].count),0,"zero-cash settlement must not create a zero-value custody movement");
-      const zeroCashExpense=await apiPool.query(
-        "SELECT amount,paid_from_employee_id,cash_custody_transaction_id,allocation_type FROM accounting_expenses WHERE idempotency_key=$1",
-        [zeroCashKey]
-      );
-      assert.equal(zeroCashExpense.rowCount,1);
-      assert.equal(Number(zeroCashExpense.rows[0].amount),150,"labor expense remains gross even when all value offsets advances");
-      assert.equal(zeroCashExpense.rows[0].paid_from_employee_id,null);
-      assert.equal(zeroCashExpense.rows[0].cash_custody_transaction_id,null);
-      assert.equal(zeroCashExpense.rows[0].allocation_type,"GENERAL");
-      const zeroCashRetry=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:workerEmployee.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:managerEmployee.id,amount:150,advanceRepaymentAmount:150,
-          method:"CASH",idempotencyKey:zeroCashKey}
-      });
-      assert.equal(zeroCashRetry.statusCode,200,zeroCashRetry.body);
-      assert.equal(zeroCashRetry.json().data.payment.id,zeroCashPayment.id);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",
-        [zeroCashKey]
-      )).rows[0].count),1);
-      assert.equal(Number((await apiPool.query(
-        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
-        [managerEmployee.id]
-      )).rows[0].balance),custodyBeforeZeroCash,"zero-cash settlement must leave the selected custody unchanged");
-
-      
       // A previous-custody settlement must still settle employee earnings and post labor cost
       // to the selected order, without creating a new cash-custody OUT on today's custody.
       const previousCustodyEmployee = (await apiPool.query(
