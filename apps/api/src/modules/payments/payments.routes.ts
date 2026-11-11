@@ -2258,6 +2258,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rows.length !== 1) {
         throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
       }
+      let settlementDifferenceExpenseId:string|null=null;
+      let settlementDifferenceAmount=0;
       for(let index=0;index<expenseBuckets.length;index++){
         const bucket=expenseBuckets[index]!;
         const bucketHash=createHash("sha256").update(`${parsed.data.idempotencyKey}:${bucket.scope}`).digest("hex");
@@ -2267,13 +2269,14 @@ export async function paymentsRoutes(app:FastifyInstance){
         const expenseDescription=bucket.order_id
           ? `تسوية مستحقات العامل ${String(settlement.payment.code)} — الطلبية ${String(bucket.order_code??bucket.order_id)}${bucket.order_name?` — ${String(bucket.order_name)}`:""}${bucket.stage_name?` — المرحلة ${String(bucket.stage_name)}`:""}`
           : `تسوية مستحقات العامل ${String(settlement.payment.code)} — مستحقات عامة غير مرتبطة بإنتاج محدد`;
-        await client.query(
+        const insertedExpense=await client.query(
           `INSERT INTO accounting_expenses(
              order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
              expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
              cash_custody_transaction_id,allocation_type,source_worker_payment_id
            )
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)`,
+           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)
+           RETURNING id`,
           [
             bucket.order_id,
             bucket.order_stage_id,
@@ -2289,6 +2292,29 @@ export async function paymentsRoutes(app:FastifyInstance){
             settlement.payment.id
           ]
         );
+        if(bucket.scope==="GENERAL" && parsed.data.allowOverpayment && parsed.data.orderId && parsed.data.settlementSource==="PREVIOUS_CUSTODY"){
+          if(settlementDifferenceExpenseId)throw new AppError("WORKER_PAYMENT_DIFFERENCE_EXPENSE_AMBIGUOUS","توجد أكثر من حركة مصروف عام لفرق التسوية؛ أوقفنا التسجيل للمراجعة.",409);
+          settlementDifferenceExpenseId=insertedExpense.rows[0]?.id??null;
+          settlementDifferenceAmount=bucket.amount;
+        }
+      }
+      let settlementDifferenceId:string|null=null;
+      if(settlementDifferenceAmount>0.009){
+        if(!settlementDifferenceExpenseId||!parsed.data.orderId||!parsed.data.allowOverpayment||parsed.data.settlementSource!=="PREVIOUS_CUSTODY"){
+          throw new AppError("WORKER_PAYMENT_DIFFERENCE_SOURCE_MISSING","تعذر ربط فرق التسوية بمصروفه وطلبيته الأصلية؛ تم إلغاء العملية بالكامل.",409);
+        }
+        const difference=await client.query(
+          `INSERT INTO worker_payment_settlement_differences(
+             worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+             original_amount,payment_date,eligible_at,created_by
+           ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$7::date+30,$8)
+           ON CONFLICT(worker_payment_id) DO NOTHING
+           RETURNING id`,
+          [settlement.payment.id,parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null,
+           settlementDifferenceExpenseId,settlementDifferenceAmount,new Date(settlement.payment.created_at).toISOString().slice(0,10),request.user!.userId]
+        );
+        if(difference.rowCount!==1)throw new AppError("WORKER_PAYMENT_DIFFERENCE_ALREADY_EXISTS","يوجد فرق تسوية مسجل مسبقًا لهذه الدفعة؛ راجع سجل الفروق قبل المتابعة.",409);
+        settlementDifferenceId=difference.rows[0].id;
       }
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
@@ -2308,7 +2334,9 @@ export async function paymentsRoutes(app:FastifyInstance){
           orderStageId: parsed.data.orderStageId ?? null,
           grossAmount: settlement.grossAmount,
           cashPaid: settlement.cashPaid,
-          advanceRepaymentAmount: settlement.advanceRepaymentAmount
+          advanceRepaymentAmount: settlement.advanceRepaymentAmount,
+          settlementDifferenceId,
+          settlementDifferenceAmount
         },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
