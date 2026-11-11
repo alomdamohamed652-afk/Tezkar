@@ -7,25 +7,25 @@ const productionRoutes = readFileSync(
   "utf8",
 );
 
-test("production report remaining summary subtracts all allocated payments", () => {
+test("production report remaining summary subtracts net allocated payments", () => {
   const match = productionRoutes.match(/const remainingSql = `([\s\S]*?)`;/);
   assert.ok(match, "remainingSql must be defined");
   const expression = match[1];
 
   assert.match(
     expression,
-    /-\s*COALESCE\(\(SELECT SUM\(a\.amount\) FROM worker_payment_order_allocations/,
-    "order-scoped payment allocations must reduce the remaining balance",
+    /-\s*COALESCE\(\(SELECT SUM\(a\.amount-COALESCE\(\(SELECT SUM\(r\.amount\) FROM worker_payment_allocation_reversals r WHERE r\.allocation_source='WORKER_PAYMENT_ORDER'/,
+    "order-scoped allocations must reduce remaining earnings by their unreversed amount",
   );
   assert.match(
     expression,
-    /-\s*COALESCE\(\(SELECT SUM\(wpa\.amount\) FROM worker_payment_allocations/,
-    "legacy payment allocations must reduce the remaining balance",
+    /-\s*COALESCE\(\(SELECT SUM\(wpa\.amount-COALESCE\(\(SELECT SUM\(r\.amount\) FROM worker_payment_allocation_reversals r WHERE r\.allocation_source='WORKER_PAYMENT_LEGACY'/,
+    "legacy allocations must reduce remaining earnings by their unreversed amount",
   );
   assert.match(
     expression,
-    /-\s*COALESCE\(\(SELECT SUM\(a\.amount\) FROM employee_earnings_settlement_allocations/,
-    "settlement allocations must reduce the remaining balance",
+    /-\s*COALESCE\(\(SELECT SUM\(a\.amount-COALESCE\(\(SELECT SUM\(r\.amount\) FROM worker_payment_allocation_reversals r WHERE r\.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT'/,
+    "settlement allocations must reduce remaining earnings by their unreversed amount",
   );
   assert.doesNotMatch(
     expression,

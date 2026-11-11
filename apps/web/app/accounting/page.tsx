@@ -15,7 +15,7 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];openingBalances?:Array<{balance_type:string;entity_key:string;balance:Record<string,unknown>;source_period_id:string;created_at:string}>;orders:Order[]};
-type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
+type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; reversed_amount?:number; effective_amount?:number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
 type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
@@ -75,7 +75,7 @@ export default function AccountingPage() {
   const [payrollReconciliation,setPayrollReconciliation]=useState<PayrollReconciliation|null>(null);
   const [reconciliationLoading,setReconciliationLoading]=useState(false);
 
-  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:"",amount:"",reason:""});
+  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"|"WORKER_PAYMENT",sourceId:"",amount:"",reason:""});
   const [reversalSaving,setReversalSaving]=useState(false);
   const [reversals,setReversals]=useState<Array<{id:string;code:string;reason:string;reversal_date:string;created_at:string;created_by_username:string;source_type:string;source_id:string;amount:string|number}>>([]);
 
@@ -315,15 +315,15 @@ export default function AccountingPage() {
 
      {tab==="reversals"&&has("finance.reversals.create")&&<>
 {has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
-      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو دفعة عامل أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس دفعة العامل يتطلب إجمالي المبلغ بالكامل ومطابقة جميع روابطه. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
       <div className="form-grid" style={{padding:"0 16px 16px"}}>
-       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
+       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"|"WORKER_PAYMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="WORKER_PAYMENT">دفعة عامل</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
        <label>معرّف الحركة الأصلية (UUID)<input value={reversalForm.sourceId} onChange={e=>setReversalForm(v=>({...v,sourceId:e.target.value}))} placeholder="الصق معرّف الحركة"/></label>
        <label>مبلغ العكس (ج.م)<input type="number" min="0.01" step="0.01" value={reversalForm.amount} onChange={e=>setReversalForm(v=>({...v,amount:e.target.value}))}/></label>
        <label style={{gridColumn:"1 / -1"}}>سبب العكس<textarea rows={2} value={reversalForm.reason} onChange={e=>setReversalForm(v=>({...v,reason:e.target.value}))} placeholder="اكتب سبب التصحيح بالتفصيل"/></label>
        <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" type="button" disabled={reversalSaving} onClick={()=>void submitReversal()}>{reversalSaving?"جارٍ التسجيل...":"تسجيل العكس"}</button></div>
       </div>
-      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
+      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="WORKER_PAYMENT"?"دفعة عامل":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
      </section>}
       </>}
 
@@ -428,7 +428,7 @@ export default function AccountingPage() {
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
       </div>}
       {has("finance.expenses.create")&&<div className="form-actions"><button className="primary-button" onClick={addExpense}>تسجيل المصروف</button></div>}
-      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={7}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>الأصلي</th><th>المعكوس</th><th>الصافي</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td className="money">{n(x.reversed_amount??0)}</td><td className="money strong">{n(x.effective_amount??x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={9}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
      </section>}
 
      {tab==="out"&&has("finance.expenses.view")&&<section className="card">
