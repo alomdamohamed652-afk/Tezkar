@@ -2257,6 +2257,31 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(differenceView.remaining_amount),0);
       assert.equal(Number(differenceView.allocated_amount),10);
       assert.equal(Number(differenceView.transferred_amount),20);
+      const differenceReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:differencePaymentId,amount:130,
+          reason:"عكس دفعة فرق تسوية بعد التوزيع والترحيل",idempotencyKey:randomUUID()}
+      });
+      assert.equal(differenceReversal.statusCode,201,differenceReversal.body);
+      const differenceReversalEffects=(await apiPool.query(
+        `SELECT d.status,
+                COUNT(*) FILTER(WHERE e.event_type='REVERSED')::int AS reversal_events,
+                COUNT(*) FILTER(WHERE e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=e.id))::int AS active_events,
+                (SELECT COALESCE(SUM(er.amount),0) FROM accounting_expense_reversals er WHERE er.source_worker_payment_id=d.worker_payment_id) AS reversed_expenses,
+                (SELECT COUNT(*)::int FROM cash_custody_transactions c WHERE c.source_type='FINANCIAL_REVERSAL' AND c.source_id=$2 AND c.direction='IN') AS custody_in
+           FROM worker_payment_settlement_differences d
+           LEFT JOIN worker_payment_settlement_difference_events e ON e.difference_id=d.id
+          WHERE d.id=$1 GROUP BY d.id`,
+        [differenceRecord.id,differenceReversal.json().data.reversal.id]
+      )).rows[0];
+      assert.equal(differenceReversalEffects.status,"REVERSED");
+      assert.equal(Number(differenceReversalEffects.reversal_events),2,
+        "the allocated and transferred difference events must both receive immutable reversal events");
+      assert.equal(Number(differenceReversalEffects.active_events),0);
+      assert.equal(Number(differenceReversalEffects.reversed_expenses),130);
+      assert.equal(Number(differenceReversalEffects.custody_in),0,
+        "reversing a previous-custody payment must not invent a cash return to current custody");
 
       // End-to-end worker payment reversal must restore the production allocation,
       // available balance, original expense and current custody without deleting originals.
