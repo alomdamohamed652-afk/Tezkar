@@ -575,7 +575,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,
            source_worker_payment_id)
          VALUES($1,40,'CUSTOM','2099-02-15','Repayment reversed after period end',$2,$3) RETURNING id`,
-        [laterReversedAdvance,manager.id,directPaymentId]
+        [laterReversedAdvance,manager.id,periodSnapshotPayment]
       )).rows[0].id;
       const laterReversal=(await apiPool.query(
         `INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by)
@@ -590,7 +590,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query(
         `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
          VALUES($1,$2,$3,25,$4)`,
-        [laterReversal,laterReversedExpense,directPaymentId,manager.id]
+        [laterReversal,laterReversedExpense,periodSnapshotPayment,manager.id]
       );
 
       const closePeriod=await closePeriodWithApproval(financePeriod.json().data.id);
