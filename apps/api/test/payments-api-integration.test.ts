@@ -2337,6 +2337,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query(
         "UPDATE worker_payment_settlement_differences SET eligible_at=CURRENT_DATE-40 WHERE id=$1",[differenceRecord.id]
       );
+      const maturityDiagnostic=await apiPool.query(
+        `SELECT d.status,wp.created_at,
+          (SELECT MAX(p.approved_at) FROM production_entries p WHERE p.employee_id=d.employee_id
+            AND p.status='APPROVED' AND p.approved_at>wp.created_at AND p.work_date>=wp.created_at::date) AS last_activity,
+          COALESCE((SELECT MAX(p.approved_at) FROM production_entries p WHERE p.employee_id=d.employee_id
+            AND p.status='APPROVED' AND p.approved_at>wp.created_at AND p.work_date>=wp.created_at::date),wp.created_at)+INTERVAL '30 days'<=now() AS mature,
+          NOT EXISTS(SELECT 1 FROM production_entries p WHERE p.employee_id=d.employee_id
+            AND p.status='PENDING' AND p.work_date>=wp.created_at::date) AS no_pending,
+          NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id) AS no_reversal
+         FROM worker_payment_settlement_differences d JOIN worker_payments wp ON wp.id=d.worker_payment_id WHERE d.id=$1`,
+        [differenceRecord.id]
+      );
+      assert.equal(maturityDiagnostic.rows[0].mature,true,JSON.stringify(maturityDiagnostic.rows[0]));
+      assert.equal(maturityDiagnostic.rows[0].no_pending,true,JSON.stringify(maturityDiagnostic.rows[0]));
+      assert.equal(maturityDiagnostic.rows[0].no_reversal,true,JSON.stringify(maturityDiagnostic.rows[0]));
       const matureClient=await apiPool.connect();
       let transferredCount=0;
       try{
