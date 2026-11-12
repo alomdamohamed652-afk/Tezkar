@@ -2913,6 +2913,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }catch(error){await matureClient.query("ROLLBACK");throw error}
       finally{matureClient.release()}
       await apiPool.query("UPDATE order_stages SET status=$2 WHERE id=$1",[differenceStage.id,originalStageStatus]);
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledStageBlocker.id]);
       assert.equal(transferredCount,1,
         "approved production in a cancelled stage must not reset inactivity or block maturity");
       const maturedDifference=(await apiPool.query(
