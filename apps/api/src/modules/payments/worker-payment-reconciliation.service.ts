@@ -43,6 +43,7 @@ export async function reconcileWorkerPayments() {
       COALESCE(repayments.row_count,0) AS repayment_count,
       COALESCE(repayments.amount_total,0) AS repayment_total,
       COALESCE(repayments.mismatch_count,0) AS repayment_mismatch_count,
+      COALESCE(repayments.status_mismatch_count,0) AS advance_status_mismatch_count,
       COALESCE(repayment_reversal.row_count,0) AS repayment_reversal_count,
       COALESCE(repayment_reversal.amount_total,0) AS repayment_reversal_amount,
       COALESCE(expenses.row_count,0) AS expense_count,
@@ -103,7 +104,18 @@ export async function reconcileWorkerPayments() {
                OR el.ledger_count<>1
                OR el.employee_id IS DISTINCT FROM wp.employee_id
                OR ABS(el.credit_amount-ar.amount)>0.01
-               OR ABS(el.debit_amount)>0.01)::int AS mismatch_count
+               OR ABS(el.debit_amount)>0.01)::int AS mismatch_count,
+             COUNT(DISTINCT a.id) FILTER(WHERE
+               CASE
+                 WHEN GREATEST(a.amount-COALESCE((
+                   SELECT SUM(ar2.amount-COALESCE((SELECT SUM(rl.amount)
+                     FROM financial_reversal_lines rl
+                    WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar2.id),0))
+                     FROM advance_repayments ar2 WHERE ar2.advance_id=a.id
+                 ),0),0)<=0.009 THEN a.repayment_status IS DISTINCT FROM 'SETTLED'
+                 ELSE a.repayment_status IS DISTINCT FROM 'OPEN'
+               END
+             )::int AS status_mismatch_count
         FROM advance_repayments ar
         JOIN advance_requests a ON a.id=ar.advance_id
         LEFT JOIN employee_earnings_settlements es ON es.id=ar.settlement_id
@@ -340,6 +352,9 @@ export async function reconcileWorkerPayments() {
           amount(row.difference_reversed_event_count) !== amount(row.difference_source_event_count)) {
         add(row, "WORKER_PAYMENT_REVERSAL_DIFFERENCE_EVENTS_ACTIVE", row.difference_source_event_count, row.difference_reversed_event_count);
       }
+    }
+    if (amount(row.advance_status_mismatch_count) > 0) {
+      add(row, "ADVANCE_REPAYMENT_MISMATCH", "OPEN/SETTLED حسب الرصيد المتبقي", `${amount(row.advance_status_mismatch_count)} سلفة بحالة غير مطابقة`);
     }
   }
 
