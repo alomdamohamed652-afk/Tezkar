@@ -710,7 +710,7 @@ export async function accountingRoutes(app:FastifyInstance){
 
  const reconciliationHandler = async () => {
   // Read-only checks: findings are never repaired automatically and no balance is changed.
-  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches,advanceRepaymentLedgerMismatches,workerPaymentReversalMismatches,workerDifferenceEventReversalMismatches] = await Promise.all([
+  const [missingExpenses,missingAdjustmentEntries,missingCashMovements,paymentIntegrity,advanceDeductionMismatch,missingAdvanceRepayments,expenseCustodyMismatch,advanceRepaymentCustodyMismatch,zeroNetPayrollSettlementMismatches,advanceRepaymentLedgerMismatches,workerPaymentPostingMismatches,workerPaymentReversalMismatches,workerDifferenceEventReversalMismatches] = await Promise.all([
    pool.query(`
     SELECT i.id AS payroll_item_id,i.employee_id,emp.full_name,p.period_month::text AS period_month,
            i.net_amount,i.advance_repayment_amount,
@@ -947,6 +947,133 @@ export async function accountingRoutes(app:FastifyInstance){
      )
      ORDER BY ar.payment_date,emp.full_name,a.code`),
    pool.query(`
+    SELECT wp.id AS worker_payment_id,wp.employee_id,wp.gross_amount,
+           wp.amount AS cash_paid_amount,wp.advance_repayment_amount,
+           COALESCE(settlement.row_count,0) AS settlement_count,
+           COALESCE(ledger.row_count,0) AS ledger_count,
+           COALESCE(ledger.debit_total,0) AS ledger_debit,
+           COALESCE(ledger.credit_total,0) AS ledger_credit,
+           COALESCE(ledger.wrong_employee_count,0) AS wrong_ledger_employee_count,
+           COALESCE(repayments.row_count,0) AS repayment_count,
+           COALESCE(repayments.amount_total,0) AS repayment_total,
+           COALESCE(repayments.ledger_mismatch_count,0) AS repayment_ledger_mismatches,
+           COALESCE(expenses.row_count,0) AS expense_count,
+           COALESCE(expenses.amount_total,0) AS expense_total,
+           COALESCE(expenses.holder_count,0) AS custody_holder_count,
+           expenses.holder_id AS custody_holder_id,
+           COALESCE(custody.out_count,0) AS custody_out_count,
+           COALESCE(custody.out_amount,0) AS custody_out_amount,
+           COALESCE(custody.holder_count,0) AS custody_out_holder_count,
+           custody.holder_id AS custody_out_holder_id,
+           COALESCE(allocations.allocation_count,0) AS allocation_count,
+           COALESCE(allocations.allocation_amount,0) AS allocation_amount,
+           COALESCE(difference.amount,0) AS difference_original_amount,
+           COALESCE(difference.active_event_amount,0) AS difference_active_event_amount
+      FROM worker_payments wp
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS row_count,
+               COUNT(*) FILTER(WHERE es.employee_id<>wp.employee_id
+                 OR ABS(es.gross_amount-wp.gross_amount)>0.01
+                 OR ABS(es.cash_paid_amount-wp.amount)>0.01
+                 OR ABS(es.advance_repayment_amount-wp.advance_repayment_amount)>0.01)::int AS mismatch_count
+          FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id
+      ) settlement ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS row_count,COALESCE(SUM(l.debit_amount),0) AS debit_total,
+               COALESCE(SUM(l.credit_amount),0) AS credit_total,
+               COUNT(*) FILTER(WHERE l.employee_id<>wp.employee_id)::int AS wrong_employee_count
+          FROM employee_earnings_ledger l WHERE l.worker_payment_id=wp.id
+      ) ledger ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS row_count,COALESCE(SUM(ar.amount),0) AS amount_total,
+               COUNT(*) FILTER(WHERE el.id IS NULL OR el.employee_id<>wp.employee_id
+                 OR ABS(el.credit_amount-ar.amount)>0.01 OR ABS(el.debit_amount)>0.01)::int AS ledger_mismatch_count
+          FROM advance_repayments ar
+          LEFT JOIN employee_earnings_ledger el ON el.advance_repayment_id=ar.id
+         WHERE ar.source_worker_payment_id=wp.id
+      ) repayments ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS row_count,COALESCE(SUM(e.amount),0) AS amount_total,
+               COUNT(DISTINCT e.paid_from_employee_id)::int AS holder_count,
+               MIN(e.paid_from_employee_id::text) AS holder_id
+          FROM accounting_expenses e WHERE e.source_worker_payment_id=wp.id
+      ) expenses ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS out_count,COALESCE(SUM(c.amount),0) AS out_amount,
+               COUNT(DISTINCT c.employee_id)::int AS holder_count,
+               MIN(c.employee_id::text) AS holder_id
+          FROM cash_custody_transactions c
+         WHERE c.source_type='WORKER_PAYMENT' AND c.source_id=wp.id AND c.direction='OUT'
+      ) custody ON TRUE
+      LEFT JOIN LATERAL (
+        WITH source_allocations AS (
+          SELECT a.id,a.amount,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
+            FROM employee_earnings_settlement_allocations a
+            JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+           WHERE es.worker_payment_id=wp.id
+          UNION ALL
+          SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text
+            FROM worker_payment_order_allocations a
+           WHERE a.worker_payment_id=wp.id
+             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+               WHERE es.worker_payment_id=wp.id)
+          UNION ALL
+          SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text
+            FROM worker_payment_order_allocations a
+            JOIN worker_payment_settlement_difference_events de
+              ON de.worker_payment_order_allocation_id=a.id
+             AND de.event_type='ALLOCATED_TO_PRODUCTION'
+           WHERE a.worker_payment_id=wp.id
+             AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
+               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+               WHERE es.worker_payment_id=wp.id)
+          UNION ALL
+          SELECT a.id,a.amount,'WORKER_PAYMENT_LEGACY'::text
+            FROM worker_payment_allocations a
+           WHERE a.worker_payment_id=wp.id
+             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
+               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
+               WHERE es.worker_payment_id=wp.id)
+             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
+        )
+        SELECT COUNT(*)::int AS allocation_count,COALESCE(SUM(amount),0) AS allocation_amount
+          FROM source_allocations
+      ) allocations ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT d.original_amount,
+               COALESCE(SUM(e.amount) FILTER(WHERE e.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+                 AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=e.id)),0) AS active_event_amount
+          FROM worker_payment_settlement_differences d
+          LEFT JOIN worker_payment_settlement_difference_events e ON e.difference_id=d.id
+         WHERE d.worker_payment_id=wp.id
+         GROUP BY d.id
+      ) difference ON TRUE
+     WHERE NOT EXISTS(SELECT 1 FROM financial_reversal_lines rl
+       WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id)
+       AND (
+         ABS(wp.gross_amount-(wp.amount+wp.advance_repayment_amount))>0.01
+         OR COALESCE(settlement.row_count,0)<>1
+         OR COALESCE(settlement.mismatch_count,0)>0
+         OR COALESCE(ledger.row_count,0)<>1
+         OR ABS(COALESCE(ledger.debit_total,0)-wp.gross_amount)>0.01
+         OR ABS(COALESCE(ledger.credit_total,0))>0.01
+         OR COALESCE(ledger.wrong_employee_count,0)>0
+         OR ABS(COALESCE(repayments.amount_total,0)-wp.advance_repayment_amount)>0.01
+         OR COALESCE(repayments.ledger_mismatch_count,0)>0
+         OR COALESCE(expenses.row_count,0)=0
+         OR ABS(COALESCE(expenses.amount_total,0)-wp.gross_amount)>0.01
+         OR (COALESCE(expenses.holder_count,0)>0 AND (
+              custody.out_count<>1 OR ABS(custody.out_amount-wp.amount)>0.01
+              OR custody.holder_count<>1 OR custody.holder_id IS DISTINCT FROM expenses.holder_id
+            ))
+         OR (COALESCE(expenses.holder_count,0)=0 AND COALESCE(custody.out_count,0)>0)
+         OR COALESCE(allocations.allocation_amount,0)>wp.gross_amount+0.01
+         OR COALESCE(difference.active_event_amount,0)>COALESCE(difference.original_amount,0)+0.01
+       )
+     ORDER BY wp.created_at DESC,wp.id
+   `),
+   pool.query(`
     SELECT wp.id AS worker_payment_id,wp.employee_id,wp.gross_amount,wp.amount AS cash_paid_amount,
            wp.advance_repayment_amount,r.id AS reversal_id,
            COALESCE(ledger.credit_total,0) AS ledger_credit,
@@ -1120,6 +1247,7 @@ export async function accountingRoutes(app:FastifyInstance){
     advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows.length,
     zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows.length,
     advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows.length,
+    workerPaymentPostingMismatches:workerPaymentPostingMismatches.rows.length,
     workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows.length,
     workerDifferenceEventReversalMismatches:workerDifferenceEventReversalMismatches.rows.length
    },
@@ -1134,6 +1262,7 @@ export async function accountingRoutes(app:FastifyInstance){
     advanceRepaymentsMissingCustodyIn:advanceRepaymentCustodyMismatch.rows,
     zeroNetPayrollSettlementMismatches:zeroNetPayrollSettlementMismatches.rows,
     advanceRepaymentLedgerMismatches:advanceRepaymentLedgerMismatches.rows,
+    workerPaymentPostingMismatches:workerPaymentPostingMismatches.rows,
     workerPaymentReversalMismatches:workerPaymentReversalMismatches.rows,
     workerDifferenceEventReversalMismatches:workerDifferenceEventReversalMismatches.rows
    }
