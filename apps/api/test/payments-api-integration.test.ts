@@ -428,7 +428,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "paid requests must disappear from the pending badge count");
       assert.ok(approved.json().data.request.paid_payment_id);
       assert.equal(approved.json().data.payment.transfer_reference,"IP-TEST-2026-001");
-      const custodyDebit=await apiPool.query("SELECT direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
+      const custodyDebit=await apiPool.query("SELECT id,direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
       assert.equal(custodyDebit.rowCount,1,"payment must create exactly one linked cash-custody debit");
       assert.equal(custodyDebit.rows[0].direction,"OUT");
       assert.equal(Number(custodyDebit.rows[0].amount),100,"cash custody must record only the net cash actually paid");
