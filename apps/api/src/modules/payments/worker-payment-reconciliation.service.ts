@@ -111,6 +111,7 @@ export async function reconcileWorkerPayments() {
                OR el.ledger_count<>1
                OR el.employee_id IS DISTINCT FROM wp.employee_id
                OR (ar.settlement_id IS NOT NULL AND es.worker_payment_id IS DISTINCT FROM wp.id)
+               OR (ar.source_worker_payment_id IS NOT NULL AND ar.source_worker_payment_id IS DISTINCT FROM wp.id)
                OR ABS(el.credit_amount-ar.amount)>0.01
                OR ABS(el.debit_amount)>0.01)::int AS mismatch_count,
              COUNT(DISTINCT a.id) FILTER(WHERE
