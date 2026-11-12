@@ -2633,6 +2633,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [differenceRecord.id,laterProduction.id]
       )).rows[0];
       assert.ok(independentAllocationEvent,"the later production allocation must have an immutable event");
+      const partialIndependentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount)/2,reason:"محاولة عكس نصف حدث فرق التسوية",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(partialIndependentAllocationReversal.statusCode,409,partialIndependentAllocationReversal.body,
+        "an independent difference allocation must reject partial reversal");
+      assert.equal(partialIndependentAllocationReversal.json().error.code,
+        "WORKER_DIFFERENCE_FULL_EVENT_REVERSAL_REQUIRED");
       const independentAllocationReversalKey=randomUUID();
       const independentAllocationReversal=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
@@ -2673,6 +2683,15 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE reverses_event_id=$1 AND event_type='REVERSED'",
         [independentAllocationEvent.id]
       )).rows[0].count),1,"an idempotency retry must never append a second reversal event");
+      const secondIndependentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount),reason:"محاولة عكس الحدث نفسه بمفتاح جديد",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(secondIndependentAllocationReversal.statusCode,409,secondIndependentAllocationReversal.body,
+        "a previously reversed event must not be reversed again with a fresh idempotency key");
+      assert.equal(secondIndependentAllocationReversal.json().error.code,"WORKER_DIFFERENCE_REQUIRES_REVIEW");
       const independentReversalIntegrity=await app.inject({
         method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
       });
