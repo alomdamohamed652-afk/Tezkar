@@ -967,7 +967,7 @@ export async function accountingRoutes(app:FastifyInstance){
            custody.holder_id AS custody_out_holder_id,
            COALESCE(allocations.allocation_count,0) AS allocation_count,
            COALESCE(allocations.allocation_amount,0) AS allocation_amount,
-           COALESCE(difference.amount,0) AS difference_original_amount,
+           COALESCE(difference.original_amount,0) AS difference_original_amount,
            COALESCE(difference.active_event_amount,0) AS difference_active_event_amount
       FROM worker_payments wp
       LEFT JOIN LATERAL (
