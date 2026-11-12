@@ -257,7 +257,7 @@ export async function reconcileWorkerPayments() {
       const custodyCount = amount(row.custody_out_count);
       const previousCustody = row.previous_custody === true;
       const custodyValid = cash <= 0.009
-        ? custodyCount === 0
+        ? custodyCount === 0 && amount(row.expense_holder_count) === 0
         : previousCustody
           ? custodyCount === 0 && amount(row.expense_holder_count) === 0
           : custodyCount === 1 && near(row.custody_out_amount, cash) &&
@@ -268,6 +268,7 @@ export async function reconcileWorkerPayments() {
         add(row, "CASH_CUSTODY_MISMATCH", cash, row.custody_out_amount);
       }
       if (amount(row.allocation_amount) > amount(row.gross_amount) + 0.01 ||
+          amount(row.allocation_reversal_count) > amount(row.allocation_count) ||
           amount(row.allocation_reversal_amount) > amount(row.allocation_source_amount) + 0.01) {
         add(row, "PRODUCTION_ALLOCATION_MISMATCH", row.gross_amount, row.allocation_amount);
       }
