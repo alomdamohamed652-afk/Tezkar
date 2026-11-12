@@ -3245,15 +3245,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const adminCostA=await createAdminCostOrder("Admin allocation basis A");
       const adminCostB=await createAdminCostOrder("Admin allocation basis B");
       async function insertAdminCostProduction(employeeId:string,stage:any){
-        await apiPool.query(
+        return (await apiPool.query(
           `INSERT INTO production_entries(
              employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
              wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
              status,submitted_by,approved_by,approved_at
-           ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())`,
+           ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())
+           RETURNING id`,
           [employeeId,stage.id,stage.output_product_id,stage.stage_id,bonusShift.id,
            stage.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
-        );
+        )).rows[0];
       }
       await insertAdminCostProduction(adminCostWorkerA,adminCostA.stage);
       await insertAdminCostProduction(adminCostWorkerB,adminCostB.stage);
