@@ -146,7 +146,7 @@ export async function orderRoutes(app: FastifyInstance) {
       // Build order lines from stage outputs so the same product is never requested twice.
       if (!lineInputs.length) {
         if (!stages.length) throw new AppError("ORDER_STAGES_REQUIRED","يجب إضافة مرحلة واحدة على الأقل للطلبية",422);
-        const derived = new Map<string,{productId?:string;productName?:string;quantity:number;notes?:string}>();
+        const derived = new Map<string,{productId?:string | undefined;productName?:string | undefined;quantity:number;notes?:string | undefined}>();
         for (const stage of stages) {
           if (!stage.outputProductId && !stage.outputProductName) continue;
           if (stage.plannedQuantity == null || stage.plannedQuantity <= 0) {
