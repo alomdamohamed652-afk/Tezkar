@@ -3319,7 +3319,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const shareA=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostA.orderId).amount);
       const shareB=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostB.orderId).amount);
       assert.ok(Math.abs(shareA/shareB-2/3)<0.02,
-        \`administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got \${shareA} and \${shareB}\`);
+        `administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got ${shareA} and ${shareB}`);
 
       // Multiple active allocations on one difference: reversing one event must
       // leave the other event and its production settlement intact.
@@ -3379,11 +3379,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(multiEventReversal.statusCode,201,multiEventReversal.body);
       const activeMultiEvents=await apiPool.query(
-        \`SELECT ev.id,ev.production_entry_id,ev.amount
+        `SELECT ev.id,ev.production_entry_id,ev.amount
            FROM worker_payment_settlement_difference_events ev
           WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
             AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
-              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')\`,
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')`,
         [multiEventDifference.id]
       );
       assert.equal(activeMultiEvents.rowCount,1,
@@ -3399,7 +3399,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [multiEventDifference.id]
       )).rows[0].status,"REQUIRES_REVIEW");
       const multiEventSummary=await app.inject({
-        method:"GET",url:\`/api/worker-payments/settlement-summary?employeeId=\${multiEventWorker}\`,
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${multiEventWorker}`,
         headers:{cookie:managerCookie}
       });
       assert.equal(multiEventSummary.statusCode,200,multiEventSummary.body);
