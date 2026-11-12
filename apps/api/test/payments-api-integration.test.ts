@@ -434,6 +434,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(custodyDebit.rows[0].amount),100,"cash custody must record only the net cash actually paid");
       assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
       assert.match(custodyDebit.rows[0].description,/صرف مستحقات العامل/);
+      const workerPaymentExpense=await apiPool.query(
+        "SELECT id,amount,category,source_worker_payment_id,cash_custody_transaction_id,paid_from_employee_id FROM accounting_expenses WHERE source_worker_payment_id=$1",
+        [approved.json().data.payment.id]
+      );
+      assert.equal(workerPaymentExpense.rowCount,1,"approval must create exactly one source-linked worker-payment expense");
+      assert.equal(Number(workerPaymentExpense.rows[0].amount),150,"the expense must record gross entitlement, including advance repayment");
+      assert.equal(workerPaymentExpense.rows[0].category,"WORKER_PAYMENT");
+      assert.equal(workerPaymentExpense.rows[0].source_worker_payment_id,approved.json().data.payment.id);
+      assert.equal(workerPaymentExpense.rows[0].cash_custody_transaction_id,custodyDebit.rows[0].id,
+        "the gross expense must link to the single net-cash custody movement");
       const workerPostingCheck=await app.inject({
         method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
       });
