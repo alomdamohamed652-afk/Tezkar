@@ -88,7 +88,9 @@ export async function allocatePendingWorkerPaymentDifferencesForProduction(
             ),0),0) AS remaining
        FROM worker_payment_settlement_differences d
        JOIN worker_payments wp ON wp.id=d.worker_payment_id
+       JOIN production_orders source_order ON source_order.id=d.source_order_id
       WHERE d.employee_id=$1
+        AND source_order.status<>'CANCELLED'
         AND d.status IN ('PENDING','PARTIALLY_ALLOCATED')
         AND $2::timestamptz > wp.created_at
         AND $3::date >= wp.created_at::date
