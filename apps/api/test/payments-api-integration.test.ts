@@ -2641,6 +2641,38 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           idempotencyKey:independentAllocationReversalKey}
       });
       assert.equal(independentAllocationReversal.statusCode,201,independentAllocationReversal.body);
+      const replayedIndependentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount),reason:"اختبار عكس توزيع فرق التسوية منفردًا",
+          idempotencyKey:independentAllocationReversalKey}
+      });
+      assert.equal(replayedIndependentAllocationReversal.statusCode,200,replayedIndependentAllocationReversal.body,
+        "retrying an identical difference-event reversal must return the original journal result");
+      assert.equal(replayedIndependentAllocationReversal.json().data.reversal.id,
+        independentAllocationReversal.json().data.reversal.id,
+        "an idempotent retry must return the same financial reversal header");
+      const reusedDifferenceReversalKey=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount)+1,reason:"محاولة إعادة استخدام المفتاح لمبلغ مختلف",
+          idempotencyKey:independentAllocationReversalKey}
+      });
+      assert.equal(reusedDifferenceReversalKey.statusCode,409,reusedDifferenceReversalKey.body,
+        "reusing a difference-event reversal key with a different financial request must be rejected");
+      assert.equal(reusedDifferenceReversalKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals WHERE idempotency_key=$1",
+        [independentAllocationReversalKey]
+      )).rows[0].count),1,"an idempotency retry must never create a second reversal header");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversal_lines WHERE source_type='WORKER_SETTLEMENT_DIFFERENCE_EVENT' AND source_id=$1",
+        [independentAllocationEvent.id]
+      )).rows[0].count),1,"an idempotency retry must never duplicate the financial reversal line");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE reverses_event_id=$1 AND event_type='REVERSED'",
+        [independentAllocationEvent.id]
+      )).rows[0].count),1,"an idempotency retry must never append a second reversal event");
       const independentReversalIntegrity=await app.inject({
         method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
       });
