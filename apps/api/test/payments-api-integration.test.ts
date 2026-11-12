@@ -2754,7 +2754,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "production report must remove the independently reversed difference allocation");
       assert.equal(Number(reversedDifferenceProductionRow.remaining_amount),20,
         "production report must restore the full unpaid amount after independent reversal");
-      assert.equal(reversedDifferenceProductionRow.payment_status,"UNPAID");
+      assert.equal(reversedDifferenceProductionRow.payment_status,"UNALLOCATED",
+         "the source-order difference remains unallocated while held for accounting review, even though this production allocation was reversed");
       const reversedDifferenceOrderDashboard=await app.inject({
         method:"GET",url:`/api/orders/${differenceOrderId}/dashboard`,headers:{cookie:managerCookie}
       });
