@@ -276,21 +276,24 @@ export async function reconcileWorkerPayments() {
       const cash = amount(row.cash_paid_amount);
       const custodyCount = amount(row.custody_out_count);
       const previousCustody = row.previous_custody === true;
-      const custodyValid = cash <= 0.009
-        ? custodyCount === 0 && amount(row.expense_holder_count) === 0 &&
-          amount(row.expense_holder_row_count) === 0 && amount(row.expense_custody_link_count) === 0
-        : previousCustody
-          ? custodyCount === 0 && amount(row.expense_holder_count) === 0 &&
-            amount(row.expense_holder_row_count) === 0 && amount(row.expense_custody_link_count) === 0
-          : custodyCount === 1 && near(row.custody_out_amount, cash) &&
-            amount(row.custody_out_holder_count) === 1 &&
-            amount(row.expense_holder_count) === 1 &&
-            amount(row.expense_holder_row_count) === 1 &&
-            amount(row.expense_custody_link_count) === 1 &&
-            amount(row.expense_custody_link_mismatch_count) === 0 &&
-            row.custody_out_holder_id === row.expense_holder_id;
-      if (!custodyValid) {
-        add(row, "CASH_CUSTODY_MISMATCH", cash, row.custody_out_amount);
+      const requiresCashCustodyOut = cash > 0.009 && !previousCustody;
+      const custodyMovementValid = requiresCashCustodyOut
+        ? custodyCount === 1 && near(row.custody_out_amount, cash) && amount(row.custody_out_holder_count) === 1
+        : custodyCount === 0;
+      const expenseCustodyLinkValid = requiresCashCustodyOut
+        ? amount(row.expense_holder_count) === 1 &&
+          amount(row.expense_holder_row_count) === 1 &&
+          amount(row.expense_custody_link_count) === 1 &&
+          amount(row.expense_custody_link_mismatch_count) === 0 &&
+          row.custody_out_holder_id === row.expense_holder_id
+        : amount(row.expense_holder_count) === 0 &&
+          amount(row.expense_holder_row_count) === 0 &&
+          amount(row.expense_custody_link_count) === 0;
+      if (!custodyMovementValid) {
+        add(row, "CASH_CUSTODY_MISMATCH", requiresCashCustodyOut ? cash : 0, row.custody_out_amount);
+      }
+      if (!expenseCustodyLinkValid) {
+        add(row, "WORKER_PAYMENT_EXPENSE_CUSTODY_LINK_MISMATCH", requiresCashCustodyOut ? 1 : 0, row.expense_custody_link_count);
       }
       if (amount(row.allocation_mismatch_count) > 0 ||
           amount(row.allocation_amount) > amount(row.gross_amount) + 0.01 ||
