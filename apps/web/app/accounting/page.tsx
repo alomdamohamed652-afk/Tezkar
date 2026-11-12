@@ -555,7 +555,7 @@ export default function AccountingPage() {
             WORKER_PAYMENT_REVERSAL_ALLOCATIONS_MISMATCH:"عكس توزيعات الإنتاج غير مكتمل",
             WORKER_PAYMENT_REVERSAL_DIFFERENCE_EVENTS_ACTIVE:"أحداث فروق التسوية لم تُعكس بالكامل"
           } as Record<string,string>)[x.issueType]||x.issueType}</td>
-          <td>{x.expected===null?"—":n(Number(x.expected))}</td><td>{x.actual===null?"—":n(Number(x.actual))}</td>
+          <td>{x.expected===null?"—":typeof x.expected==="number"?n(x.expected):x.expected}</td><td>{x.actual===null?"—":typeof x.actual==="number"?n(x.actual):x.actual}</td>
           <td>{n(x.details.grossAmount)}</td><td>{n(x.details.cashPaidAmount)}</td><td>{n(x.details.advanceRepaymentAmount)}</td>
          </tr>)}
         </tbody></table></div>:<div className="form-hint">لا توجد فروق في دفعات العمال التي تم فحصها.</div>}
