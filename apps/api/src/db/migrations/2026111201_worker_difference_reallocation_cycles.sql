@@ -2,7 +2,7 @@
 -- production entry. Every cycle gets its own immutable allocation row; reversal
 -- records remain attached to the exact row they reverse.
 ALTER TABLE worker_payment_order_allocations
-  DROP CONSTRAINT IF EXISTS worker_payment_order_allocations_worker_payment_id_production_entry_id_key;
+  DROP CONSTRAINT IF EXISTS worker_payment_order_allocati_worker_payment_id_production__key;
 
 CREATE INDEX IF NOT EXISTS worker_payment_order_allocations_payment_production_idx
   ON worker_payment_order_allocations(worker_payment_id, production_entry_id);
