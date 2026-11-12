@@ -1008,12 +1008,16 @@ export async function accountingRoutes(app:FastifyInstance){
       ) custody ON TRUE
       LEFT JOIN LATERAL (
         WITH source_allocations AS (
-          SELECT a.id,a.amount,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
+          SELECT a.id,GREATEST(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+              WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0),0) AS amount,
+                   'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
             FROM employee_earnings_settlement_allocations a
             JOIN employee_earnings_settlements es ON es.id=a.settlement_id
            WHERE es.worker_payment_id=wp.id
           UNION ALL
-          SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text
+          SELECT a.id,GREATEST(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+              WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0),0) AS amount,
+                   'WORKER_PAYMENT_ORDER'::text
             FROM worker_payment_order_allocations a
            WHERE a.worker_payment_id=wp.id
              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -1030,7 +1034,9 @@ export async function accountingRoutes(app:FastifyInstance){
                JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                WHERE es.worker_payment_id=wp.id)
           UNION ALL
-          SELECT a.id,a.amount,'WORKER_PAYMENT_LEGACY'::text
+          SELECT a.id,GREATEST(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+              WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0),0) AS amount,
+                   'WORKER_PAYMENT_LEGACY'::text
             FROM worker_payment_allocations a
            WHERE a.worker_payment_id=wp.id
              AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
