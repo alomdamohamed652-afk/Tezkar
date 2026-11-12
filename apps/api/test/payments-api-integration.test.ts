@@ -2974,17 +2974,16 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(reusedReleaseKeyWithDifferentReason.statusCode,409,reusedReleaseKeyWithDifferentReason.body,
         "reusing a release idempotency key with a different reason must be rejected");
       assert.equal(reusedReleaseKeyWithDifferentReason.json().error.code,"IDEMPOTENCY_KEY_REUSED");
-      // A reversed allocation is immutable: retrying the same difference against
-      // the same production row must not create a second allocation or event.
-      // The production remains payable through a new, separately verified payout.
+      // Once accounting explicitly releases the reviewed difference, the same
+      // production row may receive a fresh immutable allocation cycle. The old
+      // allocation and its reversal remain untouched in the audit history.
       const repeatedDifferenceAllocationClient=await apiPool.connect();
+      let repeatedDifferenceAllocations:any[]=[];
       try{
         await repeatedDifferenceAllocationClient.query("BEGIN");
-        const repeatedDifferenceAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+        repeatedDifferenceAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
           repeatedDifferenceAllocationClient,differenceWorker.id,laterProduction.id,manager.id
         );
-        assert.equal(repeatedDifferenceAllocations.length,0,
-          "a reversed historical allocation must not be recreated against the same production row");
         await repeatedDifferenceAllocationClient.query("COMMIT");
       }catch(error){
         await repeatedDifferenceAllocationClient.query("ROLLBACK");
@@ -2992,17 +2991,28 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }finally{
         repeatedDifferenceAllocationClient.release();
       }
+      assert.equal(repeatedDifferenceAllocations.length,1,
+        "an explicitly released difference must be re-allocatable to the same production row");
+      assert.equal(Number(repeatedDifferenceAllocations[0].amount),20);
+      const allocationCyclesAfterReview=await apiPool.query(
+        `SELECT id,amount FROM worker_payment_order_allocations
+          WHERE worker_payment_id=$1 AND production_entry_id=$2 ORDER BY created_at,id`,
+        [differencePaymentId,laterProduction.id]
+      );
+      assert.equal(allocationCyclesAfterReview.rowCount,2,
+        "reallocation must append a new allocation row rather than mutate or reuse the reversed row");
+      assert.notEqual(allocationCyclesAfterReview.rows[0].id,allocationCyclesAfterReview.rows[1].id);
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND production_entry_id=$2 AND event_type='ALLOCATED_TO_PRODUCTION'",
         [differenceRecord.id,laterProduction.id]
-      )).rows[0].count),1,"retrying the same production must preserve one immutable original allocation event");
+      )).rows[0].count),2,"the event ledger must preserve both the reversed and reallocated cycles");
 
       const unpaidAfterReviewClient=await apiPool.connect();
       try{
         await unpaidAfterReviewClient.query("BEGIN");
         assert.equal(await processMaturedWorkerPaymentDifferences(
           unpaidAfterReviewClient,{actorUserId:manager.id,actorType:"USER"}
-        ),0,"maturity must not move the remainder to the source order while the reversed allocation has reopened unpaid approved production");
+        ),0,"the remaining difference must not mature before its inactivity threshold");
         await unpaidAfterReviewClient.query("COMMIT");
       }catch(error){await unpaidAfterReviewClient.query("ROLLBACK");throw error}
       finally{unpaidAfterReviewClient.release()}
@@ -3011,18 +3021,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie}
       });
       assert.equal(reopenedSettlementSummary.statusCode,200,reopenedSettlementSummary.body);
-      assert.equal(Number(reopenedSettlementSummary.json().data.availableForSettlement),20,
-        "an independently reversed allocation must restore only the genuinely unpaid production amount, not subtract the old unmatched difference twice");
-
-      const replacementProductionPayment=await app.inject({
-        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
-        payload:{employeeId:differenceWorker.id,settlementSource:"CURRENT_CUSTODY",
-          cashCustodyEmployeeId:managerEmployee.id,settlementMode:"SELECTED_PRODUCTION",
-          productionEntryIds:[laterProduction.id],amount:20,method:"CASH",advanceRepaymentAmount:0,
-          idempotencyKey:randomUUID()}
-      });
-      assert.equal(replacementProductionPayment.statusCode,201,replacementProductionPayment.body,
-        "the reopened later production must be settled by a separate verified payment before its unmatched remainder can mature");
+      assert.equal(Number(reopenedSettlementSummary.json().data.availableForSettlement),0,
+        "the reallocated historical difference must settle the reopened production exactly once");
 
       // Approved work attached to a cancelled stage/order is no longer eligible
       // for allocation and must not keep an otherwise mature difference pending.
@@ -3092,7 +3092,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number((await apiPool.query(
         "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER' AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=worker_payment_settlement_difference_events.id)",
         [differenceRecord.id]
-      )).rows[0].amount),50);
+      )).rows[0].amount),30);
       const maturedProfitability=await app.inject({
         method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
         headers:{cookie:managerCookie}
