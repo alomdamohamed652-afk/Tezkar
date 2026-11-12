@@ -2305,6 +2305,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "an insufficient custody balance must not leave a direct payment");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",[workerEmployee.id])).rows[0].count),Number(settlementsBeforeInsufficientCustody.rows[0].count),
         "an insufficient custody balance must not leave an additional settlement");
+      // Earlier scenarios in this long integration test intentionally consume the
+      // manager's opening custody. Fund this independent concurrency/remainder case
+      // explicitly so it tests payout serialization, not incidental prior test spend.
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',500,'direct payout concurrency test funding',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const directTestCustodyBalance=Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [managerEmployee.id]
+      )).rows[0].balance);
+      assert.ok(directTestCustodyBalance>=250,
+        "direct payout concurrency test must start with enough explicitly funded custody for both payments");
       const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
       const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
       const concurrentDirect=await Promise.all([
