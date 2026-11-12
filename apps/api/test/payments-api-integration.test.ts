@@ -3318,7 +3318,92 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const shareA=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostA.orderId).amount);
       const shareB=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostB.orderId).amount);
       assert.ok(Math.abs(shareA/shareB-2/3)<0.02,
-        `administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got ${shareA} and ${shareB}`);
+        \`administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got \${shareA} and \${shareB}\`);
+
+      // Multiple active allocations on one difference: reversing one event must
+      // leave the other event and its production settlement intact.
+      const multiEventWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Multi Event Difference Worker "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      const multiEventOrder=await createAdminCostOrder("Multi event difference isolation");
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[multiEventOrder.orderId]);
+      await insertAdminCostProduction(multiEventWorker,multiEventOrder.stage);
+      const multiEventSourcePayment=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:multiEventWorker,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:multiEventOrder.orderId,orderStageId:multiEventOrder.stage.id,amount:300,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(multiEventSourcePayment.statusCode,201,multiEventSourcePayment.body);
+      const multiEventPaymentId=multiEventSourcePayment.json().data.payment.id as string;
+      const multiEventDifference=(await apiPool.query(
+        "SELECT id,original_amount FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",
+        [multiEventPaymentId]
+      )).rows[0];
+      assert.ok(multiEventDifference,"the multi-event source payment must create a settlement difference");
+      assert.equal(Number(multiEventDifference.original_amount),200);
+      const multiEventProductionA=await insertAdminCostProduction(multiEventWorker,multiEventOrder.stage);
+      const multiEventProductionB=await insertAdminCostProduction(multiEventWorker,multiEventOrder.stage);
+      async function allocateMultiEventProduction(productionEntryId:string){
+        const client=await apiPool.connect();
+        try{
+          await client.query("BEGIN");
+          const allocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+            client,multiEventWorker,productionEntryId,manager.id
+          );
+          await client.query("COMMIT");
+          return allocations;
+        }catch(error){
+          await client.query("ROLLBACK");
+          throw error;
+        }finally{client.release()}
+      }
+      const multiEventAllocationA=await allocateMultiEventProduction(multiEventProductionA.id);
+      const multiEventAllocationB=await allocateMultiEventProduction(multiEventProductionB.id);
+      assert.equal(multiEventAllocationA.length,1);
+      assert.equal(multiEventAllocationB.length,1);
+      assert.equal(Number(multiEventAllocationA[0].amount),100);
+      assert.equal(Number(multiEventAllocationB[0].amount),100);
+      const multiEventRows=(await apiPool.query(
+        "SELECT id,production_entry_id,worker_payment_order_allocation_id,amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION' ORDER BY created_at,id",
+        [multiEventDifference.id]
+      )).rows;
+      assert.equal(multiEventRows.length,2,"the difference must retain two distinct active allocation events");
+      const multiEventReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:multiEventRows[0].id,
+          amount:Number(multiEventRows[0].amount),reason:"عكس تخصيص واحد من تخصيصين نشطين",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(multiEventReversal.statusCode,201,multiEventReversal.body);
+      const activeMultiEvents=await apiPool.query(
+        \`SELECT ev.id,ev.production_entry_id,ev.amount
+           FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')\`,
+        [multiEventDifference.id]
+      );
+      assert.equal(activeMultiEvents.rowCount,1,
+        "reversing one allocation must not reverse or erase the other active allocation");
+      assert.equal(activeMultiEvents.rows[0].production_entry_id,multiEventRows[1].production_entry_id);
+      assert.equal(Number(activeMultiEvents.rows[0].amount),100);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_allocation_reversals WHERE worker_payment_id=$1",
+        [multiEventPaymentId]
+      )).rows[0].count),1,"only the selected allocation may receive an allocation-reversal row");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",
+        [multiEventDifference.id]
+      )).rows[0].status,"REQUIRES_REVIEW");
+      const multiEventSummary=await app.inject({
+        method:"GET",url:\`/api/worker-payments/settlement-summary?employeeId=\${multiEventWorker}\`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(multiEventSummary.statusCode,200,multiEventSummary.body);
+      assert.equal(Number(multiEventSummary.json().data.availableForSettlement),100,
+        "the summary must restore only the reversed production while retaining the other active difference allocation");
 
     }finally{await app.close()}
   }finally{
