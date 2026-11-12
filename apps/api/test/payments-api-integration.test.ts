@@ -462,8 +462,22 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(corruptedWorkerPostingCheck.statusCode,200,corruptedWorkerPostingCheck.body);
       assert.equal(corruptedWorkerPostingCheck.json().data.counts.workerPaymentPostingMismatches,1,
         "reconciliation must detect a worker payment whose earnings-ledger debit differs from gross");
+      const independentCorruptionCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(independentCorruptionCheck.statusCode,200,independentCorruptionCheck.body);
+      assert.ok(independentCorruptionCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===approved.json().data.payment.id&&issue.issueType==="EARNINGS_LEDGER_MISMATCH"),
+        "the independent payment reconciliation must identify the exact payment and broken ledger component");
       await apiPool.query("UPDATE employee_earnings_ledger SET debit_amount=$2 WHERE id=$1",
         [workerLedgerEntry.rows[0].id,workerLedgerEntry.rows[0].debit_amount]);
+      const independentHealthyCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(independentHealthyCheck.statusCode,200,independentHealthyCheck.body);
+      assert.equal(independentHealthyCheck.json().data.issues.filter((issue:any)=>
+        issue.workerPaymentId===approved.json().data.payment.id).length,0,
+        "the independent payment reconciliation must clear the payment after its source ledger is restored");
       assert.equal(Number(approved.json().data.payment.amount),100);
       assert.equal(Number(approved.json().data.grossAmount),150);
       assert.equal(Number(approved.json().data.advanceRepaymentAmount),50);
