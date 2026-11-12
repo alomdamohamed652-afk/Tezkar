@@ -365,13 +365,17 @@ export async function orderRoutes(app: FastifyInstance) {
       const activity=await client.query(
         `SELECT
            EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status <> 'CANCELLED') AS has_production,
+           EXISTS(SELECT 1 FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id WHERE os.order_id=$1) AS has_machine_production,
            EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
            EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1) AS has_deliveries`,
         [id]
       );
-      if(activity.rows[0].has_production||activity.rows[0].has_stock_movements||activity.rows[0].has_deliveries){
-        throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن حذف طلبية عليها إنتاج أو حركة مخزنية أو إذونات تسليم. عالج السجلات التابعة أولًا حتى لا تتأثر الأرصدة والتكلفة.",409);
+      const a=activity.rows[0];
+      if(a.has_production||a.has_machine_production||a.has_stock_movements||a.has_deliveries){
+        throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن إلغاء طلبية عليها إنتاج أو تشغيل ماكينة أو حركة مخزنية أو إذونات تسليم. عالج السجلات التشغيلية التابعة أولًا حتى لا تتأثر الأرصدة والتكلفة.",409);
       }
+      // Posted expenses, revenues and cash-custody movements are historical records.
+      // Cancellation preserves them and never issues an automatic refund or reversal.
       const after=await client.query("UPDATE production_orders SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,order_name,status",[id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate",module:"orders",entityType:"production_order",entityId:id,beforeData:before.rows[0],afterData:after.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return after.rows[0];
@@ -409,14 +413,12 @@ export async function orderRoutes(app: FastifyInstance) {
                EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status<>'CANCELLED') AS has_production,
                EXISTS(SELECT 1 FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id WHERE os.order_id=$1) AS has_machine_production,
                EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
-               EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1) AS has_deliveries,
-               EXISTS(SELECT 1 FROM accounting_expenses WHERE order_id=$1) AS has_expenses,
-               EXISTS(SELECT 1 FROM order_revenues WHERE order_id=$1) AS has_revenues`,
+               EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1) AS has_deliveries`,
             [id]
           );
           const a=activity.rows[0];
-          if(a.has_production||a.has_machine_production||a.has_stock_movements||a.has_deliveries||a.has_expenses||a.has_revenues){
-            throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن إلغاء طلبية عليها إنتاج أو حركة مخزنية أو تسليم أو حركة مالية؛ عالج السجلات التابعة بإجراء تصحيح معتمد أولًا.",409);
+          if(a.has_production||a.has_machine_production||a.has_stock_movements||a.has_deliveries){
+            throw new AppError("ORDER_HAS_ACTIVITY_LOCKED","لا يمكن إلغاء طلبية عليها إنتاج أو تشغيل ماكينة أو حركة مخزنية أو تسليم. عالج السجلات التشغيلية التابعة أولًا؛ أما المصروفات والإيرادات وحركات العهدة فتبقى محفوظة كما هي دون رد أو عكس تلقائي.",409);
           }
         }
       }

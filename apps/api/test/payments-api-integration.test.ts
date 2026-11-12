@@ -590,6 +590,74 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(directExpense.statusCode,201,directExpense.body);
 
+      // Cancellation preserves posted financial history and never refunds custody.
+      const patchCancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Cancel order with financial history PATCH "+randomBytes(4).toString("hex"),manager.id]
+      )).rows[0];
+      const patchCancelledExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:patchCancelledOrder.id,category:"اختبار إلغاء",description:"مصروف محفوظ بعد إلغاء الطلبية",amount:35,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,idempotencyKey:randomUUID()}
+      });
+      assert.equal(patchCancelledExpense.statusCode,201,patchCancelledExpense.body);
+      const patchCancelledRevenue=await app.inject({
+        method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+        payload:{orderId:patchCancelledOrder.id,amount:15,revenueDate:"2099-02-12",source:"MANUAL",notes:"إيراد محفوظ بعد إلغاء الطلبية"}
+      });
+      assert.equal(patchCancelledRevenue.statusCode,201,patchCancelledRevenue.body);
+      const reversalCustodyCountBeforePatchCancellation=Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN'"
+      )).rows[0].count);
+      const patchCancellation=await app.inject({
+        method:"PATCH",url:"/api/orders/"+patchCancelledOrder.id,headers:{cookie:managerCookie},
+        payload:{status:"CANCELLED"}
+      });
+      assert.equal(patchCancellation.statusCode,200,patchCancellation.body);
+      assert.equal(patchCancellation.json().data.status,"CANCELLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE order_id=$1",[patchCancelledOrder.id]
+      )).rows[0].count),1,"PATCH cancellation must retain the original expense");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM order_revenues WHERE order_id=$1",[patchCancelledOrder.id]
+      )).rows[0].count),1,"PATCH cancellation must retain the original revenue");
+      const patchCancellationCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [patchCancelledExpense.json().data.id]
+      );
+      assert.equal(patchCancellationCustody.rowCount,1,"the original expense custody movement must remain");
+      assert.equal(patchCancellationCustody.rows[0].direction,"OUT");
+      assert.equal(Number(patchCancellationCustody.rows[0].amount),35);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN'"
+      )).rows[0].count),reversalCustodyCountBeforePatchCancellation,
+        "cancellation must not create an automatic cash refund or financial reversal");
+
+      const deleteCancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Cancel order with financial history DELETE "+randomBytes(4).toString("hex"),manager.id]
+      )).rows[0];
+      const deleteCancelledExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:deleteCancelledOrder.id,category:"اختبار إلغاء",description:"مصروف محفوظ بعد الإلغاء من مسار الحذف",amount:22,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,idempotencyKey:randomUUID()}
+      });
+      assert.equal(deleteCancelledExpense.statusCode,201,deleteCancelledExpense.body);
+      const deleteCancellation=await app.inject({
+        method:"DELETE",url:"/api/orders/"+deleteCancelledOrder.id,headers:{cookie:managerCookie},
+        payload:{password:"Test-Manager-Password-2026!"}
+      });
+      assert.equal(deleteCancellation.statusCode,200,deleteCancellation.body);
+      assert.equal(deleteCancellation.json().data.status,"CANCELLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE order_id=$1",[deleteCancelledOrder.id]
+      )).rows[0].count),1,"DELETE cancellation must retain the original expense");
+      const deleteCancellationCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [deleteCancelledExpense.json().data.id]
+      );
+      assert.equal(deleteCancellationCustody.rowCount,1);
+      assert.equal(deleteCancellationCustody.rows[0].direction,"OUT");
+      assert.equal(Number(deleteCancellationCustody.rows[0].amount),22);
+
       // Historical settlements must not silently debit a current custody, and their date must belong to an open period.
       const historicalDate="1800-03-10";
       const historicalWithoutPeriod=await app.inject({
