@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { processMaturedWorkerPaymentDifferences } from "../payments/worker-payment-differences.service.js";
+import { reconcileWorkerPayments } from "../payments/worker-payment-reconciliation.service.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
@@ -1277,6 +1278,7 @@ export async function accountingRoutes(app:FastifyInstance){
  };
  app.get("/api/accounting/reconciliation/payroll",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconciliationHandler()}));
  app.get("/api/accounting/reconciliation/overview",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconciliationHandler()}));
+ app.get("/api/accounting/reconciliation/worker-payments",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async()=>({data:await reconcileWorkerPayments()}));
 
  app.get("/api/accounting/expenses",{preHandler:[authenticateRequest,requirePermission("finance.expenses.view")]},async(request)=>{
   const q=z.object({orderId:z.string().uuid().optional()}).safeParse(request.query);
