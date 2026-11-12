@@ -544,6 +544,7 @@ export default function AccountingPage() {
             ADVANCE_REPAYMENT_MISMATCH:"سداد السلف غير مطابق",
             WORKER_PAYMENT_EXPENSE_MISMATCH:"مصروف الدفعة غير مطابق",
             CASH_CUSTODY_MISMATCH:"حركة العهدة غير مطابقة",
+            WORKER_PAYMENT_EXPENSE_CUSTODY_LINK_MISMATCH:"رابط مصروف الدفعة بحركة العهدة غير مطابق",
             PRODUCTION_ALLOCATION_MISMATCH:"توزيعات الإنتاج غير مطابقة",
             SETTLEMENT_DIFFERENCE_MISMATCH:"فرق التسوية غير مطابق",
             WORKER_PAYMENT_REVERSAL_MISMATCH:"عكس الدفعة أو المصروف غير مكتمل",
