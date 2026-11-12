@@ -2927,16 +2927,28 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       )).rows[0];
       await apiPool.query("UPDATE production_orders SET status='CANCELLED' WHERE id=$1",[cancelledOrderId]);
 
-      const matureClient=await apiPool.connect();
+      // Two independent callers race the same mature difference. Row-level
+      // employee/difference locks plus SKIP LOCKED must allow exactly one transfer.
+      const matureClients=await Promise.all([apiPool.connect(),apiPool.connect()]);
       let transferredCount=0;
       try{
-        await matureClient.query("BEGIN");
-        transferredCount=await processMaturedWorkerPaymentDifferences(
-          matureClient,{actorUserId:manager.id,actorType:"USER"}
-        );
-        await matureClient.query("COMMIT");
-      }catch(error){await matureClient.query("ROLLBACK");throw error}
-      finally{matureClient.release()}
+        const concurrentResults=await Promise.all(matureClients.map(async matureClient=>{
+          try{
+            await matureClient.query("BEGIN");
+            const count=await processMaturedWorkerPaymentDifferences(
+              matureClient,{actorUserId:manager.id,actorType:"USER"}
+            );
+            await matureClient.query("COMMIT");
+            return count;
+          }catch(error){
+            await matureClient.query("ROLLBACK");
+            throw error;
+          }
+        }));
+        transferredCount=concurrentResults.reduce((sum,count)=>sum+count,0);
+      }finally{
+        for(const matureClient of matureClients)matureClient.release();
+      }
       await apiPool.query("UPDATE order_stages SET status=$2 WHERE id=$1",[differenceStage.id,originalStageStatus]);
       await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledStageBlocker.id]);
       await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledOrderBlocker.id]);
