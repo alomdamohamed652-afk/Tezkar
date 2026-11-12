@@ -2424,6 +2424,20 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "independent reconciliation must detect an advance repayment linked to another worker settlement");
       await apiPool.query("UPDATE advance_repayments SET settlement_id=$1 WHERE id=$2",
         [originalRepaymentSettlement,repaymentLink.id]);
+      const unrelatedPaymentLink=(await apiPool.query(
+        "SELECT id FROM worker_payments WHERE id<>$1 ORDER BY created_at,id LIMIT 1",[reversalPaymentId]
+      )).rows[0]?.id;
+      assert.ok(unrelatedPaymentLink,"reconciliation test requires a second worker payment for a foreign source link");
+      await apiPool.query("UPDATE advance_repayments SET source_worker_payment_id=$1 WHERE id=$2",
+        [unrelatedPaymentLink,repaymentLink.id]);
+      const brokenAdvanceSourcePaymentLink=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(brokenAdvanceSourcePaymentLink.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="ADVANCE_REPAYMENT_MISMATCH"),
+        "independent reconciliation must detect an advance repayment source link pointing to another worker payment");
+      await apiPool.query("UPDATE advance_repayments SET source_worker_payment_id=$1 WHERE id=$2",
+        [reversalPaymentId,repaymentLink.id]);
       const originalPaymentLedgerSettlement=(await apiPool.query(
         "SELECT settlement_id FROM employee_earnings_ledger WHERE worker_payment_id=$1",[reversalPaymentId]
       )).rows[0].settlement_id;
