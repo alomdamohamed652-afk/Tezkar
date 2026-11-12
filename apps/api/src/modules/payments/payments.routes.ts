@@ -664,6 +664,32 @@ export async function paymentsRoutes(app:FastifyInstance){
         grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
         manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
       });
+      const custodyMovement=settlement.cashPaid>0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : {rows:[] as Array<{id:string}>};
+      if(settlement.cashPaid>0.009 && custodyMovement.rows.length!==1){
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      await client.query(
+        `INSERT INTO accounting_expenses(
+           category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,cash_custody_transaction_id,allocation_type,
+           source_worker_payment_id
+         )
+         VALUES('WORKER_PAYMENT',$1,$2,CURRENT_DATE,$3,$4,'DIRECT',$5,$6,'GENERAL',$7)`,
+        [
+          `تسوية مستحقات العامل ${String(settlement.payment.code)} — طلب قبض ${String(current.rows[0].code)}`,
+          settlement.grossAmount,
+          String(current.rows[0].method),
+          request.user!.userId,
+          settlement.cashPaid>0.009?custodyEmployeeId:null,
+          custodyMovement.rows[0]?.id??null,
+          settlement.payment.id
+        ]
+      );
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [settlement.payment.id,id]);
