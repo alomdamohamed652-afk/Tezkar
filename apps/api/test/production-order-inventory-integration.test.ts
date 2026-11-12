@@ -856,6 +856,29 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(cancelOrderWithActiveMachineRun.statusCode,409,cancelOrderWithActiveMachineRun.body);
     assert.equal(cancelOrderWithActiveMachineRun.json().error.code,"ORDER_HAS_ACTIVITY_LOCKED");
+
+    // Cancelled delivery drafts are retained for audit but must not lock an otherwise unused order.
+    const cancelledDeliveryOrder=(await apiPool.query(
+      "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+      ["Cancelled delivery draft guard "+randomBytes(4).toString("hex"),submitter.userId]
+    )).rows[0];
+    const deliveryDraft=await app.inject({
+      method:"POST",url:"/api/delivery-permissions/drafts",headers:{cookie:submitter.cookie},
+      payload:{orderId:cancelledDeliveryOrder.id,destination:"Cancelled draft regression"}
+    });
+    assert.equal(deliveryDraft.statusCode,201,deliveryDraft.body);
+    const cancelDeliveryDraft=await app.inject({
+      method:"POST",url:"/api/delivery-permissions/"+deliveryDraft.json().data.id+"/cancel-draft",
+      headers:{cookie:submitter.cookie}
+    });
+    assert.equal(cancelDeliveryDraft.statusCode,200,cancelDeliveryDraft.body);
+    assert.equal(cancelDeliveryDraft.json().data.status,"CANCELLED");
+    const cancelOrderWithCancelledDeliveryDraft=await app.inject({
+      method:"PATCH",url:"/api/orders/"+cancelledDeliveryOrder.id,headers:{cookie:submitter.cookie},
+      payload:{status:"CANCELLED"}
+    });
+    assert.equal(cancelOrderWithCancelledDeliveryDraft.statusCode,200,cancelOrderWithCancelledDeliveryDraft.body);
+    assert.equal(cancelOrderWithCancelledDeliveryDraft.json().data.status,"CANCELLED");
     await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1", [orderId]);
     const reopenCompletedOrder = await app.inject({
       method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
