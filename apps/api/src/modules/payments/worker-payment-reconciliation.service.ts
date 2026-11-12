@@ -3,6 +3,8 @@ import { pool } from "../../db/pool.js";
 type ReconciliationIssue = {
   workerPaymentId: string;
   employeeId: string;
+  employeeCode: string;
+  employeeName: string;
   issueType: string;
   expected: number | string | null;
   actual: number | string | null;
@@ -25,6 +27,8 @@ export async function reconcileWorkerPayments() {
     SELECT
       wp.id AS worker_payment_id,
       wp.employee_id,
+      emp.code AS employee_code,
+      emp.full_name AS employee_name,
       wp.gross_amount,
       wp.amount AS cash_paid_amount,
       wp.advance_repayment_amount,
@@ -74,6 +78,7 @@ export async function reconcileWorkerPayments() {
       COALESCE(reversal_ledger.wrong_employee_count,0) AS reversal_ledger_wrong_employee_count,
       COALESCE(difference.active_event_count,0) AS difference_active_event_count
     FROM worker_payments wp
+    JOIN employees emp ON emp.id=wp.employee_id
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::int AS row_count,
              COUNT(*) FILTER(WHERE es.employee_id IS DISTINCT FROM wp.employee_id
@@ -239,6 +244,8 @@ export async function reconcileWorkerPayments() {
     const issue: ReconciliationIssue = {
       workerPaymentId: String(row.worker_payment_id),
       employeeId: String(row.employee_id),
+      employeeCode: String(row.employee_code ?? ""),
+      employeeName: String(row.employee_name ?? ""),
       issueType,
       expected,
       actual,
