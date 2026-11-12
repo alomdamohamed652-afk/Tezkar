@@ -478,6 +478,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(independentHealthyCheck.json().data.issues.filter((issue:any)=>
         issue.workerPaymentId===approved.json().data.payment.id).length,0,
         "the independent payment reconciliation must clear the payment after its source ledger is restored");
+      const advanceStatusBefore=await apiPool.query(
+        "SELECT repayment_status FROM advance_requests WHERE id=$1",[testAdvance.id]
+      );
+      assert.equal(advanceStatusBefore.rows[0].repayment_status,"SETTLED");
+      await apiPool.query("UPDATE advance_requests SET repayment_status='OPEN' WHERE id=$1",[testAdvance.id]);
+      const corruptedAdvanceStatusCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(corruptedAdvanceStatusCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===approved.json().data.payment.id&&issue.issueType==="ADVANCE_REPAYMENT_MISMATCH"),
+        "the independent payment reconciliation must detect an advance status inconsistent with its remaining balance");
+      await apiPool.query("UPDATE advance_requests SET repayment_status=$2 WHERE id=$1",
+        [testAdvance.id,advanceStatusBefore.rows[0].repayment_status]);
       assert.equal(Number(approved.json().data.payment.amount),100);
       assert.equal(Number(approved.json().data.grossAmount),150);
       assert.equal(Number(approved.json().data.advanceRepaymentAmount),50);
