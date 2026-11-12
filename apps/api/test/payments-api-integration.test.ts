@@ -175,6 +175,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(summaryBody.availableBreakdown.calculatedAvailable),500,
         "diagnostic breakdown must match the legacy ledger fallback when no approved production exists");
       assert.equal(summaryBody.availableBreakdown.calculationMode,"LEDGER_FALLBACK");
+      assert.equal(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries.length,1,
+        "the reconciliation breakdown must return each standalone ledger adjustment contributing to the balance");
+      assert.equal(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].notes,"test-only earned balance");
+      assert.equal(Number(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].credit),500);
+      assert.equal(Number(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].debit),0);
+      assert.equal(Number(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].net),500);
       assert.equal(Number(summaryBody.productionEarnings),0);
       assert.equal(Number(summaryBody.previouslySettled),0);
       assert.equal(Number(summaryBody.outstandingAdvances),0);
