@@ -44,6 +44,9 @@ export async function reconcileWorkerPayments() {
       COALESCE(expenses.row_count,0) AS expense_count,
       COALESCE(expenses.amount_total,0) AS expense_total,
       COALESCE(expenses.holder_count,0) AS expense_holder_count,
+      COALESCE(expenses.holder_row_count,0) AS expense_holder_row_count,
+      COALESCE(expenses.custody_link_count,0) AS expense_custody_link_count,
+      COALESCE(expenses.custody_link_mismatch_count,0) AS expense_custody_link_mismatch_count,
       expenses.holder_id AS expense_holder_id,
       COALESCE(custody.out_count,0) AS custody_out_count,
       COALESCE(custody.out_amount,0) AS custody_out_amount,
@@ -121,6 +124,17 @@ export async function reconcileWorkerPayments() {
       SELECT COUNT(DISTINCT e.id)::int AS row_count,
              COALESCE(SUM(e.amount),0) AS amount_total,
              COUNT(DISTINCT e.paid_from_employee_id)::int AS holder_count,
+             COUNT(*) FILTER(WHERE e.paid_from_employee_id IS NOT NULL)::int AS holder_row_count,
+             COUNT(*) FILTER(WHERE e.cash_custody_transaction_id IS NOT NULL)::int AS custody_link_count,
+             COUNT(*) FILTER(WHERE e.paid_from_employee_id IS NOT NULL AND (
+               e.cash_custody_transaction_id IS NULL OR NOT EXISTS(
+                 SELECT 1 FROM cash_custody_transactions linked
+                  WHERE linked.id=e.cash_custody_transaction_id
+                    AND linked.source_type='WORKER_PAYMENT' AND linked.source_id=wp.id
+                    AND linked.direction='OUT' AND linked.employee_id=e.paid_from_employee_id
+                    AND ABS(linked.amount-wp.amount)<=0.01
+               )
+             ))::int AS custody_link_mismatch_count,
              MIN(e.paid_from_employee_id::text) AS holder_id
         FROM accounting_expenses e
        WHERE e.source_worker_payment_id=wp.id
@@ -263,12 +277,17 @@ export async function reconcileWorkerPayments() {
       const custodyCount = amount(row.custody_out_count);
       const previousCustody = row.previous_custody === true;
       const custodyValid = cash <= 0.009
-        ? custodyCount === 0 && amount(row.expense_holder_count) === 0
+        ? custodyCount === 0 && amount(row.expense_holder_count) === 0 &&
+          amount(row.expense_holder_row_count) === 0 && amount(row.expense_custody_link_count) === 0
         : previousCustody
-          ? custodyCount === 0 && amount(row.expense_holder_count) === 0
+          ? custodyCount === 0 && amount(row.expense_holder_count) === 0 &&
+            amount(row.expense_holder_row_count) === 0 && amount(row.expense_custody_link_count) === 0
           : custodyCount === 1 && near(row.custody_out_amount, cash) &&
             amount(row.custody_out_holder_count) === 1 &&
             amount(row.expense_holder_count) === 1 &&
+            amount(row.expense_holder_row_count) === 1 &&
+            amount(row.expense_custody_link_count) === 1 &&
+            amount(row.expense_custody_link_mismatch_count) === 0 &&
             row.custody_out_holder_id === row.expense_holder_id;
       if (!custodyValid) {
         add(row, "CASH_CUSTODY_MISMATCH", cash, row.custody_out_amount);
