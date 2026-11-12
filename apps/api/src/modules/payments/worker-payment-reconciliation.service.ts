@@ -40,6 +40,7 @@ export async function reconcileWorkerPayments() {
       COALESCE(ledger.debit_total,0) AS ledger_debit,
       COALESCE(ledger.credit_total,0) AS ledger_credit,
       COALESCE(ledger.wrong_employee_count,0) AS ledger_wrong_employee_count,
+      COALESCE(ledger.settlement_link_mismatch_count,0) AS ledger_settlement_link_mismatch_count,
       COALESCE(repayments.row_count,0) AS repayment_count,
       COALESCE(repayments.amount_total,0) AS repayment_total,
       COALESCE(repayments.mismatch_count,0) AS repayment_mismatch_count,
@@ -73,6 +74,8 @@ export async function reconcileWorkerPayments() {
       COALESCE(expense_reversal.row_count,0) AS expense_reversal_count,
       COALESCE(custody_reversal.row_count,0) AS custody_reversal_count,
       COALESCE(custody_reversal.amount_total,0) AS custody_reversal_in,
+      COALESCE(custody_reversal.holder_count,0) AS custody_reversal_holder_count,
+      custody_reversal.holder_id AS custody_reversal_holder_id,
       COALESCE(reversal_ledger.row_count,0) AS reversal_ledger_count,
       COALESCE(reversal_ledger.credit_total,0) AS reversal_ledger_credit,
       COALESCE(reversal_ledger.debit_total,0) AS reversal_ledger_debit,
@@ -94,7 +97,11 @@ export async function reconcileWorkerPayments() {
       SELECT COUNT(*)::int AS row_count,
              COALESCE(SUM(l.debit_amount),0) AS debit_total,
              COALESCE(SUM(l.credit_amount),0) AS credit_total,
-             COUNT(*) FILTER(WHERE l.employee_id IS DISTINCT FROM wp.employee_id)::int AS wrong_employee_count
+             COUNT(*) FILTER(WHERE l.employee_id IS DISTINCT FROM wp.employee_id)::int AS wrong_employee_count,
+             COUNT(*) FILTER(WHERE l.settlement_id IS DISTINCT FROM (
+               SELECT es.id FROM employee_earnings_settlements es
+                WHERE es.worker_payment_id=wp.id ORDER BY es.created_at,es.id LIMIT 1
+             ))::int AS settlement_link_mismatch_count
         FROM employee_earnings_ledger l WHERE l.worker_payment_id=wp.id
     ) ledger ON TRUE
     LEFT JOIN LATERAL (
@@ -103,6 +110,7 @@ export async function reconcileWorkerPayments() {
              COUNT(*) FILTER(WHERE a.employee_id IS DISTINCT FROM wp.employee_id
                OR el.ledger_count<>1
                OR el.employee_id IS DISTINCT FROM wp.employee_id
+               OR (ar.settlement_id IS NOT NULL AND es.worker_payment_id IS DISTINCT FROM wp.id)
                OR ABS(el.credit_amount-ar.amount)>0.01
                OR ABS(el.debit_amount)>0.01)::int AS mismatch_count,
              COUNT(DISTINCT a.id) FILTER(WHERE
@@ -232,7 +240,9 @@ export async function reconcileWorkerPayments() {
                 OR (e.source_worker_payment_id IS NULL AND e.idempotency_key=wp.idempotency_key))
     ) expense_reversal ON TRUE
     LEFT JOIN LATERAL (
-      SELECT COUNT(*)::int AS row_count,COALESCE(SUM(c.amount),0) AS amount_total
+      SELECT COUNT(*)::int AS row_count,COALESCE(SUM(c.amount),0) AS amount_total,
+             COUNT(DISTINCT c.employee_id)::int AS holder_count,
+             MIN(c.employee_id::text) AS holder_id
         FROM cash_custody_transactions c
        WHERE c.source_type='FINANCIAL_REVERSAL' AND c.direction='IN'
          AND c.source_id IN (SELECT line.reversal_id FROM financial_reversal_lines line
@@ -282,6 +292,7 @@ export async function reconcileWorkerPayments() {
         add(row, "SETTLEMENT_LINK_MISMATCH", 1, row.settlement_count);
       }
       if (amount(row.ledger_count) !== 1 || amount(row.ledger_wrong_employee_count) > 0 ||
+          amount(row.ledger_settlement_link_mismatch_count) > 0 ||
           !near(row.ledger_debit, row.gross_amount) || !near(row.ledger_credit, 0)) {
         add(row, "EARNINGS_LEDGER_MISMATCH", row.gross_amount, row.ledger_debit);
       }
@@ -332,8 +343,19 @@ export async function reconcileWorkerPayments() {
       }
       const expectedCustodyReversal = row.previous_custody ? 0 : amount(row.cash_paid_amount);
       const expectedCustodyReversalCount = expectedCustodyReversal > 0.009 ? 1 : 0;
+      const originalCustodyValid = row.previous_custody
+        ? amount(row.custody_out_count) === 0
+        : expectedCustodyReversal > 0.009
+          ? amount(row.custody_out_count) === 1 && near(row.custody_out_amount, expectedCustodyReversal) &&
+            amount(row.custody_out_holder_count) === 1
+          : amount(row.custody_out_count) === 0;
+      const reversalCustodyHolderValid = expectedCustodyReversal > 0.009
+        ? amount(row.custody_reversal_holder_count) === 1 &&
+          row.custody_reversal_holder_id === row.custody_out_holder_id
+        : amount(row.custody_reversal_holder_count) === 0;
       if (amount(row.custody_reversal_count) !== expectedCustodyReversalCount ||
-          !near(row.custody_reversal_in, expectedCustodyReversal)) {
+          !near(row.custody_reversal_in, expectedCustodyReversal) ||
+          !originalCustodyValid || !reversalCustodyHolderValid) {
         add(row, "WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH", row.cash_paid_amount, row.custody_reversal_in);
       }
       if (amount(row.reversal_ledger_count) !== 1 + amount(row.repayment_count) ||
