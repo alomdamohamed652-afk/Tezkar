@@ -2683,6 +2683,29 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(repeatedRelease.statusCode,200,repeatedRelease.body,
         "replaying the same release idempotency key must return the original release event");
+      // A reversed allocation is immutable: retrying the same difference against
+      // the same production row must not create a second allocation or event.
+      // The production remains payable through a new, separately verified payout.
+      const repeatedDifferenceAllocationClient=await apiPool.connect();
+      try{
+        await repeatedDifferenceAllocationClient.query("BEGIN");
+        const repeatedDifferenceAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+          repeatedDifferenceAllocationClient,differenceWorker.id,laterProduction.id,manager.id
+        );
+        assert.equal(repeatedDifferenceAllocations.length,0,
+          "a reversed historical allocation must not be recreated against the same production row");
+        await repeatedDifferenceAllocationClient.query("COMMIT");
+      }catch(error){
+        await repeatedDifferenceAllocationClient.query("ROLLBACK");
+        throw error;
+      }finally{
+        repeatedDifferenceAllocationClient.release();
+      }
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND production_entry_id=$2 AND event_type='ALLOCATED_TO_PRODUCTION'",
+        [differenceRecord.id,laterProduction.id]
+      )).rows[0].count),1,"retrying the same production must preserve one immutable original allocation event");
+
       const unpaidAfterReviewClient=await apiPool.connect();
       try{
         await unpaidAfterReviewClient.query("BEGIN");
