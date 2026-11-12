@@ -439,7 +439,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(workerPostingCheck.statusCode,200,workerPostingCheck.body);
       assert.equal(workerPostingCheck.json().data.counts.workerPaymentPostingMismatches,0,
-        "a correctly posted active worker payment must pass the full posting reconciliation");
+        "a correctly posted active worker payment must pass the full posting reconciliation: "+JSON.stringify(workerPostingCheck.json().data.issues.workerPaymentPostingMismatches));
       const workerLedgerEntry=await apiPool.query(
         "SELECT id,debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",
         [approved.json().data.payment.id]
