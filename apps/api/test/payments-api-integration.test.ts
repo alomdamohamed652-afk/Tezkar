@@ -2406,6 +2406,37 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       await apiPool.query("UPDATE advance_requests SET employee_id=$1 WHERE id=$2",[reversalAllocationWorker.id,reversalAdvance]);
       await apiPool.query("UPDATE employee_earnings_ledger SET employee_id=$1 WHERE advance_repayment_id=$2",
         [reversalAllocationWorker.id,repaymentLink.id]);
+      const foreignSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by)
+         VALUES($1,1,1,0,CURRENT_DATE,'foreign settlement link reconciliation test',$2) RETURNING id`,
+        [reversalAllocationWorker.id,manager.id]
+      )).rows[0].id;
+      const originalRepaymentSettlement=(await apiPool.query(
+        "SELECT settlement_id FROM advance_repayments WHERE id=$1",[repaymentLink.id]
+      )).rows[0].settlement_id;
+      await apiPool.query("UPDATE advance_repayments SET settlement_id=$1 WHERE id=$2",
+        [foreignSettlement,repaymentLink.id]);
+      const brokenRepaymentSettlementLink=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(brokenRepaymentSettlementLink.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="ADVANCE_REPAYMENT_MISMATCH"),
+        "independent reconciliation must detect an advance repayment linked to another worker settlement");
+      await apiPool.query("UPDATE advance_repayments SET settlement_id=$1 WHERE id=$2",
+        [originalRepaymentSettlement,repaymentLink.id]);
+      const originalPaymentLedgerSettlement=(await apiPool.query(
+        "SELECT settlement_id FROM employee_earnings_ledger WHERE worker_payment_id=$1",[reversalPaymentId]
+      )).rows[0].settlement_id;
+      await apiPool.query("UPDATE employee_earnings_ledger SET settlement_id=$1 WHERE worker_payment_id=$2",
+        [foreignSettlement,reversalPaymentId]);
+      const brokenPaymentLedgerSettlementLink=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(brokenPaymentLedgerSettlementLink.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="EARNINGS_LEDGER_MISMATCH"),
+        "independent reconciliation must detect a worker earnings entry linked to another settlement");
+      await apiPool.query("UPDATE employee_earnings_ledger SET settlement_id=$1 WHERE worker_payment_id=$2",
+        [originalPaymentLedgerSettlement,reversalPaymentId]);
       const reversalResponse=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
         payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,reason:"عكس دفعة عامل مع توزيع إنتاج",idempotencyKey:randomUUID()}
@@ -2437,6 +2468,48 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "reversing a worker payout must restore the advance outstanding status");
       assert.equal(Number(reversalEffects.rows[0].advance_reversal_lines),1,
         "the linked advance repayment must be reversed in the same financial transaction");
+      const healthyReversedPaymentCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(healthyReversedPaymentCheck.statusCode,200,healthyReversedPaymentCheck.body);
+      assert.equal(healthyReversedPaymentCheck.json().data.issues.filter((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId).length,0,
+        "a correctly reversed current-custody worker payment must pass independent reconciliation");
+      const originalCustodyAmount=(await apiPool.query(
+        "SELECT amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId]
+      )).rows[0].amount;
+      await apiPool.query(
+        "UPDATE cash_custody_transactions SET amount=amount-1 WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId]
+      );
+      const missingOriginalCustodyValueCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(missingOriginalCustodyValueCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH"),
+        "reconciliation must validate the original cash OUT as well as its reversal IN");
+      await apiPool.query(
+        "UPDATE cash_custody_transactions SET amount=$2 WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId,originalCustodyAmount]
+      );
+      const reversalCustodyId=(await apiPool.query(
+        "SELECT id FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN'",
+        [reversalResponse.json().data.reversal.id]
+      )).rows[0].id;
+      const originalReversalCustodian=(await apiPool.query(
+        "SELECT employee_id FROM cash_custody_transactions WHERE id=$1",[reversalCustodyId]
+      )).rows[0].employee_id;
+      await apiPool.query("UPDATE cash_custody_transactions SET employee_id=$2 WHERE id=$1",
+        [reversalCustodyId,unrelatedAdvanceOwner]);
+      const wrongReversalCustodianCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(wrongReversalCustodianCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH"),
+        "reconciliation must reject a reversal IN credited to a different custodian");
+      await apiPool.query("UPDATE cash_custody_transactions SET employee_id=$2 WHERE id=$1",
+        [reversalCustodyId,originalReversalCustodian]);
       const productionAfterReversal=await app.inject({
         method:"GET",url:`/api/production?employeeId=${reversalAllocationWorker.id}&status=APPROVED&limit=100`,
         headers:{cookie:managerCookie}
