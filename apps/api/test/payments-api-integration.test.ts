@@ -3427,12 +3427,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
          ) VALUES($1,$2,$3,$4,$5,50,CURRENT_DATE,CURRENT_DATE,'PENDING',$6) RETURNING id`,
         [cancelledCostPayment,cancelledCostWorker,cancelledCostOrder.orderId,cancelledCostOrder.stage.id,cancelledCostExpense,manager.id]
       )).rows[0].id;
-      const cancelledOrderResponse=await app.inject({
+      const cancelledPaidCostOrderResponse=await app.inject({
         method:"DELETE",url:`/api/orders/${cancelledCostOrder.orderId}`,
         headers:{cookie:managerCookie},payload:{password:"Test-Manager-Password-2026!"}
       });
-      assert.equal(cancelledOrderResponse.statusCode,200,cancelledOrderResponse.body);
-      assert.equal(cancelledOrderResponse.json().data.status,"CANCELLED");
+      assert.equal(cancelledPaidCostOrderResponse.statusCode,200,cancelledPaidCostOrderResponse.body);
+      assert.equal(cancelledPaidCostOrderResponse.json().data.status,"CANCELLED");
       assert.equal((await apiPool.query(
         "SELECT status FROM production_orders WHERE id=$1",[cancelledCostOrder.orderId]
       )).rows[0].status,"CANCELLED","the cancelled order must remain as a historical record");
