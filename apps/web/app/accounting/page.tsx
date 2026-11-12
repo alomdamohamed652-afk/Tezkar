@@ -29,6 +29,8 @@ type WorkerPaymentReconciliation = {
   issues:Array<{
     workerPaymentId:string;
     employeeId:string;
+    employeeCode:string;
+    employeeName:string;
     issueType:string;
     expected:number|string|null;
     actual:number|string|null;
@@ -535,9 +537,9 @@ export default function AccountingPage() {
          <article className="card stat"><div className="stat-label">دفعات بها ملاحظات</div><div className="stat-value">{new Set(workerPaymentReconciliation.issues.map(x=>x.workerPaymentId)).size}</div></article>
         </div>
         <div className="form-hint">آخر فحص: {new Date(workerPaymentReconciliation.checkedAt).toLocaleString("ar-EG")}. كل سطر يمثل اختبارًا غير مطابق، وقد تظهر أكثر من ملاحظة للدفعة نفسها.</div>
-        {workerPaymentReconciliation.issueCount>0?<div className="table-wrap"><table><thead><tr><th>معرف الدفعة</th><th>معرف العامل</th><th>نوع الاختلاف</th><th>المتوقع</th><th>الفعلي</th><th>إجمالي الدفعة</th><th>النقد</th><th>السلف</th></tr></thead><tbody>
+        {workerPaymentReconciliation.issueCount>0?<div className="table-wrap"><table><thead><tr><th>معرف الدفعة</th><th>العامل</th><th>معرف العامل</th><th>نوع الاختلاف</th><th>المتوقع</th><th>الفعلي</th><th>إجمالي الدفعة</th><th>النقد</th><th>السلف</th></tr></thead><tbody>
          {workerPaymentReconciliation.issues.map((x,i)=><tr key={x.workerPaymentId+"-"+x.issueType+"-"+i}>
-          <td className="mono">{x.workerPaymentId}</td><td className="mono">{x.employeeId}</td><td>{({
+          <td className="mono">{x.workerPaymentId}</td><td>{x.employeeName} ({x.employeeCode})</td><td className="mono">{x.employeeId}</td><td>{({
             PAYMENT_TOTAL_MISMATCH:"إجمالي الدفعة لا يساوي النقد والسلف",
             SETTLEMENT_LINK_MISMATCH:"رابط التسوية غير مطابق",
             EARNINGS_LEDGER_MISMATCH:"قيد دفتر العامل غير مطابق",
