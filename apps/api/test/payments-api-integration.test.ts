@@ -2739,6 +2739,45 @@ test("approving a worker payout atomically marks it paid and debits the availabl
        assert.equal(reviewDifferenceReport.statusCode,200,reviewDifferenceReport.body);
        assert.ok(reviewDifferenceReport.json().data.some((row:any)=>row.id===sourceProduction.id),
          "production reporting must keep a worker's source order visible as unallocated while its reversed difference awaits accounting review");
+
+      // After reversing the later-production allocation, every financial view
+      // must restore exactly that production's unpaid balance without creating
+      // a duplicate direct expense or changing the approved labor cost.
+      const reversedDifferenceProductionReport=await app.inject({
+        method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedDifferenceProductionReport.statusCode,200,reversedDifferenceProductionReport.body);
+      const reversedDifferenceProductionRow=reversedDifferenceProductionReport.json().data.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(reversedDifferenceProductionRow,"reversed allocation production must remain in production report");
+      assert.equal(Number(reversedDifferenceProductionRow.paid_amount),0,
+        "production report must remove the independently reversed difference allocation");
+      assert.equal(Number(reversedDifferenceProductionRow.remaining_amount),20,
+        "production report must restore the full unpaid amount after independent reversal");
+      assert.equal(reversedDifferenceProductionRow.payment_status,"UNPAID");
+      const reversedDifferenceOrderDashboard=await app.inject({
+        method:"GET",url:`/api/orders/${differenceOrderId}/dashboard`,headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedDifferenceOrderDashboard.statusCode,200,reversedDifferenceOrderDashboard.body);
+      const reversedDifferenceOrderRow=reversedDifferenceOrderDashboard.json().data.production.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(reversedDifferenceOrderRow,"order dashboard must retain the reversed production row");
+      assert.equal(Number(reversedDifferenceOrderRow.paid_amount),0);
+      assert.equal(Number(reversedDifferenceOrderRow.remaining_amount),20);
+      const reversedDifferenceProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedDifferenceProfitability.statusCode,200,reversedDifferenceProfitability.body);
+      assert.equal(Number(reversedDifferenceProfitability.json().data.laborCost),120,
+        "reversal changes settlement state, not the approved worker labor expense");
+      assert.equal(Number(reversedDifferenceProfitability.json().data.expenses),0,
+        "reversing an allocation must not recreate the original worker-payment expense as a second direct cost");
+      assert.equal(Number(reversedDifferenceProfitability.json().data.totalCost),120,
+        "order total cost must remain equal to approved labor after allocation reversal");
+      const reversedDifferenceDashboard=await readDifferenceOrderDashboard();
+      assert.equal(Number(reversedDifferenceDashboard.labor_cost),120);
+      assert.equal(Number(reversedDifferenceDashboard.direct_expenses),0);
+      assert.equal(Number(reversedDifferenceDashboard.total_cost),120);
       const heldMaturityClient=await apiPool.connect();
       try{
         await heldMaturityClient.query("BEGIN");
