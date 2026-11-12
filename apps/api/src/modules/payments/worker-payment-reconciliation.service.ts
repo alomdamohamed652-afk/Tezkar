@@ -101,7 +101,7 @@ export async function reconcileWorkerPayments() {
     ) repayments ON TRUE
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT e.id)::int AS row_count,
-             COALESCE(SUM(DISTINCT e.amount),0) AS amount_total,
+             COALESCE(SUM(e.amount),0) AS amount_total,
              COUNT(DISTINCT e.paid_from_employee_id)::int AS holder_count,
              MIN(e.paid_from_employee_id::text) AS holder_id
         FROM accounting_expenses e
