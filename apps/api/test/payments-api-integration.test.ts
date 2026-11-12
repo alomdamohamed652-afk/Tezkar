@@ -3259,7 +3259,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='REVERSED'",
         [differenceRecord.id]
-      )).rows[0].count),2,"both the later production allocation and the maturity transfer must be reversed");
+      )).rows[0].count),3,
+        "the original allocation reversal, the reallocated production reversal and the maturity-transfer reversal must all remain in the append-only event history");
       assert.equal(Number((await apiPool.query(
         "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocation_reversals WHERE worker_payment_id=$1",
         [differencePaymentId]
@@ -3294,7 +3295,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         headers:{cookie:managerCookie}
       });
       assert.equal(differenceEventsApi.statusCode,200,differenceEventsApi.body);
-      assert.equal(differenceEventsApi.json().data.length,5,"the audit endpoint must expose the allocation, its reversal, review release, maturity transfer and transfer reversal");
+      assert.equal(differenceEventsApi.json().data.length,7,
+        "the audit endpoint must expose both allocation cycles, their reversals, review release, maturity transfer and transfer reversal");
       const closureDifferenceReversal=await app.inject({
         method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
         payload:{sourceType:"WORKER_PAYMENT",sourceId:closurePaymentId,amount:60,
