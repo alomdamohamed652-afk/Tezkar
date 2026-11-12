@@ -434,6 +434,26 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(custodyDebit.rows[0].amount),100,"cash custody must record only the net cash actually paid");
       assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
       assert.match(custodyDebit.rows[0].description,/صرف مستحقات العامل/);
+      const workerPostingCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(workerPostingCheck.statusCode,200,workerPostingCheck.body);
+      assert.equal(workerPostingCheck.json().data.counts.workerPaymentPostingMismatches,0,
+        "a correctly posted active worker payment must pass the full posting reconciliation");
+      const workerLedgerEntry=await apiPool.query(
+        "SELECT id,debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",
+        [approved.json().data.payment.id]
+      );
+      assert.equal(workerLedgerEntry.rowCount,1);
+      await apiPool.query("UPDATE employee_earnings_ledger SET debit_amount=debit_amount-1 WHERE id=$1",[workerLedgerEntry.rows[0].id]);
+      const corruptedWorkerPostingCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(corruptedWorkerPostingCheck.statusCode,200,corruptedWorkerPostingCheck.body);
+      assert.equal(corruptedWorkerPostingCheck.json().data.counts.workerPaymentPostingMismatches,1,
+        "reconciliation must detect a worker payment whose earnings-ledger debit differs from gross");
+      await apiPool.query("UPDATE employee_earnings_ledger SET debit_amount=$2 WHERE id=$1",
+        [workerLedgerEntry.rows[0].id,workerLedgerEntry.rows[0].debit_amount]);
       assert.equal(Number(approved.json().data.payment.amount),100);
       assert.equal(Number(approved.json().data.grossAmount),150);
       assert.equal(Number(approved.json().data.advanceRepaymentAmount),50);
