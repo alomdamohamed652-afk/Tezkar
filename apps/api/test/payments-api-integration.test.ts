@@ -2893,6 +2893,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(replacementProductionPayment.statusCode,201,replacementProductionPayment.body,
         "the reopened later production must be settled by a separate verified payment before its unmatched remainder can mature");
 
+      // Approved work attached to a cancelled stage is no longer eligible for
+      // allocation and must not keep an otherwise mature difference pending.
+      const cancelledStageBlocker=await insertDifferenceProduction(1,10);
+      const originalStageStatus=(await apiPool.query(
+        "SELECT status FROM order_stages WHERE id=$1",[differenceStage.id]
+      )).rows[0].status;
+      await apiPool.query("UPDATE order_stages SET status='CANCELLED' WHERE id=$1",[differenceStage.id]);
+
       const matureClient=await apiPool.connect();
       let transferredCount=0;
       try{
@@ -2903,7 +2911,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         await matureClient.query("COMMIT");
       }catch(error){await matureClient.query("ROLLBACK");throw error}
       finally{matureClient.release()}
-      assert.equal(transferredCount,1,"a difference idle for 30 days must transfer its remainder to the source order");
+      await apiPool.query("UPDATE order_stages SET status=$2 WHERE id=$1",[differenceStage.id,originalStageStatus]);
+      assert.equal(transferredCount,1,
+        "approved production in a cancelled stage must not reset inactivity or block maturity");
       const maturedDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0];
