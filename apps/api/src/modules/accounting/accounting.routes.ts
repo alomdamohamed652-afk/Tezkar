@@ -635,7 +635,8 @@ export async function accountingRoutes(app:FastifyInstance){
     "SELECT ev.*,d.status AS difference_status FROM worker_payment_settlement_difference_events ev JOIN worker_payment_settlement_differences d ON d.id=ev.difference_id WHERE ev.idempotency_key=$1",
     [input.idempotencyKey]);
    if(replay.rowCount){
-    if(replay.rows[0].difference_id!==input.id||replay.rows[0].event_type!=="RELEASED_AFTER_REVIEW")
+    if(replay.rows[0].difference_id!==input.id||replay.rows[0].event_type!=="RELEASED_AFTER_REVIEW"||
+       replay.rows[0].reason!==input.reason)
      throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة الاعتماد مستخدم لعملية مختلفة",409);
     return {replayed:true,event:replay.rows[0],status:replay.rows[0].difference_status};
    }
