@@ -3264,7 +3264,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number((await apiPool.query(
         "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocation_reversals WHERE worker_payment_id=$1",
         [differencePaymentId]
-      )).rows[0].amount),120,"reversal must offset both the original allocation and the later production allocation");
+      )).rows[0].amount),140,
+        "reversal must offset the original allocation, its independently reversed cycle, and the later reallocated production amount");
       const differenceExpenseNet=await apiPool.query(
         `SELECT COALESCE(SUM(GREATEST(e.amount
           -COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)
