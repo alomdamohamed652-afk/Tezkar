@@ -285,8 +285,14 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
       method: "PATCH", url: "/api/orders/" + contractOrderId, headers: { cookie: submitter.cookie },
       payload: { status: "CANCELLED" }
     });
-    assert.equal(cancelWithRevenue.statusCode, 409, cancelWithRevenue.body);
-    assert.equal(cancelWithRevenue.json().error.code, "ORDER_HAS_ACTIVITY_LOCKED");
+    assert.equal(cancelWithRevenue.statusCode, 200, cancelWithRevenue.body);
+    assert.equal(cancelWithRevenue.json().data.status, "CANCELLED");
+    const retainedCancellationRevenue=await apiPool.query(
+      "SELECT COUNT(*)::int AS count FROM order_revenues WHERE order_id=$1 AND idempotency_key=$2",
+      [contractOrderId,contractRevenuePayload.idempotencyKey]
+    );
+    assert.equal(retainedCancellationRevenue.rows[0].count,1,
+      "cancelling an order must retain its posted revenue without reversing or deleting it");
 
     await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1", [orderId]);
     const stagesResult = await apiPool.query(
