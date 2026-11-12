@@ -3007,15 +3007,22 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         [differenceRecord.id,laterProduction.id]
       )).rows[0].count),2,"the event ledger must preserve both the reversed and reallocated cycles");
 
-      const unpaidAfterReviewClient=await apiPool.connect();
-      try{
-        await unpaidAfterReviewClient.query("BEGIN");
-        assert.equal(await processMaturedWorkerPaymentDifferences(
-          unpaidAfterReviewClient,{actorUserId:manager.id,actorType:"USER"}
-        ),0,"the remaining difference must not mature before its inactivity threshold");
-        await unpaidAfterReviewClient.query("COMMIT");
-      }catch(error){await unpaidAfterReviewClient.query("ROLLBACK");throw error}
-      finally{unpaidAfterReviewClient.release()}
+      const differenceAfterReallocation=await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      );
+      assert.equal(differenceAfterReallocation.rows[0].status,"PARTIALLY_ALLOCATED",
+        "reallocating the reopened production must leave only the unmatched remainder pending maturity");
+      const activeDifferenceAmount=await apiPool.query(
+        `SELECT COALESCE(SUM(ev.amount),0) AS amount
+           FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')`,
+        [differenceRecord.id]
+      );
+      assert.equal(Number(activeDifferenceAmount.rows[0].amount),20);
+      assert.equal(Number(differenceRecord.original_amount)-Number(activeDifferenceAmount.rows[0].amount),30,
+        "only the unallocated remainder may later transfer to the source order");
       const reopenedSettlementSummary=await app.inject({
         method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${differenceWorker.id}`,
         headers:{cookie:managerCookie}
