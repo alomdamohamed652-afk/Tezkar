@@ -2896,6 +2896,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // Approved work attached to a cancelled stage is no longer eligible for
       // allocation and must not keep an otherwise mature difference pending.
       const cancelledStageBlocker=await insertDifferenceProduction(1,10);
+      assert.ok(cancelledStageBlocker.id);
       const originalStageStatus=(await apiPool.query(
         "SELECT status FROM order_stages WHERE id=$1",[differenceStage.id]
       )).rows[0].status;
