@@ -2409,7 +2409,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const foreignSettlement=(await apiPool.query(
         `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by)
          VALUES($1,1,1,0,CURRENT_DATE,'foreign settlement link reconciliation test',$2) RETURNING id`,
-        [reversalAllocationWorker.id,manager.id]
+        [unrelatedAdvanceOwner,manager.id]
       )).rows[0].id;
       const originalRepaymentSettlement=(await apiPool.query(
         "SELECT settlement_id FROM advance_repayments WHERE id=$1",[repaymentLink.id]
