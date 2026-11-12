@@ -1,8 +1,35 @@
 -- Allow multiple historical allocation cycles for the same worker payment and
 -- production entry. Every cycle gets its own immutable allocation row; reversal
 -- records remain attached to the exact row they reverse.
-ALTER TABLE worker_payment_order_allocations
-  DROP CONSTRAINT IF EXISTS worker_payment_order_allocati_worker_payment_id_production__key;
+--
+-- Resolve the generated UNIQUE constraint by its column definition instead of
+-- relying on PostgreSQL's 63-byte truncated auto-generated constraint name.
+DO $$
+DECLARE
+  allocation_constraint TEXT;
+BEGIN
+  SELECT c.conname
+    INTO allocation_constraint
+    FROM pg_constraint c
+   WHERE c.conrelid = 'worker_payment_order_allocations'::regclass
+     AND c.contype = 'u'
+     AND (
+       SELECT array_agg(a.attname ORDER BY key_column.ordinality)
+         FROM unnest(c.conkey) WITH ORDINALITY AS key_column(attnum, ordinality)
+         JOIN pg_attribute a
+           ON a.attrelid = c.conrelid
+          AND a.attnum = key_column.attnum
+     ) = ARRAY['worker_payment_id', 'production_entry_id']::name[]
+   LIMIT 1;
+
+  IF allocation_constraint IS NOT NULL THEN
+    EXECUTE format(
+      'ALTER TABLE worker_payment_order_allocations DROP CONSTRAINT %I',
+      allocation_constraint
+    );
+  END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS worker_payment_order_allocations_payment_production_idx
   ON worker_payment_order_allocations(worker_payment_id, production_entry_id);
