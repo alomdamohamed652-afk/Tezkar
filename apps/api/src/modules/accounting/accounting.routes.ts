@@ -802,6 +802,7 @@ export async function accountingRoutes(app:FastifyInstance){
     HAVING COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)>i.net_amount+0.01
         OR (i.status='PAID' AND COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)<i.net_amount-0.01)
         OR (i.status='PARTIAL' AND (COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)<=0.01 OR COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)>=i.net_amount-0.01))
+        OR (i.status='UNPAID' AND COALESCE(SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)),0)>0.01)
      ORDER BY p.period_month,emp.full_name`),
    pool.query(`
     SELECT i.id AS payroll_item_id,emp.full_name,p.period_month::text AS period_month,
