@@ -3393,6 +3393,85 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         )).rows[0];
         return {orderId:response.json().data.id as string,stage};
       }
+      // Cancelling an order with an already-paid worker expense is a status change,
+      // not a financial reversal. Keep the expense and custody OUT untouched, and
+      // never reallocate its pending difference to a later order for the same worker.
+      const cancelledCostWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Cancelled Order Cost Worker "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      const cancelledCostOrder=await createAdminCostOrder("Cancelled order with paid cost");
+      const cancelledCostPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,50,50,0,'CASH',$2,$3,'cancelled-order-cost-payment') RETURNING id`,
+        [cancelledCostWorker,manager.id,randomUUID()]
+      )).rows[0].id;
+      const cancelledCostCustody=(await apiPool.query(
+        `INSERT INTO cash_custody_transactions(
+           employee_id,direction,amount,description,source_type,source_id,created_by
+         ) VALUES($1,'OUT',50,'صرف فعلي لطلبية سيتم إلغاؤها','WORKER_PAYMENT',$2,$3) RETURNING id`,
+        [managerEmployee.id,cancelledCostPayment,manager.id]
+      )).rows[0].id;
+      const cancelledCostExpense=(await apiPool.query(
+        `INSERT INTO accounting_expenses(
+           order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,cash_custody_transaction_id,allocation_type,source_worker_payment_id
+         ) VALUES($1,$2,'WORKER_PAYMENT','مصروف عامل مدفوع قبل إلغاء الطلبية',50,CURRENT_DATE,'CASH',$3,
+           'DIRECT',$4,$5,'GENERAL',$6) RETURNING id`,
+        [cancelledCostOrder.orderId,cancelledCostOrder.stage.id,manager.id,managerEmployee.id,cancelledCostCustody,cancelledCostPayment]
+      )).rows[0].id;
+      const cancelledCostDifference=(await apiPool.query(
+        `INSERT INTO worker_payment_settlement_differences(
+           worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+           original_amount,payment_date,eligible_at,status,created_by
+         ) VALUES($1,$2,$3,$4,$5,50,CURRENT_DATE,CURRENT_DATE,'PENDING',$6) RETURNING id`,
+        [cancelledCostPayment,cancelledCostWorker,cancelledCostOrder.orderId,cancelledCostOrder.stage.id,cancelledCostExpense,manager.id]
+      )).rows[0].id;
+      const cancelledOrderResponse=await app.inject({
+        method:"DELETE",url:`/api/orders/${cancelledCostOrder.orderId}`,
+        headers:{cookie:managerCookie},payload:{password:"Test-Manager-Password-2026!"}
+      });
+      assert.equal(cancelledOrderResponse.statusCode,200,cancelledOrderResponse.body);
+      assert.equal(cancelledOrderResponse.json().data.status,"CANCELLED");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM production_orders WHERE id=$1",[cancelledCostOrder.orderId]
+      )).rows[0].status,"CANCELLED","the cancelled order must remain as a historical record");
+      assert.equal(Number((await apiPool.query(
+        "SELECT amount FROM accounting_expenses WHERE id=$1",[cancelledCostExpense]
+      )).rows[0].amount),50,"cancellation must preserve the expense already posted to the order");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT' AND amount=50",
+        [cancelledCostPayment]
+      )).rows[0].count),1,"cancellation must not refund cash already paid out of custody");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN' AND source_id IN (SELECT reversal_id FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1)",
+        [cancelledCostPayment]
+      )).rows[0].count),0,"cancellation must not create a custody IN reversal");
+      const laterCancelledCostProduction=await insertAdminCostProduction(cancelledCostWorker,adminCostA.stage);
+      const cancelledDifferenceAllocationClient=await apiPool.connect();
+      let cancelledDifferenceAllocations:any[]=[];
+      try{
+        await cancelledDifferenceAllocationClient.query("BEGIN");
+        cancelledDifferenceAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+          cancelledDifferenceAllocationClient,cancelledCostWorker,laterCancelledCostProduction.id,manager.id
+        );
+        await cancelledDifferenceAllocationClient.query("COMMIT");
+      }catch(error){
+        await cancelledDifferenceAllocationClient.query("ROLLBACK");
+        throw error;
+      }finally{
+        cancelledDifferenceAllocationClient.release();
+      }
+      assert.equal(cancelledDifferenceAllocations.length,0,
+        "a pending difference from a cancelled source order must not be reallocated to another order");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[cancelledCostDifference]
+      )).rows[0].status,"PENDING","the source difference remains attached to its cancelled order without refund or reassignment");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE difference_id=$1",
+        [cancelledCostDifference]
+      )).rows[0].count),0,"cancellation alone must not create a transfer or reversal event");
+
       const adminCostA=await createAdminCostOrder("Admin allocation basis A");
       const adminCostB=await createAdminCostOrder("Admin allocation basis B");
       async function insertAdminCostProduction(employeeId:string,stage:any){
