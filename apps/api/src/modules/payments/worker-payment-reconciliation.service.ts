@@ -50,6 +50,7 @@ export async function reconcileWorkerPayments() {
       COALESCE(custody.holder_count,0) AS custody_out_holder_count,
       custody.holder_id AS custody_out_holder_id,
       COALESCE(allocations.source_count,0) AS allocation_count,
+      COALESCE(allocations.mismatch_count,0) AS allocation_mismatch_count,
       COALESCE(allocations.active_amount,0) AS allocation_amount,
       COALESCE(allocations.source_amount,0) AS allocation_source_amount,
       COALESCE(allocations.reversal_count,0) AS allocation_reversal_count,
@@ -134,13 +135,15 @@ export async function reconcileWorkerPayments() {
     ) custody ON TRUE
     LEFT JOIN LATERAL (
       WITH source_allocations AS (
-        SELECT a.id,a.amount,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source
+        SELECT a.id,a.amount,'EMPLOYEE_EARNINGS_SETTLEMENT'::text AS source,p.employee_id,p.status
           FROM employee_earnings_settlement_allocations a
           JOIN employee_earnings_settlements es ON es.id=a.settlement_id
+          JOIN production_entries p ON p.id=a.production_entry_id
          WHERE es.worker_payment_id=wp.id
         UNION ALL
-        SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text
+        SELECT a.id,a.amount,'WORKER_PAYMENT_ORDER'::text,p.employee_id,p.status
           FROM worker_payment_order_allocations a
+          JOIN production_entries p ON p.id=a.production_entry_id
          WHERE a.worker_payment_id=wp.id
            AND (
              NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -150,15 +153,18 @@ export async function reconcileWorkerPayments() {
                WHERE ev.worker_payment_order_allocation_id=a.id AND ev.event_type='ALLOCATED_TO_PRODUCTION')
            )
         UNION ALL
-        SELECT a.id,a.amount,'WORKER_PAYMENT_LEGACY'::text
+        SELECT a.id,a.amount,'WORKER_PAYMENT_LEGACY'::text,p.employee_id,p.status
           FROM worker_payment_allocations a
+          JOIN production_entries p ON p.id=a.production_entry_id
          WHERE a.worker_payment_id=wp.id
            AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
              WHERE es.worker_payment_id=wp.id)
            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
       )
-      SELECT COUNT(*)::int AS source_count,COALESCE(SUM(sa.amount),0) AS source_amount,
+      SELECT COUNT(*)::int AS source_count,
+             COUNT(*) FILTER(WHERE sa.employee_id IS DISTINCT FROM wp.employee_id OR sa.status IS DISTINCT FROM 'APPROVED')::int AS mismatch_count,
+             COALESCE(SUM(sa.amount),0) AS source_amount,
              COALESCE(SUM(GREATEST(sa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
                WHERE r.worker_payment_id=wp.id AND r.source_allocation_id=sa.id AND r.allocation_source=sa.source),0),0)),0) AS active_amount,
              (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals r WHERE r.worker_payment_id=wp.id) AS reversal_count,
@@ -267,7 +273,8 @@ export async function reconcileWorkerPayments() {
       if (!custodyValid) {
         add(row, "CASH_CUSTODY_MISMATCH", cash, row.custody_out_amount);
       }
-      if (amount(row.allocation_amount) > amount(row.gross_amount) + 0.01 ||
+      if (amount(row.allocation_mismatch_count) > 0 ||
+          amount(row.allocation_amount) > amount(row.gross_amount) + 0.01 ||
           amount(row.allocation_reversal_count) > amount(row.allocation_count) ||
           amount(row.allocation_reversal_amount) > amount(row.allocation_source_amount) + 0.01) {
         add(row, "PRODUCTION_ALLOCATION_MISMATCH", row.gross_amount, row.allocation_amount);
