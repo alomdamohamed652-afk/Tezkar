@@ -3321,6 +3321,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(Math.abs(shareA/shareB-2/3)<0.02,
         `administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got ${shareA} and ${shareB}`);
 
+      // The closed-period assertion above is complete. Move its isolated
+      // one-day fixture away from today's date so this later independent scenario
+      // can post normally without weakening the closed-period regression itself.
+      await apiPool.query(
+        "UPDATE accounting_periods SET period_start='2098-01-01',period_end='2098-01-01' WHERE id=$1",
+        [lockedPeriod.json().data.id]
+      );
+
       // Multiple active allocations on one difference: reversing one event must
       // leave the other event and its production settlement intact.
       const multiEventWorker=(await apiPool.query(
