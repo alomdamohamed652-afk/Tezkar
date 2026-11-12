@@ -817,6 +817,45 @@ test("order -> staged production -> approval -> inventory lot and order dashboar
     });
     assert.equal(machineProductionOnCompletedStage.statusCode, 409, machineProductionOnCompletedStage.body);
     assert.equal(machineProductionOnCompletedStage.json().error.code, "ORDER_STAGE_COMPLETED");
+
+    // Cancelled machine runs are historical evidence, not active work that should lock order cancellation.
+    const cancelledMachineOrder=(await apiPool.query(
+      "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+      ["Cancelled machine run guard "+randomBytes(4).toString("hex"),submitter.userId]
+    )).rows[0];
+    const cancelledMachineStage=(await apiPool.query(
+      "INSERT INTO order_stages(order_id,stage_id,sequence_no,output_product_id) SELECT $1,stage_id,1,output_product_id FROM order_stages WHERE id=$2 RETURNING id",
+      [cancelledMachineOrder.id,finalStage.id]
+    )).rows[0];
+    await apiPool.query(
+      "INSERT INTO machine_productions(order_stage_id,machine_id,product_id,work_date,quantity,unit_id,created_by,status) VALUES($1,$2,$3,'2099-01-06',1,$4,$5,'CANCELLED')",
+      [cancelledMachineStage.id,testMachine.id,finalStage.output_product_id,finalStage.unit_id,submitter.userId]
+    );
+    const cancelOrderWithCancelledMachineRun=await app.inject({
+      method:"PATCH",url:"/api/orders/"+cancelledMachineOrder.id,headers:{cookie:submitter.cookie},
+      payload:{status:"CANCELLED"}
+    });
+    assert.equal(cancelOrderWithCancelledMachineRun.statusCode,200,cancelOrderWithCancelledMachineRun.body);
+    assert.equal(cancelOrderWithCancelledMachineRun.json().data.status,"CANCELLED");
+
+    const activeMachineOrder=(await apiPool.query(
+      "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+      ["Active machine run guard "+randomBytes(4).toString("hex"),submitter.userId]
+    )).rows[0];
+    const activeMachineStage=(await apiPool.query(
+      "INSERT INTO order_stages(order_id,stage_id,sequence_no,output_product_id) SELECT $1,stage_id,1,output_product_id FROM order_stages WHERE id=$2 RETURNING id",
+      [activeMachineOrder.id,finalStage.id]
+    )).rows[0];
+    await apiPool.query(
+      "INSERT INTO machine_productions(order_stage_id,machine_id,product_id,work_date,quantity,unit_id,created_by,status) VALUES($1,$2,$3,'2099-01-07',1,$4,$5,'ACTIVE')",
+      [activeMachineStage.id,testMachine.id,finalStage.output_product_id,finalStage.unit_id,submitter.userId]
+    );
+    const cancelOrderWithActiveMachineRun=await app.inject({
+      method:"PATCH",url:"/api/orders/"+activeMachineOrder.id,headers:{cookie:submitter.cookie},
+      payload:{status:"CANCELLED"}
+    });
+    assert.equal(cancelOrderWithActiveMachineRun.statusCode,409,cancelOrderWithActiveMachineRun.body);
+    assert.equal(cancelOrderWithActiveMachineRun.json().error.code,"ORDER_HAS_ACTIVITY_LOCKED");
     await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1", [orderId]);
     const reopenCompletedOrder = await app.inject({
       method: "PATCH", url: "/api/orders/" + orderId, headers: { cookie: submitter.cookie },
