@@ -168,27 +168,41 @@ export async function processMaturedWorkerPaymentDifferences(
        LEFT JOIN LATERAL (
          SELECT MAX(p.approved_at) AS last_activity
            FROM production_entries p
+          LEFT JOIN order_stages activity_stage ON activity_stage.id=p.order_stage_id
+          LEFT JOIN production_orders activity_order ON activity_order.id=activity_stage.order_id
           WHERE p.employee_id=d.employee_id
             AND p.status='APPROVED'
             AND p.approved_at>wp.created_at
             AND p.work_date>=wp.created_at::date
+            AND (activity_stage.id IS NULL OR activity_stage.status<>'CANCELLED')
+            AND (activity_order.id IS NULL OR activity_order.status<>'CANCELLED')
        ) activity ON TRUE
       WHERE d.status IN ('PENDING','PARTIALLY_ALLOCATED')
         AND po.status<>'CANCELLED'
         AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr
           WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
-        AND NOT EXISTS(SELECT 1 FROM production_entries pending
+        AND NOT EXISTS(
+          SELECT 1 FROM production_entries pending
+          LEFT JOIN order_stages pending_stage ON pending_stage.id=pending.order_stage_id
+          LEFT JOIN production_orders pending_order ON pending_order.id=pending_stage.order_id
           WHERE pending.employee_id=d.employee_id AND pending.status='PENDING'
-            AND pending.work_date>=wp.created_at::date)
+            AND pending.work_date>=wp.created_at::date
+            AND (pending_stage.id IS NULL OR pending_stage.status<>'CANCELLED')
+            AND (pending_order.id IS NULL OR pending_order.status<>'CANCELLED')
+        )
         -- Never transfer an unmatched payment remainder while the same worker
         -- still has later approved production with an unpaid balance. This matters
         -- after an independent allocation reversal restores that production due.
         AND NOT EXISTS(
           SELECT 1 FROM production_entries p
+           LEFT JOIN order_stages blocker_stage ON blocker_stage.id=p.order_stage_id
+           LEFT JOIN production_orders blocker_order ON blocker_order.id=blocker_stage.order_id
            WHERE p.employee_id=d.employee_id
              AND p.status='APPROVED'
              AND p.approved_at>wp.created_at
              AND p.work_date>=wp.created_at::date
+             AND (blocker_stage.id IS NULL OR blocker_stage.status<>'CANCELLED')
+             AND (blocker_order.id IS NULL OR blocker_order.status<>'CANCELLED')
              AND ${productionRemainingSql}>0.009
         )
         AND (
@@ -199,12 +213,14 @@ export async function processMaturedWorkerPaymentDifferences(
               SELECT 1 FROM production_entries pending_order
               JOIN order_stages os ON os.id=pending_order.order_stage_id
                WHERE os.order_id=d.source_order_id
+                 AND os.status<>'CANCELLED'
                  AND pending_order.status='PENDING'
             )
             AND NOT EXISTS(
               SELECT 1 FROM production_entries p
               JOIN order_stages os ON os.id=p.order_stage_id
                WHERE os.order_id=d.source_order_id
+                 AND os.status<>'CANCELLED'
                  AND p.status='APPROVED' AND ${productionRemainingSql}>0.009
             )
           )
