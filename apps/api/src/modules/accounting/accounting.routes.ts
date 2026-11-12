@@ -997,6 +997,7 @@ export async function accountingRoutes(app:FastifyInstance){
                COUNT(DISTINCT e.paid_from_employee_id)::int AS holder_count,
                MIN(e.paid_from_employee_id::text) AS holder_id
           FROM accounting_expenses e WHERE e.source_worker_payment_id=wp.id
+            OR (e.source_worker_payment_id IS NULL AND wp.idempotency_key IS NOT NULL AND e.idempotency_key=wp.idempotency_key)
       ) expenses ON TRUE
       LEFT JOIN LATERAL (
         SELECT COUNT(*)::int AS out_count,COALESCE(SUM(c.amount),0) AS out_amount,
