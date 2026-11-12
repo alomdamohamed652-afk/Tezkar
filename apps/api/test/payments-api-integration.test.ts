@@ -911,7 +911,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(payoutPreview.statusCode,200,payoutPreview.body);
       assert.equal(Number(payoutPreview.json().data.availableEarnings),150);
-      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),550);
+      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),493,"the two cancellation-history expenses (35 + 22) remain real custody outflows");
       assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
         "payout preview must show the lower of available earnings and cash custody before confirmation");
 
