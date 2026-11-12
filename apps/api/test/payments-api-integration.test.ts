@@ -3106,13 +3106,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(maturedProfitability.statusCode,200,maturedProfitability.body);
       assert.equal(Number(maturedProfitability.json().data.laborCost),120);
-      assert.equal(Number(maturedProfitability.json().data.expenses),50,
-        "reversing the later allocation restores that amount to the unmatched remainder before maturity");
-      assert.equal(Number(maturedProfitability.json().data.totalCost),170);
+      assert.equal(Number(maturedProfitability.json().data.expenses),30,
+        "the 20 reallocated amount remains attributed to production; only the unmatched 30 remainder transfers as a direct expense");
+      assert.equal(Number(maturedProfitability.json().data.totalCost),150,
+        "approved labor of 120 plus the remaining 30 transfer must reconcile to the original 150 worker payment");
       const maturedDashboardOrder=await readDifferenceOrderDashboard();
       assert.equal(Number(maturedDashboardOrder.labor_cost),120);
-      assert.equal(Number(maturedDashboardOrder.direct_expenses),50);
-      assert.equal(Number(maturedDashboardOrder.total_cost),170);
+      assert.equal(Number(maturedDashboardOrder.direct_expenses),30);
+      assert.equal(Number(maturedDashboardOrder.total_cost),150);
       const duplicateMaturityClient=await apiPool.connect();
       try{
         await duplicateMaturityClient.query("BEGIN");
