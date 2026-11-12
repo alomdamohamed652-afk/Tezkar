@@ -98,6 +98,37 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
       const accountantCookie=await login(accountantUsername,accountantPassword);
+
+      // Worker settlement-difference permissions must be separated from ordinary
+      // worker access: workers cannot inspect financial differences or trigger
+      // accounting review/maturity operations.
+      const workerDifferenceListDenied=await app.inject({
+        method:"GET",url:"/api/accounting/worker-settlement-differences",headers:{cookie:workerCookie}
+      });
+      assert.equal(workerDifferenceListDenied.statusCode,403,workerDifferenceListDenied.body);
+      const workerDifferenceEventsDenied=await app.inject({
+        method:"GET",url:`/api/accounting/worker-settlement-differences/${randomUUID()}/events`,
+        headers:{cookie:workerCookie}
+      });
+      assert.equal(workerDifferenceEventsDenied.statusCode,403,workerDifferenceEventsDenied.body);
+      const workerDifferenceReleaseDenied=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${randomUUID()}/release`,
+        headers:{cookie:workerCookie},payload:{reason:"محاولة غير مصرح بها",idempotencyKey:randomUUID()}
+      });
+      assert.equal(workerDifferenceReleaseDenied.statusCode,403,workerDifferenceReleaseDenied.body);
+      const workerDifferenceProcessDenied=await app.inject({
+        method:"POST",url:"/api/accounting/worker-settlement-differences/process",
+        headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(workerDifferenceProcessDenied.statusCode,403,workerDifferenceProcessDenied.body);
+      const managerDifferenceListAllowed=await app.inject({
+        method:"GET",url:"/api/accounting/worker-settlement-differences",headers:{cookie:managerCookie}
+      });
+      assert.equal(managerDifferenceListAllowed.statusCode,200,managerDifferenceListAllowed.body);
+      const accountantDifferenceListAllowed=await app.inject({
+        method:"GET",url:"/api/accounting/worker-settlement-differences",headers:{cookie:accountantCookie}
+      });
+      assert.equal(accountantDifferenceListAllowed.statusCode,200,accountantDifferenceListAllowed.body);
       const assignedWorkerTask=(await apiPool.query(
         "INSERT INTO tasks(title,created_by) VALUES('Worker badge count test task',$1) RETURNING id",[manager.id]
       )).rows[0];
