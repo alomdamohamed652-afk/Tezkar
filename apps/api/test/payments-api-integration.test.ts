@@ -2730,10 +2730,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const repeatedRelease=await app.inject({
         method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
         headers:{cookie:managerCookie},
-        payload:{reason:"إعادة المحاولة بنفس المفتاح",idempotencyKey:releaseDifference.json().data.event.idempotency_key}
+        payload:{reason:"تمت مراجعة عكس التوزيع واعتماد إعادة المعالجة",idempotencyKey:releaseDifference.json().data.event.idempotency_key}
       });
       assert.equal(repeatedRelease.statusCode,200,repeatedRelease.body,
-        "replaying the same release idempotency key must return the original release event");
+        "replaying the same release request and idempotency key must return the original release event");
+      const reusedReleaseKeyWithDifferentReason=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"سبب مختلف بنفس المفتاح",idempotencyKey:releaseDifference.json().data.event.idempotency_key}
+      });
+      assert.equal(reusedReleaseKeyWithDifferentReason.statusCode,409,reusedReleaseKeyWithDifferentReason.body,
+        "reusing a release idempotency key with a different reason must be rejected");
+      assert.equal(reusedReleaseKeyWithDifferentReason.json().error.code,"IDEMPOTENCY_KEY_REUSED");
       // A reversed allocation is immutable: retrying the same difference against
       // the same production row must not create a second allocation or event.
       // The production remains payable through a new, separately verified payout.
