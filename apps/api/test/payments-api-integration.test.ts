@@ -2893,14 +2893,39 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(replacementProductionPayment.statusCode,201,replacementProductionPayment.body,
         "the reopened later production must be settled by a separate verified payment before its unmatched remainder can mature");
 
-      // Approved work attached to a cancelled stage is no longer eligible for
-      // allocation and must not keep an otherwise mature difference pending.
+      // Approved work attached to a cancelled stage/order is no longer eligible
+      // for allocation and must not keep an otherwise mature difference pending.
       const cancelledStageBlocker=await insertDifferenceProduction(1,10);
       assert.ok(cancelledStageBlocker.id);
       const originalStageStatus=(await apiPool.query(
         "SELECT status FROM order_stages WHERE id=$1",[differenceStage.id]
       )).rows[0].status;
       await apiPool.query("UPDATE order_stages SET status='CANCELLED' WHERE id=$1",[differenceStage.id]);
+
+      const cancelledOrderResponse=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Cancelled maturity blocker "+randomBytes(4).toString("hex"),
+          stages:[{stageName:"Cancelled blocker stage",sequenceNo:1,outputProductName:"Cancelled blocker output "+randomBytes(4).toString("hex"),
+            plannedQuantity:5,stageRate:10,stageRateMethod:"PER_PIECE",isFinalProduct:true}]}
+      });
+      assert.equal(cancelledOrderResponse.statusCode,201,cancelledOrderResponse.body);
+      const cancelledOrderId=cancelledOrderResponse.json().data.id as string;
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[cancelledOrderId]);
+      const cancelledOrderStage=(await apiPool.query(
+        "SELECT os.id,os.stage_id,os.output_product_id,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1",
+        [cancelledOrderId]
+      )).rows[0];
+      const cancelledOrderBlocker=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at,order_stage_id
+         ) VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,10,$7,'PER_PIECE','PER_PIECE',10,0,0,
+           'APPROVED',$8,$8,now(),$9) RETURNING id`,
+        [differenceWorker.id,cancelledOrderStage.output_product_id,cancelledOrderStage.stage_id,bonusShift.id,
+         cancelledOrderStage.unit_id,bonusRate.id,perPieceWageType.id,manager.id,cancelledOrderStage.id]
+      )).rows[0];
+      await apiPool.query("UPDATE production_orders SET status='CANCELLED' WHERE id=$1",[cancelledOrderId]);
 
       const matureClient=await apiPool.connect();
       let transferredCount=0;
@@ -2914,8 +2939,9 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       finally{matureClient.release()}
       await apiPool.query("UPDATE order_stages SET status=$2 WHERE id=$1",[differenceStage.id,originalStageStatus]);
       await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledStageBlocker.id]);
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledOrderBlocker.id]);
       assert.equal(transferredCount,1,
-        "approved production in a cancelled stage must not reset inactivity or block maturity");
+        "approved production in cancelled stages or orders must not reset inactivity or block maturity");
       const maturedDifference=(await apiPool.query(
         "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
       )).rows[0];
