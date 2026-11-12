@@ -901,6 +901,7 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         expensesMissingCustodyLink:0,
         advanceRepaymentsMissingCustodyIn:0,
         workerPaymentReversalMismatches:0,
+        workerPaymentPostingMismatches:0,
         workerDifferenceEventReversalMismatches:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
