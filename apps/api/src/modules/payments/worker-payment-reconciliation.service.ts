@@ -48,19 +48,24 @@ export async function reconcileWorkerPayments() {
       COALESCE(custody.holder_count,0) AS custody_out_holder_count,
       custody.holder_id AS custody_out_holder_id,
       COALESCE(allocations.source_count,0) AS allocation_count,
-      COALESCE(allocations.source_amount,0) AS allocation_amount,
+      COALESCE(allocations.active_amount,0) AS allocation_amount,
+      COALESCE(allocations.source_amount,0) AS allocation_source_amount,
       COALESCE(allocations.reversal_count,0) AS allocation_reversal_count,
       COALESCE(allocations.reversal_amount,0) AS allocation_reversal_amount,
       COALESCE(difference.original_amount,0) AS difference_original_amount,
       COALESCE(difference.active_amount,0) AS difference_active_amount,
+      COALESCE(difference.source_event_count,0) AS difference_source_event_count,
       COALESCE(difference.reversed_event_count,0) AS difference_reversed_event_count,
       COALESCE(parent_reversal.row_count,0) AS parent_reversal_count,
       COALESCE(parent_reversal.amount_total,0) AS parent_reversal_amount,
       COALESCE(expense_reversal.amount_total,0) AS expense_reversal_amount,
       COALESCE(expense_reversal.row_count,0) AS expense_reversal_count,
+      COALESCE(custody_reversal.row_count,0) AS custody_reversal_count,
       COALESCE(custody_reversal.amount_total,0) AS custody_reversal_in,
+      COALESCE(reversal_ledger.row_count,0) AS reversal_ledger_count,
       COALESCE(reversal_ledger.credit_total,0) AS reversal_ledger_credit,
       COALESCE(reversal_ledger.debit_total,0) AS reversal_ledger_debit,
+      COALESCE(reversal_ledger.wrong_employee_count,0) AS reversal_ledger_wrong_employee_count,
       COALESCE(difference.active_event_count,0) AS difference_active_event_count
     FROM worker_payments wp
     LEFT JOIN LATERAL (
@@ -142,6 +147,8 @@ export async function reconcileWorkerPayments() {
            AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
       )
       SELECT COUNT(*)::int AS source_count,COALESCE(SUM(sa.amount),0) AS source_amount,
+             COALESCE(SUM(GREATEST(sa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+               WHERE r.worker_payment_id=wp.id AND r.source_allocation_id=sa.id AND r.allocation_source=sa.source),0),0)),0) AS active_amount,
              (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals r WHERE r.worker_payment_id=wp.id) AS reversal_count,
              (SELECT COALESCE(SUM(r.amount),0) FROM worker_payment_allocation_reversals r WHERE r.worker_payment_id=wp.id) AS reversal_amount
         FROM source_allocations sa
@@ -151,6 +158,7 @@ export async function reconcileWorkerPayments() {
              COALESCE(SUM(ev.amount) FILTER(WHERE ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
                AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
                  WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS active_amount,
+             COUNT(*) FILTER(WHERE ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER'))::int AS source_event_count,
              COUNT(*) FILTER(WHERE ev.event_type='REVERSED')::int AS reversed_event_count,
              COUNT(*) FILTER(WHERE ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
                AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
@@ -175,15 +183,17 @@ export async function reconcileWorkerPayments() {
                 OR (e.source_worker_payment_id IS NULL AND e.idempotency_key=wp.idempotency_key))
     ) expense_reversal ON TRUE
     LEFT JOIN LATERAL (
-      SELECT COALESCE(SUM(c.amount),0) AS amount_total
+      SELECT COUNT(*)::int AS row_count,COALESCE(SUM(c.amount),0) AS amount_total
         FROM cash_custody_transactions c
        WHERE c.source_type='FINANCIAL_REVERSAL' AND c.direction='IN'
          AND c.source_id IN (SELECT line.reversal_id FROM financial_reversal_lines line
            WHERE line.source_type='WORKER_PAYMENT' AND line.source_id=wp.id)
     ) custody_reversal ON TRUE
     LEFT JOIN LATERAL (
-      SELECT COALESCE(SUM(l.credit_amount),0) AS credit_total,
-             COALESCE(SUM(l.debit_amount),0) AS debit_total
+      SELECT COUNT(*)::int AS row_count,
+             COALESCE(SUM(l.credit_amount),0) AS credit_total,
+             COALESCE(SUM(l.debit_amount),0) AS debit_total,
+             COUNT(*) FILTER(WHERE l.employee_id IS DISTINCT FROM wp.employee_id)::int AS wrong_employee_count
         FROM employee_earnings_ledger l
        WHERE l.financial_reversal_id IN (SELECT line.reversal_id FROM financial_reversal_lines line
          WHERE line.source_type='WORKER_PAYMENT' AND line.source_id=wp.id)
@@ -253,19 +263,27 @@ export async function reconcileWorkerPayments() {
         add(row, "SETTLEMENT_DIFFERENCE_MISMATCH", row.difference_original_amount, row.difference_active_amount);
       }
     } else {
-      if (!near(row.parent_reversal_amount, row.gross_amount) ||
+      if (amount(row.parent_reversal_count) !== 1 || !near(row.parent_reversal_amount, row.gross_amount) ||
+          amount(row.expense_reversal_count) !== amount(row.expense_count) ||
           !near(row.expense_reversal_amount, row.gross_amount)) {
         add(row, "WORKER_PAYMENT_REVERSAL_MISMATCH", row.gross_amount, row.parent_reversal_amount);
       }
-      if (!near(row.custody_reversal_in, row.cash_paid_amount) && !row.previous_custody) {
+      if (!row.previous_custody && (amount(row.custody_reversal_count) !== (amount(row.cash_paid_amount) > 0.009 ? 1 : 0) ||
+          !near(row.custody_reversal_in, row.cash_paid_amount))) {
         add(row, "WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH", row.cash_paid_amount, row.custody_reversal_in);
       }
       if (!near(row.reversal_ledger_credit, row.gross_amount) ||
-          !near(row.reversal_ledger_debit, row.advance_repayment_amount)) {
+          !near(row.reversal_ledger_debit, row.advance_repayment_amount) ||
+          amount(row.reversal_ledger_wrong_employee_count) > 0) {
         add(row, "WORKER_PAYMENT_REVERSAL_LEDGER_MISMATCH", row.gross_amount, row.reversal_ledger_credit);
       }
-      if (amount(row.difference_active_event_count) > 0) {
-        add(row, "WORKER_PAYMENT_REVERSAL_DIFFERENCE_EVENTS_ACTIVE", 0, row.difference_active_event_count);
+      if (amount(row.allocation_reversal_count) !== amount(row.allocation_count) ||
+          !near(row.allocation_reversal_amount, row.allocation_source_amount)) {
+        add(row, "WORKER_PAYMENT_REVERSAL_ALLOCATIONS_MISMATCH", row.allocation_source_amount, row.allocation_reversal_amount);
+      }
+      if (amount(row.difference_active_event_count) > 0 ||
+          amount(row.difference_reversed_event_count) !== amount(row.difference_source_event_count)) {
+        add(row, "WORKER_PAYMENT_REVERSAL_DIFFERENCE_EVENTS_ACTIVE", row.difference_source_event_count, row.difference_reversed_event_count);
       }
     }
   }
