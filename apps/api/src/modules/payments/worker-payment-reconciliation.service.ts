@@ -256,10 +256,11 @@ export async function reconcileWorkerPayments() {
         add(row, "CASH_CUSTODY_MISMATCH", cash, row.custody_out_amount);
       }
       if (amount(row.allocation_amount) > amount(row.gross_amount) + 0.01 ||
-          amount(row.allocation_reversal_amount) > amount(row.allocation_amount) + 0.01) {
+          amount(row.allocation_reversal_amount) > amount(row.allocation_source_amount) + 0.01) {
         add(row, "PRODUCTION_ALLOCATION_MISMATCH", row.gross_amount, row.allocation_amount);
       }
-      if (amount(row.difference_active_amount) > amount(row.difference_original_amount) + 0.01) {
+      if (amount(row.difference_original_amount) > amount(row.gross_amount) + 0.01 ||
+          amount(row.difference_active_amount) > amount(row.difference_original_amount) + 0.01) {
         add(row, "SETTLEMENT_DIFFERENCE_MISMATCH", row.difference_original_amount, row.difference_active_amount);
       }
     } else {
