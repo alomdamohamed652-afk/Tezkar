@@ -3686,6 +3686,61 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(multiEventSummary.json().data.availableForSettlement),100,
         "the summary must restore only the reversed production while retaining the other active difference allocation");
 
+      // Releasing a reversed difference must allow a fresh immutable allocation
+      // cycle against the same production entry, without reusing the reversed row.
+      const differenceRelease=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${multiEventDifference.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"إعادة اعتماد بعد مراجعة عكس التخصيص",idempotencyKey:randomUUID()}
+      });
+      assert.equal(differenceRelease.statusCode,201,differenceRelease.body);
+      assert.equal(differenceRelease.json().data.status,"PARTIALLY_ALLOCATED",
+        "only the remaining unreversed amount should be released for allocation");
+
+      const reallocatedSameProduction=await allocateMultiEventProduction(multiEventProductionA.id);
+      assert.equal(reallocatedSameProduction.length,1,
+        "the previously reversed production entry must accept a new allocation cycle");
+      assert.equal(Number(reallocatedSameProduction[0].amount),100);
+      const allocationCycles=await apiPool.query(
+        `SELECT id,amount FROM worker_payment_order_allocations
+          WHERE worker_payment_id=$1 AND production_entry_id=$2 ORDER BY created_at,id`,
+        [multiEventPaymentId,multiEventProductionA.id]
+      );
+      assert.equal(allocationCycles.rowCount,2,
+        "reallocation must create a second immutable allocation row instead of reusing the reversed row");
+      assert.notEqual(allocationCycles.rows[0].id,allocationCycles.rows[1].id);
+      assert.equal(Number((await apiPool.query(
+        `SELECT COUNT(*)::int AS count FROM worker_payment_allocation_reversals
+          WHERE allocation_source='WORKER_PAYMENT_ORDER' AND source_allocation_id=$1`,
+        [allocationCycles.rows[0].id]
+      )).rows[0].count),1,"the original allocation reversal must remain untouched");
+      const reallocatedEvents=await apiPool.query(
+        `SELECT ev.id,ev.worker_payment_order_allocation_id
+           FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')
+          ORDER BY ev.created_at,ev.id`,
+        [multiEventDifference.id]
+      );
+      assert.equal(reallocatedEvents.rowCount,2,
+        "the reallocated event and the other still-active event must both remain active");
+      assert.ok(reallocatedEvents.rows.some((row:any)=>row.worker_payment_order_allocation_id===allocationCycles.rows[1].id),
+        "the new active event must point to the new allocation row");
+      const duplicateReallocation=await allocateMultiEventProduction(multiEventProductionA.id);
+      assert.equal(duplicateReallocation.length,0,
+        "reprocessing the same production must not duplicate an active allocation");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[multiEventDifference.id]
+      )).rows[0].status,"ALLOCATED");
+      const afterReallocationSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${multiEventWorker}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(afterReallocationSummary.statusCode,200,afterReallocationSummary.body);
+      assert.equal(Number(afterReallocationSummary.json().data.availableForSettlement),0,
+        "reallocation must consume only the restored production due exactly once");
+
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
