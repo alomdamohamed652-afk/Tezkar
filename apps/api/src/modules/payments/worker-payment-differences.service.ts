@@ -106,14 +106,30 @@ export async function allocatePendingWorkerPaymentDifferencesForProduction(
     const amount = Math.round(Math.min(productionRemaining, differenceRemaining) * 100) / 100;
     if (amount <= 0.009) continue;
 
+    const activeAllocation = await client.query(
+      `SELECT 1
+         FROM worker_payment_settlement_difference_events ev
+        WHERE ev.difference_id=$1
+          AND ev.production_entry_id=$2
+          AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+          AND NOT EXISTS(
+            SELECT 1 FROM worker_payment_settlement_difference_events rv
+             WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED'
+          )
+        LIMIT 1`,
+      [difference.id, productionEntryId]
+    );
+    if (activeAllocation.rowCount) continue;
+
+    // Each allocation cycle gets a new immutable allocation row. A prior cycle
+    // may have been reversed; reusing its row would collide with the append-only
+    // allocation-reversal journal and could make the restored due unpayable.
     const inserted = await client.query(
       `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
        VALUES($1,$2,$3)
-       ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING
        RETURNING id`,
       [difference.worker_payment_id, productionEntryId, amount]
     );
-    if (!inserted.rowCount) continue;
 
     await client.query(
       `INSERT INTO worker_payment_settlement_difference_events(
