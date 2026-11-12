@@ -1212,7 +1212,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // Legacy reconciliation can leave a duplicate order-allocation row for the
       // same payment. Settlement allocations are canonical and must take precedence.
       await apiPool.query(
-        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,130) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
+        `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+         SELECT $1,$2,130
+          WHERE NOT EXISTS(
+            SELECT 1 FROM worker_payment_order_allocations
+             WHERE worker_payment_id=$1 AND production_entry_id=$2
+          )`,
         [bonusAwarePayout.json().data.payment.id,bonusProduction.id]
       );
       const productionHistoryAfterDuplicate=await app.inject({
