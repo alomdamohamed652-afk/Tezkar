@@ -3447,7 +3447,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN' AND source_id IN (SELECT reversal_id FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$1)",
         [cancelledCostPayment]
       )).rows[0].count),0,"cancellation must not create a custody IN reversal");
-      const laterCancelledCostProduction=await insertAdminCostProduction(cancelledCostWorker,adminCostA.stage);
+      const cancelledCostTargetOrder=await createAdminCostOrder("Target order must not receive cancelled cost");
+      const laterCancelledCostProduction=await insertAdminCostProduction(cancelledCostWorker,cancelledCostTargetOrder.stage);
       const cancelledDifferenceAllocationClient=await apiPool.connect();
       let cancelledDifferenceAllocations:any[]=[];
       try{
