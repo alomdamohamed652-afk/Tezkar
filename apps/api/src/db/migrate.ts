@@ -39,19 +39,43 @@ for (const file of files) {
     }
 
     const sql = await readFile(path.join(migrationsDir, file), "utf8");
+    const maxLockAttempts = 3;
+    let applied = false;
 
-    await client.query("BEGIN");
-    try {
-      await client.query(sql);
-      await client.query(
-        "INSERT INTO schema_migrations(version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
-        [version]
-      );
-      await client.query("COMMIT");
-      console.log(`applied: ${file}`);
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+    for (let attempt = 1; attempt <= maxLockAttempts; attempt += 1) {
+      console.log(`applying: ${file} (attempt ${attempt}/${maxLockAttempts})`);
+      await client.query("BEGIN");
+
+      try {
+        await client.query(sql);
+        await client.query(
+          "INSERT INTO schema_migrations(version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
+          [version]
+        );
+        await client.query("COMMIT");
+        console.log(`applied: ${file}`);
+        applied = true;
+        break;
+      } catch (error) {
+        await client.query("ROLLBACK");
+
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: string }).code
+          : undefined;
+        if (code !== "55P03" || attempt === maxLockAttempts) {
+          throw error;
+        }
+
+        const delayMs = attempt * 2_000;
+        console.warn(
+          `lock timeout: ${file}; retrying in ${delayMs}ms (${attempt}/${maxLockAttempts})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    if (!applied) {
+      throw new Error(`Migration did not complete: ${file}`);
     }
   } finally {
     client.release();
