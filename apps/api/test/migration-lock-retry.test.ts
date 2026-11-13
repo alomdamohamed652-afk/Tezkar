@@ -121,7 +121,7 @@ test("migration runner retries a transient lock timeout and reports the migratio
 
     const result = await exit;
     assert.equal(result.code, 0, output);
-    assert.match(output, new RegExp(`applying: ${migrationName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(attempt 2/3\\)`));
+    assert.ok(output.includes(`applying: ${migrationName}.sql (attempt 2/3)`), output);
     assert.match(output, new RegExp(`applied: ${migrationName}.sql`));
 
     const verification = new pg.Client({ connectionString: target.toString() });
