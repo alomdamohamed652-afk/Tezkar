@@ -4,6 +4,11 @@
 --
 -- Resolve the generated UNIQUE constraint by its column definition instead of
 -- relying on PostgreSQL's 63-byte truncated auto-generated constraint name.
+--
+-- This migration must not wait indefinitely behind active production transactions.
+-- The runner retries short-lived lock contention and reports the exact migration.
+SET LOCAL lock_timeout = '10s';
+
 DO $$
 DECLARE
   allocation_constraint TEXT;
