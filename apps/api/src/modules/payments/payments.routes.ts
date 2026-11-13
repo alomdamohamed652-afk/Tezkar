@@ -634,7 +634,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       const candidates = await client.query(`
         SELECT wp.id
           FROM worker_payments wp
-          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
@@ -659,7 +659,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           SELECT wp.id,wp.employee_id,wp.gross_amount,wp.created_at::date AS payment_date,e.full_name AS employee_name,
                  ae.order_id,ae.order_stage_id,es.id AS settlement_id
             FROM worker_payments wp
-            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
             JOIN employees e ON e.id=wp.employee_id
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
            WHERE wp.id=$1
@@ -810,7 +810,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
           FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
            AND (
              (es.id IS NULL AND (
@@ -1055,7 +1055,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         FROM worker_payments wp
         JOIN employees e ON e.id=wp.employee_id
         LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
         LEFT JOIN production_orders o ON o.id=ae.order_id
         LEFT JOIN order_stages original_stage ON original_stage.id=ae.order_stage_id
         LEFT JOIN stages original_stage_lookup ON original_stage_lookup.id=original_stage.stage_id
@@ -1131,7 +1131,7 @@ export async function paymentsRoutes(app:FastifyInstance){
              os.sequence_no,st.name AS stage_name,es.id AS settlement_id
         FROM worker_payments wp
         JOIN employees e ON e.id=wp.employee_id
-        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+        LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
         LEFT JOIN production_orders o ON o.id=ae.order_id
         LEFT JOIN order_stages os ON os.id=ae.order_stage_id
         LEFT JOIN stages st ON st.id=os.stage_id
@@ -1243,7 +1243,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                to_char(wp.created_at,'YYYY-MM-DD') AS payment_date
           FROM worker_payments wp
           JOIN employees e ON e.id=wp.employee_id
-          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+          LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE wp.id=$1 AND wp.employee_id=$2 FOR UPDATE OF wp
       `,[id,owner.rows[0].employee_id]);
@@ -1462,7 +1462,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                  END AS allocation_status
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
             LEFT JOIN production_orders o ON o.id=ae.order_id
             LEFT JOIN order_stages os ON os.id=ae.order_stage_id
             LEFT JOIN stages s ON s.id=os.stage_id
@@ -1637,7 +1637,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                     WHERE es.worker_payment_id=wp.id)
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
-              JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+              JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]}),
         client.query(`
@@ -1657,6 +1657,20 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.payroll_payment_id IS NULL
                 AND l.settlement_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
+            COALESCE((SELECT json_agg(json_build_object(
+              'id',l.id,'code',l.code,'createdAt',l.created_at,
+              'credit',l.credit_amount,'debit',l.debit_amount,
+              'net',l.credit_amount-l.debit_amount,'notes',l.notes
+            ) ORDER BY l.created_at,l.id)
+              FROM employee_earnings_ledger l
+              WHERE l.employee_id=$1 AND l.entry_type='ADJUSTMENT' AND l.production_entry_id IS NULL
+                AND l.advance_repayment_id IS NULL
+                AND l.payroll_item_id IS NULL
+                AND l.payroll_adjustment_line_id IS NULL
+                AND l.payroll_payment_id IS NULL
+                AND l.settlement_id IS NULL
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)
+            ),'[]'::json) AS ledger_only_adjustment_entries,
             COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
             COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
               LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
@@ -1687,6 +1701,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           productionNet: Number(availabilityBreakdown.rows[0]?.production_net ?? 0),
           standaloneAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0),
           ledgerOnlyAdjustmentsNet: Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0),
+          ledgerOnlyAdjustmentEntries: availabilityBreakdown.rows[0]?.ledger_only_adjustment_entries ?? [],
           previouslySettled: Number(availabilityBreakdown.rows[0]?.settled ?? 0) + Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0),
           historicalPaid: Number(availabilityBreakdown.rows[0]?.historical_paid ?? 0),
           calculationMode: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0 ? "PRODUCTION" : "LEDGER_FALLBACK",
@@ -1763,9 +1778,6 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.settlementSource === "CURRENT_CUSTODY" && !value.cashCustodyEmployeeId) {
         ctx.addIssue({ code: "custom", path: ["cashCustodyEmployeeId"], message: "اختار العهدة الحالية التي سيتم الخصم منها" });
       }
-      if (value.settlementSource === "PREVIOUS_CUSTODY" && !value.orderId) {
-        ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار الطلبية مطلوب عند التسوية من عهدة سابقة" });
-      }
       if (value.orderStageId && !value.orderId) {
         ctx.addIssue({ code: "custom", path: ["orderId"], message: "اختيار مرحلة الطلبية يتطلب تحديد الطلبية" });
       }
@@ -1805,14 +1817,10 @@ export async function paymentsRoutes(app:FastifyInstance){
       });
       const prior = await client.query(
         `SELECT wp.*,
-                c.employee_id AS custody_employee_id,
-                e.order_id AS expense_order_id,
-                e.order_stage_id AS expense_order_stage_id
+                c.employee_id AS custody_employee_id
            FROM worker_payments wp
            LEFT JOIN cash_custody_transactions c
              ON c.source_type='WORKER_PAYMENT' AND c.source_id=wp.id
-           LEFT JOIN accounting_expenses e
-             ON e.expense_type='DIRECT' AND e.category='WORKER_PAYMENT' AND e.idempotency_key=wp.idempotency_key
           WHERE wp.idempotency_key=$1
           LIMIT 1`,
         [parsed.data.idempotencyKey]
@@ -1820,9 +1828,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (prior.rowCount) {
         const payment = prior.rows[0];
         const sameRequest = payment.employee_id === parsed.data.employeeId
-          && payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null)
-          && payment.expense_order_id === (parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderId ?? null : null)
-          && payment.expense_order_stage_id === (parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? parsed.data.orderStageId ?? null : null)
+          && (Number(payment.amount) <= 0.009 || payment.custody_employee_id === (parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.cashCustodyEmployeeId : null))
           && payment.idempotency_fingerprint === fingerprint;
         if (!sameRequest) throw new AppError("IDEMPOTENCY_KEY_REUSED", "مفتاح العملية مستخدم مع بيانات صرف مختلفة", 409);
         return {
@@ -1836,12 +1842,12 @@ export async function paymentsRoutes(app:FastifyInstance){
       }
 
       await assertAccountingPeriodOpen(client);
-      if(parsed.data.settlementSource==="CURRENT_CUSTODY" && (parsed.data.productionEntryIds?.length??0)>0){
+      if((parsed.data.productionEntryIds?.length??0)>0){
         const unresolvedHistory=await client.query(`
           SELECT wp.id,wp.gross_amount
             FROM worker_payments wp
             LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
-            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+            LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
            WHERE wp.employee_id=$1
              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
              AND (
@@ -1905,7 +1911,7 @@ export async function paymentsRoutes(app:FastifyInstance){
       let orderAvailable: number | null = null;
       let orderLegacyPaid = 0;
       let orderProductionCount = 0;
-      if(parsed.data.settlementSource==="PREVIOUS_CUSTODY"){
+      if(parsed.data.orderId){
         const orderDue=await client.query(`
           SELECT
             COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
@@ -1965,12 +1971,13 @@ export async function paymentsRoutes(app:FastifyInstance){
                     WHERE es.worker_payment_id=wp.id)
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
-              JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
+              JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
               WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
         orderAvailable=Math.max(0,Number(orderDue.rows[0]?.earned??0)-Number(orderDue.rows[0]?.allocated_paid??0)-orderLegacyPaid);
+        if(orderProductionCount===0)throw new AppError("ORDER_HAS_NO_WORKER_PRODUCTION","لا يمكن تحميل تسوية العامل على طلبية أو مرحلة لا تحتوي سجلات إنتاج معتمدة تخص هذا العامل؛ نفّذ التسوية العامة بدلًا من ذلك.",409);
         if(orderProductionCount>0){
           if(!parsed.data.allowOverpayment&&parsed.data.amount>orderAvailable+0.009)throw new AppError("ORDER_BALANCE_EXCEEDED",`المتبقي على الطلبية المختارة ${orderAvailable.toFixed(2)} ج.م فقط؛ راجع حساب الطلبية قبل الصرف.`,409);
         }else if(!parsed.data.allowOverpayment&&parsed.data.amount>available+0.009){
@@ -1980,7 +1987,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         throw new AppError("INSUFFICIENT_BALANCE", `المستحقات المتاحة ${available.toFixed(2)} ج.م فقط`, 409);
       }
 
-      if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
+      if (parsed.data.orderId) {
         const order = await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE", [parsed.data.orderId]);
         if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND", "الطلبية غير موجودة", 404);
         if (order.rows[0].status === "CANCELLED") throw new AppError("ORDER_CANCELLED", "لا يمكن تحميل تسوية على طلبية ملغاة", 409);
@@ -2018,7 +2025,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           FOR UPDATE OF p
         `,[parsed.data.employeeId,parsed.data.productionEntryIds]);
         if(selected.rowCount!==new Set(parsed.data.productionEntryIds).size)throw new AppError("PRODUCTION_SELECTION_INVALID","بعض سجلات الإنتاج المختارة لا تخص العامل أو لم تعد معتمدة",409);
-        if(parsed.data.settlementSource==="PREVIOUS_CUSTODY" && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
+        if(parsed.data.orderId && selected.rows.some(row=>row.order_id!==parsed.data.orderId || (parsed.data.orderStageId && row.order_stage_id!==parsed.data.orderStageId)))throw new AppError("PRODUCTION_ORDER_MISMATCH","كل سجلات الإنتاج المختارة يجب أن تخص الطلبية والمرحلة المحددتين",409);
         if(parsed.data.settlementMode==="SELECTED_PRODUCTION"){
           const selectedDue=Math.round(selected.rows.reduce((sum,row)=>sum+Number(row.remaining??0),0)*100)/100;
           if(selectedDue<=0.009)throw new AppError("PRODUCTION_ALREADY_SETTLED","سجلات الإنتاج المختارة تمت تسويتها بالفعل",409);
@@ -2043,11 +2050,11 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
-        skipProductionAllocations: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
-        availableBalanceOverride: parsed.data.settlementSource === "PREVIOUS_CUSTODY" ? (orderProductionCount > 0 ? orderAvailable : available) : null,
-        productionEntryIds: parsed.data.settlementSource === "CURRENT_CUSTODY" ? parsed.data.productionEntryIds ?? null : null
+        skipProductionAllocations: Boolean(parsed.data.orderId),
+        availableBalanceOverride: parsed.data.orderId ? (orderProductionCount > 0 ? orderAvailable : available) : null,
+        productionEntryIds: parsed.data.orderId ? null : parsed.data.productionEntryIds ?? null
       });
-      if (parsed.data.settlementSource === "PREVIOUS_CUSTODY") {
+      if (parsed.data.orderId) {
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
         const productionRows=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
@@ -2172,19 +2179,110 @@ export async function paymentsRoutes(app:FastifyInstance){
             `تم إيقاف التسوية: سجل الإنتاج ${conflict.code} وصل إلى ${Number(conflict.paid).toFixed(2)} ج.م من أصل ${Number(conflict.earned).toFixed(2)} ج.م بعد جمع كل الدفعات؛ راجع توزيع الدفعات القديمة.`,409);
         }
         if(amountToAllocate>0.009 && Number(productionRows.rowCount??0)>0 && !parsed.data.allowOverpayment)throw new AppError("ORDER_ALLOCATION_INCOMPLETE","تعذر توزيع كامل مبلغ الصرف على سجلات الإنتاج المتاحة للطلبية؛ لم يتم اعتماد العملية.",409);
-        const expenseOrder = await client.query("SELECT code,order_name FROM production_orders WHERE id=$1", [parsed.data.orderId]);
+      }
+      const expenseAllocations = parsed.data.orderId
+        ? await client.query(
+            `SELECT os.order_id,p.order_stage_id,o.code AS order_code,o.order_name,
+                    os.sequence_no,st.name AS stage_name,SUM(a.amount)::numeric AS amount
+               FROM worker_payment_order_allocations a
+               JOIN production_entries p ON p.id=a.production_entry_id
+               LEFT JOIN order_stages os ON os.id=p.order_stage_id
+               LEFT JOIN production_orders o ON o.id=os.order_id
+               LEFT JOIN stages st ON st.id=os.stage_id
+              WHERE a.worker_payment_id=$1
+              GROUP BY os.order_id,p.order_stage_id,o.code,o.order_name,os.sequence_no,st.name
+              ORDER BY os.order_id NULLS LAST,p.order_stage_id NULLS LAST`,
+            [settlement.payment.id]
+          )
+        : await client.query(
+            `SELECT os.order_id,p.order_stage_id,o.code AS order_code,o.order_name,
+                    os.sequence_no,st.name AS stage_name,SUM(a.amount)::numeric AS amount
+               FROM employee_earnings_settlement_allocations a
+               JOIN production_entries p ON p.id=a.production_entry_id
+               LEFT JOIN order_stages os ON os.id=p.order_stage_id
+               LEFT JOIN production_orders o ON o.id=os.order_id
+               LEFT JOIN stages st ON st.id=os.stage_id
+              WHERE a.settlement_id=(
+                SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1
+              )
+              GROUP BY os.order_id,p.order_stage_id,o.code,o.order_name,os.sequence_no,st.name
+              ORDER BY os.order_id NULLS LAST,p.order_stage_id NULLS LAST`,
+            [settlement.payment.id]
+          );
+      const expenseBuckets: Array<{
+        order_id:string|null;order_stage_id:string|null;order_code:string|null;order_name:string|null;
+        sequence_no:number|null;stage_name:string|null;amount:number;scope:string
+      }> = [];
+      let generalExpenseAmount=0;
+      let allocatedExpenseAmount=0;
+      for(const row of expenseAllocations.rows){
+        const amount=Math.round(Number(row.amount)*100)/100;
+        if(amount<=0.009)continue;
+        allocatedExpenseAmount=Math.round((allocatedExpenseAmount+amount)*100)/100;
+        if(row.order_id){
+          expenseBuckets.push({
+            order_id:row.order_id,order_stage_id:row.order_stage_id,order_code:row.order_code,
+            order_name:row.order_name,sequence_no:row.sequence_no,stage_name:row.stage_name,
+            amount,scope:`ORDER:${row.order_id}:STAGE:${row.order_stage_id??"NONE"}`
+          });
+        }else{
+          generalExpenseAmount=Math.round((generalExpenseAmount+amount)*100)/100;
+        }
+      }
+      if(allocatedExpenseAmount>settlement.grossAmount+0.009){
+        throw new AppError("WORKER_EXPENSE_ALLOCATION_EXCEEDED","توزيع تكلفة العامل تجاوز إجمالي التسوية؛ تم إلغاء العملية بالكامل.",409);
+      }
+      generalExpenseAmount=Math.round((generalExpenseAmount+Math.max(0,settlement.grossAmount-allocatedExpenseAmount))*100)/100;
+      if(generalExpenseAmount>0.009){
+        expenseBuckets.push({
+          order_id:null,order_stage_id:null,order_code:null,order_name:null,
+          sequence_no:null,stage_name:null,amount:generalExpenseAmount,scope:"GENERAL"
+        });
+      }
+      if(!expenseBuckets.length){
+        expenseBuckets.push({
+          order_id:null,order_stage_id:null,order_code:null,order_name:null,
+          sequence_no:null,stage_name:null,amount:settlement.grossAmount,scope:"GENERAL"
+        });
+      }
+      const custodyMovement = parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : { rows: [] as Array<{id:string}> };
+      if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rows.length !== 1) {
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      for(let index=0;index<expenseBuckets.length;index++){
+        const bucket=expenseBuckets[index]!;
+        const bucketHash=createHash("sha256").update(`${parsed.data.idempotencyKey}:${bucket.scope}`).digest("hex");
+        const expenseIdempotencyKey=index===0
+          ? parsed.data.idempotencyKey
+          : `${bucketHash.slice(0,8)}-${bucketHash.slice(8,12)}-4${bucketHash.slice(13,16)}-a${bucketHash.slice(17,20)}-${bucketHash.slice(20,32)}`;
+        const expenseDescription=bucket.order_id
+          ? `تسوية مستحقات العامل ${String(settlement.payment.code)} — الطلبية ${String(bucket.order_code??bucket.order_id)}${bucket.order_name?` — ${String(bucket.order_name)}`:""}${bucket.stage_name?` — المرحلة ${String(bucket.stage_name)}`:""}`
+          : `تسوية مستحقات العامل ${String(settlement.payment.code)} — مستحقات عامة غير مرتبطة بإنتاج محدد`;
         await client.query(
-          `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash)
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',NULL,$7,$8)`,
+          `INSERT INTO accounting_expenses(
+             order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+             expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
+             cash_custody_transaction_id,allocation_type,source_worker_payment_id
+           )
+           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)`,
           [
-            parsed.data.orderId,
-            parsed.data.orderStageId ?? null,
-            `تسوية مستحقات العامل ${String(settlement.payment.code)} من عهدة سابقة — الطلبية ${String(expenseOrder.rows[0]?.code ?? parsed.data.orderId)}${expenseOrder.rows[0]?.order_name ? ` — ${String(expenseOrder.rows[0].order_name)}` : ""}`,
-            parsed.data.amount,
+            bucket.order_id,
+            bucket.order_stage_id,
+            expenseDescription,
+            bucket.amount,
             parsed.data.method,
             request.user!.userId,
-            parsed.data.idempotencyKey,
-            createHash("sha256").update(fingerprint).digest("hex")
+            index===0 && parsed.data.settlementSource==="CURRENT_CUSTODY" && settlement.cashPaid>0.009 ? parsed.data.cashCustodyEmployeeId : null,
+            expenseIdempotencyKey,
+            createHash("sha256").update(`${fingerprint}:${bucket.scope}:${bucket.amount.toFixed(2)}`).digest("hex"),
+            index===0 ? custodyMovement.rows[0]?.id ?? null : null,
+            bucket.order_id ? "DIRECT" : "GENERAL",
+            settlement.payment.id
           ]
         );
       }

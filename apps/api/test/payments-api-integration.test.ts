@@ -696,7 +696,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
         "payout preview must show the lower of available earnings and cash custody before confirmation");
 
-      
       // A previous-custody settlement must still settle employee earnings and post labor cost
       // to the selected order, without creating a new cash-custody OUT on today's custody.
       const previousCustodyEmployee = (await apiPool.query(
@@ -716,7 +715,6 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{
           employeeId:previousCustodyEmployee.id,
           settlementSource:"PREVIOUS_CUSTODY",
-          orderId:hamzaOrder.json().data.id,
           amount:75,
           method:"CASH",
           idempotencyKey:previousCustodyKey,
@@ -737,22 +735,23 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       )).rows[0].balance);
       assert.equal(custodyAfterPreviousSettlement,custodyBeforePreviousSettlement,"current custody balance remains unchanged");
       const previousCustodyExpense=await apiPool.query(
-        "SELECT order_id,order_stage_id,category,amount,expense_type,paid_from_employee_id,idempotency_key FROM accounting_expenses WHERE idempotency_key=$1",
+        "SELECT order_id,order_stage_id,category,amount,expense_type,paid_from_employee_id,idempotency_key,allocation_type,source_worker_payment_id FROM accounting_expenses WHERE idempotency_key=$1",
         [previousCustodyKey]
       );
       assert.equal(previousCustodyExpense.rowCount,1,"previous-custody settlement must create exactly one order expense");
-      assert.equal(previousCustodyExpense.rows[0].order_id,hamzaOrder.json().data.id);
+      assert.equal(previousCustodyExpense.rows[0].order_id,null);
       assert.equal(previousCustodyExpense.rows[0].order_stage_id,null);
       assert.equal(previousCustodyExpense.rows[0].category,"WORKER_PAYMENT");
       assert.equal(previousCustodyExpense.rows[0].expense_type,"DIRECT");
       assert.equal(previousCustodyExpense.rows[0].paid_from_employee_id,null,"the expense must not be tied to today's custody");
       assert.equal(previousCustodyExpense.rows[0].idempotency_key,previousCustodyKey);
+      assert.equal(previousCustodyExpense.rows[0].allocation_type,"GENERAL");
+      assert.equal(previousCustodyExpense.rows[0].source_worker_payment_id,previousCustodyPaymentId);
       const previousCustodyRetry=await app.inject({
         method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
         payload:{
           employeeId:previousCustodyEmployee.id,
           settlementSource:"PREVIOUS_CUSTODY",
-          orderId:hamzaOrder.json().data.id,
           amount:75,
           method:"CASH",
           idempotencyKey:previousCustodyKey,
@@ -769,6 +768,53 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [previousCustodyPaymentId]
       )).rows[0].count),0,"retry must not create a custody debit");
+
+      // A current-custody settlement uses the same order-scoped settlement path,
+      // but posts exactly one cash OUT and attributes the order expense to that custody.
+      const currentOrderWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Current Order Worker') RETURNING id")).rows[0];
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',75,$2,'test current-custody order balance')",[currentOrderWorker.id,manager.id]);
+      const currentOrderKey=randomUUID();
+      const custodyBeforeCurrent=Number((await apiPool.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",[managerEmployee.id])).rows[0].balance);
+      const currentOrderPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody general"}});
+      assert.equal(currentOrderPayout.statusCode,201,currentOrderPayout.body);
+      const currentOrderPaymentId=currentOrderPayout.json().data.payment.id;
+      const currentOrderExpense=await apiPool.query("SELECT order_id,paid_from_employee_id,amount,allocation_type,source_worker_payment_id,cash_custody_transaction_id FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey]);
+      assert.equal(currentOrderExpense.rowCount,1);
+      assert.equal(currentOrderExpense.rows[0].order_id,null);
+      assert.equal(currentOrderExpense.rows[0].allocation_type,"GENERAL");
+      assert.equal(currentOrderExpense.rows[0].source_worker_payment_id,currentOrderPaymentId);
+      assert.equal(currentOrderExpense.rows[0].paid_from_employee_id,managerEmployee.id);
+      assert.equal(Number(currentOrderExpense.rows[0].amount),75);
+      const currentOrderOut=await apiPool.query("SELECT id,employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId]);
+      assert.equal(currentOrderOut.rowCount,1,"current-custody settlement must create one custody OUT");
+      assert.equal(currentOrderOut.rows[0].employee_id,managerEmployee.id);
+      assert.equal(Number(currentOrderOut.rows[0].amount),75);
+      assert.equal(currentOrderExpense.rows[0].cash_custody_transaction_id,currentOrderOut.rows[0].id);
+      const currentOrderRetry=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody general"}});
+      assert.equal(currentOrderRetry.statusCode,200,currentOrderRetry.body);
+      assert.equal(currentOrderRetry.json().data.payment.id,currentOrderPaymentId);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey])).rows[0].count),1);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[currentOrderPaymentId])).rows[0].count),1);
+      const custodyAfterCurrent=Number((await apiPool.query("SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",[managerEmployee.id])).rows[0].balance);
+      assert.equal(custodyAfterCurrent,custodyBeforeCurrent-75,"current custody must be debited once only");
+
+      // A worker with no production on the selected order must not have
+      // independent/general earnings misattributed to that order, even with overpayment enabled.
+      const unrelatedOrderWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Unrelated Order Worker') RETURNING id")).rows[0];
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',20,$2,'unrelated order guard test')",
+        [unrelatedOrderWorker.id,manager.id]
+      );
+      const unrelatedOrderKey=randomUUID();
+      const unrelatedOrderPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:unrelatedOrderWorker.id,settlementSource:"PREVIOUS_CUSTODY",
+          orderId:hamzaOrder.json().data.id,amount:20,method:"CASH",allowOverpayment:true,idempotencyKey:unrelatedOrderKey}
+      });
+      assert.equal(unrelatedOrderPayout.statusCode,409,unrelatedOrderPayout.body);
+      assert.equal(unrelatedOrderPayout.json().error.code,"ORDER_HAS_NO_WORKER_PRODUCTION");
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
+      assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
 
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
@@ -1658,6 +1704,183 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(orderScopedPayout.statusCode,201,orderScopedPayout.body,
         "previous-custody payout must validate and execute against selected order balance, not global available balance");
       assert.equal(Number(orderScopedPayout.json().data.grossAmount),100);
+      const currentOrderScopedWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Current Order Scoped Worker') RETURNING id"
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())`,
+        [currentOrderScopedWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      );
+      const currentOrderScopedKey=randomUUID();
+      const currentOrderScopedPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:currentOrderScopedWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,orderId:multiOrderId,
+          orderStageId:reconcileOrderStage.id,amount:10,method:"CASH",idempotencyKey:currentOrderScopedKey}
+      });
+      assert.equal(currentOrderScopedPayout.statusCode,201,currentOrderScopedPayout.body);
+      const currentOrderScopedPaymentId=currentOrderScopedPayout.json().data.payment.id;
+      const currentOrderScopedExpense=await apiPool.query(
+        "SELECT order_id,order_stage_id,amount,paid_from_employee_id,cash_custody_transaction_id,source_worker_payment_id FROM accounting_expenses WHERE source_worker_payment_id=$1",
+        [currentOrderScopedPaymentId]
+      );
+      assert.equal(currentOrderScopedExpense.rowCount,1);
+      assert.equal(currentOrderScopedExpense.rows[0].order_id,multiOrderId);
+      assert.equal(currentOrderScopedExpense.rows[0].order_stage_id,reconcileOrderStage.id);
+      assert.equal(Number(currentOrderScopedExpense.rows[0].amount),10);
+      assert.equal(currentOrderScopedExpense.rows[0].paid_from_employee_id,managerEmployee.id);
+      assert.equal(currentOrderScopedExpense.rows[0].source_worker_payment_id,currentOrderScopedPaymentId);
+      const currentOrderScopedOut=await apiPool.query(
+        "SELECT id,employee_id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [currentOrderScopedPaymentId]
+      );
+      assert.equal(currentOrderScopedOut.rowCount,1);
+      assert.equal(currentOrderScopedOut.rows[0].employee_id,managerEmployee.id);
+      assert.equal(Number(currentOrderScopedOut.rows[0].amount),10);
+      assert.equal(currentOrderScopedExpense.rows[0].cash_custody_transaction_id,currentOrderScopedOut.rows[0].id);
+
+      // An all-orders settlement must split labor expense by the real production
+      // order/stage allocations and leave independent ledger adjustments general.
+      const splitExpenseWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Test Split Expense Worker') RETURNING id"
+      )).rows[0];
+      const splitOtherOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{
+          orderName:"Split worker expense second order "+productSuffix,
+          customerName:"Isolated integration test",
+          stages:[{stageName:"Split worker expense stage "+productSuffix,
+            outputProductName:"Split worker expense product "+productSuffix,sequenceNo:1,
+            plannedQuantity:1,stageRate:10,stageRateMethod:"PER_PIECE",isFinalProduct:true}]
+        }
+      });
+      assert.equal(splitOtherOrder.statusCode,201,splitOtherOrder.body);
+      const secondExpenseStage=(await apiPool.query(
+        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 ORDER BY sequence_no LIMIT 1",
+        [splitOtherOrder.json().data.id]
+      )).rows[0];
+      assert.ok(secondExpenseStage,"split expense test requires a second order stage");
+      const secondExpenseProduct=(await apiPool.query(
+        "SELECT id,unit_id FROM products WHERE id=$1",
+        [secondExpenseStage.output_product_id]
+      )).rows[0];
+      const secondExpenseRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,10,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id`,
+        [secondExpenseProduct.id,secondExpenseStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,secondExpenseProduct.unit_id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [splitExpenseWorker.id,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,
+         reconcileShift.id,reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,manager.id]
+      );
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [splitExpenseWorker.id,secondExpenseStage.id,secondExpenseProduct.id,secondExpenseStage.stage_id,
+         reconcileShift.id,secondExpenseProduct.unit_id,secondExpenseRate.id,perPieceWageType.id,manager.id]
+      );
+      const thirdExpenseStage=(await apiPool.query(
+        "SELECT id,stage_id,output_product_id FROM order_stages WHERE order_id=$1 AND id<>$2 ORDER BY sequence_no DESC LIMIT 1",
+        [multiOrderId,reconcileOrderStage.id]
+      )).rows[0];
+      assert.ok(thirdExpenseStage,"split expense test requires a second stage on the first order");
+      const thirdExpenseProduct=(await apiPool.query(
+        "SELECT id,unit_id FROM products WHERE id=$1",
+        [thirdExpenseStage.output_product_id]
+      )).rows[0];
+      const thirdExpenseRate=(await apiPool.query(
+        `INSERT INTO rates(product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active,created_by)
+         VALUES($1,$2,$3,$4,$5,10,daterange(CURRENT_DATE-1,CURRENT_DATE+30,'[)'),TRUE,$6)
+         RETURNING id`,
+        [thirdExpenseProduct.id,thirdExpenseStage.stage_id,reconcileRateGroup.id,perPieceWageType.id,thirdExpenseProduct.unit_id,manager.id]
+      )).rows[0];
+      await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',10,0,0,'APPROVED',$9,$9,now())
+         RETURNING id`,
+        [splitExpenseWorker.id,thirdExpenseStage.id,thirdExpenseProduct.id,thirdExpenseStage.stage_id,
+         reconcileShift.id,thirdExpenseProduct.unit_id,thirdExpenseRate.id,perPieceWageType.id,manager.id]
+      );
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',5,$2,'split expense standalone adjustment')",
+        [splitExpenseWorker.id,manager.id]
+      );
+      const splitExpenseKey=randomUUID();
+      const splitExpensePayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:splitExpenseWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,amount:35,method:"CASH",idempotencyKey:splitExpenseKey}
+      });
+      assert.equal(splitExpensePayout.statusCode,201,splitExpensePayout.body);
+      const splitExpenseRows=await apiPool.query(
+        `SELECT order_id,order_stage_id,amount,allocation_type,source_worker_payment_id,
+                paid_from_employee_id,cash_custody_transaction_id
+           FROM accounting_expenses
+          WHERE source_worker_payment_id=$1
+          ORDER BY order_id NULLS LAST,order_stage_id NULLS LAST`,
+        [splitExpensePayout.json().data.payment.id]
+      );
+      assert.equal(splitExpenseRows.rowCount,4,"three production order/stage scopes plus one standalone general amount");
+      assert.equal(Number(splitExpenseRows.rows.reduce((sum:any,row:any)=>sum+Number(row.amount),0)),35);
+      const orderExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.order_id!==null);
+      const generalExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.order_id===null);
+      assert.equal(orderExpenseRows.length,3);
+      assert.equal(generalExpenseRows.length,1);
+      assert.equal(Number(generalExpenseRows[0].amount),5,"standalone ledger adjustment must remain unallocated");
+      assert.equal(new Set(orderExpenseRows.map((row:any)=>row.order_id)).size,2,"the production expenses must retain two actual orders");
+      assert.equal(new Set(orderExpenseRows.map((row:any)=>row.order_stage_id)).size,3,"production expenses must preserve three actual stages");
+      assert.ok(orderExpenseRows.every((row:any)=>Number(row.amount)===10));
+      assert.ok(splitExpenseRows.rows.every((row:any)=>row.source_worker_payment_id===splitExpensePayout.json().data.payment.id));
+      const linkedExpenseRows=splitExpenseRows.rows.filter((row:any)=>row.cash_custody_transaction_id!==null);
+      assert.equal(linkedExpenseRows.length,1,"one real custody movement must be linked once, not duplicated across split expenses");
+      assert.equal(linkedExpenseRows[0].paid_from_employee_id,managerEmployee.id);
+      const splitExpenseMovement=await apiPool.query(
+        "SELECT id,amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [splitExpensePayout.json().data.payment.id]
+      );
+      assert.equal(splitExpenseMovement.rowCount,1);
+      assert.equal(Number(splitExpenseMovement.rows[0].amount),35);
+      assert.equal(linkedExpenseRows[0].cash_custody_transaction_id,splitExpenseMovement.rows[0].id);
+      const splitExpenseRetry=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:splitExpenseWorker.id,settlementSource:"CURRENT_CUSTODY",
+          cashCustodyEmployeeId:managerEmployee.id,amount:35,method:"CASH",idempotencyKey:splitExpenseKey}
+      });
+      assert.equal(splitExpenseRetry.statusCode,200,splitExpenseRetry.body);
+      assert.equal(splitExpenseRetry.json().data.payment.id,splitExpensePayout.json().data.payment.id);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE source_worker_payment_id=$1",
+        [splitExpensePayout.json().data.payment.id]
+      )).rows[0].count),4,"retry must preserve the same four expense allocations");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
+        [splitExpensePayout.json().data.payment.id]
+      )).rows[0].count),1,"retry must not duplicate the single custody movement");
+
+
       assert.equal(Number((await apiPool.query(
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [orderScopedPayout.json().data.payment.id]
