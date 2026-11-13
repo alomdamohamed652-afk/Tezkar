@@ -1020,6 +1020,18 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(previousCustodyReconciliation.json().data.issues.filter((issue:any)=>
         issue.workerPaymentId===previousCustodyPaymentId).length,0,
         "reconciliation must use the persisted source, not mutable settlement notes");
+      const previousCustodyReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:previousCustodyPaymentId,amount:75,
+          reason:"اختبار عكس عهدة سابقة بعد تعديل ملاحظات التسوية",idempotencyKey:randomUUID()}
+      });
+      assert.equal(previousCustodyReversal.statusCode,201,previousCustodyReversal.body,
+        "worker-payment reversal must use the persisted custody source after settlement notes are edited");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN'",
+        [previousCustodyReversal.json().data.reversal.id]
+      )).rows[0].count),0,
+        "reversing a previous-custody payment must never create a fictional cash-custody refund");
 
       // A current-custody settlement uses the same order-scoped settlement path,
       // but posts exactly one cash OUT and attributes the order expense to that custody.
