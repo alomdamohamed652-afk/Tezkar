@@ -99,7 +99,7 @@ test("migration runner retries a transient lock timeout and reports the migratio
       )), 25_000);
       const consume = (chunk: Buffer) => {
         output += chunk.toString();
-        if (output.includes(`lock timeout: ${migrationName}; retrying`)) {
+        if (output.includes(`lock timeout: ${migrationName}.sql; retrying`)) {
           clearTimeout(timeout);
           resolve();
         }
@@ -107,7 +107,7 @@ test("migration runner retries a transient lock timeout and reports the migratio
       child!.stdout.on("data", consume);
       child!.stderr.on("data", consume);
       child!.once("exit", (code) => {
-        if (!output.includes(`lock timeout: ${migrationName}; retrying`)) {
+        if (!output.includes(`lock timeout: ${migrationName}.sql; retrying`)) {
           clearTimeout(timeout);
           reject(new Error(`migration runner exited before retrying (code ${code}); output: ${output}`));
         }
@@ -122,7 +122,7 @@ test("migration runner retries a transient lock timeout and reports the migratio
     const result = await exit;
     assert.equal(result.code, 0, output);
     assert.match(output, new RegExp(`applying: ${migrationName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(attempt 2/3\\)`));
-    assert.match(output, new RegExp(`applied: ${migrationName}`));
+    assert.match(output, new RegExp(`applied: ${migrationName}.sql`));
 
     const verification = new pg.Client({ connectionString: target.toString() });
     await verification.connect();
