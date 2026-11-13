@@ -231,8 +231,8 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   // Previous-custody settlements have no current cash OUT and must not create a
   // fictitious cash IN when reversed.
   const previousPayment=(await db.query(
-    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
-     VALUES($1,50,50,0,'CASH',$2,$3,'previous-custody-reversal-test') RETURNING id`,
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint,settlement_source)
+     VALUES($1,50,50,0,'CASH',$2,$3,'previous-custody-reversal-test','PREVIOUS_CUSTODY') RETURNING id`,
     [emp,user,randomUUID()]
   )).rows[0].id;
   const previousSettlement=(await db.query(

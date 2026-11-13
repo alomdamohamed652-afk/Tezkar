@@ -185,7 +185,7 @@ export async function accountingRoutes(app:FastifyInstance){
        Math.abs(Number(settlement.rows[0].cash_paid_amount)-cashPaid)>0.01||
        Math.abs(Number(settlement.rows[0].advance_repayment_amount)-advanceAmount)>0.01)
      throw new AppError("WORKER_PAYMENT_SETTLEMENT_MISMATCH","تسوية العامل المرتبطة بالدفعة غير موجودة أو لا تطابق مبالغ الدفعة؛ أوقفنا العكس",409);
-    const previousCustodySettlement=String(settlement.rows[0].notes??"").includes("تسوية من عهدة سابقة");
+    const previousCustodySettlement=payment.settlement_source==="PREVIOUS_CUSTODY";
     if(Math.abs(input.amount-gross)>0.01)
      throw new AppError("WORKER_PAYMENT_FULL_REVERSAL_REQUIRED","عكس دفعة العامل يتطلب عكس إجمالي الدفعة بالكامل؛ العكس الجزئي غير متاح قبل مطابقة جميع آثارها",409);
     const priorPayment=await client.query(
