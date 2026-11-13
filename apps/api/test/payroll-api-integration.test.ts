@@ -899,7 +899,10 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
         advanceDeductionMismatches:0,
         paidPayrollMissingAdvanceRepayments:0,
         expensesMissingCustodyLink:0,
-        advanceRepaymentsMissingCustodyIn:0
+        advanceRepaymentsMissingCustodyIn:0,
+        workerPaymentReversalMismatches:0,
+        workerPaymentPostingMismatches:0,
+        workerDifferenceEventReversalMismatches:0
       },"linked payroll records should pass the read-only reconciliation checks");
 
       // Payroll approval must create exactly one accounting expense per non-zero payroll item.
@@ -1306,6 +1309,16 @@ test("payroll HTTP routes enforce approval, partial/full payment, overpayment an
       assert.equal(partial.statusCode, 201, partial.body);
       assert.equal(partial.json().data.status, "PARTIAL");
       assert.equal(Number(partial.json().data.remainingAmount), 400);
+      // A payroll item cannot remain UNPAID while any effective payment is still posted.
+      // Fully reversed payments are excluded from effective paid totals and remain valid UNPAID.
+      await apiPool.query("UPDATE payroll_items SET status='UNPAID' WHERE id=$1",[itemA.rows[0].id]);
+      const unpaidWithPaymentReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/payroll",headers:{cookie:cookieHeader}
+      });
+      assert.equal(unpaidWithPaymentReconciliation.statusCode,200,unpaidWithPaymentReconciliation.body);
+      assert.equal(unpaidWithPaymentReconciliation.json().data.counts.payrollPaymentMismatches,1,
+        "reconciliation must flag an UNPAID payroll item with a non-reversed payment");
+      await apiPool.query("UPDATE payroll_items SET status='PARTIAL' WHERE id=$1",[itemA.rows[0].id]);
       const partialRetry=await app.inject({
         method:"POST",url:`/api/payroll/items/${itemA.rows[0].id}/payments`,
         headers:{cookie:cookieHeader},payload:partialPayload

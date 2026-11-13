@@ -22,7 +22,8 @@ test("trial reset removes manual operational/catalog data and preserves manager 
     ...process.env,
     DATABASE_URL: target.toString(),
     BOOTSTRAP_ADMIN_USERNAME: "admin",
-    BOOTSTRAP_ADMIN_PASSWORD: "TestResetAdminPassword!123"
+    BOOTSTRAP_ADMIN_PASSWORD: "TestResetAdminPassword!123",
+    TEZKAR_ENABLE_ONE_TIME_RESET: "true"
   };
   const run = (args: string[], extraEnv: Record<string, string> = {}) =>
     spawnSync(process.execPath, args, { cwd: apiDir, env: { ...env, ...extraEnv }, encoding: "utf8" });

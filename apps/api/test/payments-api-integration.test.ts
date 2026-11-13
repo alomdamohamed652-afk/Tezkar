@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,9 +37,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     process.env.WEB_ORIGIN="http://localhost:3000";
     process.env.SESSION_SECRET="test-only-payment-session-secret-long-enough";
     process.env.NODE_ENV="test";
-    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{historicalProductionSettlementRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{taskRoutes},{hashPassword},poolModule]=await Promise.all([
+    const [{default:Fastify},{default:cookie},{authRoutes},{paymentsRoutes},{historicalProductionSettlementRoutes},{globalSearchRoutes},{accountingRoutes},{operationsMasterRoutes},{warehouseRoutes},{orderRoutes},{productionRoutes},{reportsRoutes},{allocatePendingWorkerPaymentDifferencesForProduction,processMaturedWorkerPaymentDifferences},{taskRoutes},{hashPassword},poolModule]=await Promise.all([
       import("fastify"),import("@fastify/cookie"),import("../src/modules/auth/auth.routes.js"),
-      import("../src/modules/payments/payments.routes.js"),import("../src/modules/payments/historical-production-settlements.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),import("../src/modules/tasks/tasks.routes.js"),import("../src/modules/auth/auth.service.js"),
+      import("../src/modules/payments/payments.routes.js"),import("../src/modules/payments/historical-production-settlements.routes.js"),import("../src/modules/search/global-search.routes.js"),import("../src/modules/accounting/accounting.routes.js"),import("../src/modules/operations-master/operations-master.routes.js"),import("../src/modules/warehouse/warehouse.routes.js"),import("../src/modules/orders/orders.routes.js"),import("../src/modules/production/production.routes.js"),
+      import("../src/modules/reports/reports.routes.js"),import("../src/modules/payments/worker-payment-differences.service.js"),import("../src/modules/tasks/tasks.routes.js"),import("../src/modules/auth/auth.service.js"),
       import("../src/db/pool.js")
     ]);
     apiPool=poolModule.pool;
@@ -57,6 +59,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
     await app.register(warehouseRoutes);
     await app.register(orderRoutes);
     await app.register(productionRoutes);
+    await app.register(reportsRoutes);
     await app.register(taskRoutes);
     try{
       const managerEmployee=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Finance Manager') RETURNING id")).rows[0];
@@ -96,6 +99,37 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const workerCookie=await login(workerUsername,"Test-Worker-Password-2026!");
       const managerCookie=await login(managerUsername,"Test-Manager-Password-2026!");
       const accountantCookie=await login(accountantUsername,accountantPassword);
+
+      // Worker settlement-difference permissions must be separated from ordinary
+      // worker access: workers cannot inspect financial differences or trigger
+      // accounting review/maturity operations.
+      const workerDifferenceListDenied=await app.inject({
+        method:"GET",url:"/api/accounting/worker-settlement-differences",headers:{cookie:workerCookie}
+      });
+      assert.equal(workerDifferenceListDenied.statusCode,403,workerDifferenceListDenied.body);
+      const workerDifferenceEventsDenied=await app.inject({
+        method:"GET",url:`/api/accounting/worker-settlement-differences/${randomUUID()}/events`,
+        headers:{cookie:workerCookie}
+      });
+      assert.equal(workerDifferenceEventsDenied.statusCode,403,workerDifferenceEventsDenied.body);
+      const workerDifferenceReleaseDenied=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${randomUUID()}/release`,
+        headers:{cookie:workerCookie},payload:{reason:"محاولة غير مصرح بها",idempotencyKey:randomUUID()}
+      });
+      assert.equal(workerDifferenceReleaseDenied.statusCode,403,workerDifferenceReleaseDenied.body);
+      const workerDifferenceProcessDenied=await app.inject({
+        method:"POST",url:"/api/accounting/worker-settlement-differences/process",
+        headers:{cookie:workerCookie},payload:{}
+      });
+      assert.equal(workerDifferenceProcessDenied.statusCode,403,workerDifferenceProcessDenied.body);
+      const managerDifferenceListAllowed=await app.inject({
+        method:"GET",url:"/api/accounting/worker-settlement-differences",headers:{cookie:managerCookie}
+      });
+      assert.equal(managerDifferenceListAllowed.statusCode,200,managerDifferenceListAllowed.body);
+      const accountantDifferenceListAllowed=await app.inject({
+        method:"GET",url:"/api/accounting/worker-settlement-differences",headers:{cookie:accountantCookie}
+      });
+      assert.equal(accountantDifferenceListAllowed.statusCode,200,accountantDifferenceListAllowed.body);
       const assignedWorkerTask=(await apiPool.query(
         "INSERT INTO tasks(title,created_by) VALUES('Worker badge count test task',$1) RETURNING id",[manager.id]
       )).rows[0];
@@ -117,7 +151,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const integrityCounts=integrityOverview.json().data.counts;
       for(const key of [
         "missingPayrollExpenses","missingAdjustmentLedgerEntries","cashPaymentsMissingCustodyOut",
-        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink"
+        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink",
+        "workerPaymentReversalMismatches","workerDifferenceEventReversalMismatches"
       ]){
         assert.equal(typeof integrityCounts[key],"number",`financial integrity overview must return numeric count for ${key}`);
       }
@@ -141,6 +176,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(summaryBody.availableBreakdown.calculatedAvailable),500,
         "diagnostic breakdown must match the legacy ledger fallback when no approved production exists");
       assert.equal(summaryBody.availableBreakdown.calculationMode,"LEDGER_FALLBACK");
+      assert.equal(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries.length,1,
+        "the reconciliation breakdown must return each standalone ledger adjustment contributing to the balance");
+      assert.equal(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].notes,"test-only earned balance");
+      assert.equal(Number(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].credit),500);
+      assert.equal(Number(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].debit),0);
+      assert.equal(Number(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].net),500);
       assert.equal(Number(summaryBody.productionEarnings),0);
       assert.equal(Number(summaryBody.previouslySettled),0);
       assert.equal(Number(summaryBody.outstandingAdvances),0);
@@ -394,12 +435,70 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "paid requests must disappear from the pending badge count");
       assert.ok(approved.json().data.request.paid_payment_id);
       assert.equal(approved.json().data.payment.transfer_reference,"IP-TEST-2026-001");
-      const custodyDebit=await apiPool.query("SELECT direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
+      const custodyDebit=await apiPool.query("SELECT id,direction,amount,source_type,source_id,description FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[approved.json().data.payment.id]);
       assert.equal(custodyDebit.rowCount,1,"payment must create exactly one linked cash-custody debit");
       assert.equal(custodyDebit.rows[0].direction,"OUT");
       assert.equal(Number(custodyDebit.rows[0].amount),100,"cash custody must record only the net cash actually paid");
       assert.equal(custodyDebit.rows[0].source_id,approved.json().data.payment.id);
       assert.match(custodyDebit.rows[0].description,/صرف مستحقات العامل/);
+      const workerPaymentExpense=await apiPool.query(
+        "SELECT id,amount,category,source_worker_payment_id,cash_custody_transaction_id,paid_from_employee_id FROM accounting_expenses WHERE source_worker_payment_id=$1",
+        [approved.json().data.payment.id]
+      );
+      assert.equal(workerPaymentExpense.rowCount,1,"approval must create exactly one source-linked worker-payment expense");
+      assert.equal(Number(workerPaymentExpense.rows[0].amount),150,"the expense must record gross entitlement, including advance repayment");
+      assert.equal(workerPaymentExpense.rows[0].category,"WORKER_PAYMENT");
+      assert.equal(workerPaymentExpense.rows[0].source_worker_payment_id,approved.json().data.payment.id);
+      assert.equal(workerPaymentExpense.rows[0].cash_custody_transaction_id,custodyDebit.rows[0].id,
+        "the gross expense must link to the single net-cash custody movement");
+      const workerPostingCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(workerPostingCheck.statusCode,200,workerPostingCheck.body);
+      assert.equal(workerPostingCheck.json().data.counts.workerPaymentPostingMismatches,0,
+        "a correctly posted active worker payment must pass the full posting reconciliation: "+JSON.stringify(workerPostingCheck.json().data.issues.workerPaymentPostingMismatches));
+      const workerLedgerEntry=await apiPool.query(
+        "SELECT id,debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",
+        [approved.json().data.payment.id]
+      );
+      assert.equal(workerLedgerEntry.rowCount,1);
+      await apiPool.query("UPDATE employee_earnings_ledger SET debit_amount=debit_amount-1 WHERE id=$1",[workerLedgerEntry.rows[0].id]);
+      const corruptedWorkerPostingCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(corruptedWorkerPostingCheck.statusCode,200,corruptedWorkerPostingCheck.body);
+      assert.equal(corruptedWorkerPostingCheck.json().data.counts.workerPaymentPostingMismatches,1,
+        "reconciliation must detect a worker payment whose earnings-ledger debit differs from gross");
+      const independentCorruptionCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(independentCorruptionCheck.statusCode,200,independentCorruptionCheck.body);
+      assert.ok(independentCorruptionCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===approved.json().data.payment.id&&issue.issueType==="EARNINGS_LEDGER_MISMATCH"),
+        "the independent payment reconciliation must identify the exact payment and broken ledger component");
+      await apiPool.query("UPDATE employee_earnings_ledger SET debit_amount=$2 WHERE id=$1",
+        [workerLedgerEntry.rows[0].id,workerLedgerEntry.rows[0].debit_amount]);
+      const independentHealthyCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(independentHealthyCheck.statusCode,200,independentHealthyCheck.body);
+      assert.equal(independentHealthyCheck.json().data.issues.filter((issue:any)=>
+        issue.workerPaymentId===approved.json().data.payment.id).length,0,
+        "the independent payment reconciliation must clear the payment after its source ledger is restored");
+      const advanceStatusBefore=await apiPool.query(
+        "SELECT repayment_status FROM advance_requests WHERE id=$1",[testAdvance.id]
+      );
+      assert.equal(advanceStatusBefore.rows[0].repayment_status,"OPEN",
+        "a partially repaid advance must remain open while a balance is outstanding");
+      await apiPool.query("UPDATE advance_requests SET repayment_status='SETTLED' WHERE id=$1",[testAdvance.id]);
+      const corruptedAdvanceStatusCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(corruptedAdvanceStatusCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===approved.json().data.payment.id&&issue.issueType==="ADVANCE_REPAYMENT_MISMATCH"),
+        "the independent payment reconciliation must detect an advance incorrectly marked settled with an outstanding balance");
+      await apiPool.query("UPDATE advance_requests SET repayment_status=$2 WHERE id=$1",
+        [testAdvance.id,advanceStatusBefore.rows[0].repayment_status]);
       assert.equal(Number(approved.json().data.payment.amount),100);
       assert.equal(Number(approved.json().data.grossAmount),150);
       assert.equal(Number(approved.json().data.advanceRepaymentAmount),50);
@@ -498,6 +597,74 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(directExpense.statusCode,201,directExpense.body);
 
+      // Cancellation preserves posted financial history and never refunds custody.
+      const patchCancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Cancel order with financial history PATCH "+randomBytes(4).toString("hex"),manager.id]
+      )).rows[0];
+      const patchCancelledExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:patchCancelledOrder.id,category:"اختبار إلغاء",description:"مصروف محفوظ بعد إلغاء الطلبية",amount:35,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,idempotencyKey:randomUUID()}
+      });
+      assert.equal(patchCancelledExpense.statusCode,201,patchCancelledExpense.body);
+      const patchCancelledRevenue=await app.inject({
+        method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+        payload:{orderId:patchCancelledOrder.id,amount:15,revenueDate:"2099-02-12",source:"MANUAL",notes:"إيراد محفوظ بعد إلغاء الطلبية"}
+      });
+      assert.equal(patchCancelledRevenue.statusCode,201,patchCancelledRevenue.body);
+      const reversalCustodyCountBeforePatchCancellation=Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN'"
+      )).rows[0].count);
+      const patchCancellation=await app.inject({
+        method:"PATCH",url:"/api/orders/"+patchCancelledOrder.id,headers:{cookie:managerCookie},
+        payload:{status:"CANCELLED"}
+      });
+      assert.equal(patchCancellation.statusCode,200,patchCancellation.body);
+      assert.equal(patchCancellation.json().data.status,"CANCELLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE order_id=$1",[patchCancelledOrder.id]
+      )).rows[0].count),1,"PATCH cancellation must retain the original expense");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM order_revenues WHERE order_id=$1",[patchCancelledOrder.id]
+      )).rows[0].count),1,"PATCH cancellation must retain the original revenue");
+      const patchCancellationCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [patchCancelledExpense.json().data.id]
+      );
+      assert.equal(patchCancellationCustody.rowCount,1,"the original expense custody movement must remain");
+      assert.equal(patchCancellationCustody.rows[0].direction,"OUT");
+      assert.equal(Number(patchCancellationCustody.rows[0].amount),35);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN'"
+      )).rows[0].count),reversalCustodyCountBeforePatchCancellation,
+        "cancellation must not create an automatic cash refund or financial reversal");
+
+      const deleteCancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Cancel order with financial history DELETE "+randomBytes(4).toString("hex"),manager.id]
+      )).rows[0];
+      const deleteCancelledExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:deleteCancelledOrder.id,category:"اختبار إلغاء",description:"مصروف محفوظ بعد الإلغاء من مسار الحذف",amount:22,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,idempotencyKey:randomUUID()}
+      });
+      assert.equal(deleteCancelledExpense.statusCode,201,deleteCancelledExpense.body);
+      const deleteCancellation=await app.inject({
+        method:"DELETE",url:"/api/orders/"+deleteCancelledOrder.id,headers:{cookie:managerCookie},
+        payload:{password:"Test-Manager-Password-2026!"}
+      });
+      assert.equal(deleteCancellation.statusCode,200,deleteCancellation.body);
+      assert.equal(deleteCancellation.json().data.status,"CANCELLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE order_id=$1",[deleteCancelledOrder.id]
+      )).rows[0].count),1,"DELETE cancellation must retain the original expense");
+      const deleteCancellationCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [deleteCancelledExpense.json().data.id]
+      );
+      assert.equal(deleteCancellationCustody.rowCount,1);
+      assert.equal(deleteCancellationCustody.rows[0].direction,"OUT");
+      assert.equal(Number(deleteCancellationCustody.rows[0].amount),22);
+
       // Historical settlements must not silently debit a current custody, and their date must belong to an open period.
       const historicalDate="1800-03-10";
       const historicalWithoutPeriod=await app.inject({
@@ -547,8 +714,67 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         payload:{allocations:[{expenseId:adminExpense.json().data.id,orderId:financeOrder.id,amount:30}]}
       });
       assert.equal(allocations.statusCode,200,allocations.body);
+
+      // A reversal dated after this period must not rewrite its historical snapshot.
+      const periodSnapshotWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES('Period snapshot reversal worker') RETURNING id"
+      )).rows[0].id;
+      const periodSnapshotPayment=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,25,25,0,'CASH',$2,$3,'period-snapshot-boundary-payment') RETURNING id`,
+        [periodSnapshotWorker,manager.id,randomUUID()]
+      )).rows[0].id;
+      const laterReversedExpense=(await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,
+           expense_type,allocation_type,source_worker_payment_id)
+         VALUES('WORKER_PAYMENT','Expense reversed in a later period',25,'2099-02-15','CASH',$1,
+           'DIRECT','GENERAL',$2) RETURNING id`,
+        [manager.id,periodSnapshotPayment]
+      )).rows[0].id;
+      const laterReversedAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,
+           repayment_method,repayment_status)
+         VALUES($1,100,'Period snapshot reversal boundary','PAID',$2,$2,'2099-02-10 12:00:00+00',
+           'CUSTOM','OPEN') RETURNING id`,
+        [periodSnapshotWorker,manager.id]
+      )).rows[0].id;
+      const laterAdvanceRepayment=(await apiPool.query(
+        `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,
+           source_worker_payment_id)
+         VALUES($1,40,'CUSTOM','2099-02-15','Repayment reversed after period end',$2,$3) RETURNING id`,
+        [laterReversedAdvance,manager.id,periodSnapshotPayment]
+      )).rows[0].id;
+      const laterReversal=(await apiPool.query(
+        `INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,reversal_date,created_by)
+         VALUES($1,'period-snapshot-boundary','Later-period reversal','2099-03-01',$2) RETURNING id`,
+        [randomUUID(),manager.id]
+      )).rows[0].id;
+      await apiPool.query(
+        `INSERT INTO financial_reversal_lines(reversal_id,source_type,source_id,amount)
+         VALUES($1,'ADVANCE_REPAYMENT',$2,40)`,
+        [laterReversal,laterAdvanceRepayment]
+      );
+      await apiPool.query(
+        `INSERT INTO accounting_expense_reversals(reversal_id,expense_id,source_worker_payment_id,amount,created_by)
+         VALUES($1,$2,$3,25,$4)`,
+        [laterReversal,laterReversedExpense,periodSnapshotPayment,manager.id]
+      );
+
       const closePeriod=await closePeriodWithApproval(financePeriod.json().data.id);
       assert.equal(closePeriod.statusCode,200,closePeriod.body);
+      const historicalPeriodReport=await app.inject({
+        method:"GET",url:`/api/accounting/periods/${financePeriod.json().data.id}/report`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(historicalPeriodReport.statusCode,200,historicalPeriodReport.body);
+      assert.equal(historicalPeriodReport.json().data.integrityVerified,true,
+        "period snapshot hash must verify after close");
+      assert.equal(Number(historicalPeriodReport.json().data.report.totals.expenses),80,
+        "the earlier period must retain its 25 direct cost, 30 administrative cost, and 25 expense reversed only in a later period");
+      const advanceSnapshot=historicalPeriodReport.json().data.report.advances.find((row:any)=>row.id===laterReversedAdvance);
+      assert.ok(advanceSnapshot,"the advance must be included in the period-end snapshot");
+      assert.equal(Number(advanceSnapshot.remaining),60,
+        "a later-period repayment reversal must not restore the advance balance in the earlier period");
       const profitability=await app.inject({
         method:"GET",url:`/api/accounting/orders/${financeOrder.id}/profitability`,
         headers:{cookie:managerCookie}
@@ -692,7 +918,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(payoutPreview.statusCode,200,payoutPreview.body);
       assert.equal(Number(payoutPreview.json().data.availableEarnings),150);
-      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),550);
+      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),493,"the two cancellation-history expenses (35 + 22) remain real custody outflows");
       assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
         "payout preview must show the lower of available earnings and cash custody before confirmation");
 
@@ -768,6 +994,44 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [previousCustodyPaymentId]
       )).rows[0].count),0,"retry must not create a custody debit");
+      // Re-run the idempotent migration against a simulated legacy row. This
+      // proves that a previous-custody payment is recovered from its immutable
+      // settlement marker before the column is made NOT NULL again.
+      const custodySourceMigration=await readFile(
+        path.resolve(apiDir,"src/db/migrations/2026111202_worker_payment_settlement_source.sql"),
+        "utf8"
+      );
+      await apiPool.query("ALTER TABLE worker_payments ALTER COLUMN settlement_source DROP NOT NULL");
+      await apiPool.query("UPDATE worker_payments SET settlement_source=NULL WHERE id=$1",[previousCustodyPaymentId]);
+      await apiPool.query(custodySourceMigration);
+      const previousCustodySource=await apiPool.query(
+        "SELECT settlement_source FROM worker_payments WHERE id=$1",[previousCustodyPaymentId]
+      );
+      assert.equal(previousCustodySource.rows[0].settlement_source,"PREVIOUS_CUSTODY",
+        "migration must backfill legacy previous-custody payments from the settlement marker");
+      await apiPool.query(
+        "UPDATE employee_earnings_settlements SET notes='edited settlement note without source marker' WHERE worker_payment_id=$1",
+        [previousCustodyPaymentId]
+      );
+      const previousCustodyReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(previousCustodyReconciliation.statusCode,200,previousCustodyReconciliation.body);
+      assert.equal(previousCustodyReconciliation.json().data.issues.filter((issue:any)=>
+        issue.workerPaymentId===previousCustodyPaymentId).length,0,
+        "reconciliation must use the persisted source, not mutable settlement notes");
+      const previousCustodyReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:previousCustodyPaymentId,amount:75,
+          reason:"اختبار عكس عهدة سابقة بعد تعديل ملاحظات التسوية",idempotencyKey:randomUUID()}
+      });
+      assert.equal(previousCustodyReversal.statusCode,201,previousCustodyReversal.body,
+        "worker-payment reversal must use the persisted custody source after settlement notes are edited");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN'",
+        [previousCustodyReversal.json().data.reversal.id]
+      )).rows[0].count),0,
+        "reversing a previous-custody payment must never create a fictional cash-custody refund");
 
       // A current-custody settlement uses the same order-scoped settlement path,
       // but posts exactly one cash OUT and attributes the order expense to that custody.
@@ -778,6 +1042,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const currentOrderPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody general"}});
       assert.equal(currentOrderPayout.statusCode,201,currentOrderPayout.body);
       const currentOrderPaymentId=currentOrderPayout.json().data.payment.id;
+      const currentOrderSource=await apiPool.query(
+        "SELECT settlement_source FROM worker_payments WHERE id=$1",[currentOrderPaymentId]
+      );
+      assert.equal(currentOrderSource.rows[0].settlement_source,"CURRENT_CUSTODY");
       const currentOrderExpense=await apiPool.query("SELECT order_id,paid_from_employee_id,amount,allocation_type,source_worker_payment_id,cash_custody_transaction_id FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey]);
       assert.equal(currentOrderExpense.rowCount,1);
       assert.equal(currentOrderExpense.rows[0].order_id,null);
@@ -1055,7 +1323,12 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // Legacy reconciliation can leave a duplicate order-allocation row for the
       // same payment. Settlement allocations are canonical and must take precedence.
       await apiPool.query(
-        "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,130) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
+        `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+         SELECT $1,$2,130
+          WHERE NOT EXISTS(
+            SELECT 1 FROM worker_payment_order_allocations
+             WHERE worker_payment_id=$1 AND production_entry_id=$2
+          )`,
         [bonusAwarePayout.json().data.payment.id,bonusProduction.id]
       );
       const productionHistoryAfterDuplicate=await app.inject({
@@ -2086,6 +2359,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "an insufficient custody balance must not leave a direct payment");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",[workerEmployee.id])).rows[0].count),Number(settlementsBeforeInsufficientCustody.rows[0].count),
         "an insufficient custody balance must not leave an additional settlement");
+      // Earlier scenarios in this long integration test intentionally consume the
+      // manager's opening custody. Fund this independent concurrency/remainder case
+      // explicitly so it tests payout serialization, not incidental prior test spend.
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',500,'direct payout concurrency test funding',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const directTestCustodyBalance=Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [managerEmployee.id]
+      )).rows[0].balance);
+      assert.ok(directTestCustodyBalance>=250,
+        "direct payout concurrency test must start with enough explicitly funded custody for both payments");
       const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
       const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
       const concurrentDirect=await Promise.all([
@@ -2144,6 +2430,1106 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // A retry of a committed payout remains safe after the accounting period closes,
       // while a new payout must be blocked by that same period lock.
       const directCountBeforePeriodLock=await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id]);
+      // End-to-end worker payment reversal must restore the production allocation,
+      // available balance, original expense and current custody without deleting originals.
+      const reversalAllocationWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Worker Reversal Allocation "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',5000,'worker reversal test cash top-up',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const reversalAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,requested_by,status,paid_by,paid_at,repayment_status)
+         VALUES($1,20,'worker payment reversal integration advance',$2,'PAID',$2,now(),'OPEN') RETURNING id`,
+        [reversalAllocationWorker.id,manager.id]
+      )).rows[0].id;
+      const reversalProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [reversalAllocationWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(reversalProduction.total_earning_amount),100);
+      const reversalPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:reversalAllocationWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,advanceRepaymentAmount:20,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(reversalPayout.statusCode,201,reversalPayout.body);
+      const reversalPaymentId=reversalPayout.json().data.payment.id;
+      const reversalSettlement=(await apiPool.query(
+        "SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1",
+        [reversalPaymentId]
+      )).rows[0];
+      assert.ok(reversalSettlement,"worker payment must retain its linked settlement");
+      const originalAllocation=(await apiPool.query(
+        "SELECT id,amount FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",
+        [reversalSettlement.id]
+      )).rows[0];
+      assert.ok(originalAllocation,"worker payment must allocate the production entry");
+      await apiPool.query(
+        `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+         SELECT $1,$2,100
+          WHERE NOT EXISTS(
+            SELECT 1 FROM worker_payment_order_allocations
+             WHERE worker_payment_id=$1 AND production_entry_id=$2
+          )`,
+        [reversalPaymentId,reversalProduction.id]
+      );
+      const reversalCustodyOut=(await apiPool.query(
+        "SELECT id,transaction_date::text AS transaction_date FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId]
+      )).rows[0];
+      assert.ok(reversalCustodyOut,"current-custody worker payment must retain its original cash OUT");
+      const linkedExpense=(await apiPool.query(
+        "SELECT id,cash_custody_transaction_id FROM accounting_expenses WHERE source_worker_payment_id=$1 AND cash_custody_transaction_id IS NOT NULL",
+        [reversalPaymentId]
+      )).rows[0];
+      assert.ok(linkedExpense,"the worker-payment expense must point to the exact cash custody movement");
+      await apiPool.query("UPDATE accounting_expenses SET cash_custody_transaction_id=NULL WHERE id=$1",[linkedExpense.id]);
+      const brokenCustodyLinkReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,
+          reason:"اختبار منع العكس عند فقد رابط العهدة بالمصروف",idempotencyKey:randomUUID()}
+      });
+      assert.equal(brokenCustodyLinkReversal.statusCode,409,brokenCustodyLinkReversal.body);
+      assert.equal(brokenCustodyLinkReversal.json().error.code,"WORKER_PAYMENT_CUSTODY_MISMATCH");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals r JOIN financial_reversal_lines l ON l.reversal_id=r.id WHERE l.source_type='WORKER_PAYMENT' AND l.source_id=$1",
+        [reversalPaymentId]
+      )).rows[0].count),0,"a broken custody-to-expense link must abort without a partial reversal");
+      await apiPool.query("UPDATE accounting_expenses SET cash_custody_transaction_id=$1 WHERE id=$2",
+        [reversalCustodyOut.id,linkedExpense.id]);
+      await apiPool.query("UPDATE cash_custody_transactions SET transaction_date=transaction_date-1 WHERE id=$1",
+        [reversalCustodyOut.id]);
+      const brokenCustodyDateReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,
+          reason:"اختبار منع العكس عند اختلاف تاريخ حركة العهدة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(brokenCustodyDateReversal.statusCode,409,brokenCustodyDateReversal.body);
+      assert.equal(brokenCustodyDateReversal.json().error.code,"WORKER_PAYMENT_CUSTODY_MISMATCH");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals r JOIN financial_reversal_lines l ON l.reversal_id=r.id WHERE l.source_type='WORKER_PAYMENT' AND l.source_id=$1",
+        [reversalPaymentId]
+      )).rows[0].count),0,"a custody date mismatch must abort without a partial reversal");
+      await apiPool.query("UPDATE cash_custody_transactions SET transaction_date=$1::date WHERE id=$2",
+        [reversalCustodyOut.transaction_date,reversalCustodyOut.id]);
+      const repaymentLink=(await apiPool.query(
+        "SELECT id FROM advance_repayments WHERE source_worker_payment_id=$1",[reversalPaymentId]
+      )).rows[0];
+      assert.ok(repaymentLink,"the payment must retain its linked advance repayment");
+      const unrelatedAdvanceOwner=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Unrelated Advance Owner "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      await apiPool.query("UPDATE advance_requests SET employee_id=$1 WHERE id=$2",[unrelatedAdvanceOwner,reversalAdvance]);
+      await apiPool.query("UPDATE employee_earnings_ledger SET employee_id=$1 WHERE advance_repayment_id=$2",
+        [unrelatedAdvanceOwner,repaymentLink.id]);
+      const unsafeOwnerReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,
+          reason:"اختبار منع عكس سلفة تخص عاملًا آخر",idempotencyKey:randomUUID()}
+      });
+      assert.equal(unsafeOwnerReversal.statusCode,409,unsafeOwnerReversal.body);
+      assert.equal(unsafeOwnerReversal.json().error.code,"WORKER_PAYMENT_ADVANCE_OWNER_MISMATCH");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals r JOIN financial_reversal_lines l ON l.reversal_id=r.id WHERE l.source_type='WORKER_PAYMENT' AND l.source_id=$1",
+        [reversalPaymentId]
+      )).rows[0].count),0,"mismatched advance ownership must abort the entire reversal");
+      await apiPool.query("UPDATE advance_requests SET employee_id=$1 WHERE id=$2",[reversalAllocationWorker.id,reversalAdvance]);
+      await apiPool.query("UPDATE employee_earnings_ledger SET employee_id=$1 WHERE advance_repayment_id=$2",
+        [reversalAllocationWorker.id,repaymentLink.id]);
+      const foreignSettlement=(await apiPool.query(
+        `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by)
+         VALUES($1,1,1,0,CURRENT_DATE,'foreign settlement link reconciliation test',$2) RETURNING id`,
+        [unrelatedAdvanceOwner,manager.id]
+      )).rows[0].id;
+      const originalRepaymentSettlement=(await apiPool.query(
+        "SELECT settlement_id FROM advance_repayments WHERE id=$1",[repaymentLink.id]
+      )).rows[0].settlement_id;
+      await apiPool.query("UPDATE advance_repayments SET settlement_id=$1 WHERE id=$2",
+        [foreignSettlement,repaymentLink.id]);
+      const brokenRepaymentSettlementLink=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(brokenRepaymentSettlementLink.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="ADVANCE_REPAYMENT_MISMATCH"),
+        "independent reconciliation must detect an advance repayment linked to another worker settlement");
+      await apiPool.query("UPDATE advance_repayments SET settlement_id=$1 WHERE id=$2",
+        [originalRepaymentSettlement,repaymentLink.id]);
+      const unrelatedPaymentLink=(await apiPool.query(
+        "SELECT id FROM worker_payments WHERE id<>$1 ORDER BY created_at,id LIMIT 1",[reversalPaymentId]
+      )).rows[0]?.id;
+      assert.ok(unrelatedPaymentLink,"reconciliation test requires a second worker payment for a foreign source link");
+      await apiPool.query("UPDATE advance_repayments SET source_worker_payment_id=$1 WHERE id=$2",
+        [unrelatedPaymentLink,repaymentLink.id]);
+      const brokenAdvanceSourcePaymentLink=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(brokenAdvanceSourcePaymentLink.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="ADVANCE_REPAYMENT_MISMATCH"),
+        "independent reconciliation must detect an advance repayment source link pointing to another worker payment");
+      await apiPool.query("UPDATE advance_repayments SET source_worker_payment_id=$1 WHERE id=$2",
+        [reversalPaymentId,repaymentLink.id]);
+      const originalPaymentLedgerSettlement=(await apiPool.query(
+        "SELECT settlement_id FROM employee_earnings_ledger WHERE worker_payment_id=$1",[reversalPaymentId]
+      )).rows[0].settlement_id;
+      await apiPool.query("UPDATE employee_earnings_ledger SET settlement_id=$1 WHERE worker_payment_id=$2",
+        [foreignSettlement,reversalPaymentId]);
+      const brokenPaymentLedgerSettlementLink=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(brokenPaymentLedgerSettlementLink.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="EARNINGS_LEDGER_MISMATCH"),
+        "independent reconciliation must detect a worker earnings entry linked to another settlement");
+      await apiPool.query("UPDATE employee_earnings_ledger SET settlement_id=$1 WHERE worker_payment_id=$2",
+        [originalPaymentLedgerSettlement,reversalPaymentId]);
+      const reversalResponse=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,reason:"عكس دفعة عامل مع توزيع إنتاج",idempotencyKey:randomUUID()}
+      });
+      assert.equal(reversalResponse.statusCode,201,reversalResponse.body);
+      const reversalEffects=await apiPool.query(
+        `SELECT
+          (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals WHERE reversal_id=$1) AS allocation_count,
+          (SELECT COALESCE(SUM(amount),0) FROM worker_payment_allocation_reversals WHERE reversal_id=$1) AS allocation_amount,
+          (SELECT COALESCE(SUM(amount),0) FROM accounting_expense_reversals WHERE reversal_id=$1) AS expense_amount,
+          (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS custody_in,
+          (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS reversal_custody_holder,
+          (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$3 AND direction='OUT') AS original_custody_holder,
+          (SELECT COUNT(*)::int FROM employee_earnings_settlement_allocations WHERE id=$2) AS original_allocation_count,
+          (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status,
+          (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$1 AND source_type='ADVANCE_REPAYMENT') AS advance_reversal_lines`,
+        [reversalResponse.json().data.reversal.id,originalAllocation.id,reversalPaymentId,reversalAdvance]
+      );
+      assert.equal(Number(reversalEffects.rows[0].allocation_count),1);
+      assert.equal(Number(reversalEffects.rows[0].allocation_amount),100);
+      assert.equal(Number(reversalEffects.rows[0].expense_amount),100);
+      assert.equal(Number(reversalEffects.rows[0].custody_in),80);
+      assert.equal(reversalEffects.rows[0].reversal_custody_holder,reversalEffects.rows[0].original_custody_holder,
+        "cash must return to the exact custodian who funded the original worker payment");
+      assert.equal(reversalEffects.rows[0].reversal_custody_holder,managerEmployee.id);
+      assert.equal(Number(reversalEffects.rows[0].original_allocation_count),1,
+        "original production allocation must remain immutable after reversal");
+      assert.equal(reversalEffects.rows[0].advance_status,"OPEN",
+        "reversing a worker payout must restore the advance outstanding status");
+      assert.equal(Number(reversalEffects.rows[0].advance_reversal_lines),1,
+        "the linked advance repayment must be reversed in the same financial transaction");
+      const healthyReversedPaymentCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(healthyReversedPaymentCheck.statusCode,200,healthyReversedPaymentCheck.body);
+      assert.equal(healthyReversedPaymentCheck.json().data.issues.filter((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId).length,0,
+        "a correctly reversed current-custody worker payment must pass independent reconciliation");
+      const originalCustodyAmount=(await apiPool.query(
+        "SELECT amount FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId]
+      )).rows[0].amount;
+      await apiPool.query(
+        "UPDATE cash_custody_transactions SET amount=amount-1 WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId]
+      );
+      const missingOriginalCustodyValueCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(missingOriginalCustodyValueCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH"),
+        "reconciliation must validate the original cash OUT as well as its reversal IN");
+      await apiPool.query(
+        "UPDATE cash_custody_transactions SET amount=$2 WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+        [reversalPaymentId,originalCustodyAmount]
+      );
+      const reversalCustodyId=(await apiPool.query(
+        "SELECT id FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN'",
+        [reversalResponse.json().data.reversal.id]
+      )).rows[0].id;
+      const originalReversalCustodian=(await apiPool.query(
+        "SELECT employee_id FROM cash_custody_transactions WHERE id=$1",[reversalCustodyId]
+      )).rows[0].employee_id;
+      await apiPool.query("UPDATE cash_custody_transactions SET employee_id=$2 WHERE id=$1",
+        [reversalCustodyId,unrelatedAdvanceOwner]);
+      const wrongReversalCustodianCheck=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.ok(wrongReversalCustodianCheck.json().data.issues.some((issue:any)=>
+        issue.workerPaymentId===reversalPaymentId&&issue.issueType==="WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH"),
+        "reconciliation must reject a reversal IN credited to a different custodian");
+      await apiPool.query("UPDATE cash_custody_transactions SET employee_id=$2 WHERE id=$1",
+        [reversalCustodyId,originalReversalCustodian]);
+      const productionAfterReversal=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${reversalAllocationWorker.id}&status=APPROVED&limit=100`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionAfterReversal.statusCode,200,productionAfterReversal.body);
+      const reversedProductionRow=productionAfterReversal.json().data.find((row:any)=>row.id===reversalProduction.id);
+      assert.ok(reversedProductionRow,"production row must remain visible after payout reversal");
+      assert.equal(Number(reversedProductionRow.paid_amount),0);
+      assert.equal(Number(reversedProductionRow.remaining_amount),100);
+      assert.equal(reversedProductionRow.payment_status,"UNPAID");
+      const balanceAfterReversal=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${reversalAllocationWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(balanceAfterReversal.statusCode,200,balanceAfterReversal.body);
+      assert.equal(Number(balanceAfterReversal.json().data.availableForSettlement),100,
+        "reversing the payout must restore the worker's payable production balance");
+      const reversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(reversalIntegrity.statusCode,200,reversalIntegrity.body);
+      assert.equal(reversalIntegrity.json().data.counts.workerPaymentReversalMismatches,0,
+        "the read-only reconciliation report must confirm the reversal's ledger, custody, expense and allocation effects");
+
+
+      // Worker settlement differences: preserve the original payment, allocate later
+      // approved production, mature the remainder, and reverse every derived effect.
+      const differenceWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Worker Difference "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const differenceOrder=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Worker difference source "+randomBytes(4).toString("hex"),
+          stages:[{stageName:"Difference stage",sequenceNo:1,outputProductName:"Difference output "+randomBytes(4).toString("hex"),
+            plannedQuantity:20,stageRate:10,stageRateMethod:"PER_PIECE",isFinalProduct:true}]}
+      });
+      assert.equal(differenceOrder.statusCode,201,differenceOrder.body);
+      const differenceOrderId=differenceOrder.json().data.id as string;
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      const differenceStage=(await apiPool.query(
+        "SELECT os.id,os.stage_id,os.output_product_id,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1",
+        [differenceOrderId]
+      )).rows[0];
+      assert.ok(differenceStage,"source order must have a production stage");
+      async function insertDifferenceProduction(quantity:number,earning:number,employeeId:string=differenceWorker.id){
+        return (await apiPool.query(
+          `INSERT INTO production_entries(
+             employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+             wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+             status,submitted_by,approved_by,approved_at,order_stage_id
+           ) VALUES($1,$2,$3,$4,CURRENT_DATE,$5,$6,$7,10,$8,'PER_PIECE','PER_PIECE',$9,0,0,
+             'APPROVED',$10,$10,now(),$11)
+           RETURNING id,total_earning_amount`,
+          [employeeId,differenceStage.output_product_id,differenceStage.stage_id,bonusShift.id,
+           quantity,differenceStage.unit_id,bonusRate.id,perPieceWageType.id,earning,manager.id,differenceStage.id]
+        )).rows[0];
+      }
+      async function readDifferenceOrderDashboard(){
+        const response=await app.inject({
+          method:"GET",url:"/api/accounting/orders-dashboard",headers:{cookie:managerCookie}
+        });
+        assert.equal(response.statusCode,200,response.body);
+        const row=response.json().data.find((item:any)=>item.id===differenceOrderId);
+        assert.ok(row,"the worker settlement order must appear in the profitability dashboard");
+        return row;
+      }
+      const sourceProduction=await insertDifferenceProduction(10,100);
+      assert.equal(Number(sourceProduction.total_earning_amount),100);
+      const differencePaymentResponse=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:150,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(differencePaymentResponse.statusCode,201,differencePaymentResponse.body);
+      const differencePaymentId=differencePaymentResponse.json().data.payment.id as string;
+      const differenceRecord=(await apiPool.query(
+        "SELECT id,original_amount,status FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",
+        [differencePaymentId]
+      )).rows[0];
+      assert.ok(differenceRecord,"the general remainder must be registered as a settlement difference");
+      assert.equal(Number(differenceRecord.original_amount),50);
+      assert.equal(differenceRecord.status,"PENDING");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_order_allocations WHERE worker_payment_id=$1",
+        [differencePaymentId]
+      )).rows[0].amount),100,"the source production portion must remain allocated to its original order");
+
+      await apiPool.query("UPDATE production_orders SET status='CANCELLED' WHERE id=$1",[differenceOrderId]);
+      const cancelledTargetProduction=await insertDifferenceProduction(1,10);
+      const cancelledTargetClient=await apiPool.connect();
+      try{
+        await cancelledTargetClient.query("BEGIN");
+        assert.deepEqual(await allocatePendingWorkerPaymentDifferencesForProduction(
+          cancelledTargetClient,differenceWorker.id,cancelledTargetProduction.id,manager.id
+        ),[],"cancelled orders must never receive worker settlement difference allocations");
+        await cancelledTargetClient.query("COMMIT");
+      }catch(error){await cancelledTargetClient.query("ROLLBACK");throw error}
+      finally{cancelledTargetClient.release()}
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledTargetProduction.id]);
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+
+      const initialProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(initialProfitability.statusCode,200,initialProfitability.body);
+      assert.equal(Number(initialProfitability.json().data.laborCost),100);
+      assert.equal(Number(initialProfitability.json().data.expenses),0,
+        "worker-payment cash expense must not be counted again on top of production labor cost");
+      assert.equal(Number(initialProfitability.json().data.totalCost),100);
+      const initialDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(initialDashboardOrder.labor_cost),100);
+      assert.equal(Number(initialDashboardOrder.direct_expenses),0);
+      assert.equal(Number(initialDashboardOrder.total_cost),100);
+
+      const laterProduction=await insertDifferenceProduction(2,20);
+      const differenceClient=await apiPool.connect();
+      let laterAllocations:any[]=[];
+      try{
+        await differenceClient.query("BEGIN");
+        laterAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+          differenceClient,differenceWorker.id,laterProduction.id,manager.id
+        );
+        await differenceClient.query("COMMIT");
+      }catch(error){await differenceClient.query("ROLLBACK");throw error}
+      finally{differenceClient.release()}
+      assert.equal(laterAllocations.length,1);
+      assert.equal(Number(laterAllocations[0].amount),20);
+      const settledAfterDifferenceAllocation=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${differenceWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(settledAfterDifferenceAllocation.statusCode,200,settledAfterDifferenceAllocation.body);
+      assert.equal(Number(settledAfterDifferenceAllocation.json().data.availableForSettlement),0,
+        "an active difference allocation must count as settled even when its original payment has canonical settlement allocations");
+      const productionReport=await app.inject({
+        method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionReport.statusCode,200,productionReport.body);
+      const reportedLaterProduction=productionReport.json().data.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(reportedLaterProduction,"the later production must appear in the production report");
+      assert.equal(Number(reportedLaterProduction.paid_amount),20,
+        "production reports must include active difference allocations backed by canonical worker settlements");
+      assert.equal(Number(reportedLaterProduction.remaining_amount),0);
+      assert.equal(reportedLaterProduction.payment_status,"PAID");
+      const orderDashboardAfterDifference=await app.inject({
+        method:"GET",url:`/api/orders/${differenceOrderId}/dashboard`,headers:{cookie:managerCookie}
+      });
+      assert.equal(orderDashboardAfterDifference.statusCode,200,orderDashboardAfterDifference.body);
+      const orderProductionAfterDifference=orderDashboardAfterDifference.json().data.production.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(orderProductionAfterDifference,"the later production must appear in the order dashboard");
+      assert.equal(Number(orderProductionAfterDifference.paid_amount),20,
+        "order dashboards must include the same active difference allocation as the settlement summary");
+      assert.equal(Number(orderProductionAfterDifference.remaining_amount),0);
+      const productionListAfterDifference=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionListAfterDifference.statusCode,200,productionListAfterDifference.body);
+      const listedLaterProduction=productionListAfterDifference.json().data.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(listedLaterProduction);
+      assert.equal(Number(listedLaterProduction.paid_amount),20);
+      assert.equal(Number(listedLaterProduction.remaining_amount),0);
+      assert.equal(listedLaterProduction.payment_status,"PAID");
+      const workerOrderSummary=await app.inject({
+        method:"GET",url:`/api/production/earnings/order-summary?orderId=${differenceOrderId}&employeeId=${differenceWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(workerOrderSummary.statusCode,200,workerOrderSummary.body);
+      const workerOrderSummaryRow=workerOrderSummary.json().data.find((row:any)=>row.order_id===differenceOrderId);
+      assert.ok(workerOrderSummaryRow,"the source order must appear in the worker order summary");
+      assert.equal(Number(workerOrderSummaryRow.total_earned),120);
+      assert.equal(Number(workerOrderSummaryRow.paid_amount),120,
+        "tracked difference allocations must count as production-paid without reclassifying the remaining difference as a production payment");
+      assert.equal(Number(workerOrderSummaryRow.remaining_amount),0);
+      const partialDifference=(await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0];
+      assert.equal(partialDifference.status,"PARTIALLY_ALLOCATED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION'",
+        [differenceRecord.id]
+      )).rows[0].amount),20);
+      const partialProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(partialProfitability.statusCode,200,partialProfitability.body);
+      assert.equal(Number(partialProfitability.json().data.laborCost),120);
+      assert.equal(Number(partialProfitability.json().data.expenses),0,
+        "an allocation to later approved production is already included in labor cost");
+      assert.equal(Number(partialProfitability.json().data.totalCost),120);
+      const partialDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(partialDashboardOrder.labor_cost),120);
+      assert.equal(Number(partialDashboardOrder.direct_expenses),0);
+      assert.equal(Number(partialDashboardOrder.total_cost),120);
+      const immutableDifferenceEvent=(await apiPool.query(
+        "SELECT id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 ORDER BY created_at,id LIMIT 1",
+        [differenceRecord.id]
+      )).rows[0];
+      await assert.rejects(
+        apiPool.query("UPDATE worker_payment_settlement_difference_events SET reason='tampered' WHERE id=$1",[immutableDifferenceEvent.id]),
+        /append-only/
+      );
+      await assert.rejects(
+        apiPool.query("DELETE FROM worker_payment_settlement_difference_events WHERE id=$1",[immutableDifferenceEvent.id]),
+        /append-only/
+      );
+      await assert.rejects(
+        apiPool.query("TRUNCATE worker_payment_settlement_difference_events"),
+        /append-only/
+      );
+
+      // Simulate elapsed time in the isolated disposable DB; no wall-clock sleep.
+      await apiPool.query(
+        "UPDATE worker_payments SET created_at=now()-INTERVAL '70 days' WHERE id=$1",[differencePaymentId]
+      );
+      await apiPool.query(
+        "UPDATE production_entries SET approved_at=now()-INTERVAL '40 days',work_date=CURRENT_DATE-40 WHERE id=$1",
+        [laterProduction.id]
+      );
+      await apiPool.query(
+        "UPDATE production_entries SET approved_at=now()-INTERVAL '75 days',work_date=CURRENT_DATE-75 WHERE id=$1",
+        [sourceProduction.id]
+      );
+      await apiPool.query(
+        "UPDATE worker_payment_settlement_differences SET eligible_at=CURRENT_DATE-40 WHERE id=$1",[differenceRecord.id]
+      );
+      const maturityDiagnostic=await apiPool.query(
+        `SELECT d.status,wp.created_at,
+          (SELECT MAX(p.approved_at) FROM production_entries p WHERE p.employee_id=d.employee_id
+            AND p.status='APPROVED' AND p.approved_at>wp.created_at AND p.work_date>=wp.created_at::date) AS last_activity,
+          COALESCE((SELECT MAX(p.approved_at) FROM production_entries p WHERE p.employee_id=d.employee_id
+            AND p.status='APPROVED' AND p.approved_at>wp.created_at AND p.work_date>=wp.created_at::date),wp.created_at)+INTERVAL '30 days'<=now() AS mature,
+          NOT EXISTS(SELECT 1 FROM production_entries p WHERE p.employee_id=d.employee_id
+            AND p.status='PENDING' AND p.work_date>=wp.created_at::date) AS no_pending,
+          NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id) AS no_reversal
+         FROM worker_payment_settlement_differences d JOIN worker_payments wp ON wp.id=d.worker_payment_id WHERE d.id=$1`,
+        [differenceRecord.id]
+      );
+      assert.equal(maturityDiagnostic.rows[0].mature,true,JSON.stringify(maturityDiagnostic.rows[0]));
+      assert.equal(maturityDiagnostic.rows[0].no_pending,true,JSON.stringify(maturityDiagnostic.rows[0]));
+      assert.equal(maturityDiagnostic.rows[0].no_reversal,true,JSON.stringify(maturityDiagnostic.rows[0]));
+      const pendingDifferenceProduction=await insertDifferenceProduction(1,10);
+      await apiPool.query(
+        "UPDATE production_entries SET status='PENDING',approved_by=NULL,approved_at=NULL,work_date=CURRENT_DATE-40 WHERE id=$1",
+        [pendingDifferenceProduction.id]
+      );
+      const pendingMaturityClient=await apiPool.connect();
+      try{
+        await pendingMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          pendingMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"maturity must wait while the worker has unresolved production awaiting approval");
+        await pendingMaturityClient.query("COMMIT");
+      }catch(error){await pendingMaturityClient.query("ROLLBACK");throw error}
+      finally{pendingMaturityClient.release()}
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[pendingDifferenceProduction.id]);
+      const employeeLockClient=await apiPool.connect();
+      const blockedMaturityClient=await apiPool.connect();
+      try{
+        await employeeLockClient.query("BEGIN");
+        await employeeLockClient.query("SELECT id FROM employees WHERE id=$1 FOR UPDATE",[differenceWorker.id]);
+        await blockedMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          blockedMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"maturity processing must serialize with worker production approval through the employee lock");
+        await blockedMaturityClient.query("COMMIT");
+        await employeeLockClient.query("ROLLBACK");
+      }catch(error){
+        await blockedMaturityClient.query("ROLLBACK").catch(()=>{});
+        await employeeLockClient.query("ROLLBACK").catch(()=>{});
+        throw error;
+      }finally{
+        blockedMaturityClient.release();
+        employeeLockClient.release();
+      }
+      const independentAllocationEvent=(await apiPool.query(
+        "SELECT id,worker_payment_order_allocation_id,amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION' AND production_entry_id=$2",
+        [differenceRecord.id,laterProduction.id]
+      )).rows[0];
+      assert.ok(independentAllocationEvent,"the later production allocation must have an immutable event");
+      const partialIndependentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount)/2,reason:"محاولة عكس نصف حدث فرق التسوية",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(partialIndependentAllocationReversal.statusCode,409,partialIndependentAllocationReversal.body,
+        "an independent difference allocation must reject partial reversal");
+      assert.equal(partialIndependentAllocationReversal.json().error.code,
+        "WORKER_DIFFERENCE_FULL_EVENT_REVERSAL_REQUIRED");
+      const independentAllocationReversalKey=randomUUID();
+      const independentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount),reason:"اختبار عكس توزيع فرق التسوية منفردًا",
+          idempotencyKey:independentAllocationReversalKey}
+      });
+      assert.equal(independentAllocationReversal.statusCode,201,independentAllocationReversal.body);
+      const replayedIndependentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount),reason:"اختبار عكس توزيع فرق التسوية منفردًا",
+          idempotencyKey:independentAllocationReversalKey}
+      });
+      assert.equal(replayedIndependentAllocationReversal.statusCode,200,replayedIndependentAllocationReversal.body,
+        "retrying an identical difference-event reversal must return the original journal result");
+      assert.equal(replayedIndependentAllocationReversal.json().data.reversal.id,
+        independentAllocationReversal.json().data.reversal.id,
+        "an idempotent retry must return the same financial reversal header");
+      const reusedDifferenceReversalKey=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount)+1,reason:"محاولة إعادة استخدام المفتاح لمبلغ مختلف",
+          idempotencyKey:independentAllocationReversalKey}
+      });
+      assert.equal(reusedDifferenceReversalKey.statusCode,409,reusedDifferenceReversalKey.body,
+        "reusing a difference-event reversal key with a different financial request must be rejected");
+      assert.equal(reusedDifferenceReversalKey.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversals WHERE idempotency_key=$1",
+        [independentAllocationReversalKey]
+      )).rows[0].count),1,"an idempotency retry must never create a second reversal header");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM financial_reversal_lines WHERE source_type='WORKER_SETTLEMENT_DIFFERENCE_EVENT' AND source_id=$1",
+        [independentAllocationEvent.id]
+      )).rows[0].count),1,"an idempotency retry must never duplicate the financial reversal line");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE reverses_event_id=$1 AND event_type='REVERSED'",
+        [independentAllocationEvent.id]
+      )).rows[0].count),1,"an idempotency retry must never append a second reversal event");
+      const secondIndependentAllocationReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentAllocationEvent.id,
+          amount:Number(independentAllocationEvent.amount),reason:"محاولة عكس الحدث نفسه بمفتاح جديد",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(secondIndependentAllocationReversal.statusCode,409,secondIndependentAllocationReversal.body,
+        "a previously reversed event must not be reversed again with a fresh idempotency key");
+      assert.equal(secondIndependentAllocationReversal.json().error.code,"WORKER_DIFFERENCE_REQUIRES_REVIEW");
+      const independentReversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(independentReversalIntegrity.statusCode,200,independentReversalIntegrity.body);
+      assert.equal(independentReversalIntegrity.json().data.counts.workerDifferenceEventReversalMismatches,0,
+        "an independent difference-event reversal must reconcile to its immutable event and financial journal line");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0].status,"REQUIRES_REVIEW","an independently reversed allocation must be held for accounting review");
+       const reviewDifferenceReport=await app.inject({
+         method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}&paymentStatus=UNALLOCATED`,
+         headers:{cookie:managerCookie}
+       });
+       assert.equal(reviewDifferenceReport.statusCode,200,reviewDifferenceReport.body);
+       assert.ok(reviewDifferenceReport.json().data.some((row:any)=>row.id===sourceProduction.id),
+         "production reporting must keep a worker's source order visible as unallocated while its reversed difference awaits accounting review");
+
+      // After reversing the later-production allocation, every financial view
+      // must restore exactly that production's unpaid balance without creating
+      // a duplicate direct expense or changing the approved labor cost.
+      const reversedDifferenceProductionReport=await app.inject({
+        method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedDifferenceProductionReport.statusCode,200,reversedDifferenceProductionReport.body);
+      const reversedDifferenceProductionRow=reversedDifferenceProductionReport.json().data.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(reversedDifferenceProductionRow,"reversed allocation production must remain in production report");
+      assert.equal(Number(reversedDifferenceProductionRow.paid_amount),0,
+        "production report must remove the independently reversed difference allocation");
+      assert.equal(Number(reversedDifferenceProductionRow.remaining_amount),20,
+        "production report must restore the full unpaid amount after independent reversal");
+      assert.equal(reversedDifferenceProductionRow.payment_status,"UNALLOCATED",
+         "the source-order difference remains unallocated while held for accounting review, even though this production allocation was reversed");
+      const reversedDifferenceOrderDashboard=await app.inject({
+        method:"GET",url:`/api/orders/${differenceOrderId}/dashboard`,headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedDifferenceOrderDashboard.statusCode,200,reversedDifferenceOrderDashboard.body);
+      const reversedDifferenceOrderRow=reversedDifferenceOrderDashboard.json().data.production.find((row:any)=>row.id===laterProduction.id);
+      assert.ok(reversedDifferenceOrderRow,"order dashboard must retain the reversed production row");
+      assert.equal(Number(reversedDifferenceOrderRow.paid_amount),0);
+      assert.equal(Number(reversedDifferenceOrderRow.remaining_amount),20);
+      const reversedDifferenceProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedDifferenceProfitability.statusCode,200,reversedDifferenceProfitability.body);
+      assert.equal(Number(reversedDifferenceProfitability.json().data.laborCost),120,
+        "reversal changes settlement state, not the approved worker labor expense");
+      assert.equal(Number(reversedDifferenceProfitability.json().data.expenses),0,
+        "reversing an allocation must not recreate the original worker-payment expense as a second direct cost");
+      assert.equal(Number(reversedDifferenceProfitability.json().data.totalCost),120,
+        "order total cost must remain equal to approved labor after allocation reversal");
+      const reversedDifferenceDashboard=await readDifferenceOrderDashboard();
+      assert.equal(Number(reversedDifferenceDashboard.labor_cost),120);
+      assert.equal(Number(reversedDifferenceDashboard.direct_expenses),0);
+      assert.equal(Number(reversedDifferenceDashboard.total_cost),120);
+      const heldMaturityClient=await apiPool.connect();
+      try{
+        await heldMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          heldMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"a difference under accounting review must be excluded from automatic maturity");
+        await heldMaturityClient.query("COMMIT");
+      }catch(error){await heldMaturityClient.query("ROLLBACK");throw error}
+      finally{heldMaturityClient.release()}
+      const releaseDifference=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"تمت مراجعة عكس التوزيع واعتماد إعادة المعالجة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(releaseDifference.statusCode,201,releaseDifference.body);
+      assert.equal(releaseDifference.json().data.status,"PENDING");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0].status,"PENDING");
+      const repeatedRelease=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"تمت مراجعة عكس التوزيع واعتماد إعادة المعالجة",idempotencyKey:releaseDifference.json().data.event.idempotency_key}
+      });
+      assert.equal(repeatedRelease.statusCode,200,repeatedRelease.body,
+        "replaying the same release request and idempotency key must return the original release event");
+      const reusedReleaseKeyWithDifferentReason=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"سبب مختلف بنفس المفتاح",idempotencyKey:releaseDifference.json().data.event.idempotency_key}
+      });
+      assert.equal(reusedReleaseKeyWithDifferentReason.statusCode,409,reusedReleaseKeyWithDifferentReason.body,
+        "reusing a release idempotency key with a different reason must be rejected");
+      assert.equal(reusedReleaseKeyWithDifferentReason.json().error.code,"IDEMPOTENCY_KEY_REUSED");
+      // Once accounting explicitly releases the reviewed difference, the same
+      // production row may receive a fresh immutable allocation cycle. The old
+      // allocation and its reversal remain untouched in the audit history.
+      const repeatedDifferenceAllocationClient=await apiPool.connect();
+      let repeatedDifferenceAllocations:any[]=[];
+      try{
+        await repeatedDifferenceAllocationClient.query("BEGIN");
+        repeatedDifferenceAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+          repeatedDifferenceAllocationClient,differenceWorker.id,laterProduction.id,manager.id
+        );
+        await repeatedDifferenceAllocationClient.query("COMMIT");
+      }catch(error){
+        await repeatedDifferenceAllocationClient.query("ROLLBACK");
+        throw error;
+      }finally{
+        repeatedDifferenceAllocationClient.release();
+      }
+      assert.equal(repeatedDifferenceAllocations.length,1,
+        "an explicitly released difference must be re-allocatable to the same production row");
+      assert.equal(Number(repeatedDifferenceAllocations[0].amount),20);
+      const allocationCyclesAfterReview=await apiPool.query(
+        `SELECT id,amount FROM worker_payment_order_allocations
+          WHERE worker_payment_id=$1 AND production_entry_id=$2 ORDER BY created_at,id`,
+        [differencePaymentId,laterProduction.id]
+      );
+      assert.equal(allocationCyclesAfterReview.rowCount,2,
+        "reallocation must append a new allocation row rather than mutate or reuse the reversed row");
+      assert.notEqual(allocationCyclesAfterReview.rows[0].id,allocationCyclesAfterReview.rows[1].id);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND production_entry_id=$2 AND event_type='ALLOCATED_TO_PRODUCTION'",
+        [differenceRecord.id,laterProduction.id]
+      )).rows[0].count),2,"the event ledger must preserve both the reversed and reallocated cycles");
+
+      const differenceAfterReallocation=await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      );
+      assert.equal(differenceAfterReallocation.rows[0].status,"PARTIALLY_ALLOCATED",
+        "reallocating the reopened production must leave only the unmatched remainder pending maturity");
+      const activeDifferenceAmount=await apiPool.query(
+        `SELECT COALESCE(SUM(ev.amount),0) AS amount
+           FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')`,
+        [differenceRecord.id]
+      );
+      assert.equal(Number(activeDifferenceAmount.rows[0].amount),20);
+      assert.equal(Number(differenceRecord.original_amount)-Number(activeDifferenceAmount.rows[0].amount),30,
+        "only the unallocated remainder may later transfer to the source order");
+      const reopenedSettlementSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${differenceWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reopenedSettlementSummary.statusCode,200,reopenedSettlementSummary.body);
+      assert.equal(Number(reopenedSettlementSummary.json().data.availableForSettlement),0,
+        "the reallocated historical difference must settle the reopened production exactly once");
+
+      // Approved work attached to a cancelled stage/order is no longer eligible
+      // for allocation and must not keep an otherwise mature difference pending.
+      const cancelledStageBlocker=await insertDifferenceProduction(1,10);
+      assert.ok(cancelledStageBlocker.id);
+      const originalStageStatus=(await apiPool.query(
+        "SELECT status FROM order_stages WHERE id=$1",[differenceStage.id]
+      )).rows[0].status;
+      await apiPool.query("UPDATE order_stages SET status='CANCELLED' WHERE id=$1",[differenceStage.id]);
+
+      const cancelledOrderResponse=await app.inject({
+        method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+        payload:{orderName:"Cancelled maturity blocker "+randomBytes(4).toString("hex"),
+          stages:[{stageName:"Cancelled blocker stage",sequenceNo:1,outputProductName:"Cancelled blocker output "+randomBytes(4).toString("hex"),
+            plannedQuantity:5,stageRate:10,stageRateMethod:"PER_PIECE",isFinalProduct:true}]}
+      });
+      assert.equal(cancelledOrderResponse.statusCode,201,cancelledOrderResponse.body);
+      const cancelledOrderId=cancelledOrderResponse.json().data.id as string;
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[cancelledOrderId]);
+      const cancelledOrderStage=(await apiPool.query(
+        "SELECT os.id,os.stage_id,os.output_product_id,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1",
+        [cancelledOrderId]
+      )).rows[0];
+      const cancelledOrderBlocker=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at,order_stage_id
+         ) VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,10,$7,'PER_PIECE','PER_PIECE',10,0,0,
+           'APPROVED',$8,$8,now(),$9) RETURNING id`,
+        [differenceWorker.id,cancelledOrderStage.output_product_id,cancelledOrderStage.stage_id,bonusShift.id,
+         cancelledOrderStage.unit_id,bonusRate.id,perPieceWageType.id,manager.id,cancelledOrderStage.id]
+      )).rows[0];
+      await apiPool.query("UPDATE production_orders SET status='CANCELLED' WHERE id=$1",[cancelledOrderId]);
+
+      // Two independent callers race the same mature difference. Row-level
+      // employee/difference locks plus SKIP LOCKED must allow exactly one transfer.
+      const matureClients=await Promise.all([apiPool.connect(),apiPool.connect()]);
+      let transferredCount=0;
+      try{
+        const concurrentResults=await Promise.all(matureClients.map(async matureClient=>{
+          try{
+            await matureClient.query("BEGIN");
+            const count=await processMaturedWorkerPaymentDifferences(
+              matureClient,{actorUserId:manager.id,actorType:"USER"}
+            );
+            await matureClient.query("COMMIT");
+            return count;
+          }catch(error){
+            await matureClient.query("ROLLBACK");
+            throw error;
+          }
+        }));
+        transferredCount=concurrentResults.reduce((sum,count)=>sum+count,0);
+      }finally{
+        for(const matureClient of matureClients)matureClient.release();
+      }
+      await apiPool.query("UPDATE order_stages SET status=$2 WHERE id=$1",[differenceStage.id,originalStageStatus]);
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledStageBlocker.id]);
+      await apiPool.query("UPDATE production_entries SET status='CANCELLED' WHERE id=$1",[cancelledOrderBlocker.id]);
+      assert.equal(transferredCount,1,
+        "approved production in cancelled stages or orders must not reset inactivity or block maturity");
+      const maturedDifference=(await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0];
+      assert.equal(maturedDifference.status,"TRANSFERRED_TO_SOURCE_ORDER");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER' AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=worker_payment_settlement_difference_events.id)",
+        [differenceRecord.id]
+      )).rows[0].amount),30);
+      const maturedProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(maturedProfitability.statusCode,200,maturedProfitability.body);
+      assert.equal(Number(maturedProfitability.json().data.laborCost),120);
+      assert.equal(Number(maturedProfitability.json().data.expenses),30,
+        "the 20 reallocated amount remains attributed to production; only the unmatched 30 remainder transfers as a direct expense");
+      assert.equal(Number(maturedProfitability.json().data.totalCost),150,
+        "approved labor of 120 plus the remaining 30 transfer must reconcile to the original 150 worker payment");
+      const maturedDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(maturedDashboardOrder.labor_cost),120);
+      assert.equal(Number(maturedDashboardOrder.direct_expenses),30);
+      assert.equal(Number(maturedDashboardOrder.total_cost),150);
+      const duplicateMaturityClient=await apiPool.connect();
+      try{
+        await duplicateMaturityClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          duplicateMaturityClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"repeated maturity processing must not transfer the same difference twice");
+        await duplicateMaturityClient.query("COMMIT");
+      }catch(error){await duplicateMaturityClient.query("ROLLBACK");throw error}
+      finally{duplicateMaturityClient.release()}
+
+      // A completed source order may close the remaining difference before the
+      // 30-day inactivity threshold, but only after all approved worker production
+      // on that order has been settled and no production remains pending.
+      const closureProduction=await insertDifferenceProduction(5,50);
+      const otherOrderWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Other Order Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      const otherOrderProduction=await insertDifferenceProduction(1,10,otherOrderWorker.id);
+      assert.equal(Number(otherOrderProduction.total_earning_amount),10);
+      const closurePaymentResponse=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:60,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(closurePaymentResponse.statusCode,201,closurePaymentResponse.body);
+      const closurePaymentId=closurePaymentResponse.json().data.payment.id as string;
+      const closureDifference=(await apiPool.query(
+        "SELECT id,original_amount,status FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",
+        [closurePaymentId]
+      )).rows[0];
+      assert.ok(closureDifference);
+      assert.equal(Number(closureDifference.original_amount),10);
+      await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1",[differenceOrderId]);
+      const blockedClosureClient=await apiPool.connect();
+      try{
+        await blockedClosureClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          blockedClosureClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"closing one worker's production must not transfer a difference while another worker still has unpaid production on the order");
+        await blockedClosureClient.query("COMMIT");
+      }catch(error){await blockedClosureClient.query("ROLLBACK");throw error}
+      finally{blockedClosureClient.release()}
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0].status,"PENDING","the difference must remain pending while any worker's order dues are open");
+
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      const otherWorkerPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:otherOrderWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:10,method:"CASH",
+          advanceRepaymentAmount:0,idempotencyKey:randomUUID()}
+      });
+      assert.equal(otherWorkerPayout.statusCode,201,otherWorkerPayout.body);
+      await apiPool.query("UPDATE production_orders SET status='COMPLETED' WHERE id=$1",[differenceOrderId]);
+      const closureClient=await apiPool.connect();
+      let closureTransfers=0;
+      try{
+        await closureClient.query("BEGIN");
+        closureTransfers=await processMaturedWorkerPaymentDifferences(
+          closureClient,{actorUserId:manager.id,actorType:"USER"}
+        );
+        await closureClient.query("COMMIT");
+      }catch(error){await closureClient.query("ROLLBACK");throw error}
+      finally{closureClient.release()}
+      assert.equal(closureTransfers,1,"a completed order may transfer its remaining difference only after every worker's production dues are settled");
+      const completedOrderDifference=(await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0];
+      assert.equal(completedOrderDifference.status,"TRANSFERRED_TO_SOURCE_ORDER");
+      assert.equal(Number((await apiPool.query(
+        "SELECT SUM(amount) AS amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER'",
+        [closureDifference.id]
+      )).rows[0].amount),10);
+
+      const independentTransferEvent=(await apiPool.query(
+        "SELECT id,amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='TRANSFERRED_TO_SOURCE_ORDER'",
+        [closureDifference.id]
+      )).rows[0];
+      const independentTransferReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:independentTransferEvent.id,
+          amount:Number(independentTransferEvent.amount),reason:"اختبار عكس ترحيل فرق التسوية منفردًا",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(independentTransferReversal.statusCode,201,independentTransferReversal.body);
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0].status,"REQUIRES_REVIEW");
+      const heldTransferClient=await apiPool.connect();
+      try{
+        await heldTransferClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          heldTransferClient,{actorUserId:manager.id,actorType:"USER"}
+        ),0,"a reversed transfer must not be recreated while the difference awaits review");
+        await heldTransferClient.query("COMMIT");
+      }catch(error){await heldTransferClient.query("ROLLBACK");throw error}
+      finally{heldTransferClient.release()}
+      const releaseTransferDifference=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${closureDifference.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"اعتماد إعادة ترحيل الفرق بعد المراجعة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(releaseTransferDifference.statusCode,201,releaseTransferDifference.body);
+      const retranferClient=await apiPool.connect();
+      try{
+        await retranferClient.query("BEGIN");
+        assert.equal(await processMaturedWorkerPaymentDifferences(
+          retranferClient,{actorUserId:manager.id,actorType:"USER"}
+        ),1,"an explicitly released completed-order difference may be transferred again exactly once");
+        await retranferClient.query("COMMIT");
+      }catch(error){await retranferClient.query("ROLLBACK");throw error}
+      finally{retranferClient.release()}
+      assert.equal(Number((await apiPool.query(
+        `SELECT COALESCE(SUM(ev.amount),0) AS amount FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='TRANSFERRED_TO_SOURCE_ORDER'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)`,
+        [closureDifference.id]
+      )).rows[0].amount),10,"the re-transferred amount must be active once, while the original transfer remains reversed");
+
+      const differenceReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:differencePaymentId,amount:150,
+          reason:"اختبار عكس فرق تسوية العامل",idempotencyKey:randomUUID()}
+      });
+      assert.equal(differenceReversal.statusCode,201,differenceReversal.body);
+      const previousCustodyReversalMovements=await apiPool.query(
+        `SELECT
+          (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT') AS original_out,
+          (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$2 AND direction='IN') AS reversal_in`,
+        [differencePaymentId,differenceReversal.json().data.reversal.id]
+      );
+      assert.equal(Number(previousCustodyReversalMovements.rows[0].original_out),0,
+        "a previous-custody settlement must not invent a current-custody cash OUT");
+      assert.equal(Number(previousCustodyReversalMovements.rows[0].reversal_in),0,
+        "reversing a previous-custody settlement must not credit the current custody");
+      const reversedDifference=(await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[differenceRecord.id]
+      )).rows[0];
+      assert.equal(reversedDifference.status,"REVERSED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='REVERSED'",
+        [differenceRecord.id]
+      )).rows[0].count),3,
+        "the original allocation reversal, the reallocated production reversal and the maturity-transfer reversal must all remain in the append-only event history");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_allocation_reversals WHERE worker_payment_id=$1",
+        [differencePaymentId]
+      )).rows[0].amount),140,
+        "reversal must offset the original allocation, its independently reversed cycle, and the later reallocated production amount");
+      const differenceExpenseNet=await apiPool.query(
+        `SELECT COALESCE(SUM(GREATEST(e.amount
+          -COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=e.id),0)
+          -COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
+            WHERE ev.source_expense_id=e.id AND ev.event_type IN ('ALLOCATED_TO_PRODUCTION','TRANSFERRED_TO_SOURCE_ORDER')
+              AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv WHERE rv.reverses_event_id=ev.id)),0),0)),0) AS net
+         FROM accounting_expenses e WHERE e.source_worker_payment_id=$1`,
+        [differencePaymentId]
+      );
+      assert.equal(Number(differenceExpenseNet.rows[0].net),0,"reversing the parent payment must reverse its source expenses and all transferred cost effects");
+      const reversedProfitability=await app.inject({
+        method:"GET",url:`/api/accounting/orders/${differenceOrderId}/profitability`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(reversedProfitability.statusCode,200,reversedProfitability.body);
+      assert.equal(Number(reversedProfitability.json().data.laborCost),180,
+        "earned labor for the source, later, closure and other-worker production must remain visible");
+      assert.equal(Number(reversedProfitability.json().data.expenses),10,
+        "the separate closure difference remains charged until its own payment is reversed");
+      assert.equal(Number(reversedProfitability.json().data.totalCost),190,
+        "reversing one payment must not erase other workers' earned labor or leave duplicate transferred expense");
+      const reversedDashboardOrder=await readDifferenceOrderDashboard();
+      assert.equal(Number(reversedDashboardOrder.labor_cost),180);
+      assert.equal(Number(reversedDashboardOrder.direct_expenses),10);
+      assert.equal(Number(reversedDashboardOrder.total_cost),190);
+      const differenceEventsApi=await app.inject({
+        method:"GET",url:`/api/accounting/worker-settlement-differences/${differenceRecord.id}/events`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(differenceEventsApi.statusCode,200,differenceEventsApi.body);
+      assert.equal(differenceEventsApi.json().data.length,7,
+        "the audit endpoint must expose both allocation cycles, their reversals, review release, maturity transfer and transfer reversal");
+      const closureDifferenceReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:closurePaymentId,amount:60,
+          reason:"عكس دفعة فرق طلبية مكتملة",idempotencyKey:randomUUID()}
+      });
+      assert.equal(closureDifferenceReversal.statusCode,201,closureDifferenceReversal.body);
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[closureDifference.id]
+      )).rows[0].status,"REVERSED","reversing the second payment must also reverse its completion-transfer event");
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      const repayoutAfterReversal=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:differenceWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:100,method:"CASH",
+          advanceRepaymentAmount:0,idempotencyKey:randomUUID()}
+      });
+      assert.equal(repayoutAfterReversal.statusCode,201,repayoutAfterReversal.body,
+        "a later order-scoped payout must treat reversed historical allocations as available, not as duplicate paid amounts");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COALESCE(SUM(amount),0) AS amount FROM worker_payment_order_allocations WHERE worker_payment_id=$1",
+        [repayoutAfterReversal.json().data.payment.id]
+      )).rows[0].amount),100);
+
+      // Parent reversal must also reverse difference allocations stored in the
+      // order-allocation table when the original payment uses settlement allocations.
+      const parentReverseWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Parent Difference Reversal Worker "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[differenceOrderId]);
+      await apiPool.query("UPDATE order_stages SET status='IN_PROGRESS' WHERE id=$1",[differenceStage.id]);
+      const parentSourceProduction=await insertDifferenceProduction(10,100,parentReverseWorker.id);
+      assert.equal(Number(parentSourceProduction.total_earning_amount),100);
+      const parentPaymentResponse=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:parentReverseWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:differenceOrderId,orderStageId:differenceStage.id,amount:150,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(parentPaymentResponse.statusCode,201,parentPaymentResponse.body);
+      const parentPaymentId=parentPaymentResponse.json().data.payment.id as string;
+      const parentDifference=(await apiPool.query(
+        "SELECT id FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",[parentPaymentId]
+      )).rows[0];
+      assert.ok(parentDifference,"the parent-reversal scenario must create a settlement difference");
+      const parentLaterProduction=await insertDifferenceProduction(1,10,parentReverseWorker.id);
+      const parentAllocationClient=await apiPool.connect();
+      let parentAllocations:any[]=[];
+      try{
+        await parentAllocationClient.query("BEGIN");
+        parentAllocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+          parentAllocationClient,parentReverseWorker.id,parentLaterProduction.id,manager.id
+        );
+        await parentAllocationClient.query("COMMIT");
+      }catch(error){await parentAllocationClient.query("ROLLBACK");throw error}
+      finally{parentAllocationClient.release()}
+      assert.equal(parentAllocations.length,1);
+      assert.equal(Number(parentAllocations[0].amount),10);
+      const orderSummaryAfterDifferenceAllocation=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${parentReverseWorker.id}&orderId=${differenceOrderId}&orderStageId=${differenceStage.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(orderSummaryAfterDifferenceAllocation.statusCode,200,orderSummaryAfterDifferenceAllocation.body);
+      assert.equal(Number(orderSummaryAfterDifferenceAllocation.json().data.availableForSettlement),0,
+        "order-scoped settlement summary must include active difference allocations to prevent paying the same production twice: "+JSON.stringify(orderSummaryAfterDifferenceAllocation.json().data));
+      const parentDifferenceEvent=(await apiPool.query(
+        "SELECT id,worker_payment_order_allocation_id FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION'",
+        [parentDifference.id]
+      )).rows[0];
+      assert.ok(parentDifferenceEvent,"the parent payment must have an active difference allocation event");
+      const parentDifferenceReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:parentPaymentId,amount:150,
+          reason:"اختبار عكس الدفعة الأصلية مع تخصيص فرق التسوية النشط",idempotencyKey:randomUUID()}
+      });
+      assert.equal(parentDifferenceReversal.statusCode,201,parentDifferenceReversal.body);
+      assert.equal(Number((await apiPool.query(
+        `SELECT COUNT(*)::int AS count FROM worker_payment_allocation_reversals
+          WHERE reversal_id=$1 AND allocation_source='WORKER_PAYMENT_ORDER' AND source_allocation_id=$2`,
+        [parentDifferenceReversal.json().data.reversal.id,parentDifferenceEvent.worker_payment_order_allocation_id]
+      )).rows[0].count),1,
+        "reversing the parent payment must append an allocation reversal for its active difference allocation");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[parentDifference.id]
+      )).rows[0].status,"REVERSED");
+      const parentReversedSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${parentReverseWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(parentReversedSummary.statusCode,200,parentReversedSummary.body);
+      assert.equal(Number(parentReversedSummary.json().data.availableForSettlement),110,
+        "full parent reversal must reopen both source production and the separately allocated later production");
+      const orderSummaryAfterParentReversal=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${parentReverseWorker.id}&orderId=${differenceOrderId}&orderStageId=${differenceStage.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(orderSummaryAfterParentReversal.statusCode,200,orderSummaryAfterParentReversal.body);
+      assert.equal(Number(orderSummaryAfterParentReversal.json().data.availableForSettlement),110,
+        "order-scoped settlement summary must reopen both production amounts after the parent payment and its difference allocation are reversed");
+      const parentReversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(parentReversalIntegrity.statusCode,200,parentReversalIntegrity.body);
+      assert.equal(parentReversalIntegrity.json().data.counts.workerPaymentReversalMismatches,0,
+        "reconciliation must include difference-event allocations stored beside canonical settlement allocations");
+      assert.equal(parentReversalIntegrity.json().data.counts.workerDifferenceEventReversalMismatches,0,
+        "parent payment reversals must reconcile their generated difference-event reversal records to the parent journal line");
+
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
@@ -2247,6 +3633,259 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(throttledPassword.statusCode,429,
         "five failed closure password attempts must temporarily lock the caller out");
+
+      // Administrative allocation must use the same order-cost classification as
+      // profitability: do not count worker-payment expenses twice, and include a
+      // matured settlement-difference transfer as a direct cost of its target order.
+      const adminCostWorkerA=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Admin Cost Basis Worker A "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      const adminCostWorkerB=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Admin Cost Basis Worker B "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      async function createAdminCostOrder(label:string){
+        const response=await app.inject({
+          method:"POST",url:"/api/orders",headers:{cookie:managerCookie},
+          payload:{orderName:label+" "+randomBytes(4).toString("hex"),
+            stages:[{stageName:label+" stage",sequenceNo:1,outputProductName:label+" product "+randomBytes(4).toString("hex"),
+              plannedQuantity:1,stageRate:100,stageRateMethod:"PER_PIECE",isFinalProduct:true}]}
+        });
+        assert.equal(response.statusCode,201,response.body);
+        const stage=(await apiPool.query(
+          "SELECT os.id,os.stage_id,os.output_product_id,p.unit_id FROM order_stages os JOIN products p ON p.id=os.output_product_id WHERE os.order_id=$1",
+          [response.json().data.id]
+        )).rows[0];
+        return {orderId:response.json().data.id as string,stage};
+      }
+      const adminCostA=await createAdminCostOrder("Admin allocation basis A");
+      const adminCostB=await createAdminCostOrder("Admin allocation basis B");
+      async function insertAdminCostProduction(employeeId:string,stage:any){
+        return (await apiPool.query(
+          `INSERT INTO production_entries(
+             employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+             wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+             status,submitted_by,approved_by,approved_at
+           ) VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,100,$8,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$9,$9,now())
+           RETURNING id`,
+          [employeeId,stage.id,stage.output_product_id,stage.stage_id,bonusShift.id,
+           stage.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+        )).rows[0];
+      }
+      await insertAdminCostProduction(adminCostWorkerA,adminCostA.stage);
+      await insertAdminCostProduction(adminCostWorkerB,adminCostB.stage);
+      const adminCostPaymentA=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,100,100,0,'CASH',$2,$3,'admin-cost-worker-payment-a') RETURNING id`,
+        [adminCostWorkerA,manager.id,randomUUID()]
+      )).rows[0].id;
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
+           expense_type,allocation_type,source_worker_payment_id)
+         VALUES($1,$2,'WORKER_PAYMENT','Worker payment already included in labor cost',100,CURRENT_DATE,'CASH',$3,'DIRECT','DIRECT',$4)`,
+        [adminCostA.orderId,adminCostA.stage.id,manager.id,adminCostPaymentA]
+      );
+      const adminCostPaymentB=(await apiPool.query(
+        `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+         VALUES($1,50,50,0,'CASH',$2,$3,'admin-cost-difference-payment-b') RETURNING id`,
+        [adminCostWorkerB,manager.id,randomUUID()]
+      )).rows[0].id;
+      const adminCostSourceExpense=(await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,
+           expense_type,allocation_type,source_worker_payment_id)
+         VALUES('WORKER_PAYMENT','Matured worker difference source expense',50,CURRENT_DATE,'CASH',$1,
+           'DIRECT','GENERAL',$2) RETURNING id`,
+        [manager.id,adminCostPaymentB]
+      )).rows[0].id;
+      const adminCostDifference=(await apiPool.query(
+        `INSERT INTO worker_payment_settlement_differences(
+           worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+           original_amount,payment_date,eligible_at,status,created_by
+         ) VALUES($1,$2,$3,$4,$5,50,CURRENT_DATE,CURRENT_DATE,'TRANSFERRED_TO_SOURCE_ORDER',$6) RETURNING id`,
+        [adminCostPaymentB,adminCostWorkerB,adminCostB.orderId,adminCostB.stage.id,adminCostSourceExpense,manager.id]
+      )).rows[0].id;
+      await apiPool.query(
+        `INSERT INTO worker_payment_settlement_difference_events(
+           difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,target_order_id,
+           target_order_stage_id,actor_type,actor_user_id,reason,idempotency_key
+         ) VALUES($1,$2,$3,'TRANSFERRED_TO_SOURCE_ORDER',50,$4,$4,$5,'USER',$6,
+           'مراجعة أساس توزيع المصروفات الإدارية',$7)`,
+        [adminCostDifference,adminCostPaymentB,adminCostSourceExpense,adminCostB.orderId,adminCostB.stage.id,manager.id,randomUUID()]
+      );
+      const adminCostPeriod=await app.inject({
+        method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
+        payload:{name:"Administrative allocation basis regression",periodStart:"2099-12-01",periodEnd:"2099-12-31"}
+      });
+      assert.equal(adminCostPeriod.statusCode,201,adminCostPeriod.body);
+      await apiPool.query(
+        `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,expense_type)
+         VALUES('ADMIN_TEST','Administrative allocation basis test',1000,'2099-12-15','CASH',$1,'ADMINISTRATIVE')`,
+        [manager.id]
+      );
+      const adminCostAllocation=await app.inject({
+        method:"POST",url:`/api/accounting/periods/${adminCostPeriod.json().data.id}/auto-allocate`,
+        headers:{cookie:managerCookie},payload:{}
+      });
+      assert.equal(adminCostAllocation.statusCode,200,adminCostAllocation.body);
+      const adminCostShares=await apiPool.query(
+        "SELECT order_id,amount FROM accounting_expense_allocations WHERE period_id=$1 AND order_id=ANY($2::uuid[])",
+        [adminCostPeriod.json().data.id,[adminCostA.orderId,adminCostB.orderId]]
+      );
+      assert.equal(adminCostShares.rowCount,2,"both test orders must receive an administrative cost allocation");
+      const shareA=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostA.orderId).amount);
+      const shareB=Number(adminCostShares.rows.find((row:any)=>row.order_id===adminCostB.orderId).amount);
+      assert.ok(Math.abs(shareA/shareB-2/3)<0.02,
+        `administrative allocation basis must be 100 labor for order A versus 100 labor + 50 transferred difference for order B; got ${shareA} and ${shareB}`);
+
+      // The closed-period assertion above is complete. Move its isolated
+      // one-day fixture away from today's date so this later independent scenario
+      // can post normally without weakening the closed-period regression itself.
+      await apiPool.query(
+        "UPDATE accounting_periods SET period_start='2098-01-01',period_end='2098-01-01' WHERE id=$1",
+        [lockedPeriod.json().data.id]
+      );
+
+      // Multiple active allocations on one difference: reversing one event must
+      // leave the other event and its production settlement intact.
+      const multiEventWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Multi Event Difference Worker "+randomBytes(4).toString("hex")]
+      )).rows[0].id;
+      const multiEventOrder=await createAdminCostOrder("Multi event difference isolation");
+      await apiPool.query("UPDATE production_orders SET status='IN_PROGRESS' WHERE id=$1",[multiEventOrder.orderId]);
+      await insertAdminCostProduction(multiEventWorker,multiEventOrder.stage);
+      const multiEventSourcePayment=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:multiEventWorker,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          orderId:multiEventOrder.orderId,orderStageId:multiEventOrder.stage.id,amount:300,method:"CASH",
+          advanceRepaymentAmount:0,allowOverpayment:true,idempotencyKey:randomUUID()}
+      });
+      assert.equal(multiEventSourcePayment.statusCode,201,multiEventSourcePayment.body);
+      const multiEventPaymentId=multiEventSourcePayment.json().data.payment.id as string;
+      const multiEventDifference=(await apiPool.query(
+        "SELECT id,original_amount FROM worker_payment_settlement_differences WHERE worker_payment_id=$1",
+        [multiEventPaymentId]
+      )).rows[0];
+      assert.ok(multiEventDifference,"the multi-event source payment must create a settlement difference");
+      assert.equal(Number(multiEventDifference.original_amount),200);
+      const multiEventProductionA=await insertAdminCostProduction(multiEventWorker,multiEventOrder.stage);
+      const multiEventProductionB=await insertAdminCostProduction(multiEventWorker,multiEventOrder.stage);
+      async function allocateMultiEventProduction(productionEntryId:string){
+        const client=await apiPool.connect();
+        try{
+          await client.query("BEGIN");
+          const allocations=await allocatePendingWorkerPaymentDifferencesForProduction(
+            client,multiEventWorker,productionEntryId,manager.id
+          );
+          await client.query("COMMIT");
+          return allocations;
+        }catch(error){
+          await client.query("ROLLBACK");
+          throw error;
+        }finally{client.release()}
+      }
+      const multiEventAllocationA=await allocateMultiEventProduction(multiEventProductionA.id);
+      const multiEventAllocationB=await allocateMultiEventProduction(multiEventProductionB.id);
+      assert.equal(multiEventAllocationA.length,1);
+      assert.equal(multiEventAllocationB.length,1);
+      assert.equal(Number(multiEventAllocationA[0].amount),100);
+      assert.equal(Number(multiEventAllocationB[0].amount),100);
+      const multiEventRows=(await apiPool.query(
+        "SELECT id,production_entry_id,worker_payment_order_allocation_id,amount FROM worker_payment_settlement_difference_events WHERE difference_id=$1 AND event_type='ALLOCATED_TO_PRODUCTION' ORDER BY created_at,id",
+        [multiEventDifference.id]
+      )).rows;
+      assert.equal(multiEventRows.length,2,"the difference must retain two distinct active allocation events");
+      const multiEventReversal=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:multiEventRows[0].id,
+          amount:Number(multiEventRows[0].amount),reason:"عكس تخصيص واحد من تخصيصين نشطين",
+          idempotencyKey:randomUUID()}
+      });
+      assert.equal(multiEventReversal.statusCode,201,multiEventReversal.body);
+      const activeMultiEvents=await apiPool.query(
+        `SELECT ev.id,ev.production_entry_id,ev.amount
+           FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')`,
+        [multiEventDifference.id]
+      );
+      assert.equal(activeMultiEvents.rowCount,1,
+        "reversing one allocation must not reverse or erase the other active allocation");
+      assert.equal(activeMultiEvents.rows[0].production_entry_id,multiEventRows[1].production_entry_id);
+      assert.equal(Number(activeMultiEvents.rows[0].amount),100);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM worker_payment_allocation_reversals WHERE worker_payment_id=$1",
+        [multiEventPaymentId]
+      )).rows[0].count),1,"only the selected allocation may receive an allocation-reversal row");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",
+        [multiEventDifference.id]
+      )).rows[0].status,"REQUIRES_REVIEW");
+      const multiEventSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${multiEventWorker}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(multiEventSummary.statusCode,200,multiEventSummary.body);
+      assert.equal(Number(multiEventSummary.json().data.availableForSettlement),100,
+        "the summary must restore only the reversed production while retaining the other active difference allocation");
+
+      // Releasing a reversed difference must allow a fresh immutable allocation
+      // cycle against the same production entry, without reusing the reversed row.
+      const differenceRelease=await app.inject({
+        method:"POST",url:`/api/accounting/worker-settlement-differences/${multiEventDifference.id}/release`,
+        headers:{cookie:managerCookie},
+        payload:{reason:"إعادة اعتماد بعد مراجعة عكس التخصيص",idempotencyKey:randomUUID()}
+      });
+      assert.equal(differenceRelease.statusCode,201,differenceRelease.body);
+      assert.equal(differenceRelease.json().data.status,"PARTIALLY_ALLOCATED",
+        "only the remaining unreversed amount should be released for allocation");
+
+      const reallocatedSameProduction=await allocateMultiEventProduction(multiEventProductionA.id);
+      assert.equal(reallocatedSameProduction.length,1,
+        "the previously reversed production entry must accept a new allocation cycle");
+      assert.equal(Number(reallocatedSameProduction[0].amount),100);
+      const allocationCycles=await apiPool.query(
+        `SELECT id,amount FROM worker_payment_order_allocations
+          WHERE worker_payment_id=$1 AND production_entry_id=$2 ORDER BY created_at,id`,
+        [multiEventPaymentId,multiEventProductionA.id]
+      );
+      assert.equal(allocationCycles.rowCount,2,
+        "reallocation must create a second immutable allocation row instead of reusing the reversed row");
+      assert.notEqual(allocationCycles.rows[0].id,allocationCycles.rows[1].id);
+      assert.equal(Number((await apiPool.query(
+        `SELECT COUNT(*)::int AS count FROM worker_payment_allocation_reversals
+          WHERE allocation_source='WORKER_PAYMENT_ORDER' AND source_allocation_id=$1`,
+        [allocationCycles.rows[0].id]
+      )).rows[0].count),1,"the original allocation reversal must remain untouched");
+      const reallocatedEvents=await apiPool.query(
+        `SELECT ev.id,ev.worker_payment_order_allocation_id
+           FROM worker_payment_settlement_difference_events ev
+          WHERE ev.difference_id=$1 AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')
+          ORDER BY ev.created_at,ev.id`,
+        [multiEventDifference.id]
+      );
+      assert.equal(reallocatedEvents.rowCount,2,
+        "the reallocated event and the other still-active event must both remain active");
+      assert.ok(reallocatedEvents.rows.some((row:any)=>row.worker_payment_order_allocation_id===allocationCycles.rows[1].id),
+        "the new active event must point to the new allocation row");
+      const duplicateReallocation=await allocateMultiEventProduction(multiEventProductionA.id);
+      assert.equal(duplicateReallocation.length,0,
+        "reprocessing the same production must not duplicate an active allocation");
+      assert.equal((await apiPool.query(
+        "SELECT status FROM worker_payment_settlement_differences WHERE id=$1",[multiEventDifference.id]
+      )).rows[0].status,"ALLOCATED");
+      const afterReallocationSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${multiEventWorker}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(afterReallocationSummary.statusCode,200,afterReallocationSummary.body);
+      assert.equal(Number(afterReallocationSummary.json().data.availableForSettlement),0,
+        "reallocation must consume only the restored production due exactly once");
+
     }finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();

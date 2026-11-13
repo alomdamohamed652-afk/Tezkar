@@ -130,5 +130,133 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
     "the advance repayment credit must be reversed independently");
   assert.equal(Number(payrollReversalState.rows[0].custody_in),120);
   assert.equal(Number(payrollReversalState.rows[0].custody_out),20);
+
+  // Worker-payment reversal restores the exact gross ledger balance, linked advance,
+  // current custodian cash, and the source expense without mutating original rows.
+  const workerPaymentKey=randomUUID();
+  const workerPayment=(await db.query(
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint)
+     VALUES($1,80,100,20,'CASH',$2,$3,'worker-payment-reversal-test') RETURNING id`,
+    [emp,user,workerPaymentKey]
+  )).rows[0].id;
+  const workerSettlement=(await db.query(
+    `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+     VALUES($1,100,80,20,CURRENT_DATE,'تسوية طلب قبض صرف مباشر بدون طلب قبض',$2,$3) RETURNING id`,
+    [emp,user,workerPayment]
+  )).rows[0].id;
+  const workerAdvance=(await db.query(
+    `INSERT INTO advance_requests(employee_id,amount,reason,requested_by,status,paid_by,paid_at,repayment_status)
+     VALUES($1,20,'worker payment reversal',$2,'PAID',$2,now(),'SETTLED') RETURNING id`,
+    [emp,user]
+  )).rows[0].id;
+  const workerRepayment=(await db.query(
+    `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,created_by,source_worker_payment_id,settlement_id)
+     VALUES($1,20,'CUSTOM',CURRENT_DATE,$2,$3,$4) RETURNING id`,
+    [workerAdvance,user,workerPayment,workerSettlement]
+  )).rows[0].id;
+  await db.query(
+    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,settlement_id,created_by,notes)
+     VALUES($1,'WORKER_PAYMENT',100,$2,$3,$4,'worker payment gross debit')`,
+    [emp,workerPayment,workerSettlement,user]
+  );
+  await db.query(
+    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,advance_repayment_id,created_by,notes)
+     VALUES($1,'ADJUSTMENT',20,$2,$3,'worker payment advance offset')`,
+    [emp,workerRepayment,user]
+  );
+  const workerCustodyOut=(await db.query(
+    `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
+     VALUES($1,'OUT',80,CURRENT_DATE,'worker payment cash out',$2,'WORKER_PAYMENT',$3) RETURNING id`,
+    [emp,user,workerPayment]
+  )).rows[0].id;
+  await db.query(
+    `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,cash_custody_transaction_id,allocation_type,source_worker_payment_id)
+     VALUES('WORKER_PAYMENT','worker payment reversal expense',100,CURRENT_DATE,'CASH',$1,'DIRECT',$2,$3,'worker-payment-expense-test',$4,'GENERAL',$5)`,
+    [user,emp,randomUUID(),workerCustodyOut,workerPayment]
+  );
+  const standaloneWorkerAdvanceReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{sourceType:'ADVANCE_REPAYMENT',sourceId:workerRepayment,amount:20,reason:'محاولة عكس قسط مرتبط بدفعة عامل',idempotencyKey:randomUUID()}});
+  assert.equal(standaloneWorkerAdvanceReversal.statusCode,409,standaloneWorkerAdvanceReversal.body);
+  assert.equal(standaloneWorkerAdvanceReversal.json().error.code,'WORKER_PAYMENT_REPAYMENT_REQUIRES_PAYMENT_REVERSAL');
+  const workerPayload={sourceType:'WORKER_PAYMENT',sourceId:workerPayment,amount:100,reason:'عكس دفعة عامل اختبارية',idempotencyKey:randomUUID()};
+  const partialWorkerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{...workerPayload,amount:99,idempotencyKey:randomUUID()}});
+  assert.equal(partialWorkerReversal.statusCode,409,partialWorkerReversal.body);
+  assert.equal(partialWorkerReversal.json().error.code,'WORKER_PAYMENT_FULL_REVERSAL_REQUIRED');
+  await db.query("CREATE OR REPLACE FUNCTION test_fail_worker_reversal_cash_in() RETURNS trigger AS 'BEGIN IF NEW.source_type = ''FINANCIAL_REVERSAL'' AND NEW.direction = ''IN'' THEN RAISE EXCEPTION ''forced worker reversal cash-in failure''; END IF; RETURN NEW; END;' LANGUAGE plpgsql");
+  await db.query(`CREATE TRIGGER test_fail_worker_reversal_cash_in_trigger
+    BEFORE INSERT ON cash_custody_transactions
+    FOR EACH ROW EXECUTE FUNCTION test_fail_worker_reversal_cash_in()`);
+  const rollbackAttempt=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:workerPayload});
+  assert.equal(rollbackAttempt.statusCode,500,rollbackAttempt.body);
+  const rollbackState=await db.query(
+    `SELECT
+      (SELECT COUNT(*)::int FROM financial_reversals WHERE idempotency_key=$1) AS reversal_headers,
+      (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$2) AS payment_lines,
+      (SELECT COUNT(*)::int FROM accounting_expense_reversals WHERE source_worker_payment_id=$2) AS expense_effects,
+      (SELECT COUNT(*)::int FROM employee_earnings_ledger WHERE employee_id=$3 AND entry_type='ADJUSTMENT' AND financial_reversal_id IS NOT NULL AND notes LIKE '%' || $2::text || '%') AS ledger_effects,
+      (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN' AND description LIKE '%' || $2::text || '%') AS custody_effects`,
+    [workerPayload.idempotencyKey,workerPayment,emp]
+  );
+  for(const value of Object.values(rollbackState.rows[0]))assert.equal(Number(value),0,"failed worker reversal must roll back every financial effect");
+  await db.query("DROP TRIGGER test_fail_worker_reversal_cash_in_trigger ON cash_custody_transactions");
+  await db.query("DROP FUNCTION test_fail_worker_reversal_cash_in()");
+  const workerReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:workerPayload});
+  assert.equal(workerReversal.statusCode,201,workerReversal.body);
+  assert.equal(workerReversal.json().data.lines.length,2,'worker payment and linked advance repayment must be reversed together');
+  const workerReplay=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:workerPayload});
+  assert.equal(workerReplay.statusCode,200,workerReplay.body);
+  const workerState=await db.query(
+    `SELECT
+      (SELECT COUNT(*)::int FROM worker_payments WHERE id=$1) AS original_payment_count,
+      (SELECT COUNT(*)::int FROM advance_repayments WHERE id=$2) AS original_repayment_count,
+      (SELECT COUNT(*)::int FROM accounting_expense_reversals WHERE source_worker_payment_id=$1) AS expense_reversal_count,
+      (SELECT COALESCE(SUM(amount),0) FROM accounting_expense_reversals WHERE source_worker_payment_id=$1) AS expense_reversed,
+      (SELECT COALESCE(SUM(credit_amount),0) FROM employee_earnings_ledger WHERE notes LIKE '%عكس دفعة العامل%' AND notes LIKE '%' || $1::text || '%') AS worker_ledger_credit,
+      (SELECT COALESCE(SUM(debit_amount),0) FROM employee_earnings_ledger WHERE notes LIKE '%عكس سداد سلفة%' AND notes LIKE '%' || $2::text || '%') AS advance_ledger_debit,
+      (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='IN') AS custody_in,
+      (SELECT COUNT(*)::int FROM employee_earnings_ledger WHERE financial_reversal_id=$3) AS reversal_ledger_count,
+      (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status`,
+    [workerPayment,workerRepayment,workerReversal.json().data.reversal.id,workerAdvance]
+  );
+  assert.equal(Number(workerState.rows[0].original_payment_count),1);
+  assert.equal(Number(workerState.rows[0].original_repayment_count),1);
+  assert.equal(Number(workerState.rows[0].expense_reversal_count),1);
+  assert.equal(Number(workerState.rows[0].expense_reversed),100);
+  assert.equal(Number(workerState.rows[0].worker_ledger_credit),100);
+  assert.equal(Number(workerState.rows[0].advance_ledger_debit),20);
+  assert.equal(Number(workerState.rows[0].custody_in),80);
+  assert.equal(Number(workerState.rows[0].reversal_ledger_count),2,
+    "each append-only ledger correction must be linked to its financial reversal header");
+  assert.equal(workerState.rows[0].advance_status,'OPEN');
+
+  // Previous-custody settlements have no current cash OUT and must not create a
+  // fictitious cash IN when reversed.
+  const previousPayment=(await db.query(
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint,settlement_source)
+     VALUES($1,50,50,0,'CASH',$2,$3,'previous-custody-reversal-test','PREVIOUS_CUSTODY') RETURNING id`,
+    [emp,user,randomUUID()]
+  )).rows[0].id;
+  const previousSettlement=(await db.query(
+    `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+     VALUES($1,50,50,0,'2099-07-02','تسوية طلب قبض تسوية من عهدة سابقة',$2,$3) RETURNING id`,
+    [emp,user,previousPayment]
+  )).rows[0].id;
+  await db.query(
+    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,settlement_id,created_by,notes)
+     VALUES($1,'WORKER_PAYMENT',50,$2,$3,$4,'previous custody worker payment')`,
+    [emp,previousPayment,previousSettlement,user]
+  );
+  await db.query(
+    `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,expense_type,idempotency_key,idempotency_payload_hash,allocation_type,source_worker_payment_id)
+     VALUES('WORKER_PAYMENT','previous custody expense',50,'2099-07-02','CASH',$1,'DIRECT',$2,'previous-custody-expense-test','GENERAL',$3)`,
+    [user,randomUUID(),previousPayment]
+  );
+  const previousPayload={sourceType:'WORKER_PAYMENT',sourceId:previousPayment,amount:50,reason:'عكس تسوية عهدة سابقة اختبارية',idempotencyKey:randomUUID()};
+  const previousReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:previousPayload});
+  assert.equal(previousReversal.statusCode,201,previousReversal.body);
+  const previousCash=await db.query(
+    "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1",
+    [previousReversal.json().data.reversal.id]
+  );
+  assert.equal(Number(previousCash.rows[0].count),0,'previous-custody reversal must not create a cash movement');
  }finally{if(app)await app.close();if(db)await db.end();const c=new pg.Client({connectionString:adminUrl});await c.connect();try{await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)}finally{await c.end()}}
 });

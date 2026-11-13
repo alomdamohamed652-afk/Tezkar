@@ -41,6 +41,7 @@ import { globalSearchRoutes } from "./modules/search/global-search.routes.js";
 import { notificationRoutes } from "./modules/notifications/notifications.routes.js";
 import { systemResetRoutes } from "./modules/system-reset/system-reset.routes.js";
 import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
+import { runMaturedWorkerPaymentDifferenceJob } from "./modules/payments/worker-payment-differences.service.js";
 
 const app = Fastify({ logger: true });
 
@@ -140,3 +141,17 @@ await app.register(notificationRoutes);
 await app.register(systemResetRoutes);
 
 await app.listen({ host: "0.0.0.0", port: env.API_PORT });
+
+// A small daily sweep moves only matured, fully reconciled worker settlement
+// differences. The PostgreSQL advisory lock prevents duplicate work across replicas.
+const workerDifferenceSweep = async () => {
+  try {
+    const transferred = await runMaturedWorkerPaymentDifferenceJob();
+    if (transferred > 0) app.log.info({ transferred }, "Processed matured worker settlement differences");
+  } catch (error) {
+    app.log.error({ err: error }, "Failed to process matured worker settlement differences");
+  }
+};
+const workerDifferenceSweepTimer = setInterval(() => { void workerDifferenceSweep(); }, 24 * 60 * 60 * 1000);
+workerDifferenceSweepTimer.unref();
+void workerDifferenceSweep();

@@ -15,10 +15,28 @@ type AccountingPeriod = {id:string;code:string;name:string;period_start:string;p
 type PeriodExpense = {id:string;code:string;category:string;description:string;amount:number;expense_date:string};
 type PeriodAllocation = {id:string;expense_id:string;order_id:string;amount:number;expense_code:string;expense_description:string;order_code:string;order_name:string};
 type PeriodDetail = {period:AccountingPeriod;expenses:PeriodExpense[];allocations:PeriodAllocation[];openingBalances?:Array<{balance_type:string;entity_key:string;balance:Record<string,unknown>;source_period_id:string;created_at:string}>;orders:Order[]};
-type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
+type WorkerSettlementDifference = {id:string;worker_payment_id:string;employee_id:string;employee_name:string;payment_code:string;payment_gross_amount:number|string;source_order_id:string;source_order_code:string;source_order_name:string;source_stage_name:string|null;original_amount:number|string;payment_date:string;eligible_at:string;status:"PENDING"|"PARTIALLY_ALLOCATED"|"ALLOCATED"|"TRANSFERRED_TO_SOURCE_ORDER"|"REQUIRES_REVIEW"|"REVERSED";allocated_amount:number|string;transferred_amount:number|string;reversed_amount:number|string;remaining_amount:number|string};
+type WorkerSettlementDifferenceEvent = {id:string;event_type:string;amount:number|string;target_order_code:string|null;target_order_name:string|null;production_code:string|null;target_stage_name:string|null;actor_username:string|null;actor_type:"USER"|"SYSTEM";reason:string;created_at:string;reverses_event_id?:string|null;financial_reversal_id?:string|null};
+type Expense = { id: string; code: string; order_code: string | null; stage_name?: string|null; category: string; description: string; amount: number; reversed_amount?:number; difference_allocated_amount?:number; effective_amount?:number; expense_date: string; created_at?: string; expense_type?: "DIRECT"|"ADMINISTRATIVE"; paid_from_employee_id?: string|null; created_by_username?: string|null };
 type Revenue = { id: string; code: string; order_code: string | null; order_name?: string | null; amount: number; revenue_date: string; source: string; notes?: string | null; created_by_username?: string | null };
 type OrderFinanceRow = {id:string;code:string;order_name:string;customer_name:string|null;status:string;order_date:string;due_date:string|null;contract_value?:number;accrued_revenue:number;revenue:number;direct_expenses:number;administrative_allocation:number;material_cost:number;labor_cost:number;total_cost:number;profit:number;accrued_profit?:number;margin_percent:number|null;accrued_margin_percent?:number|null};
 type CashTx = {id:string;code:string;employee_id?:string;employee_name:string;source_type?:string|null;direction:"IN"|"OUT";amount:number;transaction_date:string;description:string;notes:string|null;balance:number;created_by_username?:string|null;order_code?:string|null;order_name?:string|null;revenue_code?:string|null;transfer_code?:string|null;payment_request_code?:string|null;worker_payment_id?:string|null};
+type WorkerPaymentReconciliation = {
+  checkedAt:string;
+  paymentCount:number;
+  issueCount:number;
+  counts:Record<string,number>;
+  issues:Array<{
+    workerPaymentId:string;
+    employeeId:string;
+    employeeCode:string;
+    employeeName:string;
+    issueType:string;
+    expected:number|string|null;
+    actual:number|string|null;
+    details:{grossAmount:number;cashPaidAmount:number;advanceRepaymentAmount:number};
+  }>;
+};
 type PayrollReconciliation = {
   checkedAt:string;
   counts:{
@@ -26,8 +44,11 @@ type PayrollReconciliation = {
     payrollPaymentMismatches:number;advanceDeductionMismatches:number;paidPayrollMissingAdvanceRepayments:number;
     expensesMissingCustodyLink:number;advanceRepaymentsMissingCustodyIn:number;
     zeroNetPayrollSettlementMismatches:number;advanceRepaymentLedgerMismatches:number;
+    workerPaymentPostingMismatches:number;workerDifferenceEventReversalMismatches:number;
   };
   issues:{
+    workerPaymentPostingMismatches:Array<{worker_payment_id:string;employee_id:string;gross_amount:string|number;cash_paid_amount:string|number;advance_repayment_amount:string|number;ledger_debit:string|number;expense_total:string|number;repayment_total:string|number;allocation_amount:string|number}>;
+    workerDifferenceEventReversalMismatches:Array<{issue_type:string;source_event_id:string|null;reversal_id:string|null;journal_amount:string|number|null;original_amount:string|number|null;reversal_event_id:string|null;reversal_event_amount:string|number|null}>;
     missingPayrollExpenses:Array<{payroll_item_id:string;employee_id:string;full_name:string;period_month:string;net_amount:string|number;accounting_expense_id:string|null;expense_amount:string|number|null;category:string|null}>;
     missingAdjustmentLedgerEntries:Array<{adjustment_line_id:string;payroll_item_id:string;employee_id:string;full_name:string;period_month:string;line_type:string;description:string;amount:string|number}>;
     cashPaymentsMissingCustodyOut:Array<{payment_id:string;payroll_item_id:string;employee_id:string;full_name:string;period_month:string;payment_date:string;amount:string|number;reference:string|null}>;
@@ -42,7 +63,7 @@ const revenueSourceLabel=(source:string)=>(({ "CUSTOMER_COLLECTION":"تحصيل 
 
 export default function AccountingPage() {
   const { has } = usePermissions();
-  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody"|"reversals">("dashboard");
+  const [tab,setTab]=useState<"dashboard"|"in"|"out"|"profitability"|"periods"|"custody"|"reversals"|"differences">("dashboard");
   const [orders,setOrders]=useState<Order[]>([]);
   const [orderId,setOrderId]=useState("");
   const [profit,setProfit]=useState<Profit|null>(null);
@@ -74,10 +95,18 @@ export default function AccountingPage() {
   const [message,setMessage]=useState("");
   const [payrollReconciliation,setPayrollReconciliation]=useState<PayrollReconciliation|null>(null);
   const [reconciliationLoading,setReconciliationLoading]=useState(false);
+  const [workerPaymentReconciliation,setWorkerPaymentReconciliation]=useState<WorkerPaymentReconciliation|null>(null);
+  const [workerPaymentReconciliationLoading,setWorkerPaymentReconciliationLoading]=useState(false);
 
-  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT",sourceId:"",amount:"",reason:""});
+  const [reversalForm,setReversalForm]=useState({sourceType:"PAYROLL_PAYMENT" as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"|"WORKER_PAYMENT",sourceId:"",amount:"",reason:""});
   const [reversalSaving,setReversalSaving]=useState(false);
   const [reversals,setReversals]=useState<Array<{id:string;code:string;reason:string;reversal_date:string;created_at:string;created_by_username:string;source_type:string;source_id:string;amount:string|number}>>([]);
+  const [workerDifferences,setWorkerDifferences]=useState<WorkerSettlementDifference[]>([]);
+  const [workerDifferenceEvents,setWorkerDifferenceEvents]=useState<WorkerSettlementDifferenceEvent[]>([]);
+  const [selectedWorkerDifference,setSelectedWorkerDifference]=useState("");
+  const [workerDifferencesLoading,setWorkerDifferencesLoading]=useState(false);
+  const [workerDifferencesProcessing,setWorkerDifferencesProcessing]=useState(false);
+
 
 
   async function load() {
@@ -95,6 +124,8 @@ export default function AccountingPage() {
   }
   useEffect(()=>{void load()},[]);
   useEffect(()=>{void loadReversals()},[has]);
+  useEffect(()=>{if(tab==="differences")void loadWorkerDifferences()},[tab]);
+
   useEffect(()=>{
     let active=true;
     if(!eForm.orderId||eForm.expenseType!=="DIRECT"){setExpenseStages([]);return;}
@@ -112,6 +143,64 @@ export default function AccountingPage() {
   async function loadReversals(){
     if(!has("finance.expenses.view"))return;
     try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
+  }
+
+  async function loadWorkerDifferences(){
+    if(!has("finance.worker_settlement_differences.view"))return;
+    setWorkerDifferencesLoading(true);
+    try{setWorkerDifferences((await api<{data:WorkerSettlementDifference[]}>("/api/accounting/worker-settlement-differences")).data)}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تحميل فروق تسويات العمال")}
+    finally{setWorkerDifferencesLoading(false)}
+  }
+  async function loadWorkerDifferenceEvents(id:string){
+    setSelectedWorkerDifference(id);setWorkerDifferenceEvents([]);
+    try{setWorkerDifferenceEvents((await api<{data:WorkerSettlementDifferenceEvent[]}>(`/api/accounting/worker-settlement-differences/${id}/events`)).data)}
+    catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل حركات فرق التسوية")}
+  }
+  async function reverseWorkerDifferenceEvent(event:WorkerSettlementDifferenceEvent){
+    if(!has("finance.reversals.create")||!["ALLOCATED_TO_PRODUCTION","TRANSFERRED_TO_SOURCE_ORDER"].includes(event.event_type))return;
+    const reason=window.prompt("اكتب سبب عكس حركة فرق التسوية:");
+    if(reason===null)return;
+    if(reason.trim().length<2){setError("سبب العكس مطلوب ويجب ألا يقل عن حرفين.");return;}
+    if(!window.confirm("سيتم عكس الحركة بالكامل من خلال دفتر العكسيات المالي، وسيُوقف الفرق للمراجعة حتى إعادة اعتماده. هل تريد المتابعة؟"))return;
+    setError("");setMessage("");
+    try{
+      await api("/api/accounting/reversals",{method:"POST",body:JSON.stringify({
+        sourceType:"WORKER_SETTLEMENT_DIFFERENCE_EVENT",sourceId:event.id,
+        amount:Number(event.amount),reason:reason.trim(),idempotencyKey:crypto.randomUUID()
+      })});
+      setMessage("تم عكس الحركة وإيقاف فرق التسوية للمراجعة المحاسبية.");
+      await loadWorkerDifferences();
+      await loadWorkerDifferenceEvents(selectedWorkerDifference);
+      await loadReversals();
+    }catch(e){setError(e instanceof Error?e.message:"تعذر عكس حركة فرق التسوية");}
+  }
+  async function releaseWorkerDifference(id:string){
+    if(!has("finance.worker_settlement_differences.manage"))return;
+    const reason=window.prompt("اكتب سبب إعادة اعتماد فرق التسوية بعد المراجعة المحاسبية:");
+    if(reason===null)return;
+    if(reason.trim().length<2){setError("سبب إعادة الاعتماد مطلوب ويجب ألا يقل عن حرفين.");return;}
+    if(!window.confirm("سيعود الرصيد المتبقي إلى دورة معالجة فروق التسوية، وقد يُوزع على إنتاج لاحق أو يُرحّل عند استيفاء الشروط. هل تريد المتابعة؟"))return;
+    setError("");setMessage("");
+    try{
+      await api("/api/accounting/worker-settlement-differences/"+id+"/release",{method:"POST",body:JSON.stringify({
+        reason:reason.trim(),idempotencyKey:crypto.randomUUID()
+      })});
+      setMessage("تمت إعادة اعتماد فرق التسوية وتسجيل الحركة في سجل المراجعة.");
+      await loadWorkerDifferences();
+      if(selectedWorkerDifference===id)await loadWorkerDifferenceEvents(id);
+    }catch(e){setError(e instanceof Error?e.message:"تعذرت إعادة اعتماد فرق التسوية");}
+  }
+  async function processWorkerDifferences(){
+    if(!has("finance.worker_settlement_differences.manage"))return;
+    if(!window.confirm("سيتم ترحيل الفروق التي استوفت شروط الإقفال أو مدة الثلاثين يومًا فقط. هل تريد المتابعة؟"))return;
+    setWorkerDifferencesProcessing(true);setError("");setMessage("");
+    try{
+      const result=await api<{data:{transferred:number}}>("/api/accounting/worker-settlement-differences/process",{method:"POST"});
+      setMessage(`تمت معالجة ${result.data.transferred} فرق تسوية مستحق.`);
+      await loadWorkerDifferences();
+    }catch(e){setError(e instanceof Error?e.message:"تعذرت معالجة فروق التسوية")}
+    finally{setWorkerDifferencesProcessing(false)}
   }
   async function submitReversal(){
     setError("");setMessage("");
@@ -139,6 +228,19 @@ export default function AccountingPage() {
       setMessage(total===0?"فحص الرواتب اكتمل: لم تظهر فروق في الاختبارات الحالية.":"اكتمل فحص الرواتب؛ توجد "+total+" ملاحظة تحتاج مراجعة.");
     }catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ فحص الترابط المالي");}
     finally{setReconciliationLoading(false);}
+  }
+
+  async function runWorkerPaymentReconciliation(){
+    if(!has("finance.expenses.view"))return;
+    setWorkerPaymentReconciliationLoading(true);setError("");setMessage("");
+    try{
+      const result=await api<{data:WorkerPaymentReconciliation}>("/api/accounting/reconciliation/worker-payments");
+      setWorkerPaymentReconciliation(result.data);
+      setMessage(result.data.issueCount===0
+        ?"مطابقة دفعات العمال اكتملت: لم تظهر فروق في السجلات المفحوصة."
+        :`اكتملت مطابقة دفعات العمال؛ ظهرت ${result.data.issueCount} ملاحظة على ${new Set(result.data.issues.map(x=>x.workerPaymentId)).size} دفعة.`);
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ المطابقة المستقلة لدفعات العمال");}
+    finally{setWorkerPaymentReconciliationLoading(false);}
   }
 
   async function loadOrderFinance(periodId="") {
@@ -311,22 +413,53 @@ export default function AccountingPage() {
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
       {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
       {has("finance.reversals.create")&&<button className={"tab "+(tab==="reversals"?"active":"")} onClick={()=>setTab("reversals")}>العكس المحاسبي</button>}
+      {has("finance.worker_settlement_differences.view")&&<button className={"tab "+(tab==="differences"?"active":"")} onClick={()=>setTab("differences")}>فروق تسويات العمال</button>}
      </div>
 
      {tab==="reversals"&&has("finance.reversals.create")&&<>
 {has("finance.reversals.create")&&<section className="card" style={{marginBottom:16}}>
-      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">العكس المحاسبي</h2><div className="form-hint">يعكس دفعة راتب أو دفعة عامل أو سداد سلفة أو تسوية راتب بصافي صفر دون حذف القيود الأصلية. عكس دفعة العامل يتطلب إجمالي المبلغ بالكامل ومطابقة جميع روابطه. عكس التسوية غير النقدية يعيد أقساط السلف ولا ينشئ حركات عهدة.</div></div></div>
       <div className="form-grid" style={{padding:"0 16px 16px"}}>
-       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
+       <label>نوع الحركة الأصلية<select value={reversalForm.sourceType} onChange={e=>setReversalForm(v=>({...v,sourceType:e.target.value as "PAYROLL_PAYMENT"|"ADVANCE_REPAYMENT"|"ZERO_NET_PAYROLL_SETTLEMENT"|"WORKER_PAYMENT"}))}><option value="PAYROLL_PAYMENT">دفعة راتب</option><option value="WORKER_PAYMENT">دفعة عامل</option><option value="ADVANCE_REPAYMENT">سداد سلفة يدوي</option><option value="ZERO_NET_PAYROLL_SETTLEMENT">تسوية راتب بصافي صفر</option></select></label>
        <label>معرّف الحركة الأصلية (UUID)<input value={reversalForm.sourceId} onChange={e=>setReversalForm(v=>({...v,sourceId:e.target.value}))} placeholder="الصق معرّف الحركة"/></label>
        <label>مبلغ العكس (ج.م)<input type="number" min="0.01" step="0.01" value={reversalForm.amount} onChange={e=>setReversalForm(v=>({...v,amount:e.target.value}))}/></label>
        <label style={{gridColumn:"1 / -1"}}>سبب العكس<textarea rows={2} value={reversalForm.reason} onChange={e=>setReversalForm(v=>({...v,reason:e.target.value}))} placeholder="اكتب سبب التصحيح بالتفصيل"/></label>
        <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" type="button" disabled={reversalSaving} onClick={()=>void submitReversal()}>{reversalSaving?"جارٍ التسجيل...":"تسجيل العكس"}</button></div>
       </div>
-      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
+      {reversals.length>0&&<div className="table-wrap"><table><thead><tr><th>رقم العكس</th><th>التاريخ</th><th>نوع الأصل</th><th>معرّف الأصل</th><th>المبلغ</th><th>السبب</th><th>المنفّذ</th></tr></thead><tbody>{reversals.slice(0,20).map((r,i)=><tr key={r.id+"-"+i}><td>{r.code}</td><td>{String(r.reversal_date).slice(0,10)}</td><td>{r.source_type==="PAYROLL_PAYMENT"?"دفعة راتب":r.source_type==="WORKER_PAYMENT"?"دفعة عامل":r.source_type==="ZERO_NET_PAYROLL_SETTLEMENT"?"تسوية راتب بصافي صفر":r.source_type==="WORKER_SETTLEMENT_DIFFERENCE_EVENT"?"حدث فرق تسوية":"سداد سلفة"}</td><td><code>{r.source_id}</code></td><td>{formatMoney(Number(r.amount))}</td><td>{r.reason}</td><td>{r.created_by_username}</td></tr>)}</tbody></table></div>}
      </section>}
       </>}
 
+
+      {tab==="differences"&&has("finance.worker_settlement_differences.view")&&<>
+       <section className="card" style={{marginBottom:16}}>
+        <div className="card-header">
+         <div><h2 className="card-title">فروق تسويات العمال</h2><div className="form-hint">متابعة الجزء غير الموزع من تسوية العهدة السابقة. يوزع النظام الفرق على إنتاج العامل المعتمد لاحقًا، ويرحّل المتبقي للطلبية الأصلية بعد استيفاء شروط الثلاثين يومًا أو الإقفال.</div></div>
+         <div className="form-actions">
+          <button className="secondary-button" onClick={()=>void loadWorkerDifferences()} disabled={workerDifferencesLoading}>{workerDifferencesLoading?"جارٍ التحديث…":"تحديث"}</button>
+          {has("finance.worker_settlement_differences.manage")&&<button className="primary-button" onClick={()=>void processWorkerDifferences()} disabled={workerDifferencesProcessing}>{workerDifferencesProcessing?"جارٍ المعالجة…":"معالجة الفروق المستحقة"}</button>}
+         </div>
+        </div>
+        <div className="table-wrap"><table><thead><tr><th>العامل</th><th>الدفعة</th><th>الطلبية الأصلية</th><th>الفرق الأصلي</th><th>تم توزيعه</th><th>تم ترحيله</th><th>المتبقي</th><th>مؤهل من</th><th>الحالة</th><th></th></tr></thead><tbody>
+         {workerDifferences.map(d=><tr key={d.id}>
+          <td>{d.employee_name}</td><td className="mono">{d.payment_code}</td><td>{d.source_order_code} — {d.source_order_name}{d.source_stage_name?" / "+d.source_stage_name:""}</td>
+          <td className="money">{n(Number(d.original_amount))}</td><td className="money">{n(Number(d.allocated_amount))}</td><td className="money">{n(Number(d.transferred_amount))}</td><td className="money strong">{n(Number(d.remaining_amount))}</td><td>{String(d.eligible_at).slice(0,10)}</td>
+          <td>{d.status==="PENDING"?"معلق":d.status==="PARTIALLY_ALLOCATED"?"موزع جزئيًا":d.status==="ALLOCATED"?"موزع بالكامل":d.status==="TRANSFERRED_TO_SOURCE_ORDER"?"مُرحّل للطلبية":d.status==="REQUIRES_REVIEW"?"قيد المراجعة المحاسبية":"معكوس"}</td>
+          <td><button className="secondary-button" onClick={()=>void loadWorkerDifferenceEvents(d.id)}>الحركات</button>
+           {d.status==="REQUIRES_REVIEW"&&has("finance.worker_settlement_differences.manage")&&<button className="primary-button" style={{marginInlineStart:6}} onClick={()=>void releaseWorkerDifference(d.id)}>إعادة اعتماد</button>}
+          </td>
+         </tr>)}
+         {!workerDifferences.length&&<tr><td colSpan={10}>{workerDifferencesLoading?"جارٍ تحميل الفروق…":"لا توجد فروق تسوية مسجلة."}</td></tr>}
+        </tbody></table></div>
+       </section>
+       {selectedWorkerDifference&&<section className="card">
+        <div className="card-header"><div><h2 className="card-title">سجل حركات فرق التسوية</h2><div className="form-hint">كل توزيع أو ترحيل أو عكس محفوظ كسجل مستقل دون حذف الحركة الأصلية.</div></div><button className="secondary-button" onClick={()=>{setSelectedWorkerDifference("");setWorkerDifferenceEvents([])}}>إغلاق</button></div>
+        <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الحركة</th><th>الطلبية المستهدفة</th><th>المرحلة</th><th>الإنتاج</th><th>المبلغ</th><th>المنفذ</th><th>السبب</th><th>إجراء</th></tr></thead><tbody>
+         {workerDifferenceEvents.map(e=><tr key={e.id}><td>{new Date(e.created_at).toLocaleString("ar-EG")}</td><td>{e.event_type==="ALLOCATED_TO_PRODUCTION"?"توزيع على إنتاج":e.event_type==="TRANSFERRED_TO_SOURCE_ORDER"?"ترحيل للطلبية الأصلية":e.event_type==="RELEASED_AFTER_REVIEW"?"إعادة اعتماد بعد المراجعة":"عكس الحركة"}</td><td>{e.target_order_code||"—"} {e.target_order_name||""}</td><td>{e.target_stage_name||"—"}</td><td>{e.production_code||"—"}</td><td className="money">{n(Number(e.amount))}</td><td>{e.actor_type==="SYSTEM"?"النظام":e.actor_username||"—"}</td><td>{e.reason}</td><td>{has("finance.reversals.create")&&["ALLOCATED_TO_PRODUCTION","TRANSFERRED_TO_SOURCE_ORDER"].includes(e.event_type)&&!workerDifferenceEvents.some(reversal=>reversal.reverses_event_id===e.id)&&<button className="reject-button" onClick={()=>void reverseWorkerDifferenceEvent(e)}>عكس الحركة</button>}</td></tr>)}
+         {!workerDifferenceEvents.length&&<tr><td colSpan={8}>لا توجد حركات لهذا الفرق بعد.</td></tr>}
+        </tbody></table></div>
+       </section>}
+      </>}
       {tab==="dashboard"&&<>
       <section className="card" style={{marginBottom:16}}>
        <div className="card-header"><div><h2 className="card-title">فترة عرض الملخص</h2><div className="form-hint">تؤثر التواريخ على الإيرادات والمصروفات المعروضة في هذه اللوحة فقط؛ رصيد العهدة يظل رصيدًا تراكميًا حتى آخر حركة مسجلة.</div></div><button className="secondary-button" onClick={()=>{setDashboardFrom(localDateInput(new Date(new Date().getFullYear(),new Date().getMonth(),1)));setDashboardTo(localDateInput(new Date()));}}>هذا الشهر</button></div>
@@ -379,13 +512,53 @@ export default function AccountingPage() {
          <article className="card stat"><div className="stat-label">دفعات رواتب غير متطابقة</div><div className="stat-value">{payrollReconciliation.counts.payrollPaymentMismatches}</div></article>
          <article className="card stat"><div className="stat-label">مصروفات بلا ربط بالعهدة</div><div className="stat-value">{payrollReconciliation.counts.expensesMissingCustodyLink}</div></article>
          <article className="card stat"><div className="stat-label">سلف يدوية بلا توريد للعهدة</div><div className="stat-value">{payrollReconciliation.counts.advanceRepaymentsMissingCustodyIn}</div></article>
+         <article className="card stat"><div className="stat-label">دفعات العمال غير المطابقة</div><div className="stat-value">{payrollReconciliation.counts.workerPaymentPostingMismatches}</div></article>
+         <article className="card stat"><div className="stat-label">عكسيات فروق التسوية غير المطابقة</div><div className="stat-value">{payrollReconciliation.counts.workerDifferenceEventReversalMismatches}</div></article>
         </div>
         <div className="form-hint">آخر فحص: {new Date(payrollReconciliation.checkedAt).toLocaleString("ar-EG")}. النتائج تنبيهات للمراجعة فقط، ولا يتم إصلاح السجلات تلقائيًا.</div>
         {payrollReconciliation.counts.missingPayrollExpenses>0&&<div className="table-wrap"><h3>مصروفات الرواتب</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>صافي المسير</th><th>مصروف الحسابات</th><th>التصنيف</th></tr></thead><tbody>{payrollReconciliation.issues.missingPayrollExpenses.map(x=><tr key={x.payroll_item_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{n(Number(x.net_amount))}</td><td>{x.expense_amount==null?"غير موجود":n(Number(x.expense_amount))}</td><td>{x.category||"—"}</td></tr>)}</tbody></table></div>}
         {payrollReconciliation.counts.missingAdjustmentLedgerEntries>0&&<div className="table-wrap"><h3>المكافآت والخصومات</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>{payrollReconciliation.issues.missingAdjustmentLedgerEntries.map(x=><tr key={x.adjustment_line_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.line_type==="BONUS"?"مكافأة":"خصم"}</td><td>{x.description}</td><td>{n(Number(x.amount))}</td></tr>)}</tbody></table></div>}
         {payrollReconciliation.counts.cashPaymentsMissingCustodyOut>0&&<div className="table-wrap"><h3>دفعات نقدية بلا حركة عهدة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>تاريخ الصرف</th><th>المبلغ</th><th>المرجع</th></tr></thead><tbody>{payrollReconciliation.issues.cashPaymentsMissingCustodyOut.map(x=><tr key={x.payment_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.payment_date}</td><td>{n(Number(x.amount))}</td><td>{x.reference||"—"}</td></tr>)}</tbody></table></div>}
         {payrollReconciliation.counts.zeroNetPayrollSettlementMismatches>0&&<div className="table-wrap"><h3>تسويات رواتب بصافي صفر غير مكتملة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>المستحق الواجب تسويته</th><th>قيد الخصم</th><th>السلف المسددة</th></tr></thead><tbody>{payrollReconciliation.issues.zeroNetPayrollSettlementMismatches.map(x=><tr key={x.payroll_item_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{n(Number(x.expected_offset))}</td><td>{x.debit_amount==null?"غير موجود":n(Number(x.debit_amount))}</td><td>{n(Number(x.committed_repayments))}</td></tr>)}</tbody></table></div>}
+        {payrollReconciliation.counts.workerPaymentPostingMismatches>0&&<div className="table-wrap"><h3>دفعات العمال غير المطابقة</h3><table><thead><tr><th>معرف الدفعة</th><th>إجمالي المستحق</th><th>النقد المدفوع</th><th>السلف المسددة</th><th>قيد العامل</th><th>المصروفات</th><th>تخصيص الإنتاج</th></tr></thead><tbody>{payrollReconciliation.issues.workerPaymentPostingMismatches.map(x=><tr key={x.worker_payment_id}><td className="mono">{x.worker_payment_id}</td><td>{n(Number(x.gross_amount))}</td><td>{n(Number(x.cash_paid_amount))}</td><td>{n(Number(x.advance_repayment_amount))}</td><td>{n(Number(x.ledger_debit))}</td><td>{n(Number(x.expense_total))}</td><td>{n(Number(x.allocation_amount))}</td></tr>)}</tbody></table></div>}
+        {payrollReconciliation.counts.workerDifferenceEventReversalMismatches>0&&<div className="table-wrap"><h3>عكسيات فروق التسوية غير المطابقة</h3><table><thead><tr><th>الحركة الأصلية</th><th>العكس المالي</th><th>مبلغ الحركة</th><th>مبلغ قيد العكس</th></tr></thead><tbody>{payrollReconciliation.issues.workerDifferenceEventReversalMismatches.map((x,i)=><tr key={x.reversal_event_id||x.source_event_id||i}><td className="mono">{x.source_event_id||"—"}</td><td className="mono">{x.reversal_id||"—"}</td><td>{x.original_amount==null?"—":n(Number(x.original_amount))}</td><td>{x.journal_amount==null?"غير موجود":n(Number(x.journal_amount))}</td></tr>)}</tbody></table></div>}
         {payrollReconciliation.counts.advanceRepaymentLedgerMismatches>0&&<div className="table-wrap"><h3>قيود سداد السلف غير المطابقة</h3><table><thead><tr><th>الموظف</th><th>الشهر</th><th>كود السلفة</th><th>قسط المسير</th><th>السداد المسجل</th><th>قيد الموظف</th></tr></thead><tbody>{payrollReconciliation.issues.advanceRepaymentLedgerMismatches.map(x=><tr key={x.repayment_id}><td>{x.full_name}</td><td>{x.period_month}</td><td>{x.advance_code}</td><td>{n(Number(x.expected_repayment_amount))}</td><td>{x.repayment_amount==null?"غير موجود":n(Number(x.repayment_amount))}</td><td>{x.credit_amount==null?"غير موجود":n(Number(x.credit_amount))}</td></tr>)}</tbody></table></div>}
+       </>}
+      </section>}
+      {has("finance.expenses.view")&&<section className="card" style={{marginTop:16}}>
+       <div className="card-header">
+        <div><h2 className="card-title">المطابقة المستقلة لدفعات العمال</h2><div className="form-hint">يفحص كل دفعة على حدة ويربط المستحق بالنقد والسلف ودفتر العامل والمصروف والعهدة وتوزيعات الإنتاج وفروق التسوية والعكس المالي. الفحص للقراءة فقط ولا يصلح أو يغيّر أي سجل.</div></div>
+        <button className="secondary-button" onClick={()=>void runWorkerPaymentReconciliation()} disabled={workerPaymentReconciliationLoading}>{workerPaymentReconciliationLoading?"جارٍ فحص الدفعات…":"ابدأ المطابقة المستقلة"}</button>
+       </div>
+       {workerPaymentReconciliation&&<>
+        <div className="stats finance-stats">
+         <article className="card stat"><div className="stat-label">دفعات تم فحصها</div><div className="stat-value">{workerPaymentReconciliation.paymentCount}</div></article>
+         <article className="card stat"><div className="stat-label">إجمالي الملاحظات</div><div className="stat-value">{workerPaymentReconciliation.issueCount}</div></article>
+         <article className="card stat"><div className="stat-label">دفعات بها ملاحظات</div><div className="stat-value">{new Set(workerPaymentReconciliation.issues.map(x=>x.workerPaymentId)).size}</div></article>
+        </div>
+        <div className="form-hint">آخر فحص: {new Date(workerPaymentReconciliation.checkedAt).toLocaleString("ar-EG")}. كل سطر يمثل اختبارًا غير مطابق، وقد تظهر أكثر من ملاحظة للدفعة نفسها.</div>
+        {workerPaymentReconciliation.issueCount>0?<div className="table-wrap"><table><thead><tr><th>معرف الدفعة</th><th>العامل</th><th>معرف العامل</th><th>نوع الاختلاف</th><th>المتوقع</th><th>الفعلي</th><th>إجمالي الدفعة</th><th>النقد</th><th>السلف</th></tr></thead><tbody>
+         {workerPaymentReconciliation.issues.map((x,i)=><tr key={x.workerPaymentId+"-"+x.issueType+"-"+i}>
+          <td className="mono">{x.workerPaymentId}</td><td>{x.employeeName} ({x.employeeCode})</td><td className="mono">{x.employeeId}</td><td>{({
+            PAYMENT_TOTAL_MISMATCH:"إجمالي الدفعة لا يساوي النقد والسلف",
+            SETTLEMENT_LINK_MISMATCH:"رابط التسوية غير مطابق",
+            EARNINGS_LEDGER_MISMATCH:"قيد دفتر العامل غير مطابق",
+            ADVANCE_REPAYMENT_MISMATCH:"سداد السلف غير مطابق",
+            WORKER_PAYMENT_EXPENSE_MISMATCH:"مصروف الدفعة غير مطابق",
+            CASH_CUSTODY_MISMATCH:"حركة العهدة غير مطابقة",
+            WORKER_PAYMENT_EXPENSE_CUSTODY_LINK_MISMATCH:"رابط مصروف الدفعة بحركة العهدة غير مطابق",
+            PRODUCTION_ALLOCATION_MISMATCH:"توزيعات الإنتاج غير مطابقة",
+            SETTLEMENT_DIFFERENCE_MISMATCH:"فرق التسوية غير مطابق",
+            WORKER_PAYMENT_REVERSAL_MISMATCH:"عكس الدفعة أو المصروف غير مكتمل",
+            WORKER_PAYMENT_CUSTODY_REVERSAL_MISMATCH:"عكس حركة العهدة غير مكتمل",
+            WORKER_PAYMENT_REVERSAL_LEDGER_MISMATCH:"قيد عكس دفتر العامل غير مطابق",
+            WORKER_PAYMENT_REVERSAL_ALLOCATIONS_MISMATCH:"عكس توزيعات الإنتاج غير مكتمل",
+            WORKER_PAYMENT_REVERSAL_DIFFERENCE_EVENTS_ACTIVE:"أحداث فروق التسوية لم تُعكس بالكامل"
+          } as Record<string,string>)[x.issueType]||x.issueType}</td>
+          <td>{x.expected===null?"—":typeof x.expected==="number"?n(x.expected):x.expected}</td><td>{x.actual===null?"—":typeof x.actual==="number"?n(x.actual):x.actual}</td>
+          <td>{n(x.details.grossAmount)}</td><td>{n(x.details.cashPaidAmount)}</td><td>{n(x.details.advanceRepaymentAmount)}</td>
+         </tr>)}
+        </tbody></table></div>:<div className="form-hint">لا توجد فروق في دفعات العمال التي تم فحصها.</div>}
        </>}
       </section>}
      </>}
@@ -428,7 +601,7 @@ export default function AccountingPage() {
        <label>المبلغ<input type="number" min="0.01" step="0.01" value={eForm.amount} onChange={e=>setEForm({...eForm,amount:e.target.value})}/></label>
       </div>}
       {has("finance.expenses.create")&&<div className="form-actions"><button className="primary-button" onClick={addExpense}>تسجيل المصروف</button></div>}
-      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>المبلغ</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={7}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الطلبية</th><th>التصنيف</th><th>الوصف</th><th>الأصلي</th><th>المعكوس</th><th>المعاد توزيعه</th><th>الصافي</th><th>التاريخ</th><th>سجل بواسطة</th></tr></thead><tbody>{expenses.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.order_code||"عام"}</td><td>{x.category}</td><td>{x.description}</td><td className="money">{n(x.amount)}</td><td className="money">{n(x.reversed_amount??0)}</td><td className="money">{n(x.difference_allocated_amount??0)}</td><td className="money strong">{n(x.effective_amount??x.amount)}</td><td>{x.expense_date}</td><td>{x.created_by_username||"غير مسجل"}</td></tr>)}{!expenses.length&&<tr><td colSpan={10}>لا توجد مصروفات.</td></tr>}</tbody></table></div>
      </section>}
 
      {tab==="out"&&has("finance.expenses.view")&&<section className="card">
@@ -517,7 +690,7 @@ export default function AccountingPage() {
       </tbody></table></div>
      </section>}
      {tab==="profitability"&&has("finance.profitability.view")&&<section className="card">
-      <div className="card-header"><div><h2 className="card-title">ربحية الطلبية</h2><div className="form-hint">الإيراد − تكلفة المخزون − أجور الإنتاج − المصروفات المباشرة.</div></div></div>
+      <div className="card-header"><div><h2 className="card-title">ربحية الطلبية</h2><div className="form-hint">الإيراد − تكلفة المخزون − أجور الإنتاج − المصروفات المباشرة. لا تُضاف دفعات العمال مرة ثانية؛ أجور الإنتاج محسوبة ضمن تكلفة العمالة، ويظهر فقط فرق التسوية المرحّل دون إنتاج مقابل ضمن المصروفات.</div></div></div>
       <div className="card-body"><label className="finance-select">الطلبية<select value={orderId} onChange={e=>void loadProfit(e.target.value)}><option value="">اختر الطلبية</option>{activeOrders.map(o=><option key={o.id} value={o.id}>{orderLabel(o)}</option>)}</select></label>
       {profit&&<><div className="stats finance-stats"><article className="card stat"><div className="stat-label">الإيراد</div><div className="stat-value">{n(profit.revenue)}</div></article><article className="card stat warning"><div className="stat-label">تكلفة المخزون</div><div className="stat-value">{n(profit.materialCost)}</div></article><article className="card stat neutral"><div className="stat-label">أجور الإنتاج</div><div className="stat-value">{n(profit.laborCost)}</div></article><article className="card stat accent"><div className="stat-label">صافي الربح</div><div className="stat-value">{n(profit.profit)}</div><div className="stat-note">{profit.marginPercent==null?"—":"هامش "+n(profit.marginPercent)+"%"}</div></article></div>
        <div className="detail-grid finance-detail"><div><b>إجمالي التكلفة</b><span>{n(profit.totalCost)}</span></div><div><b>المصروفات والتوزيع الإداري</b><span>{n(profit.expenses)}</span></div><div><b>نصيب المصروفات الإدارية</b><span>{n(profit.administrativeAllocation||0)}</span></div><div><b>الإيراد المستحق تعاقديًا</b><span>{n(profit.accruedRevenue??profit.order.accrued_revenue??0)}</span></div><div><b>الإيراد المسجل</b><span>{n(profit.revenue)}</span></div><div><b>حالة الطلب</b><span>{profit.order.status}</span></div></div></>}

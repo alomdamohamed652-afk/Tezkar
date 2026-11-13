@@ -62,6 +62,39 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   return Number(r.rows[0]?.balance ?? 0);
 }
 
+function activeDifferencePaymentProductionAllocationSql(paymentIdExpr:string,settlementIdExpr:string|null,approvedAtCondition="") {
+  const eligible = `p.status='APPROVED' ${approvedAtCondition}`;
+  const net = (alias:string,source:string) =>
+    `GREATEST(${alias}.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+      WHERE r.allocation_source='${source}' AND r.source_allocation_id=${alias}.id),0),0)`;
+  const canonical = settlementIdExpr ? `
+    WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations x WHERE x.settlement_id=${settlementIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","EMPLOYEE_EARNINGS_SETTLEMENT")})
+        FROM employee_earnings_settlement_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.settlement_id=${settlementIdExpr} AND ${eligible}),0)
+        +COALESCE((SELECT SUM(ev.amount)
+          FROM worker_payment_settlement_difference_events ev
+          JOIN production_entries p ON p.id=ev.production_entry_id
+          WHERE ev.worker_payment_id=${paymentIdExpr}
+            AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND ${eligible}
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)` : "";
+  return `CASE
+    ${canonical}
+    WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations x WHERE x.worker_payment_id=${paymentIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_ORDER")})
+        FROM worker_payment_order_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+    ELSE COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_LEGACY")})
+      FROM worker_payment_allocations a
+      JOIN production_entries p ON p.id=a.production_entry_id
+      WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+  END`;
+}
+
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
   // An explicit employee closure freezes only production approved at closure time.
   // Earnings approved afterwards remain payable and are calculated independently.
@@ -74,9 +107,17 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
     const future=await client.query(`
       SELECT
         COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
-        COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s
+        COALESCE((SELECT SUM(CASE
+          WHEN s.worker_payment_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=s.worker_payment_id)
+            THEN ${activeDifferencePaymentProductionAllocationSql("s.worker_payment_id","s.id","AND p.approved_at>$2")}
+          ELSE s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END
+        END) FROM employee_earnings_settlements s
           WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
-        COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+        COALESCE((SELECT SUM(CASE
+          WHEN EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=wp.id)
+            THEN ${activeDifferencePaymentProductionAllocationSql("wp.id",null,"AND p.approved_at>$2")}
+          ELSE wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+        END) FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at>$2),0) AS legacy_paid,
         COALESCE((SELECT SUM(m.amount_snapshot)
@@ -94,7 +135,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
             AND l.payroll_item_id IS NULL
             AND l.payroll_adjustment_line_id IS NULL
             AND l.payroll_payment_id IS NULL
-            AND l.settlement_id IS NULL
+            AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
             AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments
       FROM production_entries pe
       WHERE pe.employee_id=$1 AND pe.status='APPROVED' AND pe.approved_at>$2
@@ -117,10 +158,18 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           AND l.payroll_item_id IS NULL
           AND l.payroll_adjustment_line_id IS NULL
           AND l.payroll_payment_id IS NULL
-          AND l.settlement_id IS NULL
+          AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
-      COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
-      COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+      COALESCE((SELECT SUM(CASE
+        WHEN s.worker_payment_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=s.worker_payment_id)
+          THEN ${activeDifferencePaymentProductionAllocationSql("s.worker_payment_id","s.id")}
+        ELSE s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END
+      END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+      COALESCE((SELECT SUM(CASE
+        WHEN EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=wp.id)
+          THEN ${activeDifferencePaymentProductionAllocationSql("wp.id",null)}
+        ELSE wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+      END) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
         WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
       COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
@@ -140,7 +189,7 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
 }
 async function getOutstandingAdvanceAmount(client:import("pg").PoolClient,employeeId:string) {
   const r=await client.query(`
-    SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
+    SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0)),0) AS outstanding
       FROM advance_requests a WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
   `,[employeeId]);
   return Number(r.rows[0]?.outstanding??0);
@@ -151,7 +200,7 @@ type PlannedAdvanceRepayment={advance:any;amount:number;repaymentType:"CUSTOM"|"
 async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:string,grossAmount:number,manualAmount:number,paymentDate:string) {
   const advances=await client.query(`
     SELECT a.*,
-      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
       (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
     FROM advance_requests a
     WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
@@ -193,7 +242,7 @@ async function planAdvanceRepayments(client:import("pg").PoolClient,employeeId:s
 async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,employeeId:string,paymentDate:string){
   const advances=await client.query(`
     SELECT a.*,
-      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
+      GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0) AS outstanding,
       (SELECT MAX(ar.payment_date) FROM advance_repayments ar WHERE ar.advance_id=a.id) AS last_repayment_date
     FROM advance_requests a
     WHERE a.employee_id=$1 AND a.status='PAID' AND a.repayment_status='OPEN'
@@ -214,15 +263,15 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
           -COALESCE((SELECT SUM(
               CASE
                 WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=s.id)
-                  THEN COALESCE((SELECT SUM(sa.amount) FROM employee_earnings_settlement_allocations sa
+                  THEN COALESCE((SELECT SUM(sa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=sa.id),0)) FROM employee_earnings_settlement_allocations sa
                     JOIN production_entries allocated ON allocated.id=sa.production_entry_id
                     WHERE sa.settlement_id=s.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=s.worker_payment_id)
-                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa
+                  THEN COALESCE((SELECT SUM(oa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=oa.id),0)) FROM worker_payment_order_allocations oa
                     JOIN production_entries allocated ON allocated.id=oa.production_entry_id
                     WHERE oa.worker_payment_id=s.worker_payment_id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=s.worker_payment_id)
-                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa
+                  THEN COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa
                     JOIN production_entries allocated ON allocated.id=wa.production_entry_id
                     WHERE wa.worker_payment_id=s.worker_payment_id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 ELSE s.gross_amount
@@ -232,11 +281,11 @@ async function getDueProductionAdvanceRepayment(client:import("pg").PoolClient,e
           -COALESCE((SELECT SUM(
               CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)
-                  THEN COALESCE((SELECT SUM(oa.amount) FROM worker_payment_order_allocations oa
+                  THEN COALESCE((SELECT SUM(oa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=oa.id),0)) FROM worker_payment_order_allocations oa
                     JOIN production_entries allocated ON allocated.id=oa.production_entry_id
                     WHERE oa.worker_payment_id=wp.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 WHEN EXISTS(SELECT 1 FROM worker_payment_allocations wa WHERE wa.worker_payment_id=wp.id)
-                  THEN COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa
+                  THEN COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa
                     JOIN production_entries allocated ON allocated.id=wa.production_entry_id
                     WHERE wa.worker_payment_id=wp.id AND allocated.work_date>$2::date AND allocated.work_date<=$3::date),0)
                 ELSE wp.gross_amount
@@ -288,18 +337,18 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null;availableBalanceOverride?:number|null}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;settlementSource?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null;availableBalanceOverride?:number|null}
 ){
   const available=input.availableBalanceOverride??await getAvailableEarnings(client,input.employeeId);
   if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`المتاح للتسوية ${available.toFixed(2)} ج.م فقط`,409);
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
   const payment=await client.query(
-    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,payment_request_id,paid_by,notes,transfer_reference,idempotency_key,idempotency_fingerprint)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,payment_request_id,paid_by,notes,transfer_reference,idempotency_key,idempotency_fingerprint,settlement_source)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
     [input.employeeId,planned.cashPaid,input.grossAmount,planned.total,input.method,input.requestId,input.userId,
       planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
-      input.transferReference,input.idempotencyKey??null,input.idempotencyFingerprint??null]);
+      input.transferReference,input.idempotencyKey??null,input.idempotencyFingerprint??null,input.settlementSource??"CURRENT_CUSTODY"]);
   const settlement=await client.query(
     `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -333,14 +382,14 @@ async function executeWorkerPayment(
     const productions=await client.query(
       `SELECT pe.id,
         GREATEST(0,COALESCE(pe.total_earning_amount,pe.earning_amount,0)
-          -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=pe.id),0)
-          -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+          -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=pe.id),0)
+          -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
             JOIN worker_payments awp ON awp.id=a.worker_payment_id
             WHERE a.production_entry_id=pe.id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
                 JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
                 WHERE aes.worker_payment_id=awp.id)),0)
-          -COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+          -COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa
             JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
             WHERE wpa.production_entry_id=pe.id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -437,7 +486,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     if(q.data.status){params.push(q.data.status);where.push(`pr.status=$${params.length}`);}
     const r=await pool.query(
       `SELECT pr.*,e.code employee_code,e.full_name employee_name,
-         COALESCE((SELECT SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0))
+         COALESCE((SELECT SUM(GREATEST(a.amount-COALESCE((SELECT SUM(ar.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='ADVANCE_REPAYMENT' AND rl.source_id=ar.id),0)) FROM advance_repayments ar WHERE ar.advance_id=a.id),0),0))
            FROM advance_requests a WHERE a.employee_id=pr.employee_id AND a.status='PAID' AND a.repayment_status='OPEN'),0) AS outstanding_advance_amount,
          wp.amount AS net_paid_amount,wp.gross_amount AS gross_paid_amount,wp.advance_repayment_amount
        FROM payment_requests pr JOIN employees e ON e.id=pr.employee_id
@@ -551,6 +600,32 @@ export async function paymentsRoutes(app:FastifyInstance){
         grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
         manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
       });
+      const custodyMovement=settlement.cashPaid>0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : {rows:[] as Array<{id:string}>};
+      if(settlement.cashPaid>0.009 && custodyMovement.rows.length!==1){
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      await client.query(
+        `INSERT INTO accounting_expenses(
+           category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,cash_custody_transaction_id,allocation_type,
+           source_worker_payment_id
+         )
+         VALUES('WORKER_PAYMENT',$1,$2,CURRENT_DATE,$3,$4,'DIRECT',$5,$6,'GENERAL',$7)`,
+        [
+          `تسوية مستحقات العامل ${String(settlement.payment.code)} — طلب قبض ${String(current.rows[0].code)}`,
+          settlement.grossAmount,
+          String(current.rows[0].method),
+          request.user!.userId,
+          settlement.cashPaid>0.009?custodyEmployeeId:null,
+          custodyMovement.rows[0]?.id??null,
+          settlement.payment.id
+        ]
+      );
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
           WHERE id=$3 RETURNING *`,
@@ -615,6 +690,32 @@ export async function paymentsRoutes(app:FastifyInstance){
         grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
         manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
       });
+      const custodyMovement=settlement.cashPaid>0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : {rows:[] as Array<{id:string}>};
+      if(settlement.cashPaid>0.009 && custodyMovement.rows.length!==1){
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      await client.query(
+        `INSERT INTO accounting_expenses(
+           category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,cash_custody_transaction_id,allocation_type,
+           source_worker_payment_id
+         )
+         VALUES('WORKER_PAYMENT',$1,$2,CURRENT_DATE,$3,$4,'DIRECT',$5,$6,'GENERAL',$7)`,
+        [
+          `تسوية مستحقات العامل ${String(settlement.payment.code)} — طلب قبض ${String(current.rows[0].code)}`,
+          settlement.grossAmount,
+          String(current.rows[0].method),
+          request.user!.userId,
+          settlement.cashPaid>0.009?custodyEmployeeId:null,
+          custodyMovement.rows[0]?.id??null,
+          settlement.payment.id
+        ]
+      );
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [settlement.payment.id,id]);
@@ -637,6 +738,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+           AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
            AND (
              (ae.order_id IS NOT NULL AND (
                es.id IS NULL
@@ -724,7 +826,11 @@ export async function paymentsRoutes(app:FastifyInstance){
               SELECT wpa.worker_payment_id,wpa.production_entry_id,wpa.amount
                 FROM worker_payment_allocations wpa
                WHERE wpa.worker_payment_id=$1
-              ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING
+                 AND NOT EXISTS(
+                   SELECT 1 FROM worker_payment_order_allocations existing
+                    WHERE existing.worker_payment_id=wpa.worker_payment_id
+                      AND existing.production_entry_id=wpa.production_entry_id
+                 )
             `, [payment.id]);
           }
           await writeAudit(client,{
@@ -741,14 +847,14 @@ export async function paymentsRoutes(app:FastifyInstance){
 
         const eligible = await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
               JOIN worker_payments old_wp ON old_wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements old_es
                   JOIN employee_earnings_settlement_allocations old_esa ON old_esa.settlement_id=old_es.id
                   WHERE old_es.worker_payment_id=old_wp.id)),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
               JOIN worker_payments old_wp ON old_wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements old_es
@@ -790,7 +896,12 @@ export async function paymentsRoutes(app:FastifyInstance){
             );
           } else {
             await client.query(
-              "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
+              `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+               SELECT $1,$2,$3
+                WHERE NOT EXISTS(
+                  SELECT 1 FROM worker_payment_order_allocations
+                   WHERE worker_payment_id=$1 AND production_entry_id=$2
+                )`,
               [payment.id,row.id,take]
             );
           }
@@ -807,15 +918,16 @@ export async function paymentsRoutes(app:FastifyInstance){
         reconciledCount++;
       }
       const unresolved = await client.query(`
-        SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount),0)::numeric(14,2) AS amount
+        SELECT COUNT(*)::int AS count,COALESCE(SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)),0)::numeric(14,2) AS amount
           FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements es ON es.worker_payment_id=wp.id
           LEFT JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
          WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+           AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
            AND (
              (es.id IS NULL AND (
                NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-               OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
+               OR ABS(COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-wp.gross_amount)>0.009
                OR EXISTS(SELECT 1 FROM worker_payment_allocations wpa
                  LEFT JOIN production_entries p ON p.id=wpa.production_entry_id
                  LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -825,7 +937,7 @@ export async function paymentsRoutes(app:FastifyInstance){
              ))
              OR (es.id IS NOT NULL AND (
                NOT EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id)
-               OR ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
+               OR ABS(COALESCE((SELECT SUM(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0)) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-wp.gross_amount)>0.009
                OR EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations esa
                  LEFT JOIN production_entries p ON p.id=esa.production_entry_id
                  LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -934,18 +1046,18 @@ export async function paymentsRoutes(app:FastifyInstance){
           COALESCE(p.total_earning_amount,p.earning_amount,0) AS total_earned,
           o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,
           s.name AS stage_name,
-          COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+          COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
             JOIN employee_earnings_settlements es ON es.id=a.settlement_id
             WHERE a.production_entry_id=p.id AND es.employee_id=p.employee_id
               AND NOT EXISTS(SELECT 1 FROM unlinked_allocation_conflicts uac
                 WHERE uac.employee_id=p.employee_id AND uac.production_entry_id=p.id)),0)
-          + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+          + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
             JOIN worker_payments awp ON awp.id=a.worker_payment_id
             WHERE a.production_entry_id=p.id AND awp.employee_id=p.employee_id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
                 JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
                 WHERE aes.worker_payment_id=awp.id)),0)
-          + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+          + COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa
             JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
             WHERE wpa.production_entry_id=p.id AND wp.employee_id=p.employee_id
               AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -1026,10 +1138,10 @@ export async function paymentsRoutes(app:FastifyInstance){
                - COALESCE((SELECT SUM(
                    CASE
                      WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
-                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                       THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
-                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
-                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                       THEN COALESCE((SELECT SUM(po.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=po.id),0)) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
                    END)
                  FROM worker_payments prior_wp
                  LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
@@ -1040,10 +1152,10 @@ export async function paymentsRoutes(app:FastifyInstance){
              ae.order_id,ae.order_stage_id,o.code AS order_code,o.order_name,original_stage_lookup.name AS order_stage_name,es.id AS settlement_id,
              CASE
                WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id)
-                 THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+                 THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
                WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
-                 THEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
-               ELSE COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
+                 THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
+               ELSE COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)
              END AS production_allocated,
              CASE
                WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id)
@@ -1060,19 +1172,20 @@ export async function paymentsRoutes(app:FastifyInstance){
         LEFT JOIN order_stages original_stage ON original_stage.id=ae.order_stage_id
         LEFT JOIN stages original_stage_lookup ON original_stage_lookup.id=original_stage.stage_id
        WHERE NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
+         AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
          AND (
            (es.id IS NOT NULL AND (
-             ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-LEAST(wp.gross_amount,GREATEST(0,
+             ABS(COALESCE((SELECT SUM(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0)) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-LEAST(wp.gross_amount,GREATEST(0,
                COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
                  FROM production_entries p
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
                      WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
-                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                       THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
-                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
-                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                       THEN COALESCE((SELECT SUM(po.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=po.id),0)) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
                    END)
                  FROM worker_payments prior_wp
                  LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
@@ -1088,17 +1201,17 @@ export async function paymentsRoutes(app:FastifyInstance){
            ))
            OR (es.id IS NULL AND (
              NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-             OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-LEAST(wp.gross_amount,GREATEST(0,
+             OR ABS(COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-LEAST(wp.gross_amount,GREATEST(0,
                COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
                  FROM production_entries p
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
                      WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
-                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                       THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
-                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
-                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                       THEN COALESCE((SELECT SUM(po.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=po.id),0)) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
                    END)
                  FROM worker_payments prior_wp
                  LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
@@ -1302,14 +1415,14 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(remaining>0.009){
         const eligible=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
               JOIN worker_payments wpa_wp ON wpa_wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wpa_wp.id)),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
               JOIN worker_payments wpa_wp ON wpa_wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -1368,14 +1481,14 @@ export async function paymentsRoutes(app:FastifyInstance){
                  o.id AS order_id,o.code AS order_code,o.order_name,
                  os.id AS order_stage_id,os.sequence_no,s.name AS stage_name,
                  COALESCE(pt.name,'') AS production_type_name,
-                 COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-                 + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                 COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                 + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
                    JOIN worker_payments awp ON awp.id=a.worker_payment_id
                    WHERE a.production_entry_id=p.id
                      AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
                        JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
                        WHERE aes.worker_payment_id=awp.id)),0)
-                 + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+                 + COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa
                     JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
                     WHERE wpa.production_entry_id=p.id
                       AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -1400,14 +1513,14 @@ export async function paymentsRoutes(app:FastifyInstance){
                  COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='APPROVED'),0) AS approved_earned,
                  COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='PENDING'),0) AS pending_earned,
                  COALESCE(SUM(
-                   COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-                   + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+                   COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+                   + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
                    JOIN worker_payments awp ON awp.id=a.worker_payment_id
                    WHERE a.production_entry_id=p.id
                      AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements aes
                        JOIN employee_earnings_settlement_allocations aesa ON aesa.settlement_id=aes.id
                        WHERE aes.worker_payment_id=awp.id)),0)
-                   + COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+                   + COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa
                       JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
                       WHERE wpa.production_entry_id=p.id
                         AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -1432,23 +1545,24 @@ export async function paymentsRoutes(app:FastifyInstance){
                  o.code AS order_code,o.order_name,s.name AS stage_name,
                  CASE
                    WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id)
-                     THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
+                     THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)
                    WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id)
-                     THEN COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
-                   ELSE COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0)
+                     THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a WHERE a.worker_payment_id=wp.id),0)
+                   ELSE COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a WHERE a.worker_payment_id=wp.id),0)
                  END AS allocated_amount,
                  CASE
-                   WHEN es.id IS NOT NULL AND COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)>=LEAST(wp.gross_amount,GREATEST(0,
+                   WHEN EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id) THEN 'REVERSED'
+                   WHEN es.id IS NOT NULL AND COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=es.id),0)>=LEAST(wp.gross_amount,GREATEST(0,
                COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
                  FROM production_entries p
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
-                     WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
-                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                   WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
+                       THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
-                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
-                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                       THEN COALESCE((SELECT SUM(po.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=po.id),0)) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
                    END)
                  FROM worker_payments prior_wp
                  LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
@@ -1500,8 +1614,8 @@ export async function paymentsRoutes(app:FastifyInstance){
             COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount)) FILTER(WHERE p.status='PENDING'),0) AS pending_earnings,
             COUNT(p.id) FILTER(WHERE p.status='APPROVED')::int AS approved_count,
             COUNT(p.id) FILTER(WHERE p.status='PENDING')::int AS pending_count,
-            COALESCE((SELECT SUM(es.gross_amount) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
-              + COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+            COALESCE((SELECT SUM(es.gross_amount-CASE WHEN es.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=es.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements es WHERE es.employee_id=$1),0)
+              + COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
                            WHERE wp.employee_id=$1 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es WHERE es.worker_payment_id=wp.id)),0)
               + COALESCE((SELECT SUM(hm.amount_snapshot) FROM historical_production_settlement_marks hm
                 JOIN production_entries hp ON hp.id=hm.production_entry_id
@@ -1568,7 +1682,7 @@ export async function paymentsRoutes(app:FastifyInstance){
             AND ($3::uuid IS NULL OR p.order_stage_id=$3)`, [parsed.data.employeeId,parsed.data.orderId??null,parsed.data.orderStageId??null]),
         client.query(`SELECT COALESCE(SUM(gross_amount),0) AS amount
           FROM employee_earnings_settlements WHERE employee_id=$1`, [parsed.data.employeeId]),
-        client.query(`SELECT COALESCE(SUM(wp.gross_amount),0) AS amount
+        client.query(`SELECT COALESCE(SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)),0) AS amount
           FROM worker_payments wp LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL`, [parsed.data.employeeId]),
         client.query(`SELECT COALESCE(SUM(GREATEST(a.amount-COALESCE(r.paid,0),0)),0) AS amount
@@ -1588,12 +1702,12 @@ export async function paymentsRoutes(app:FastifyInstance){
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
             (
-              COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+              COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE es.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
-              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+              + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
                 JOIN worker_payments wp ON wp.id=a.worker_payment_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -1601,7 +1715,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                     WHERE es.worker_payment_id=wp.id)),0)
-              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+              + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
                 JOIN worker_payments wp ON wp.id=a.worker_payment_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -1614,21 +1728,34 @@ export async function paymentsRoutes(app:FastifyInstance){
                  JOIN production_entries hp ON hp.id=hm.production_entry_id
                  LEFT JOIN order_stages hos ON hos.id=hp.order_stage_id
                 WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
-                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0) AS allocated_paid,
+                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0)
+              + COALESCE((SELECT SUM(ev.amount)
+                FROM worker_payment_settlement_difference_events ev
+                JOIN production_entries dp ON dp.id=ev.production_entry_id
+                LEFT JOIN order_stages dos ON dos.id=dp.order_stage_id
+                WHERE ev.worker_payment_id IN (SELECT worker_payment_id FROM worker_payment_settlement_differences WHERE employee_id=$1)
+                  AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+                  AND dp.employee_id=$1 AND dos.order_id=$2
+                  AND ($3::uuid IS NULL OR dp.order_stage_id=$3)
+                  AND EXISTS(SELECT 1 FROM employee_earnings_settlements es_difference
+                    JOIN employee_earnings_settlement_allocations esa_difference ON esa_difference.settlement_id=es_difference.id
+                    WHERE es_difference.worker_payment_id=ev.worker_payment_id)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+                    WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
-              -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+              -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE es.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
-              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+              -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
                   AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                     WHERE es.worker_payment_id=wp.id)),0)
-              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+              -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
@@ -1638,7 +1765,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_legacy WHERE es_legacy.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]}),
         client.query(`
           SELECT
@@ -1655,7 +1783,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.payroll_item_id IS NULL
                 AND l.payroll_adjustment_line_id IS NULL
                 AND l.payroll_payment_id IS NULL
-                AND l.settlement_id IS NULL
+                AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS ledger_only_adjustments_net,
             COALESCE((SELECT json_agg(json_build_object(
               'id',l.id,'code',l.code,'createdAt',l.created_at,
@@ -1668,11 +1796,11 @@ export async function paymentsRoutes(app:FastifyInstance){
                 AND l.payroll_item_id IS NULL
                 AND l.payroll_adjustment_line_id IS NULL
                 AND l.payroll_payment_id IS NULL
-                AND l.settlement_id IS NULL
+                AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)
             ),'[]'::json) AS ledger_only_adjustment_entries,
-            COALESCE((SELECT SUM(s.gross_amount) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
-            COALESCE((SELECT SUM(wp.gross_amount) FROM worker_payments wp
+            COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+            COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
               LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
               WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
             COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
@@ -1852,17 +1980,17 @@ export async function paymentsRoutes(app:FastifyInstance){
              AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wp.id)
              AND (
                (es.id IS NOT NULL AND (
-                 ABS(COALESCE((SELECT SUM(esa.amount) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-LEAST(wp.gross_amount,GREATEST(0,
+                 ABS(COALESCE((SELECT SUM(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0)) FROM employee_earnings_settlement_allocations esa WHERE esa.settlement_id=es.id),0)-LEAST(wp.gross_amount,GREATEST(0,
                COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
                  FROM production_entries p
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
                      WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
-                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                       THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
-                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
-                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                       THEN COALESCE((SELECT SUM(po.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=po.id),0)) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
                    END)
                  FROM worker_payments prior_wp
                  LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
@@ -1878,17 +2006,17 @@ export async function paymentsRoutes(app:FastifyInstance){
                ))
                OR (es.id IS NULL AND (
                  NOT EXISTS(SELECT 1 FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-                 OR ABS(COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-LEAST(wp.gross_amount,GREATEST(0,
+                 OR ABS(COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.worker_payment_id=wp.id),0)-LEAST(wp.gross_amount,GREATEST(0,
                COALESCE((SELECT SUM(COALESCE(p.total_earning_amount,p.earning_amount))
                  FROM production_entries p
                  WHERE p.employee_id=wp.employee_id AND p.status='APPROVED' AND p.work_date<=wp.created_at::date),0)
                - COALESCE((SELECT SUM(
                    CASE
                      WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations sa WHERE sa.settlement_id=prior_es.id)
-                       THEN COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
+                       THEN COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.settlement_id=prior_es.id),0)
                      WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id)
-                       THEN COALESCE((SELECT SUM(po.amount) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
-                     ELSE COALESCE((SELECT SUM(wa.amount) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
+                       THEN COALESCE((SELECT SUM(po.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=po.id),0)) FROM worker_payment_order_allocations po WHERE po.worker_payment_id=prior_wp.id),0)
+                     ELSE COALESCE((SELECT SUM(wa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wa.id),0)) FROM worker_payment_allocations wa WHERE wa.worker_payment_id=prior_wp.id),0)
                    END)
                  FROM worker_payments prior_wp
                  LEFT JOIN employee_earnings_settlements prior_es ON prior_es.worker_payment_id=prior_wp.id
@@ -1922,12 +2050,12 @@ export async function paymentsRoutes(app:FastifyInstance){
               WHERE p.employee_id=$1 AND p.status='APPROVED' AND os.order_id=$2
                 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0) AS production_count,
             (
-              COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+              COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE es.employee_id=$1 AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
-              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+              + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
                 JOIN worker_payments wp ON wp.id=a.worker_payment_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -1935,7 +2063,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                     WHERE es.worker_payment_id=wp.id)),0)
-              + COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+              + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
                 JOIN worker_payments wp ON wp.id=a.worker_payment_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
@@ -1950,19 +2078,19 @@ export async function paymentsRoutes(app:FastifyInstance){
                 WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
                   AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
-              -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a
+              -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE es.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)),0)
-              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+              -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
                   AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                     WHERE es.worker_payment_id=wp.id)),0)
-              -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+              -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
                 JOIN production_entries p ON p.id=a.production_entry_id
                 LEFT JOIN order_stages os ON os.id=p.order_stage_id
                 WHERE a.worker_payment_id=wp.id AND os.order_id=$2 AND ($3::uuid IS NULL OR p.order_stage_id=$3)
@@ -1972,7 +2100,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_legacy WHERE es_legacy.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
@@ -2003,14 +2132,14 @@ export async function paymentsRoutes(app:FastifyInstance){
       if(parsed.data.productionEntryIds !== undefined && (parsed.data.settlementSource==="CURRENT_CUSTODY" || parsed.data.settlementMode==="SELECTED_PRODUCTION")){
         const selected=await client.query(`
           SELECT p.id,os.order_id,p.order_stage_id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wp.id)),0)
-            -COALESCE((SELECT SUM(wpa.amount) FROM worker_payment_allocations wpa
+            -COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa
               JOIN worker_payments wp ON wp.id=wpa.worker_payment_id
               WHERE wpa.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -2046,6 +2175,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         method: parsed.data.method,
         transferReference: parsed.data.transferReference ?? null,
         manualRepaymentAmount: parsed.data.advanceRepaymentAmount,
+        settlementSource: parsed.data.settlementSource,
         idempotencyKey: parsed.data.idempotencyKey,
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
@@ -2058,14 +2188,14 @@ export async function paymentsRoutes(app:FastifyInstance){
         let amountToAllocate=Math.round(parsed.data.amount*100)/100;
         const productionRows=await client.query(`
           SELECT p.id,GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
-            -COALESCE((SELECT SUM(a.amount) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_order_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
                   JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
                   WHERE es.worker_payment_id=wp.id)),0)
-            -COALESCE((SELECT SUM(a.amount) FROM worker_payment_allocations a
+            -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) FROM worker_payment_allocations a
               JOIN worker_payments wp ON wp.id=a.worker_payment_id
               WHERE a.production_entry_id=p.id
                 AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -2089,7 +2219,15 @@ export async function paymentsRoutes(app:FastifyInstance){
           if(amountToAllocate<=0.009)break;
           const amount=Math.round(Math.min(amountToAllocate,rowRemaining)*100)/100;
           if(amount<=0)continue;
-          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
+          await client.query(
+            `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+             SELECT $1,$2,$3
+              WHERE NOT EXISTS(
+                SELECT 1 FROM worker_payment_order_allocations
+                 WHERE worker_payment_id=$1 AND production_entry_id=$2
+              )`,
+            [settlement.payment.id,row.id,amount]
+          );
           amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
         }
         // Final invariant: allocations from different payment records must never
@@ -2103,12 +2241,12 @@ export async function paymentsRoutes(app:FastifyInstance){
                  COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned,
                  COALESCE((
                    SELECT SUM(c.amount) FROM (
-                     SELECT esa.production_entry_id,esa.amount
+                     SELECT esa.production_entry_id,GREATEST(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0),0) AS amount
                        FROM employee_earnings_settlement_allocations esa
                        JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
                       WHERE esa.production_entry_id=p.id
                      UNION ALL
-                     SELECT owa.production_entry_id,owa.amount
+                     SELECT owa.production_entry_id,GREATEST(owa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=owa.id),0),0) AS amount
                        FROM worker_payment_order_allocations owa
                       WHERE owa.production_entry_id=p.id
                         AND NOT EXISTS (
@@ -2117,7 +2255,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                           WHERE es.worker_payment_id=owa.worker_payment_id
                         )
                      UNION ALL
-                     SELECT wpa.production_entry_id,wpa.amount
+                     SELECT wpa.production_entry_id,GREATEST(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0),0) AS amount
                        FROM worker_payment_allocations wpa
                       WHERE wpa.production_entry_id=p.id
                         AND NOT EXISTS (
@@ -2139,12 +2277,12 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE p.id=ANY($1::uuid[])
              AND COALESCE((
                SELECT SUM(c.amount) FROM (
-                 SELECT esa.production_entry_id,esa.amount
+                 SELECT esa.production_entry_id,GREATEST(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0),0) AS amount
                    FROM employee_earnings_settlement_allocations esa
                    JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
                   WHERE esa.production_entry_id=p.id
                  UNION ALL
-                 SELECT owa.production_entry_id,owa.amount
+                 SELECT owa.production_entry_id,GREATEST(owa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=owa.id),0),0) AS amount
                    FROM worker_payment_order_allocations owa
                   WHERE owa.production_entry_id=p.id
                     AND NOT EXISTS (
@@ -2153,7 +2291,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                       WHERE es.worker_payment_id=owa.worker_payment_id
                     )
                  UNION ALL
-                 SELECT wpa.production_entry_id,wpa.amount
+                 SELECT wpa.production_entry_id,GREATEST(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0),0) AS amount
                    FROM worker_payment_allocations wpa
                   WHERE wpa.production_entry_id=p.id
                     AND NOT EXISTS (
@@ -2254,6 +2392,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rows.length !== 1) {
         throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
       }
+      let settlementDifferenceExpenseId:string|null=null;
+      let settlementDifferenceAmount=0;
       for(let index=0;index<expenseBuckets.length;index++){
         const bucket=expenseBuckets[index]!;
         const bucketHash=createHash("sha256").update(`${parsed.data.idempotencyKey}:${bucket.scope}`).digest("hex");
@@ -2263,13 +2403,14 @@ export async function paymentsRoutes(app:FastifyInstance){
         const expenseDescription=bucket.order_id
           ? `تسوية مستحقات العامل ${String(settlement.payment.code)} — الطلبية ${String(bucket.order_code??bucket.order_id)}${bucket.order_name?` — ${String(bucket.order_name)}`:""}${bucket.stage_name?` — المرحلة ${String(bucket.stage_name)}`:""}`
           : `تسوية مستحقات العامل ${String(settlement.payment.code)} — مستحقات عامة غير مرتبطة بإنتاج محدد`;
-        await client.query(
+        const insertedExpense=await client.query(
           `INSERT INTO accounting_expenses(
              order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
              expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
              cash_custody_transaction_id,allocation_type,source_worker_payment_id
            )
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)`,
+           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)
+           RETURNING id`,
           [
             bucket.order_id,
             bucket.order_stage_id,
@@ -2285,6 +2426,29 @@ export async function paymentsRoutes(app:FastifyInstance){
             settlement.payment.id
           ]
         );
+        if(bucket.scope==="GENERAL" && parsed.data.allowOverpayment && parsed.data.orderId && parsed.data.settlementSource==="PREVIOUS_CUSTODY"){
+          if(settlementDifferenceExpenseId)throw new AppError("WORKER_PAYMENT_DIFFERENCE_EXPENSE_AMBIGUOUS","توجد أكثر من حركة مصروف عام لفرق التسوية؛ أوقفنا التسجيل للمراجعة.",409);
+          settlementDifferenceExpenseId=insertedExpense.rows[0]?.id??null;
+          settlementDifferenceAmount=bucket.amount;
+        }
+      }
+      let settlementDifferenceId:string|null=null;
+      if(settlementDifferenceAmount>0.009){
+        if(!settlementDifferenceExpenseId||!parsed.data.orderId||!parsed.data.allowOverpayment||parsed.data.settlementSource!=="PREVIOUS_CUSTODY"){
+          throw new AppError("WORKER_PAYMENT_DIFFERENCE_SOURCE_MISSING","تعذر ربط فرق التسوية بمصروفه وطلبيته الأصلية؛ تم إلغاء العملية بالكامل.",409);
+        }
+        const difference=await client.query(
+          `INSERT INTO worker_payment_settlement_differences(
+             worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+             original_amount,payment_date,eligible_at,created_by
+           ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$7::date+30,$8)
+           ON CONFLICT(worker_payment_id) DO NOTHING
+           RETURNING id`,
+          [settlement.payment.id,parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null,
+           settlementDifferenceExpenseId,settlementDifferenceAmount,new Date(settlement.payment.created_at).toISOString().slice(0,10),request.user!.userId]
+        );
+        if(difference.rowCount!==1)throw new AppError("WORKER_PAYMENT_DIFFERENCE_ALREADY_EXISTS","يوجد فرق تسوية مسجل مسبقًا لهذه الدفعة؛ راجع سجل الفروق قبل المتابعة.",409);
+        settlementDifferenceId=difference.rows[0].id;
       }
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
@@ -2304,7 +2468,9 @@ export async function paymentsRoutes(app:FastifyInstance){
           orderStageId: parsed.data.orderStageId ?? null,
           grossAmount: settlement.grossAmount,
           cashPaid: settlement.cashPaid,
-          advanceRepaymentAmount: settlement.advanceRepaymentAmount
+          advanceRepaymentAmount: settlement.advanceRepaymentAmount,
+          settlementDifferenceId,
+          settlementDifferenceAmount
         },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
