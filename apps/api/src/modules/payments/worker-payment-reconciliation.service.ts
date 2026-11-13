@@ -35,7 +35,7 @@ export async function reconcileWorkerPayments() {
       wp.idempotency_key,
       COALESCE(settlements.row_count,0) AS settlement_count,
       COALESCE(settlements.mismatch_count,0) AS settlement_mismatch_count,
-      COALESCE(settlements.previous_custody,FALSE) AS previous_custody,
+      (wp.settlement_source='PREVIOUS_CUSTODY') AS previous_custody,
       COALESCE(ledger.row_count,0) AS ledger_count,
       COALESCE(ledger.debit_total,0) AS ledger_debit,
       COALESCE(ledger.credit_total,0) AS ledger_credit,
@@ -88,8 +88,7 @@ export async function reconcileWorkerPayments() {
              COUNT(*) FILTER(WHERE es.employee_id IS DISTINCT FROM wp.employee_id
                OR ABS(es.gross_amount-wp.gross_amount)>0.01
                OR ABS(es.cash_paid_amount-wp.amount)>0.01
-               OR ABS(es.advance_repayment_amount-wp.advance_repayment_amount)>0.01)::int AS mismatch_count,
-             BOOL_OR(COALESCE(es.notes,'') LIKE '%تسوية من عهدة سابقة%') AS previous_custody
+               OR ABS(es.advance_repayment_amount-wp.advance_repayment_amount)>0.01)::int AS mismatch_count
         FROM employee_earnings_settlements es
        WHERE es.worker_payment_id=wp.id
     ) settlements ON TRUE

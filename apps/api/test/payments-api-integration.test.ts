@@ -993,6 +993,22 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [previousCustodyPaymentId]
       )).rows[0].count),0,"retry must not create a custody debit");
+      const previousCustodySource=await apiPool.query(
+        "SELECT settlement_source FROM worker_payments WHERE id=$1",[previousCustodyPaymentId]
+      );
+      assert.equal(previousCustodySource.rows[0].settlement_source,"PREVIOUS_CUSTODY",
+        "the custody source must be persisted as structured payment data");
+      await apiPool.query(
+        "UPDATE employee_earnings_settlements SET notes='edited settlement note without source marker' WHERE worker_payment_id=$1",
+        [previousCustodyPaymentId]
+      );
+      const previousCustodyReconciliation=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/worker-payments",headers:{cookie:managerCookie}
+      });
+      assert.equal(previousCustodyReconciliation.statusCode,200,previousCustodyReconciliation.body);
+      assert.equal(previousCustodyReconciliation.json().data.issues.filter((issue:any)=>
+        issue.workerPaymentId===previousCustodyPaymentId).length,0,
+        "reconciliation must use the persisted source, not mutable settlement notes");
 
       // A current-custody settlement uses the same order-scoped settlement path,
       // but posts exactly one cash OUT and attributes the order expense to that custody.
@@ -1003,6 +1019,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const currentOrderPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},payload:{employeeId:currentOrderWorker.id,settlementSource:"CURRENT_CUSTODY",cashCustodyEmployeeId:managerEmployee.id,amount:75,method:"CASH",idempotencyKey:currentOrderKey,notes:"integration test — current custody general"}});
       assert.equal(currentOrderPayout.statusCode,201,currentOrderPayout.body);
       const currentOrderPaymentId=currentOrderPayout.json().data.payment.id;
+      const currentOrderSource=await apiPool.query(
+        "SELECT settlement_source FROM worker_payments WHERE id=$1",[currentOrderPaymentId]
+      );
+      assert.equal(currentOrderSource.rows[0].settlement_source,"CURRENT_CUSTODY");
       const currentOrderExpense=await apiPool.query("SELECT order_id,paid_from_employee_id,amount,allocation_type,source_worker_payment_id,cash_custody_transaction_id FROM accounting_expenses WHERE idempotency_key=$1",[currentOrderKey]);
       assert.equal(currentOrderExpense.rowCount,1);
       assert.equal(currentOrderExpense.rows[0].order_id,null);
