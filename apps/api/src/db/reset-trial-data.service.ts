@@ -175,6 +175,9 @@ export async function previewTrialDataReset(protectedUserId: string) {
 }
 
 export async function resetTrialData(protectedUserId: string | null = null) {
+if (process.env.TEZKAR_ENABLE_ONE_TIME_RESET !== "true") {
+  throw new AppError("RESET_DISABLED", "ميزة المسح المؤقت غير مفعلة حاليًا", 403);
+}
 const client = await pool.connect();
 try {
   await client.query("BEGIN");
@@ -234,6 +237,10 @@ try {
   // aborts the transaction instead of deleting protected data.
   const deleted: Record<string, number> = {};
   if (targets.length > 0) {
+    // Permit the append-only difference-event table to be cleared only inside this
+    // explicitly enabled, one-time, manager-confirmed trial reset transaction.
+    // UPDATE and DELETE remain blocked by the table trigger in every context.
+    await client.query("SET LOCAL tezkar.allow_trial_data_reset = 'on'");
     await client.query(`TRUNCATE TABLE ${targets.map(qualified).join(", ")} RESTART IDENTITY`);
   }
   for (const table of targets) deleted[table] = beforeCounts[table] ?? 0;

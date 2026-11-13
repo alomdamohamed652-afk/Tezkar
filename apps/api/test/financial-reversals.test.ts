@@ -141,7 +141,7 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   )).rows[0].id;
   const workerSettlement=(await db.query(
     `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
-     VALUES($1,100,80,20,'2099-07-01','تسوية طلب قبض صرف مباشر بدون طلب قبض',$2,$3) RETURNING id`,
+     VALUES($1,100,80,20,CURRENT_DATE,'تسوية طلب قبض صرف مباشر بدون طلب قبض',$2,$3) RETURNING id`,
     [emp,user,workerPayment]
   )).rows[0].id;
   const workerAdvance=(await db.query(
@@ -151,7 +151,7 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   )).rows[0].id;
   const workerRepayment=(await db.query(
     `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,created_by,source_worker_payment_id,settlement_id)
-     VALUES($1,20,'CUSTOM','2099-07-01',$2,$3,$4) RETURNING id`,
+     VALUES($1,20,'CUSTOM',CURRENT_DATE,$2,$3,$4) RETURNING id`,
     [workerAdvance,user,workerPayment,workerSettlement]
   )).rows[0].id;
   await db.query(
@@ -166,12 +166,12 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   );
   const workerCustodyOut=(await db.query(
     `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
-     VALUES($1,'OUT',80,'2099-07-01','worker payment cash out',$2,'WORKER_PAYMENT',$3) RETURNING id`,
+     VALUES($1,'OUT',80,CURRENT_DATE,'worker payment cash out',$2,'WORKER_PAYMENT',$3) RETURNING id`,
     [emp,user,workerPayment]
   )).rows[0].id;
   await db.query(
     `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,cash_custody_transaction_id,allocation_type,source_worker_payment_id)
-     VALUES('WORKER_PAYMENT','worker payment reversal expense',100,'2099-07-01','CASH',$1,'DIRECT',$2,$3,'worker-payment-expense-test',$4,'GENERAL',$5)`,
+     VALUES('WORKER_PAYMENT','worker payment reversal expense',100,CURRENT_DATE,'CASH',$1,'DIRECT',$2,$3,'worker-payment-expense-test',$4,'GENERAL',$5)`,
     [user,emp,randomUUID(),workerCustodyOut,workerPayment]
   );
   const standaloneWorkerAdvanceReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:{sourceType:'ADVANCE_REPAYMENT',sourceId:workerRepayment,amount:20,reason:'محاولة عكس قسط مرتبط بدفعة عامل',idempotencyKey:randomUUID()}});

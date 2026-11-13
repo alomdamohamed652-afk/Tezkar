@@ -62,6 +62,39 @@ async function getBalance(client: import("pg").PoolClient, employeeId:string) {
   return Number(r.rows[0]?.balance ?? 0);
 }
 
+function activeDifferencePaymentProductionAllocationSql(paymentIdExpr:string,settlementIdExpr:string|null,approvedAtCondition="") {
+  const eligible = `p.status='APPROVED' ${approvedAtCondition}`;
+  const net = (alias:string,source:string) =>
+    `GREATEST(${alias}.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+      WHERE r.allocation_source='${source}' AND r.source_allocation_id=${alias}.id),0),0)`;
+  const canonical = settlementIdExpr ? `
+    WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations x WHERE x.settlement_id=${settlementIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","EMPLOYEE_EARNINGS_SETTLEMENT")})
+        FROM employee_earnings_settlement_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.settlement_id=${settlementIdExpr} AND ${eligible}),0)
+        +COALESCE((SELECT SUM(ev.amount)
+          FROM worker_payment_settlement_difference_events ev
+          JOIN production_entries p ON p.id=ev.production_entry_id
+          WHERE ev.worker_payment_id=${paymentIdExpr}
+            AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND ${eligible}
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)` : "";
+  return `CASE
+    ${canonical}
+    WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations x WHERE x.worker_payment_id=${paymentIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_ORDER")})
+        FROM worker_payment_order_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+    ELSE COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_LEGACY")})
+      FROM worker_payment_allocations a
+      JOIN production_entries p ON p.id=a.production_entry_id
+      WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+  END`;
+}
+
 async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:string) {
   // An explicit employee closure freezes only production approved at closure time.
   // Earnings approved afterwards remain payable and are calculated independently.
@@ -74,9 +107,17 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
     const future=await client.query(`
       SELECT
         COALESCE(SUM(COALESCE(pe.total_earning_amount,pe.earning_amount)),0) AS earned,
-        COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s
+        COALESCE((SELECT SUM(CASE
+          WHEN s.worker_payment_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=s.worker_payment_id)
+            THEN ${activeDifferencePaymentProductionAllocationSql("s.worker_payment_id","s.id","AND p.approved_at>$2")}
+          ELSE s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END
+        END) FROM employee_earnings_settlements s
           WHERE s.employee_id=$1 AND s.created_at>$2),0) AS settled,
-        COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
+        COALESCE((SELECT SUM(CASE
+          WHEN EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=wp.id)
+            THEN ${activeDifferencePaymentProductionAllocationSql("wp.id",null,"AND p.approved_at>$2")}
+          ELSE wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+        END) FROM worker_payments wp
           LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
           WHERE wp.employee_id=$1 AND s.id IS NULL AND wp.created_at>$2),0) AS legacy_paid,
         COALESCE((SELECT SUM(m.amount_snapshot)
@@ -119,8 +160,16 @@ async function getAvailableEarnings(client:import("pg").PoolClient,employeeId:st
           AND l.payroll_payment_id IS NULL
           AND l.settlement_id IS NULL AND l.financial_reversal_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM employee_earnings_adjustments a WHERE a.ledger_id=l.id)),0) AS adjustments,
-      COALESCE((SELECT SUM(s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
-      COALESCE((SELECT SUM(wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)) FROM worker_payments wp
+      COALESCE((SELECT SUM(CASE
+        WHEN s.worker_payment_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=s.worker_payment_id)
+          THEN ${activeDifferencePaymentProductionAllocationSql("s.worker_payment_id","s.id")}
+        ELSE s.gross_amount-CASE WHEN s.worker_payment_id IS NOT NULL THEN COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=s.worker_payment_id),0) ELSE 0 END
+      END) FROM employee_earnings_settlements s WHERE s.employee_id=$1),0) AS settled,
+      COALESCE((SELECT SUM(CASE
+        WHEN EXISTS(SELECT 1 FROM worker_payment_settlement_differences d WHERE d.worker_payment_id=wp.id)
+          THEN ${activeDifferencePaymentProductionAllocationSql("wp.id",null)}
+        ELSE wp.gross_amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
+      END) FROM worker_payments wp
         LEFT JOIN employee_earnings_settlements s ON s.worker_payment_id=wp.id
         WHERE wp.employee_id=$1 AND s.id IS NULL),0) AS legacy_paid,
       COALESCE((SELECT SUM(m.amount_snapshot) FROM historical_production_settlement_marks m
@@ -551,6 +600,32 @@ export async function paymentsRoutes(app:FastifyInstance){
         grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
         manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
       });
+      const custodyMovement=settlement.cashPaid>0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : {rows:[] as Array<{id:string}>};
+      if(settlement.cashPaid>0.009 && custodyMovement.rows.length!==1){
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      await client.query(
+        `INSERT INTO accounting_expenses(
+           category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,cash_custody_transaction_id,allocation_type,
+           source_worker_payment_id
+         )
+         VALUES('WORKER_PAYMENT',$1,$2,CURRENT_DATE,$3,$4,'DIRECT',$5,$6,'GENERAL',$7)`,
+        [
+          `تسوية مستحقات العامل ${String(settlement.payment.code)} — طلب قبض ${String(current.rows[0].code)}`,
+          settlement.grossAmount,
+          String(current.rows[0].method),
+          request.user!.userId,
+          settlement.cashPaid>0.009?custodyEmployeeId:null,
+          custodyMovement.rows[0]?.id??null,
+          settlement.payment.id
+        ]
+      );
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',reviewed_by=$1,reviewed_at=now(),paid_payment_id=$2,updated_at=now()
           WHERE id=$3 RETURNING *`,
@@ -615,6 +690,32 @@ export async function paymentsRoutes(app:FastifyInstance){
         grossAmount:Number(current.rows[0].amount),method:String(current.rows[0].method),transferReference:current.rows[0].transfer_reference??null,
         manualRepaymentAmount:actionBody.data.advanceRepaymentAmount
       });
+      const custodyMovement=settlement.cashPaid>0.009
+        ? await client.query(
+            "SELECT id FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1 AND direction='OUT'",
+            [settlement.payment.id]
+          )
+        : {rows:[] as Array<{id:string}>};
+      if(settlement.cashPaid>0.009 && custodyMovement.rows.length!==1){
+        throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
+      }
+      await client.query(
+        `INSERT INTO accounting_expenses(
+           category,description,amount,expense_date,payment_method,created_by,
+           expense_type,paid_from_employee_id,cash_custody_transaction_id,allocation_type,
+           source_worker_payment_id
+         )
+         VALUES('WORKER_PAYMENT',$1,$2,CURRENT_DATE,$3,$4,'DIRECT',$5,$6,'GENERAL',$7)`,
+        [
+          `تسوية مستحقات العامل ${String(settlement.payment.code)} — طلب قبض ${String(current.rows[0].code)}`,
+          settlement.grossAmount,
+          String(current.rows[0].method),
+          request.user!.userId,
+          settlement.cashPaid>0.009?custodyEmployeeId:null,
+          custodyMovement.rows[0]?.id??null,
+          settlement.payment.id
+        ]
+      );
       const updated=await client.query(
         `UPDATE payment_requests SET status='PAID',paid_payment_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,
         [settlement.payment.id,id]);
@@ -1618,7 +1719,20 @@ export async function paymentsRoutes(app:FastifyInstance){
                  JOIN production_entries hp ON hp.id=hm.production_entry_id
                  LEFT JOIN order_stages hos ON hos.id=hp.order_stage_id
                 WHERE hm.employee_id=$1 AND hm.status='PAID_PREVIOUSLY'
-                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0) AS allocated_paid,
+                  AND hos.order_id=$2 AND ($3::uuid IS NULL OR hp.order_stage_id=$3)),0)
+              + COALESCE((SELECT SUM(ev.amount)
+                FROM worker_payment_settlement_difference_events ev
+                JOIN production_entries dp ON dp.id=ev.production_entry_id
+                LEFT JOIN order_stages dos ON dos.id=dp.order_stage_id
+                WHERE ev.worker_payment_id IN (SELECT worker_payment_id FROM worker_payment_settlement_differences WHERE employee_id=$1)
+                  AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+                  AND dp.employee_id=$1 AND dos.order_id=$2
+                  AND ($3::uuid IS NULL OR dp.order_stage_id=$3)
+                  AND EXISTS(SELECT 1 FROM employee_earnings_settlements es_difference
+                    JOIN employee_earnings_settlement_allocations esa_difference ON esa_difference.settlement_id=es_difference.id
+                    WHERE es_difference.worker_payment_id=ev.worker_payment_id)
+                  AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+                    WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS allocated_paid,
             COALESCE((SELECT SUM(GREATEST(wp.gross_amount
               -COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a
                 JOIN employee_earnings_settlements es ON es.id=a.settlement_id
@@ -1642,7 +1756,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_legacy WHERE es_legacy.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]) : Promise.resolve({rows:[{earned:null,allocated_paid:null,legacy_order_paid:null}]}),
         client.query(`
           SELECT
@@ -1976,7 +2091,8 @@ export async function paymentsRoutes(app:FastifyInstance){
                   AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations oa WHERE oa.worker_payment_id=wp.id)),0),0))
               FROM worker_payments wp
               JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)),0) AS legacy_order_paid
+              WHERE wp.employee_id=$1 AND ae.order_id=$2 AND ($3::uuid IS NULL OR ae.order_stage_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_legacy WHERE es_legacy.worker_payment_id=wp.id)),0) AS legacy_order_paid
         `,[parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null]);
         orderLegacyPaid=Number(orderDue.rows[0]?.legacy_order_paid??0);
         orderProductionCount=Number(orderDue.rows[0]?.production_count??0);
@@ -2107,12 +2223,12 @@ export async function paymentsRoutes(app:FastifyInstance){
                  COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned,
                  COALESCE((
                    SELECT SUM(c.amount) FROM (
-                     SELECT esa.production_entry_id,esa.amount
+                     SELECT esa.production_entry_id,GREATEST(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0),0) AS amount
                        FROM employee_earnings_settlement_allocations esa
                        JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
                       WHERE esa.production_entry_id=p.id
                      UNION ALL
-                     SELECT owa.production_entry_id,owa.amount
+                     SELECT owa.production_entry_id,GREATEST(owa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=owa.id),0),0) AS amount
                        FROM worker_payment_order_allocations owa
                       WHERE owa.production_entry_id=p.id
                         AND NOT EXISTS (
@@ -2121,7 +2237,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                           WHERE es.worker_payment_id=owa.worker_payment_id
                         )
                      UNION ALL
-                     SELECT wpa.production_entry_id,wpa.amount
+                     SELECT wpa.production_entry_id,GREATEST(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0),0) AS amount
                        FROM worker_payment_allocations wpa
                       WHERE wpa.production_entry_id=p.id
                         AND NOT EXISTS (
@@ -2143,12 +2259,12 @@ export async function paymentsRoutes(app:FastifyInstance){
            WHERE p.id=ANY($1::uuid[])
              AND COALESCE((
                SELECT SUM(c.amount) FROM (
-                 SELECT esa.production_entry_id,esa.amount
+                 SELECT esa.production_entry_id,GREATEST(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0),0) AS amount
                    FROM employee_earnings_settlement_allocations esa
                    JOIN employee_earnings_settlements es ON es.id=esa.settlement_id
                   WHERE esa.production_entry_id=p.id
                  UNION ALL
-                 SELECT owa.production_entry_id,owa.amount
+                 SELECT owa.production_entry_id,GREATEST(owa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=owa.id),0),0) AS amount
                    FROM worker_payment_order_allocations owa
                   WHERE owa.production_entry_id=p.id
                     AND NOT EXISTS (
@@ -2157,7 +2273,7 @@ export async function paymentsRoutes(app:FastifyInstance){
                       WHERE es.worker_payment_id=owa.worker_payment_id
                     )
                  UNION ALL
-                 SELECT wpa.production_entry_id,wpa.amount
+                 SELECT wpa.production_entry_id,GREATEST(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0),0) AS amount
                    FROM worker_payment_allocations wpa
                   WHERE wpa.production_entry_id=p.id
                     AND NOT EXISTS (
@@ -2258,6 +2374,8 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (parsed.data.settlementSource === "CURRENT_CUSTODY" && settlement.cashPaid > 0.009 && custodyMovement.rows.length !== 1) {
         throw new AppError("WORKER_PAYMENT_CUSTODY_LINK_MISSING","تعذر ربط حركة العهدة بالمصروف؛ تم إلغاء التسوية بالكامل.",409);
       }
+      let settlementDifferenceExpenseId:string|null=null;
+      let settlementDifferenceAmount=0;
       for(let index=0;index<expenseBuckets.length;index++){
         const bucket=expenseBuckets[index]!;
         const bucketHash=createHash("sha256").update(`${parsed.data.idempotencyKey}:${bucket.scope}`).digest("hex");
@@ -2267,13 +2385,14 @@ export async function paymentsRoutes(app:FastifyInstance){
         const expenseDescription=bucket.order_id
           ? `تسوية مستحقات العامل ${String(settlement.payment.code)} — الطلبية ${String(bucket.order_code??bucket.order_id)}${bucket.order_name?` — ${String(bucket.order_name)}`:""}${bucket.stage_name?` — المرحلة ${String(bucket.stage_name)}`:""}`
           : `تسوية مستحقات العامل ${String(settlement.payment.code)} — مستحقات عامة غير مرتبطة بإنتاج محدد`;
-        await client.query(
+        const insertedExpense=await client.query(
           `INSERT INTO accounting_expenses(
              order_id,order_stage_id,category,description,amount,expense_date,payment_method,created_by,
              expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,
              cash_custody_transaction_id,allocation_type,source_worker_payment_id
            )
-           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)`,
+           VALUES($1,$2,'WORKER_PAYMENT',$3,$4,CURRENT_DATE,$5,$6,'DIRECT',$7,$8,$9,$10,$11,$12)
+           RETURNING id`,
           [
             bucket.order_id,
             bucket.order_stage_id,
@@ -2289,6 +2408,29 @@ export async function paymentsRoutes(app:FastifyInstance){
             settlement.payment.id
           ]
         );
+        if(bucket.scope==="GENERAL" && parsed.data.allowOverpayment && parsed.data.orderId && parsed.data.settlementSource==="PREVIOUS_CUSTODY"){
+          if(settlementDifferenceExpenseId)throw new AppError("WORKER_PAYMENT_DIFFERENCE_EXPENSE_AMBIGUOUS","توجد أكثر من حركة مصروف عام لفرق التسوية؛ أوقفنا التسجيل للمراجعة.",409);
+          settlementDifferenceExpenseId=insertedExpense.rows[0]?.id??null;
+          settlementDifferenceAmount=bucket.amount;
+        }
+      }
+      let settlementDifferenceId:string|null=null;
+      if(settlementDifferenceAmount>0.009){
+        if(!settlementDifferenceExpenseId||!parsed.data.orderId||!parsed.data.allowOverpayment||parsed.data.settlementSource!=="PREVIOUS_CUSTODY"){
+          throw new AppError("WORKER_PAYMENT_DIFFERENCE_SOURCE_MISSING","تعذر ربط فرق التسوية بمصروفه وطلبيته الأصلية؛ تم إلغاء العملية بالكامل.",409);
+        }
+        const difference=await client.query(
+          `INSERT INTO worker_payment_settlement_differences(
+             worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+             original_amount,payment_date,eligible_at,created_by
+           ) VALUES($1,$2,$3,$4,$5,$6,$7::date,$7::date+30,$8)
+           ON CONFLICT(worker_payment_id) DO NOTHING
+           RETURNING id`,
+          [settlement.payment.id,parsed.data.employeeId,parsed.data.orderId,parsed.data.orderStageId??null,
+           settlementDifferenceExpenseId,settlementDifferenceAmount,new Date(settlement.payment.created_at).toISOString().slice(0,10),request.user!.userId]
+        );
+        if(difference.rowCount!==1)throw new AppError("WORKER_PAYMENT_DIFFERENCE_ALREADY_EXISTS","يوجد فرق تسوية مسجل مسبقًا لهذه الدفعة؛ راجع سجل الفروق قبل المتابعة.",409);
+        settlementDifferenceId=difference.rows[0].id;
       }
       if (parsed.data.notes?.trim()) {
         await client.query("UPDATE worker_payments SET notes=concat_ws(' | ',notes,$1::text) WHERE id=$2", [parsed.data.notes.trim(), settlement.payment.id]);
@@ -2308,7 +2450,9 @@ export async function paymentsRoutes(app:FastifyInstance){
           orderStageId: parsed.data.orderStageId ?? null,
           grossAmount: settlement.grossAmount,
           cashPaid: settlement.cashPaid,
-          advanceRepaymentAmount: settlement.advanceRepaymentAmount
+          advanceRepaymentAmount: settlement.advanceRepaymentAmount,
+          settlementDifferenceId,
+          settlementDifferenceAmount
         },
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
