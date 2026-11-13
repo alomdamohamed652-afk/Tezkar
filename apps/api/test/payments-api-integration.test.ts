@@ -596,6 +596,74 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(directExpense.statusCode,201,directExpense.body);
 
+      // Cancellation preserves posted financial history and never refunds custody.
+      const patchCancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Cancel order with financial history PATCH "+randomBytes(4).toString("hex"),manager.id]
+      )).rows[0];
+      const patchCancelledExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:patchCancelledOrder.id,category:"اختبار إلغاء",description:"مصروف محفوظ بعد إلغاء الطلبية",amount:35,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,idempotencyKey:randomUUID()}
+      });
+      assert.equal(patchCancelledExpense.statusCode,201,patchCancelledExpense.body);
+      const patchCancelledRevenue=await app.inject({
+        method:"POST",url:"/api/accounting/revenues",headers:{cookie:managerCookie},
+        payload:{orderId:patchCancelledOrder.id,amount:15,revenueDate:"2099-02-12",source:"MANUAL",notes:"إيراد محفوظ بعد إلغاء الطلبية"}
+      });
+      assert.equal(patchCancelledRevenue.statusCode,201,patchCancelledRevenue.body);
+      const reversalCustodyCountBeforePatchCancellation=Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN'"
+      )).rows[0].count);
+      const patchCancellation=await app.inject({
+        method:"PATCH",url:"/api/orders/"+patchCancelledOrder.id,headers:{cookie:managerCookie},
+        payload:{status:"CANCELLED"}
+      });
+      assert.equal(patchCancellation.statusCode,200,patchCancellation.body);
+      assert.equal(patchCancellation.json().data.status,"CANCELLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE order_id=$1",[patchCancelledOrder.id]
+      )).rows[0].count),1,"PATCH cancellation must retain the original expense");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM order_revenues WHERE order_id=$1",[patchCancelledOrder.id]
+      )).rows[0].count),1,"PATCH cancellation must retain the original revenue");
+      const patchCancellationCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [patchCancelledExpense.json().data.id]
+      );
+      assert.equal(patchCancellationCustody.rowCount,1,"the original expense custody movement must remain");
+      assert.equal(patchCancellationCustody.rows[0].direction,"OUT");
+      assert.equal(Number(patchCancellationCustody.rows[0].amount),35);
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND direction='IN'"
+      )).rows[0].count),reversalCustodyCountBeforePatchCancellation,
+        "cancellation must not create an automatic cash refund or financial reversal");
+
+      const deleteCancelledOrder=(await apiPool.query(
+        "INSERT INTO production_orders(order_name,created_by,status) VALUES($1,$2,'DRAFT') RETURNING id",
+        ["Cancel order with financial history DELETE "+randomBytes(4).toString("hex"),manager.id]
+      )).rows[0];
+      const deleteCancelledExpense=await app.inject({
+        method:"POST",url:"/api/accounting/expenses",headers:{cookie:managerCookie},
+        payload:{orderId:deleteCancelledOrder.id,category:"اختبار إلغاء",description:"مصروف محفوظ بعد الإلغاء من مسار الحذف",amount:22,expenseType:"DIRECT",paidFromEmployeeId:managerEmployee.id,idempotencyKey:randomUUID()}
+      });
+      assert.equal(deleteCancelledExpense.statusCode,201,deleteCancelledExpense.body);
+      const deleteCancellation=await app.inject({
+        method:"DELETE",url:"/api/orders/"+deleteCancelledOrder.id,headers:{cookie:managerCookie},
+        payload:{password:"Test-Manager-Password-2026!"}
+      });
+      assert.equal(deleteCancellation.statusCode,200,deleteCancellation.body);
+      assert.equal(deleteCancellation.json().data.status,"CANCELLED");
+      assert.equal(Number((await apiPool.query(
+        "SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE order_id=$1",[deleteCancelledOrder.id]
+      )).rows[0].count),1,"DELETE cancellation must retain the original expense");
+      const deleteCancellationCustody=await apiPool.query(
+        "SELECT direction,amount FROM cash_custody_transactions WHERE source_type='ACCOUNTING_EXPENSE' AND source_id=$1",
+        [deleteCancelledExpense.json().data.id]
+      );
+      assert.equal(deleteCancellationCustody.rowCount,1);
+      assert.equal(deleteCancellationCustody.rows[0].direction,"OUT");
+      assert.equal(Number(deleteCancellationCustody.rows[0].amount),22);
+
       // Historical settlements must not silently debit a current custody, and their date must belong to an open period.
       const historicalDate="1800-03-10";
       const historicalWithoutPeriod=await app.inject({
@@ -849,7 +917,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       });
       assert.equal(payoutPreview.statusCode,200,payoutPreview.body);
       assert.equal(Number(payoutPreview.json().data.availableEarnings),150);
-      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),550);
+      assert.equal(Number(payoutPreview.json().data.cashCustodyBalance),493,"the two cancellation-history expenses (35 + 22) remain real custody outflows");
       assert.equal(Number(payoutPreview.json().data.maxGrossPayoutWithoutManualOffset),150,
         "payout preview must show the lower of available earnings and cash custody before confirmation");
 
@@ -2248,6 +2316,19 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "an insufficient custody balance must not leave a direct payment");
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM employee_earnings_settlements WHERE employee_id=$1",[workerEmployee.id])).rows[0].count),Number(settlementsBeforeInsufficientCustody.rows[0].count),
         "an insufficient custody balance must not leave an additional settlement");
+      // Earlier scenarios in this long integration test intentionally consume the
+      // manager's opening custody. Fund this independent concurrency/remainder case
+      // explicitly so it tests payout serialization, not incidental prior test spend.
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',500,'direct payout concurrency test funding',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const directTestCustodyBalance=Number((await apiPool.query(
+        "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS balance FROM cash_custody_transactions WHERE employee_id=$1",
+        [managerEmployee.id]
+      )).rows[0].balance);
+      assert.ok(directTestCustodyBalance>=250,
+        "direct payout concurrency test must start with enough explicitly funded custody for both payments");
       const directPayload={employeeId:workerEmployee.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,method:"CASH",idempotencyKey:randomUUID()};
       const otherDirectPayload={...directPayload,idempotencyKey:randomUUID()};
       const concurrentDirect=await Promise.all([
