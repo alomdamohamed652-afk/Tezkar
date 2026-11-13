@@ -826,7 +826,11 @@ export async function paymentsRoutes(app:FastifyInstance){
               SELECT wpa.worker_payment_id,wpa.production_entry_id,wpa.amount
                 FROM worker_payment_allocations wpa
                WHERE wpa.worker_payment_id=$1
-              ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING
+                 AND NOT EXISTS(
+                   SELECT 1 FROM worker_payment_order_allocations existing
+                    WHERE existing.worker_payment_id=wpa.worker_payment_id
+                      AND existing.production_entry_id=wpa.production_entry_id
+                 )
             `, [payment.id]);
           }
           await writeAudit(client,{
@@ -892,7 +896,12 @@ export async function paymentsRoutes(app:FastifyInstance){
             );
           } else {
             await client.query(
-              "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",
+              `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+               SELECT $1,$2,$3
+                WHERE NOT EXISTS(
+                  SELECT 1 FROM worker_payment_order_allocations
+                   WHERE worker_payment_id=$1 AND production_entry_id=$2
+                )`,
               [payment.id,row.id,take]
             );
           }
@@ -2209,7 +2218,15 @@ export async function paymentsRoutes(app:FastifyInstance){
           if(amountToAllocate<=0.009)break;
           const amount=Math.round(Math.min(amountToAllocate,rowRemaining)*100)/100;
           if(amount<=0)continue;
-          await client.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3) ON CONFLICT(worker_payment_id,production_entry_id) DO NOTHING",[settlement.payment.id,row.id,amount]);
+          await client.query(
+            `INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+             SELECT $1,$2,$3
+              WHERE NOT EXISTS(
+                SELECT 1 FROM worker_payment_order_allocations
+                 WHERE worker_payment_id=$1 AND production_entry_id=$2
+              )`,
+            [settlement.payment.id,row.id,amount]
+          );
           amountToAllocate=Math.round((amountToAllocate-amount)*100)/100;
         }
         // Final invariant: allocations from different payment records must never
