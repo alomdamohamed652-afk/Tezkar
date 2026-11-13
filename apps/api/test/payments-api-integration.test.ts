@@ -117,7 +117,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const integrityCounts=integrityOverview.json().data.counts;
       for(const key of [
         "missingPayrollExpenses","missingAdjustmentLedgerEntries","cashPaymentsMissingCustodyOut",
-        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink"
+        "payrollPaymentMismatches","advanceDeductionMismatches","paidPayrollMissingAdvanceRepayments","expensesMissingCustodyLink",
+        "workerPaymentReversalMismatches"
       ]){
         assert.equal(typeof integrityCounts[key],"number",`financial integrity overview must return numeric count for ${key}`);
       }
@@ -2144,6 +2145,104 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // A retry of a committed payout remains safe after the accounting period closes,
       // while a new payout must be blocked by that same period lock.
       const directCountBeforePeriodLock=await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE employee_id=$1 AND payment_request_id IS NULL",[workerEmployee.id]);
+      // End-to-end worker payment reversal must restore the production allocation,
+      // available balance, original expense and current custody without deleting originals.
+      const reversalAllocationWorker=(await apiPool.query(
+        "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
+        ["Worker Reversal Allocation "+randomBytes(4).toString("hex")]
+      )).rows[0];
+      await apiPool.query(
+        "INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',5000,'worker reversal test cash top-up',$2)",
+        [managerEmployee.id,manager.id]
+      );
+      const reversalAdvance=(await apiPool.query(
+        `INSERT INTO advance_requests(employee_id,amount,reason,requested_by,status,paid_by,paid_at,repayment_status)
+         VALUES($1,20,'worker payment reversal integration advance',$2,'PAID',$2,now(),'OPEN') RETURNING id`,
+        [reversalAllocationWorker.id,manager.id]
+      )).rows[0].id;
+      const reversalProduction=(await apiPool.query(
+        `INSERT INTO production_entries(
+           employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+           wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+           status,submitted_by,approved_by,approved_at
+         )
+         VALUES($1,$2,$3,$4,CURRENT_DATE,1,$5,$6,100,$7,'PER_PIECE','PER_PIECE',100,0,0,'APPROVED',$8,$8,now())
+         RETURNING id,total_earning_amount`,
+        [reversalAllocationWorker.id,hamzaProducts.rows[0].product_id,bonusRate.stage_id,bonusShift.id,
+         bonusProduct.unit_id,bonusRate.id,perPieceWageType.id,manager.id]
+      )).rows[0];
+      assert.equal(Number(reversalProduction.total_earning_amount),100);
+      const reversalPayout=await app.inject({
+        method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:reversalAllocationWorker.id,cashCustodyEmployeeId:managerEmployee.id,amount:100,advanceRepaymentAmount:20,method:"CASH",idempotencyKey:randomUUID()}
+      });
+      assert.equal(reversalPayout.statusCode,201,reversalPayout.body);
+      const reversalPaymentId=reversalPayout.json().data.payment.id;
+      const reversalSettlement=(await apiPool.query(
+        "SELECT id FROM employee_earnings_settlements WHERE worker_payment_id=$1",
+        [reversalPaymentId]
+      )).rows[0];
+      assert.ok(reversalSettlement,"worker payment must retain its linked settlement");
+      const originalAllocation=(await apiPool.query(
+        "SELECT id,amount FROM employee_earnings_settlement_allocations WHERE settlement_id=$1",
+        [reversalSettlement.id]
+      )).rows[0];
+      assert.ok(originalAllocation,"worker payment must allocate the production entry");
+      const reversalResponse=await app.inject({
+        method:"POST",url:"/api/accounting/reversals",headers:{cookie:managerCookie},
+        payload:{sourceType:"WORKER_PAYMENT",sourceId:reversalPaymentId,amount:100,reason:"عكس دفعة عامل مع توزيع إنتاج",idempotencyKey:randomUUID()}
+      });
+      assert.equal(reversalResponse.statusCode,201,reversalResponse.body);
+      const reversalEffects=await apiPool.query(
+        `SELECT
+          (SELECT COUNT(*)::int FROM worker_payment_allocation_reversals WHERE reversal_id=$1) AS allocation_count,
+          (SELECT COALESCE(SUM(amount),0) FROM worker_payment_allocation_reversals WHERE reversal_id=$1) AS allocation_amount,
+          (SELECT COALESCE(SUM(amount),0) FROM accounting_expense_reversals WHERE reversal_id=$1) AS expense_amount,
+          (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS custody_in,
+          (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$1 AND direction='IN') AS reversal_custody_holder,
+          (SELECT MIN(employee_id::text) FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$3 AND direction='OUT') AS original_custody_holder,
+          (SELECT COUNT(*)::int FROM employee_earnings_settlement_allocations WHERE id=$2) AS original_allocation_count,
+          (SELECT repayment_status FROM advance_requests WHERE id=$4) AS advance_status,
+          (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE reversal_id=$1 AND source_type='ADVANCE_REPAYMENT') AS advance_reversal_lines`,
+        [reversalResponse.json().data.reversal.id,originalAllocation.id,reversalPaymentId,reversalAdvance]
+      );
+      assert.equal(Number(reversalEffects.rows[0].allocation_count),1);
+      assert.equal(Number(reversalEffects.rows[0].allocation_amount),100);
+      assert.equal(Number(reversalEffects.rows[0].expense_amount),100);
+      assert.equal(Number(reversalEffects.rows[0].custody_in),80);
+      assert.equal(reversalEffects.rows[0].reversal_custody_holder,reversalEffects.rows[0].original_custody_holder,
+        "cash must return to the exact custodian who funded the original worker payment");
+      assert.equal(reversalEffects.rows[0].reversal_custody_holder,managerEmployee.id);
+      assert.equal(Number(reversalEffects.rows[0].original_allocation_count),1,
+        "original production allocation must remain immutable after reversal");
+      assert.equal(reversalEffects.rows[0].advance_status,"OPEN",
+        "reversing a worker payout must restore the advance outstanding status");
+      assert.equal(Number(reversalEffects.rows[0].advance_reversal_lines),1,
+        "the linked advance repayment must be reversed in the same financial transaction");
+      const productionAfterReversal=await app.inject({
+        method:"GET",url:`/api/production?employeeId=${reversalAllocationWorker.id}&status=APPROVED&limit=100`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(productionAfterReversal.statusCode,200,productionAfterReversal.body);
+      const reversedProductionRow=productionAfterReversal.json().data.find((row:any)=>row.id===reversalProduction.id);
+      assert.ok(reversedProductionRow,"production row must remain visible after payout reversal");
+      assert.equal(Number(reversedProductionRow.paid_amount),0);
+      assert.equal(Number(reversedProductionRow.remaining_amount),100);
+      assert.equal(reversedProductionRow.payment_status,"UNPAID");
+      const balanceAfterReversal=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${reversalAllocationWorker.id}`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(balanceAfterReversal.statusCode,200,balanceAfterReversal.body);
+      assert.equal(Number(balanceAfterReversal.json().data.availableForSettlement),100,
+        "reversing the payout must restore the worker's payable production balance");
+      const reversalIntegrity=await app.inject({
+        method:"GET",url:"/api/accounting/reconciliation/overview",headers:{cookie:managerCookie}
+      });
+      assert.equal(reversalIntegrity.statusCode,200,reversalIntegrity.body);
+      assert.equal(reversalIntegrity.json().data.counts.workerPaymentReversalMismatches,0,
+        "the read-only reconciliation report must confirm the reversal's ledger, custody, expense and allocation effects");
+
       const today=(await apiPool.query("SELECT CURRENT_DATE::text AS date")).rows[0].date;
       const lockedPeriod=await app.inject({
         method:"POST",url:"/api/accounting/periods",headers:{cookie:managerCookie},
