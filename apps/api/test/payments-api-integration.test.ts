@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -993,11 +994,21 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",
         [previousCustodyPaymentId]
       )).rows[0].count),0,"retry must not create a custody debit");
+      // Re-run the idempotent migration against a simulated legacy row. This
+      // proves that a previous-custody payment is recovered from its immutable
+      // settlement marker before the column is made NOT NULL again.
+      const custodySourceMigration=await readFile(
+        path.resolve(apiDir,"src/db/migrations/2026111202_worker_payment_settlement_source.sql"),
+        "utf8"
+      );
+      await apiPool.query("ALTER TABLE worker_payments ALTER COLUMN settlement_source DROP NOT NULL");
+      await apiPool.query("UPDATE worker_payments SET settlement_source=NULL WHERE id=$1",[previousCustodyPaymentId]);
+      await apiPool.query(custodySourceMigration);
       const previousCustodySource=await apiPool.query(
         "SELECT settlement_source FROM worker_payments WHERE id=$1",[previousCustodyPaymentId]
       );
       assert.equal(previousCustodySource.rows[0].settlement_source,"PREVIOUS_CUSTODY",
-        "the custody source must be persisted as structured payment data");
+        "migration must backfill legacy previous-custody payments from the settlement marker");
       await apiPool.query(
         "UPDATE employee_earnings_settlements SET notes='edited settlement note without source marker' WHERE worker_payment_id=$1",
         [previousCustodyPaymentId]
