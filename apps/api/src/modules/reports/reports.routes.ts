@@ -30,6 +30,22 @@ const earningsFilters = z.object({
 });
 
 export async function reportsRoutes(app: FastifyInstance) {
+  app.get("/api/reports/production/options", { preHandler: [authenticateRequest, requirePermission("reports.view")] }, async () => {
+    const [orders, stages, shifts] = await Promise.all([
+      pool.query(`SELECT DISTINCT po.id,COALESCE(NULLIF(po.code,'') || ' — ','') || po.order_name AS label
+                    FROM production_entries p
+                    JOIN order_stages os ON os.id=p.order_stage_id
+                    JOIN production_orders po ON po.id=os.order_id
+                   ORDER BY label`),
+      pool.query(`SELECT DISTINCT st.id,st.name AS label
+                    FROM production_entries p JOIN stages st ON st.id=p.stage_id
+                   ORDER BY label`),
+      pool.query(`SELECT DISTINCT sh.id,sh.name AS label
+                    FROM production_entries p JOIN shifts sh ON sh.id=p.shift_id
+                   ORDER BY label`)
+    ]);
+    return { orders: orders.rows, stages: stages.rows, shifts: shifts.rows };
+  });
   app.get("/api/reports/production", { preHandler: [authenticateRequest, requirePermission("reports.view")] }, async request => {
     const parsed = reportFilters.safeParse(request.query);
     if (!parsed.success) throw new AppError("INVALID_REPORT_FILTERS", "فلاتر تقرير الإنتاج غير صحيحة", 422);
