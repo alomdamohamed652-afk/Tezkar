@@ -61,8 +61,8 @@ export async function reportsRoutes(app: FastifyInstance) {
       whereSql = "WHERE " + where.join(" AND ");
     }
 
-    // The count and totals use all of the same business filters (including payment state).
-    // Keep joins for allocation-based filters so pagination cannot hide matching rows.
+    // Allocation joins are needed for payment-state filtering only. Avoid evaluating them
+    // in count/summary/group queries when the report is not filtered by payment state.
     const paymentFilterJoins = q.paymentStatus ? `LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
