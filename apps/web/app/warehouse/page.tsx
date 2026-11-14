@@ -62,7 +62,7 @@ export default function WarehousePage(){
    if(needOverview&&canViewCosts)setCost(c.data);
    if(needProducts&&canViewCosts)setLots(lotData.data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
- useEffect(()=>{if(session)void load()},[activeView,from,to,warehouseId,session,has,canViewCosts,canViewOrderDetails]);
+ useEffect(()=>{if(session)void load()},[activeView,activeView==="overview"?from:"",activeView==="overview"?to:"",activeView==="overview"||activeView==="products"||activeView==="movements"?warehouseId:"",session,has,canViewCosts,canViewOrderDetails]);
  useEffect(()=>{if(year){setFrom(year+"-01-01");setTo(year+"-12-31")}},[year]);
  useEffect(()=>{if(!showQuickProduct||units.length)return;let active=true;api<{data:Unit[]}>("/api/units").then(r=>{if(active){setUnits(r.data);if(!quickProductUnit)setQuickProductUnit(r.data.find(x=>x.code==="PCS")?.id||r.data[0]?.id||"")}}).catch(e=>{if(active)setError(e instanceof Error?e.message:"تعذر تحميل وحدات القياس")});return()=>{active=false}},[showQuickProduct,units.length]);
 
