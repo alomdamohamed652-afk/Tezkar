@@ -28,13 +28,13 @@ export default function EarningsPage(){
     setSummary(s.data);setEntries(l.data);
    }else{
     const canCreateAdjustment=has("production.adjustments.create");
-    const [l,a,reference]=await Promise.all([
+    const [l,a,employeeResult,shiftResult]=await Promise.all([
       api<{data:Entry[]}>("/api/earnings"),
-      api<{data:Adjustment[]}>("/api/production/adjustments"),
+      has("production.adjustments.view")||canCreateAdjustment?api<{data:Adjustment[]}>("/api/production/adjustments"):Promise.resolve({data:[] as Adjustment[]}),
       canCreateAdjustment?api<{data:Employee[]}>("/api/employees"):Promise.resolve({data:[] as Employee[]}),
       canCreateAdjustment?api<{data:Shift[]}>("/api/shifts"):Promise.resolve({data:[] as Shift[]})
     ]);
-    setEntries(l.data);setAdjustments(a.data);setEmployees(reference[0].data);setShifts(reference[1].data);
+    setEntries(l.data);setAdjustments(a.data);setEmployees(employeeResult.data);setShifts(shiftResult.data);
    }
   }catch(e){setError(e instanceof Error?e.message:"حدث خطأ أثناء تحميل سجل المستحقات");}
  }
