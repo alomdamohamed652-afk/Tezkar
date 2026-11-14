@@ -51,11 +51,23 @@ export default function ProductionPage(){
  async function load(){
   setLoading(true);setError("");
   try{
-   const [e,o,p,s,h,leaders,os,pt]=await Promise.all([
-    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),api<{data:ShiftLeader[]}>("/api/shift-leaders"),
+   // Limit the initial reference-data burst so it cannot consume the whole DB pool.
+   const [e,o]=await Promise.all([
+    api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),
+   ]);
+   setEmployees(e.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));
+   const [p,s]=await Promise.all([
+    api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),
+   ]);
+   setProducts(p.data);setStages(s.data);
+   const [h,leaders]=await Promise.all([
+    api<{data:Shift[]}>("/api/shifts"),api<{data:ShiftLeader[]}>("/api/shift-leaders"),
+   ]);
+   setShifts(h.data);setShiftLeaders(leaders.data);
+   const [os,pt]=await Promise.all([
     api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
    ]);
-   setEmployees(e.data);setStages(s.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);
+   setOrderStages(os.data);setProductionTypes(pt.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");
    const preferredShiftId=(pref.data as any).shiftId||"";
