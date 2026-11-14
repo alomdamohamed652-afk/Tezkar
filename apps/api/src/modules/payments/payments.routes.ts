@@ -342,7 +342,7 @@ async function executeWorkerPayment(
   const available=input.availableBalanceOverride??await getAvailableEarnings(client,input.employeeId);
   if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`المتاح للتسوية ${available.toFixed(2)} ج.م فقط`,409);
   const carryForwardAmount=input.carryForwardOverpayment
-    ? Math.max(0,Math.round((input.grossAmount-Math.max(0,available))*100)/100)
+    ? Math.max(0,Math.round((input.grossAmount-available)*100)/100)
     : 0;
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
