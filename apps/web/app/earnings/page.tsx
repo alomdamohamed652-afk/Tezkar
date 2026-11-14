@@ -31,7 +31,8 @@ export default function EarningsPage(){
     const [l,a,reference]=await Promise.all([
       api<{data:Entry[]}>("/api/earnings"),
       api<{data:Adjustment[]}>("/api/production/adjustments"),
-      canCreateAdjustment?Promise.all([api<{data:Employee[]}>("/api/employees"),api<{data:Shift[]}>("/api/shifts")]):Promise.resolve([{data:[] as Employee[]},{data:[] as Shift[]}])
+      canCreateAdjustment?api<{data:Employee[]}>("/api/employees"):Promise.resolve({data:[] as Employee[]}),
+      canCreateAdjustment?api<{data:Shift[]}>("/api/shifts"):Promise.resolve({data:[] as Shift[]})
     ]);
     setEntries(l.data);setAdjustments(a.data);setEmployees(reference[0].data);setShifts(reference[1].data);
    }
