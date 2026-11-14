@@ -207,7 +207,7 @@ export async function reportsRoutes(app: FastifyInstance) {
              FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id
          ) adj ON TRUE
         ORDER BY p.work_date DESC,p.created_at DESC,p.id
-        LIMIT $PLACEHOLDER_LIMIT OFFSET ${offsetParam}`,
+        LIMIT ${limitParam} OFFSET ${offsetParam}`,
       pageParams
     );
 
