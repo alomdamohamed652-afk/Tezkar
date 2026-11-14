@@ -132,6 +132,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
+          AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
     const summaryResult = q.pageOnly ? null : await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
