@@ -4,7 +4,7 @@ import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, crea
 export const API_URL = API_BASE;
 
 const getCache = createMemoryGetCache({ maxEntries: 100 });
-const deviceCache = createSessionStorageGetCache();
+const deviceCache = createSessionStorageGetCache({ storage: (() => { try { return typeof window !== "undefined" ? window.sessionStorage : null; } catch { return null; } })() });
 const pendingGets = createPendingGetRegistry();
 let cacheGeneration = 0;
 
