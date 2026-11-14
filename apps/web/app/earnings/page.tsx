@@ -13,7 +13,7 @@ type Shift={id:string;code:string;name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null};
 
 export default function EarningsPage(){
- const {has}=usePermissions();
+ const {has,session}=usePermissions();
  const [summary,setSummary]=useState<Summary|null>(null),[entries,setEntries]=useState<Entry[]>([]),[adjustments,setAdjustments]=useState<Adjustment[]>([]);
  const [employees,setEmployees]=useState<Employee[]>([]),[shifts,setShifts]=useState<Shift[]>([]);
  const [employeeId,setEmployeeId]=useState(""),[shiftId,setShiftId]=useState(""),[type,setType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10));
@@ -22,23 +22,22 @@ export default function EarningsPage(){
  async function load(){
   setError("");
   try{
-   const me=await api<{data:{roleCodes:string[]}}>("/api/auth/me");
-   const worker=me.data.roleCodes.includes("worker");setIsWorker(worker);
+   const worker=session?.roleCodes?.some(code=>code.toLowerCase()==="worker")??false;setIsWorker(worker);
    if(worker){
     const [s,l]=await Promise.all([api<{data:Summary}>("/api/earnings/my-summary"),api<{data:Entry[]}>("/api/earnings/my-ledger")]);
     setSummary(s.data);setEntries(l.data);
    }else{
-    const [l,a,e,s]=await Promise.all([
+    const canCreateAdjustment=has("production.adjustments.create");
+    const [l,a,reference]=await Promise.all([
       api<{data:Entry[]}>("/api/earnings"),
       api<{data:Adjustment[]}>("/api/production/adjustments"),
-      api<{data:Employee[]}>("/api/employees"),
-      api<{data:Shift[]}>("/api/shifts")
+      canCreateAdjustment?Promise.all([api<{data:Employee[]}>("/api/employees"),api<{data:Shift[]}>("/api/shifts")]):Promise.resolve([{data:[] as Employee[]},{data:[] as Shift[]}])
     ]);
-    setEntries(l.data);setAdjustments(a.data);setEmployees(e.data);setShifts(s.data);
+    setEntries(l.data);setAdjustments(a.data);setEmployees(reference[0].data);setShifts(reference[1].data);
    }
   }catch(e){setError(e instanceof Error?e.message:"حدث خطأ أثناء تحميل سجل المستحقات");}
  }
- useEffect(()=>{void load()},[]);
+ useEffect(()=>{if(session)void load()},[session,has]);
 
  async function addAdjustment(e:FormEvent){
   e.preventDefault();setError("");setMessage("");
