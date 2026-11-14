@@ -1,15 +1,17 @@
 import { API_BASE } from "./api-base";
-import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, getApiCacheTtl } from "./api-cache.mjs";
+import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, createSessionStorageGetCache, getApiCacheTtl } from "./api-cache.mjs";
 
 export const API_URL = API_BASE;
 
 const getCache = createMemoryGetCache({ maxEntries: 100 });
+const deviceCache = createSessionStorageGetCache();
 const pendingGets = createPendingGetRegistry();
 let cacheGeneration = 0;
 
 export function clearApiCache(): void {
   cacheGeneration += 1;
   getCache.clear();
+  deviceCache.clear();
   pendingGets.clear();
 }
 
@@ -76,8 +78,8 @@ export async function api<T>(
 
   if (canCache) {
     if (cacheTtlMs > 0) {
-      const cached = getCache.get(key);
-      if (cached !== undefined) return cached as T;
+      const cached = getCache.get(key) ?? deviceCache.get(key);
+      if (cached !== undefined) { getCache.set(key, cached, cacheTtlMs); return cached as T; }
     }
     const pending = pendingGets.get(key);
     if (pending) return pending as Promise<T>;
@@ -153,6 +155,7 @@ export async function api<T>(
 
     if (canCache && cacheTtlMs > 0 && requestGeneration === cacheGeneration) {
       getCache.set(key, body, cacheTtlMs);
+      deviceCache.set(key, body, cacheTtlMs);
     }
     return body as T;
   })();
