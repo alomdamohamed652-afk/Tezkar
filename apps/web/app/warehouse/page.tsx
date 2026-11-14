@@ -36,8 +36,33 @@ export default function WarehousePage(){
  async function load(){
   if(!session)return;
   setError("");setMessage("");
-  try{const qs=new URLSearchParams();if(warehouseId)qs.set("warehouseId",warehouseId);if(from)qs.set("from",from);if(to)qs.set("to",to);const suffix=qs.toString()?"?"+qs.toString():"";const stockQs=new URLSearchParams();if(warehouseId)stockQs.set("warehouseId",warehouseId);const stockSuffix=stockQs.toString()?"?"+stockQs.toString():"";const [w,l,p,o,u,s,allStock,m,c,lotData]=await Promise.all([api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Location[]}>("/api/warehouse/locations"),api<{data:Product[]}>("/api/products"),canViewOrderDetails?api<{data:Order[]}>("/api/orders"):Promise.resolve({data:[] as Order[]}),api<{data:Unit[]}>("/api/units"),api<{data:Stock[]}>("/api/warehouse/stock"+stockSuffix),api<{data:Stock[]}>("/api/warehouse/stock"),api<{data:Movement[]}>("/api/warehouse/movements"+suffix),canViewCosts?api<{data:Cost}>("/api/warehouse/dashboard"+suffix):Promise.resolve({data:null as Cost|null}),api<{data:Lot[]}>("/api/warehouse/lots"+(warehouseId?"?warehouseId="+warehouseId:""))]);setWarehouses(w.data.filter(x=>x.is_active));setLocations(l.data);setProducts(p.data);setMinimumStockDrafts(prev=>{const next={...prev};for(const item of p.data)if(next[item.id]===undefined)next[item.id]=String(item.minimum_stock??0);return next});setOrders(o.data);setUnits(u.data);if(!quickProductUnit)setQuickProductUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"");setStock(s.data);setAllStockForAlerts(allStock.data);setMovements(m.data);setLots(lotData.data);setCost(c.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
- useEffect(()=>{if(session)void load()},[from,to,warehouseId,session,has,canViewCosts,canViewOrderDetails]);
+  try{
+   const qs=new URLSearchParams();if(warehouseId)qs.set("warehouseId",warehouseId);if(from)qs.set("from",from);if(to)qs.set("to",to);const suffix=qs.toString()?"?"+qs.toString():"";
+   const stockQs=new URLSearchParams();if(warehouseId)stockQs.set("warehouseId",warehouseId);const stockSuffix=stockQs.toString()?"?"+stockQs.toString():"";
+   const needOverview=activeView==="overview",needProducts=activeView==="products",needMovements=activeView==="movements",needWarehouses=activeView==="warehouses";
+   const [w,l,p,o,u,s,allStock,m,c,lotData]=await Promise.all([
+    needOverview||needMovements||needWarehouses?api<{data:Warehouse[]}>("/api/warehouses"):Promise.resolve({data:warehouses}),
+    needWarehouses?api<{data:Location[]}>("/api/warehouse/locations"):Promise.resolve({data:locations}),
+    needOverview||needProducts?api<{data:Product[]}>("/api/products"):Promise.resolve({data:products}),
+    needOverview&&canViewOrderDetails?api<{data:Order[]}>("/api/orders"):Promise.resolve({data:orders}),
+    (needProducts||showQuickProduct)?api<{data:Unit[]}>("/api/units"):Promise.resolve({data:units}),
+    needOverview||needProducts?api<{data:Stock[]}>("/api/warehouse/stock"+stockSuffix):Promise.resolve({data:stock}),
+    needOverview?api<{data:Stock[]}>("/api/warehouse/stock"):Promise.resolve({data:allStockForAlerts}),
+    needMovements||needOverview?api<{data:Movement[]}>("/api/warehouse/movements"+suffix):Promise.resolve({data:movements}),
+    needOverview&&canViewCosts?api<{data:Cost}>("/api/warehouse/dashboard"+suffix):Promise.resolve({data:cost}),
+    needProducts&&canViewCosts?api<{data:Lot[]}>("/api/warehouse/lots"+(warehouseId?"?warehouseId="+warehouseId:"")):Promise.resolve({data:lots})
+   ]);
+   if(needOverview||needMovements||needWarehouses)setWarehouses(w.data.filter(x=>x.is_active));
+   if(needWarehouses)setLocations(l.data);
+   if(needOverview||needProducts){setProducts(p.data);setMinimumStockDrafts(prev=>{const next={...prev};for(const item of p.data)if(next[item.id]===undefined)next[item.id]=String(item.minimum_stock??0);return next});setStock(s.data)}
+   if(needOverview&&canViewOrderDetails)setOrders(o.data);
+   if(needProducts||showQuickProduct){setUnits(u.data);if(!quickProductUnit)setQuickProductUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"")}
+   if(needOverview)setAllStockForAlerts(allStock.data);
+   if(needMovements||needOverview)setMovements(m.data);
+   if(needOverview&&canViewCosts)setCost(c.data);
+   if(needProducts&&canViewCosts)setLots(lotData.data);
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
+ useEffect(()=>{if(session)void load()},[activeView,from,to,warehouseId,session,has,canViewCosts,canViewOrderDetails,showQuickProduct]);
  useEffect(()=>{if(year){setFrom(year+"-01-01");setTo(year+"-12-31")}},[year]);
 
  const lowStockProducts=useMemo(()=>{const eligibleWarehouseIds=new Set(warehouses.filter(w=>w.is_active&&w.warehouse_type!=="SCRAP"&&(!warehouseId||w.id===warehouseId)).map(w=>w.id));return products.flatMap(p=>{const quantity=allStockForAlerts.reduce((sum,row)=>row.product_id===p.id&&eligibleWarehouseIds.has(row.warehouse_id)?sum+Number(row.quantity||0):sum,0);const minimum=Number(p.minimum_stock??0);return p.track_inventory!==false&&p.minimum_stock!==undefined&&p.minimum_stock!==null&&minimum>0&&quantity<=minimum?[{...p,current_quantity:quantity,shortage_quantity:Math.max(0,minimum-quantity)}]:[];}).sort((a,b)=>a.current_quantity-b.current_quantity)},[products,allStockForAlerts,warehouses,warehouseId]);
