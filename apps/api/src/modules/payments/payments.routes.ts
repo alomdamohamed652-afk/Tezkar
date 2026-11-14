@@ -337,11 +337,11 @@ async function recordCashCustodyOut(client:import("pg").PoolClient,userId:string
 
 async function executeWorkerPayment(
   client:import("pg").PoolClient,
-  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;settlementSource?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null;availableBalanceOverride?:number|null}
+  input:{userId:string;actorEmployeeId:string|null;ipAddress:string|null;userAgent:string|null;custodyEmployeeId:string;employeeId:string;requestId:string|null;requestCode:string;grossAmount:number;method:string;transferReference:string|null;manualRepaymentAmount:number;settlementSource?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";idempotencyKey?:string|null;idempotencyFingerprint?:string|null;skipCashCustodyOut?:boolean;allowOverpayment?:boolean;carryForwardOverpayment?:boolean;skipProductionAllocations?:boolean;productionEntryIds?:string[]|null;availableBalanceOverride?:number|null}
 ){
   const available=input.availableBalanceOverride??await getAvailableEarnings(client,input.employeeId);
   if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`المتاح للتسوية ${available.toFixed(2)} ج.م فقط`,409);
-  const carryForwardAmount=input.allowOverpayment
+  const carryForwardAmount=input.carryForwardOverpayment
     ? Math.max(0,Math.round((input.grossAmount-Math.max(0,available))*100)/100)
     : 0;
   const paymentDate=new Date().toISOString().slice(0,10);
@@ -2189,6 +2189,7 @@ export async function paymentsRoutes(app:FastifyInstance){
         idempotencyFingerprint: fingerprint,
         skipCashCustodyOut: parsed.data.settlementSource === "PREVIOUS_CUSTODY",
         allowOverpayment: parsed.data.allowOverpayment,
+        carryForwardOverpayment: parsed.data.allowOverpayment && !parsed.data.orderId && parsed.data.settlementMode === "ALL_DUES",
         skipProductionAllocations: Boolean(parsed.data.orderId),
         availableBalanceOverride: parsed.data.orderId ? (orderProductionCount > 0 ? orderAvailable : available) : null,
         productionEntryIds: parsed.data.orderId ? null : parsed.data.productionEntryIds ?? null
