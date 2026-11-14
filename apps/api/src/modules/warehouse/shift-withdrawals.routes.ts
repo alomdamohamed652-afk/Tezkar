@@ -3,8 +3,9 @@ import { z } from "zod";
 import { withTransaction, pool } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
+import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 
 const line=z.object({
   productId:z.string().uuid(),
@@ -30,7 +31,7 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
   const lots=await client.query(`
     SELECT id,location_id,remaining_quantity,unit_cost
       FROM inventory_lots
-     WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0
+     WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0 AND cost_confirmed=TRUE
      ORDER BY created_at ASC,id ASC
      FOR UPDATE`,
     [input.productId,input.warehouseId]
@@ -94,23 +95,33 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
 }
 
 export async function shiftWithdrawalRoutes(app:FastifyInstance){
- app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
-  const r=await pool.query(`
-    SELECT sw.id,sw.code,sw.withdrawal_date,sw.notes,
+ app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+  const parsed=z.object({limit:z.coerce.number().int().min(1).max(300).default(300),offset:z.coerce.number().int().nonnegative().default(0)}).safeParse(request.query);
+  if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات ترقيم صفحات مسحوبات الورديات غير صحيحة",422);
+  const {limit,offset}=parsed.data;
+  const [r,totalResult]=await Promise.all([
+   pool.query(`
+    SELECT sw.id,sw.code,sw.withdrawal_date,sw.created_at,sw.notes,
            s.code AS shift_code,s.name AS shift_name,
            e.code AS employee_code,e.full_name AS employee_name,
            o.code AS order_code,o.order_name,
            COUNT(l.id)::int AS line_count,
-           COALESCE(SUM(l.quantity),0) AS total_quantity
+           COALESCE(SUM(l.quantity),0) AS total_quantity,
+           COALESCE(string_agg(DISTINCT p.name,' '),'') AS product_names,
+           COALESCE(string_agg(DISTINCT NULLIF(l.notes,''),' '),'') AS line_descriptions
       FROM shift_withdrawals sw
       JOIN shifts s ON s.id=sw.shift_id
       LEFT JOIN employees e ON e.id=sw.employee_id
       LEFT JOIN production_orders o ON o.id=sw.order_id
       LEFT JOIN shift_withdrawal_lines l ON l.withdrawal_id=sw.id
+      LEFT JOIN products p ON p.id=l.product_id
      GROUP BY sw.id,s.code,s.name,e.code,e.full_name,o.code,o.order_name
-     ORDER BY sw.withdrawal_date DESC,sw.created_at DESC
-     LIMIT 300`);
-  return {data:r.rows};
+     ORDER BY sw.withdrawal_date DESC,sw.created_at DESC,sw.id DESC
+     LIMIT $1 OFFSET $2`,[limit,offset]),
+   pool.query("SELECT COUNT(*)::int AS total FROM shift_withdrawals")
+  ]);
+  const total=Number(totalResult.rows[0]?.total||0);
+  return {data:r.rows,pagination:{limit,offset,total,hasMore:offset+r.rows.length<total}};
  });
 
  app.get("/api/shift-withdrawals/:id",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
@@ -135,10 +146,20 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
   return {data:{withdrawal:header.rows[0],lines:lines.rows}};
  });
 
- app.post("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.move")]},async(request,reply)=>{
+ app.post("/api/shift-withdrawals",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.move","all"],["warehouse.shift_withdrawal.create","all"])]},async(request,reply)=>{
   const p=schema.safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات مسحوبات الوردية غير صحيحة",422);
   const result=await withTransaction(async client=>{
+   const withdrawalDate=p.data.withdrawalDate??new Date().toISOString().slice(0,10);
+   await assertAccountingPeriodOpen(client,withdrawalDate);
+   // Use the same product-first lock order as warehouse receipts/movements.
+   // Lock all products in a deterministic order before locking FIFO lots or balances.
+   const productIds=[...new Set(p.data.lines.map(item=>item.productId))].sort();
+   const lockedProducts=await client.query(
+     "SELECT id FROM products WHERE id=ANY($1::uuid[]) AND is_active=TRUE AND track_inventory=TRUE ORDER BY id FOR UPDATE",
+     [productIds]
+   );
+   if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
    const shift=await client.query("SELECT id FROM shifts WHERE id=$1 AND is_active=TRUE",[p.data.shiftId]);
    if(!shift.rowCount)throw new AppError("SHIFT_NOT_FOUND","الوردية غير موجودة أو غير نشطة",422);
 
@@ -179,14 +200,10 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
     if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",422);
     const warehouse=await client.query("SELECT id FROM warehouses WHERE id=$1 AND is_active=TRUE",[item.warehouseId]);
     if(!warehouse.rowCount)throw new AppError("WAREHOUSE_NOT_FOUND","المخزن غير موجود أو غير نشط",422);
-    if(p.data.orderStageId){
-      const stage=await client.query("SELECT output_product_id FROM order_stages WHERE id=$1",[p.data.orderStageId]);
-      if(stage.rows[0]?.output_product_id && stage.rows[0].output_product_id!==item.productId){
-        throw new AppError("ORDER_STAGE_PRODUCT_MISMATCH","الصنف لا يطابق المنتج الناتج من مرحلة الطلب",409);
-      }
-    }
+    // A stage withdrawal represents consumed inputs, not the stage output. Input
+    // products must be allowed to differ from order_stages.output_product_id.
     const available=await client.query(
-      "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0",
+      "SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND remaining_quantity>0 AND cost_confirmed=TRUE",
       [item.productId,item.warehouseId]
     );
     if(Number(available.rows[0].quantity)<item.quantity)throw new AppError("INSUFFICIENT_STOCK","الكمية المطلوبة أكبر من رصيد الصنف في المخزن",409);
