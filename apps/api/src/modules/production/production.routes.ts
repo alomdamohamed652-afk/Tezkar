@@ -104,7 +104,13 @@ export async function productionRoutes(app: FastifyInstance) {
         + ${differenceAllocatedSql}`;
 
     const result = await pool.query(
-      `SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
+      `WITH page AS (
+         SELECT p.id
+           FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
+          ORDER BY p.work_date DESC,p.created_at DESC
+          LIMIT ${params.length - 1} OFFSET ${params.length}
+       )
+       SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
          FROM warehouse_locations l
          JOIN warehouses w ON w.id=l.warehouse_id
         WHERE l.is_active=TRUE AND w.is_active=TRUE
@@ -264,7 +270,8 @@ payment_totals.paid_amount,
               sh.code AS shift_code,sh.name AS shift_name,
               u.code AS unit_code,u.name AS unit_name,
               p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id
-         FROM production_entries p
+         FROM page page_rows
+         JOIN production_entries p ON p.id=page_rows.id
          JOIN employees e ON e.id=p.employee_id
          LEFT JOIN employees sle ON sle.id=p.shift_leader_employee_id
          JOIN products pr ON pr.id=p.product_id
@@ -273,9 +280,7 @@ payment_totals.paid_amount,
          JOIN units u ON u.id=p.unit_id
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
          CROSS JOIN LATERAL (SELECT ${paidSql} AS paid_amount) payment_totals
-        ${where.length ? "WHERE " + where.join(" AND ") : ""}
-        ORDER BY p.work_date DESC,p.created_at DESC
-        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        ORDER BY p.work_date DESC,p.created_at DESC`,
       params
     );
 
