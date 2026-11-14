@@ -341,18 +341,23 @@ async function executeWorkerPayment(
 ){
   const available=input.availableBalanceOverride??await getAvailableEarnings(client,input.employeeId);
   if(!input.allowOverpayment&&input.grossAmount>available+0.009)throw new AppError("INSUFFICIENT_BALANCE",`المتاح للتسوية ${available.toFixed(2)} ج.م فقط`,409);
+  const carryForwardAmount=input.allowOverpayment
+    ? Math.max(0,Math.round((input.grossAmount-Math.max(0,available))*100)/100)
+    : 0;
   const paymentDate=new Date().toISOString().slice(0,10);
   const planned=await planAdvanceRepayments(client,input.employeeId,input.grossAmount,input.manualRepaymentAmount,paymentDate);
   const payment=await client.query(
     `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,payment_request_id,paid_by,notes,transfer_reference,idempotency_key,idempotency_fingerprint,settlement_source)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
     [input.employeeId,planned.cashPaid,input.grossAmount,planned.total,input.method,input.requestId,input.userId,
-      planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
+      [planned.total>0?`إجمالي المستحق ${input.grossAmount.toFixed(2)} ج.م؛ استرداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي المدفوع ${planned.cashPaid.toFixed(2)} ج.م`:null,
+       carryForwardAmount>0?`زيادة تسوية مرحّلة على حساب العامل: ${carryForwardAmount.toFixed(2)} ج.م`:null].filter(Boolean).join("؛ ")||null,
       input.transferReference,input.idempotencyKey??null,input.idempotencyFingerprint??null,input.settlementSource??"CURRENT_CUSTODY"]);
   const settlement=await client.query(
     `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [input.employeeId,input.grossAmount,planned.cashPaid,planned.total,paymentDate,`تسوية طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
+    [input.employeeId,input.grossAmount,planned.cashPaid,planned.total,paymentDate,
+      carryForwardAmount>0?`تسوية طلب قبض ${input.requestCode}؛ زيادة مرحّلة ${carryForwardAmount.toFixed(2)} ج.م`:`تسوية طلب قبض ${input.requestCode}`,input.userId,payment.rows[0].id]);
   for(const item of planned.plan){
     const repayment=await client.query(
       `INSERT INTO advance_repayments(advance_id,amount,repayment_type,payment_date,notes,created_by,source_worker_payment_id,settlement_id)
@@ -373,7 +378,8 @@ async function executeWorkerPayment(
      VALUES($1,'WORKER_PAYMENT',$2,$3,$4,$5,$6)
      ON CONFLICT (worker_payment_id) WHERE worker_payment_id IS NOT NULL DO NOTHING`,
     [input.employeeId,input.grossAmount,payment.rows[0].id,settlement.rows[0].id,input.userId,
-      planned.total>0?`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}؛ سداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي نقد مدفوع ${planned.cashPaid.toFixed(2)} ج.م`:`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}`]);
+      [planned.total>0?`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}؛ سداد سلف ${planned.total.toFixed(2)} ج.م؛ صافي نقد مدفوع ${planned.cashPaid.toFixed(2)} ج.م`:`تسوية إجمالي مستحقات طلب قبض ${input.requestCode}`,
+       carryForwardAmount>0?`زيادة مرحّلة ${carryForwardAmount.toFixed(2)} ج.م`:null].filter(Boolean).join("؛ ")]);
   if(!input.skipCashCustodyOut) await recordCashCustodyOut(client,input.userId,input.custodyEmployeeId,planned.cashPaid,input.requestCode,payment.rows[0].id,input.grossAmount,planned.total);
 
   if(!input.skipProductionAllocations){
@@ -419,7 +425,7 @@ async function executeWorkerPayment(
     }
   }
 
-  return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
+  return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,carryForwardAmount,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
 }
 
 export async function paymentsRoutes(app:FastifyInstance){
