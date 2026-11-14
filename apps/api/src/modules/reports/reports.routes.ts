@@ -16,7 +16,8 @@ const reportFilters = z.object({
   paymentStatus: z.enum(["PAID", "PARTIAL", "UNPAID", "UNALLOCATED"]).optional(),
   groupBy: z.enum(["none", "employee", "machine", "order", "shift", "day"]).default("none"),
   limit: z.coerce.number().int().min(1).max(5000).default(1000),
-  offset: z.coerce.number().int().min(0).default(0)
+  offset: z.coerce.number().int().min(0).default(0),
+  pageOnly: z.enum(["true","false"]).default("false").transform(value => value === "true")
 }).refine(value => !value.from || !value.to || value.from <= value.to, {
   message: "تاريخ البداية يجب أن يكون قبل تاريخ النهاية"
 });
@@ -103,7 +104,7 @@ export async function reportsRoutes(app: FastifyInstance) {
           AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
            AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
-    const countResult = await pool.query(
+    const countResult = q.pageOnly ? null : await pool.query(
       `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
       params
     );
@@ -132,7 +133,7 @@ export async function reportsRoutes(app: FastifyInstance) {
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
-    const summaryResult = await pool.query(
+    const summaryResult = q.pageOnly ? null : await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
               COALESCE(SUM(p.hours_worked),0) AS hours,
               COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))),0) AS earnings,
@@ -221,11 +222,12 @@ export async function reportsRoutes(app: FastifyInstance) {
          ) adj ON TRUE
         ORDER BY p.work_date DESC,p.created_at DESC,p.id
         LIMIT $${params.length+1} OFFSET $${params.length+2}`,
-      [...params,q.limit,q.offset]
+      [...params,q.pageOnly ? q.limit + 1 : q.limit,q.offset]
     );
 
-    const rows = result.rows;
-    const count = Number(countResult.rows[0]?.total ?? 0);
+    const hasExtraPageRow = q.pageOnly && result.rows.length > q.limit;
+    const rows = hasExtraPageRow ? result.rows.slice(0, q.limit) : result.rows;
+    const count = Number(countResult?.rows[0]?.total ?? 0);
     const groupExpression: Record<string,string> = {
       employee: "e.full_name",
       machine: "COALESCE(pt.name,pr.name)",
@@ -233,7 +235,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       shift: "sh.name",
       day: "to_char(p.work_date,'YYYY-MM-DD')"
     };
-    const groups = q.groupBy === "none" ? [] : (await pool.query(
+    const groups = q.pageOnly || q.groupBy === "none" ? [] : (await pool.query(
       `SELECT ${groupExpression[q.groupBy]} AS group_name,COUNT(*)::int AS entries,
               COALESCE(SUM(p.quantity),0) AS quantity,
               COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount+COALESCE(p.bonus_amount,0)-COALESCE(p.deduction_amount,0))),0) AS earnings,
@@ -268,8 +270,8 @@ export async function reportsRoutes(app: FastifyInstance) {
         GROUP BY 1 ORDER BY 1`,
       params
     )).rows;
-    return { data: rows, pagination: {total:count,limit:q.limit,offset:q.offset,hasMore:q.offset+rows.length<count},
-      summary:summaryResult.rows[0], groups, meta:{from:q.from??null,to:q.to??null,generatedAt:new Date().toISOString(),groupBy:q.groupBy} };
+    return { data: rows, pagination: {total:q.pageOnly ? null : count,limit:q.limit,offset:q.offset,hasMore:q.pageOnly ? hasExtraPageRow : q.offset+rows.length<count},
+      summary:summaryResult?.rows[0] ?? null, groups, meta:{from:q.from??null,to:q.to??null,generatedAt:new Date().toISOString(),groupBy:q.groupBy} };
   });
 
   app.get("/api/reports/employee-earnings", { preHandler: [authenticateRequest, requirePermission("reports.view")] }, async request => {
