@@ -2080,3 +2080,16 @@ textarea:hover:not(:disabled) {
   .sidebar.sidebar-collapsed .sidebar-footer .nav-label{display:block}
   .main{min-width:0;padding:18px 14px 28px}
 }
+
+
+/* Lightweight branded transition indicator; never delays navigation. */
+.tezkar-route-loader{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:rgb(248 250 252 / 88%);backdrop-filter:blur(3px);animation:tezkar-loader-in .16s ease-out}
+.tezkar-route-loader-card{display:grid;justify-items:center;gap:12px;min-width:190px;padding:24px 30px;border:1px solid var(--border);border-radius:18px;background:#fff;box-shadow:0 16px 50px rgb(15 23 42 / 13%)}
+.tezkar-route-loader-logo{width:68px;height:68px;object-fit:contain;border-radius:16px;animation:tezkar-logo-pulse 1.25s ease-in-out infinite}
+.tezkar-route-loader-title{font-size:18px;font-weight:800;color:var(--ink)}
+.tezkar-route-loader-dhikr{font-size:14px;font-weight:700;color:var(--accent)}
+.tezkar-route-loader-spinner{width:24px;height:24px;border:3px solid #dbeafe;border-top-color:var(--primary);border-radius:50%;animation:tezkar-spin .8s linear infinite}
+@keyframes tezkar-spin{to{transform:rotate(360deg)}}
+@keyframes tezkar-logo-pulse{0%,100%{transform:scale(.96);opacity:.86}50%{transform:scale(1.04);opacity:1}}
+@keyframes tezkar-loader-in{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.tezkar-route-loader-logo,.tezkar-route-loader-spinner,.tezkar-route-loader{animation:none}}

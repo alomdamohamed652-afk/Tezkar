@@ -4,8 +4,23 @@ import {
   createGetCacheKey,
   createMemoryGetCache,
   createPendingGetRegistry,
-  getApiCacheTtl
+  getApiCacheTtl,
+  createSessionStorageGetCache
 } from "./api-cache.mjs";
+
+test("session storage cache persists only until TTL and can be cleared", () => {
+  let now = 10;
+  const values = new Map();
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage, now: () => now });
+  cache.set("reference", { rows: [1] }, 100);
+  assert.deepEqual(cache.get("reference"), { rows: [1] });
+  now = 111;
+  assert.equal(cache.get("reference"), undefined);
+  cache.set("another", 2, 100);
+  cache.clear();
+  assert.equal(values.has("tezkar-reference-cache-v1"), false);
+});
 
 test("cache miss then cache hit", () => {
   let now = 100;
@@ -69,21 +84,26 @@ test("sensitive and frequently changing endpoints bypass caching", () => {
   for (const path of [
     "/api/auth/me", "/api/payroll", "/api/accounting/ledger",
     "/api/finance/balances", "/api/custody", "/api/attendance",
-    "/api/warehouse", "/api/production", "/api/notifications/unread-count",
-    "/api/tasks/pending-count", "/api/payment-requests/pending-count",
+    "/api/warehouse", "/api/production",
     "/api/orders", "/api/deliveries", "/api/employees", "/api/earnings"
   ]) assert.equal(getApiCacheTtl(path), 0, path);
 });
 
-test("only reviewed reference endpoints receive the 30-second TTL", () => {
+test("only reviewed reference endpoints receive the two-minute TTL", () => {
   for (const path of [
     "/api/products", "/api/stages",
     "/api/shifts/rate-groups", "/api/machines"
-  ]) assert.equal(getApiCacheTtl(path), 30_000, path);
-  assert.equal(getApiCacheTtl("/api/products?page=2"), 30_000);
+  ]) assert.equal(getApiCacheTtl(path), 120_000, path);
+  assert.equal(getApiCacheTtl("/api/products?page=2"), 120_000);
   assert.equal(getApiCacheTtl("/api/rates"), 0);
   assert.equal(getApiCacheTtl("/api/shifts"), 0);
   assert.equal(getApiCacheTtl("/api/tasks"), 0);
   assert.equal(getApiCacheTtl("/api/reports/payroll"), 0);
   assert.equal(getApiCacheTtl("/api/unknown-sensitive-area"), 0);
+});
+
+test("navigation badge counts use a short cache window", () => {
+  for (const path of ["/api/tasks/pending-count", "/api/payment-requests/pending-count", "/api/notifications/unread-count"]) {
+    assert.equal(getApiCacheTtl(path), 15_000, path);
+  }
 });
