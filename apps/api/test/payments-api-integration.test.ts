@@ -1116,10 +1116,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const carryCustodyOut=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[carrySecond.json().data.payment.id]);
       assert.equal(Number(carryCustodyOut.rows[0].count),0,
         "a previous-custody carry-forward settlement must not create a current cash custody debit");
-      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',10,$2,'carry-forward insufficient next entitlement')",[carryWorker.id,manager.id]);
-      const carryInsufficient=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${carryWorker.id}`,headers:{cookie:managerCookie}});
-      assert.equal(Number(carryInsufficient.json().data.availableForSettlement),10,
-        "once the carry is cleared, later earned amounts remain payable");
+      const insufficientCarryWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Partial Carry Forward Worker') RETURNING id")).rows[0];
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',20,$2,'partial carry source entitlement')",[insufficientCarryWorker.id,manager.id]);
+      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',30,'partial carry test opening cash',$2)",[managerEmployee.id,manager.id]);
+      const partialCarryPayout=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:insufficientCarryWorker.id,cashCustodyEmployeeId:managerEmployee.id,settlementSource:"CURRENT_CUSTODY",
+          settlementMode:"ALL_DUES",amount:40,method:"CASH",allowOverpayment:true,idempotencyKey:randomUUID()}});
+      assert.equal(partialCarryPayout.statusCode,201,partialCarryPayout.body);
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',10,$2,'carry-forward insufficient next entitlement')",[insufficientCarryWorker.id,manager.id]);
+      const carryInsufficient=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${insufficientCarryWorker.id}`,headers:{cookie:managerCookie}});
+      assert.equal(Number(carryInsufficient.json().data.availableForSettlement),-10,
+        "a 10 entitlement must be fully offset by the 20 carry, leaving 10 to carry forward");
 
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
