@@ -15,7 +15,7 @@ const reportFilters = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED"]).optional(),
   paymentStatus: z.enum(["PAID", "PARTIAL", "UNPAID", "UNALLOCATED"]).optional(),
   groupBy: z.enum(["none", "employee", "machine", "order", "shift", "day"]).default("none"),
-  limit: z.coerce.number().int().min(1).max(5000).default(1000),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0)
 }).refine(value => !value.from || !value.to || value.from <= value.to, {
   message: "تاريخ البداية يجب أن يكون قبل تاريخ النهاية"
@@ -87,13 +87,17 @@ export async function reportsRoutes(app: FastifyInstance) {
           AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
            AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
+    const countQueryJoins = q.paymentStatus
+      ? countJoins
+      : "LEFT JOIN order_stages os ON os.id=p.order_stage_id";
     const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
+      `SELECT COUNT(*)::int AS total FROM production_entries p ${countQueryJoins} ${whereSql}`,
       params
     );
     const summaryJoins = `
       LEFT JOIN order_stages os ON os.id=p.order_stage_id
       LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
+` + (q.paymentStatus ? `
       LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
@@ -115,7 +119,8 @@ export async function reportsRoutes(app: FastifyInstance) {
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
-      ) unallocated ON TRUE`;
+      ) unallocated ON TRUE
+` : "");
     const summaryResult = await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
               COALESCE(SUM(p.hours_worked),0) AS hours,
@@ -127,6 +132,9 @@ export async function reportsRoutes(app: FastifyInstance) {
       params
     );
 
+    const pageParams = [...params, q.limit, q.offset];
+    const limitParam = pageParams.length - 1;
+    const offsetParam = pageParams.length;
     const result = await pool.query(
       `WITH filtered_production AS (
          SELECT p.id,p.work_date,p.code AS production_code,p.employee_id,p.product_id,p.stage_id,p.shift_id,
@@ -203,8 +211,9 @@ export async function reportsRoutes(app: FastifyInstance) {
                   SUM(a.amount) FILTER (WHERE a.adjustment_type='DEDUCTION') AS deduction_total
              FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id
          ) adj ON TRUE
-        ORDER BY p.work_date DESC,p.created_at DESC,p.id`,
-      params
+        ORDER BY p.work_date DESC,p.created_at DESC,p.id
+        LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      pageParams
     );
 
     const rows = result.rows;
