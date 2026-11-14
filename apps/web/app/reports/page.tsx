@@ -53,6 +53,8 @@ export default function ReportsPage(){
  const [weeklyMode,setWeeklyMode]=useState(false);
  const [groups,setGroups]=useState<Array<{group_name:string;entries:number;quantity:number|string;earnings:number|string;hours:number|string}>>([]);
  const [loading,setLoading]=useState(false);
+ const [productionHasMore,setProductionHasMore]=useState(false);
+ const [productionOffset,setProductionOffset]=useState(0);
  const [error,setError]=useState("");
 
  const employees=useMemo(()=>allEarnings.map(x=>({id:x.employee_id,label:x.employee_name,code:x.employee_code})),[allEarnings]);
@@ -60,10 +62,11 @@ export default function ReportsPage(){
  const stages=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)m.set(x.stage_id,x.stage_name);return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
  const shifts=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)m.set(x.shift_id,x.shift_name);return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
 
- async function load(initial=false){
+ async function load(initial=false,append=false){
   setLoading(true);setError("");
   try{
-   const params=new URLSearchParams({limit:"500",offset:"0",groupBy});
+   const requestedOffset=append?productionOffset:0;
+   const params=new URLSearchParams({limit:"500",offset:String(requestedOffset),groupBy});
    if(from)params.set("from",from);if(to)params.set("to",to);
    if(employeeId)params.set("employeeId",employeeId);
    if(orderId)params.set("orderId",orderId);if(stageId)params.set("stageId",stageId);if(shiftId)params.set("shiftId",shiftId);
@@ -74,7 +77,7 @@ export default function ReportsPage(){
     api<{data:EmployeeEarning[]}>(`/api/reports/employee-earnings${earningParams.toString()?"?"+earningParams.toString():""}`)
    ]);
    const reportRows=p.data;
-   setProduction(reportRows);setEarnings(e.data);setGroups(p.groups??[]);
+   setProduction(current=>append?[...current,...reportRows]:reportRows);setProductionOffset(requestedOffset+reportRows.length);setProductionHasMore(Boolean(p.pagination?.hasMore));setEarnings(e.data);setGroups(p.groups??[]);
    if(initial){setAllProduction(reportRows);setAllEarnings(e.data);}
    if(initial){
     const s=await api<{data:Summary}>("/api/reports/summary");setSummary(s.data);
@@ -156,6 +159,8 @@ export default function ReportsPage(){
 }} disabled={!production.length}>تصدير Excel</button></div>
       {groups.length>0&&<div className="card-body"><h3 className="card-title">ملخص التجميع</h3><div className="table-wrap"><table><thead><tr><th>التجميع</th><th>عدد السجلات</th><th>إجمالي الكمية</th><th>الساعات</th><th>قيمة المستحق</th></tr></thead><tbody>{groups.map(g=><tr key={g.group_name}><td>{g.group_name}</td><td>{formatInteger(g.entries)}</td><td>{formatInteger(g.quantity)}</td><td>{formatInteger(g.hours)}</td><td>{money(g.earnings)}</td></tr>)}</tbody></table></div></div>}
       <div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>العامل</th><th>الطلبية</th><th>المنتج / المرحلة</th><th>الوردية</th><th>نوع الأجر</th><th>الكمية</th><th>الساعات</th><th>الإنتاج</th><th>الهالك</th><th>بونص</th><th>خصم</th><th>الإجمالي</th><th>مدفوع</th><th>متبقي</th><th>حالة الدفع</th><th>الحالة</th></tr></thead><tbody>{production.map(x=><tr className={x.payment_status==="PAID"?"payment-row-paid":x.payment_status==="PARTIAL"?"payment-row-partial":x.payment_status==="UNALLOCATED"?"payment-row-unallocated":"payment-row-unpaid"} key={x.id}><td>{String(x.work_date).slice(0,10)}</td><td>{x.employee_name}<div className="form-hint">{x.employee_code}</div></td><td>{x.order_code||x.order_name||"—"}</td><td>{x.product_name}<div className="form-hint">{x.stage_name}</div></td><td>{x.shift_name}</td><td>{methodLabel[x.wage_type_method||""]||x.wage_type_code||"—"}</td><td>{money(x.quantity)} {x.unit_name}</td><td>{x.hours_worked??"—"}</td><td className="money">{money(x.base_earning_amount)}</td><td>{formatInteger(x.scrap_quantity??0)} <span className="form-hint">{x.scrap_types||""}</span></td><td>{money(x.bonus_total??x.bonus_amount)}</td><td>{money(x.deduction_total??x.deduction_amount)}</td><td className="money">{money(x.total_earning_amount)}</td><td>{money(x.paid_amount)}</td><td>{money(x.remaining_amount)}</td><td>{x.payment_status==="PAID"?"مدفوع":x.payment_status==="PARTIAL"?"مدفوع جزئيًا":x.payment_status==="UNALLOCATED"?"دفعة تاريخية غير موزعة":"غير مدفوع"}</td><td>{statusLabel[x.status]||x.status}</td></tr>)}{!production.length&&<tr><td colSpan={17}>{loading?"جاري التحميل…":"لا يوجد إنتاج مطابق للفلاتر."}</td></tr>}</tbody></table></div>
+      {productionHasMore&&<div className="form-actions" style={{justifyContent:"center",padding:16}}><button type="button" className="secondary-btn" disabled={loading} onClick={()=>void load(false,true)}>{loading?"جارٍ تحميل المزيد...":"تحميل 500 سجل إضافي"}</button><span className="form-hint">تم تحميل {formatInteger(production.length)} سجل حتى الآن.</span></div>}
+
      </>:<>
       <div className="card-body report-summary-grid"><div><span>إجمالي المكتسب</span><strong>{money(duesTotals.earned)}</strong></div><div><span>إجمالي المصروف / الخصومات</span><strong>{money(duesTotals.debited)}</strong></div><div><span>صافي الرصيد</span><strong>{money(duesTotals.balance)}</strong></div></div>
       <div className="card-header"><span className="form-hint">القائمة تشمل الموظفين حتى لو رصيدهم صفر أو لم تسجل لهم حركة مستحقات بعد.</span><button className="secondary-btn" type="button" onClick={exportEarnings} disabled={!earnings.length}>تصدير مستحقات العمال CSV</button></div>
