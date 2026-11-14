@@ -14,16 +14,29 @@ export default function ReportsPage(){
   const [summary,setSummary]=useState<Summary|null>(null);
   const [audit,setAudit]=useState<Audit[]>([]);
   const [production,setProduction]=useState<Production[]>([]);
+  const [hasMoreProduction,setHasMoreProduction]=useState(false);
+  const [loadingMoreProduction,setLoadingMoreProduction]=useState(false);
   const [error,setError]=useState("");
   const [productionFilters,setProductionFilters]=useState({employee:"",product:"",stage:"",status:"",from:"",to:"",q:""});
 
   useEffect(()=>{(async()=>{
     try{
-      const [s,p]=await Promise.all([api<{data:Summary}>("/api/reports/summary"),api<{data:Production[]}>("/api/reports/production")]);
-      setSummary(s.data);setProduction(p.data);
+      const [s,p]=await Promise.all([api<{data:Summary}>("/api/reports/summary"),api<{data:Production[];pagination?:{hasMore:boolean}}>("/api/reports/production?limit=200&offset=0")]);
+      setSummary(s.data);setProduction(p.data);setHasMoreProduction(Boolean(p.pagination?.hasMore));
       if(canAudit){const a=await api<{data:Audit[]}>("/api/audit-log?limit=100");setAudit(a.data);}
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل التقارير");}
   })()},[canAudit]);
+
+  async function loadMoreProduction(){
+    if(loadingMoreProduction||!hasMoreProduction)return;
+    setLoadingMoreProduction(true);
+    try{
+      const next=await api<{data:Production[];pagination?:{hasMore:boolean}}>(`/api/reports/production?limit=200&offset=${production.length}`);
+      setProduction(current=>current.concat(next.data));
+      setHasMoreProduction(Boolean(next.pagination?.hasMore));
+    }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل باقي سجلات الإنتاج");}
+    finally{setLoadingMoreProduction(false);}
+  }
 
   const n=(x:string|number)=>Number(x||0).toLocaleString("ar-EG",{maximumFractionDigits:2});
   const visibleProduction=useMemo(()=>production.filter(x=>
@@ -51,7 +64,7 @@ export default function ReportsPage(){
             <article className="card stat neutral"><div className="stat-label">طلبات معلقة</div><div className="stat-value">{summary?summary.pendingPayments+summary.pendingAdvances:"—"}</div><div className="stat-note">قبض + سلف</div></article>
           </div>
           <section className="card"><div className="card-header"><h2 className="card-title">ملخص المستحقات</h2><div className="form-hint">الدفتر يعتمد على اعتماد الإنتاج وتسجيل المدفوعات.</div></div><div className="card-body report-summary-grid"><div><span>إجمالي المكتسب</span><strong>{summary?n(summary.earnings.earned):"—"}</strong></div><div><span>إجمالي المصروف</span><strong>{summary?n(summary.earnings.debited):"—"}</strong></div><div><span>المتبقي</span><strong>{summary?n(summary.earnings.balance):"—"}</strong></div></div></section>
-          <section className="card"><div className="card-header"><div><h2 className="card-title">تقرير الإنتاج</h2><div className="form-hint">آخر ١٠٠٠ سجل من الإنتاج المعتمد والمعلق — النتائج المعروضة {visibleProduction.length.toLocaleString("ar-EG")}.</div></div></div>
+          <section className="card"><div className="card-header"><div><h2 className="card-title">تقرير الإنتاج</h2><div className="form-hint">أحدث ٢٠٠ سجل في البداية لتقليل الحمل، ويمكن تحميل المزيد عند الحاجة — النتائج المعروضة {visibleProduction.length.toLocaleString("ar-EG")}.</div></div></div>
            <div className="form-grid finance-four-grid" style={{padding:16}}>
             <label>الموظف<select value={productionFilters.employee} onChange={e=>setProductionFilters(v=>({...v,employee:e.target.value}))}><option value="">كل الموظفين</option>{unique("employee_name").map(x=><option key={x} value={x}>{x}</option>)}</select></label>
             <label>المنتج<select value={productionFilters.product} onChange={e=>setProductionFilters(v=>({...v,product:e.target.value}))}><option value="">كل المنتجات</option>{unique("product_name").map(x=><option key={x} value={x}>{x}</option>)}</select></label>
@@ -61,7 +74,7 @@ export default function ReportsPage(){
             <label>إلى تاريخ<input type="date" value={productionFilters.to} onChange={e=>setProductionFilters(v=>({...v,to:e.target.value}))}/></label>
             <label>بحث بالكود أو الاسم<input value={productionFilters.q} onChange={e=>setProductionFilters(v=>({...v,q:e.target.value}))} placeholder="اسم الموظف أو المنتج أو المرحلة"/></label>
             <div className="form-actions"><button type="button" className="secondary-button" onClick={()=>setProductionFilters({employee:"",product:"",stage:"",status:"",from:"",to:"",q:""})}>مسح الفلاتر</button></div>
-           </div><div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الموظف</th><th>المنتج</th><th>المرحلة</th><th>الوردية</th><th>الكمية</th><th>المستحق</th><th>الحالة</th><th>الحساب المسجّل</th></tr></thead><tbody>{visibleProduction.map(x=><tr key={x.production_code}><td>{x.work_date}</td><td>{x.employee_name}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.shift_name}</td><td>{n(x.quantity)} {x.unit_name}</td><td className="money">{n(x.earning_amount)}</td><td>{x.status}</td><td>{x.created_by_username||"—"}</td></tr>)}{!production.length&&<tr><td colSpan={9}>لا يوجد إنتاج مطابق.</td></tr>}</tbody></table></div></section>
+           </div>{hasMoreProduction&&<div className="form-actions" style={{padding:"0 16px 16px"}}><button type="button" className="secondary-button" onClick={()=>void loadMoreProduction()} disabled={loadingMoreProduction}>{loadingMoreProduction?"جاري تحميل المزيد…":"تحميل 200 سجل إضافي"}</button></div>}<div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>الموظف</th><th>المنتج</th><th>المرحلة</th><th>الوردية</th><th>الكمية</th><th>المستحق</th><th>الحالة</th><th>الحساب المسجّل</th></tr></thead><tbody>{visibleProduction.map(x=><tr key={x.production_code}><td>{x.work_date}</td><td>{x.employee_name}</td><td>{x.product_name}</td><td>{x.stage_name}</td><td>{x.shift_name}</td><td>{n(x.quantity)} {x.unit_name}</td><td className="money">{n(x.earning_amount)}</td><td>{x.status}</td><td>{x.created_by_username||"—"}</td></tr>)}{!production.length&&<tr><td colSpan={9}>لا يوجد إنتاج مطابق.</td></tr>}</tbody></table></div></section>
           {canAudit&&<section className="card"><div className="card-header"><h2 className="card-title">آخر العمليات</h2></div><div className="table-wrap"><table><thead><tr><th>الوقت</th><th>المستخدم</th><th>الموظف</th><th>الوحدة</th><th>العملية</th><th>الكيان</th></tr></thead><tbody>{audit.map(x=><tr key={x.id}><td>{new Date(x.occurred_at).toLocaleString("ar-EG")}</td><td>{x.username||"—"}</td><td>{x.employee_name||"—"}</td><td>{x.module}</td><td>{x.action}</td><td>{x.entity_type}</td></tr>)}{!audit.length&&<tr><td colSpan={6}>لا توجد عمليات مسجلة.</td></tr>}</tbody></table></div></section>}
         </section>
       </main>
