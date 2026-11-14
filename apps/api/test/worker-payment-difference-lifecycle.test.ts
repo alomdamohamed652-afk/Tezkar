@@ -11,7 +11,7 @@ function fakeClient(handler: (sql: string, values: unknown[]) => Promise<{ rows?
     async query(sql: string, values: unknown[] = []) {
       calls.push({ sql, values });
       const result = await handler(sql, values);
-      return { rows: result.rows ?? [], rowCount: result.rowCount ?? result.rows?.length ?? 0 } as QueryResult;
+      return { rows: result.rows ?? [], rowCount: result.rowCount ?? result.rows?.length ?? 0 } as unknown as QueryResult;
     }
   };
   return { client: client as unknown as PoolClient, calls };
