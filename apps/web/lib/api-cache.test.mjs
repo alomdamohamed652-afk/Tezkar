@@ -69,8 +69,7 @@ test("sensitive and frequently changing endpoints bypass caching", () => {
   for (const path of [
     "/api/auth/me", "/api/payroll", "/api/accounting/ledger",
     "/api/finance/balances", "/api/custody", "/api/attendance",
-    "/api/warehouse", "/api/production", "/api/notifications/unread-count",
-    "/api/tasks/pending-count", "/api/payment-requests/pending-count",
+    "/api/warehouse", "/api/production",
     "/api/orders", "/api/deliveries", "/api/employees", "/api/earnings"
   ]) assert.equal(getApiCacheTtl(path), 0, path);
 });
@@ -86,4 +85,12 @@ test("only reviewed reference endpoints receive the 30-second TTL", () => {
   assert.equal(getApiCacheTtl("/api/tasks"), 0);
   assert.equal(getApiCacheTtl("/api/reports/payroll"), 0);
   assert.equal(getApiCacheTtl("/api/unknown-sensitive-area"), 0);
+});
+
+test("only navigation badge counts receive a short 15-second TTL", () => {
+  for (const path of ["/api/tasks/pending-count", "/api/payment-requests/pending-count", "/api/notifications/unread-count"]) {
+    assert.equal(getApiCacheTtl(path), 15_000, path);
+  }
+  assert.equal(getApiCacheTtl("/api/notifications"), 0);
+  assert.equal(getApiCacheTtl("/api/tasks"), 0);
 });
