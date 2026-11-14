@@ -29,7 +29,7 @@ test("production export uses lightweight page-only requests and fetches every pa
   assert.match(reportsRoutes, /summaryResult = q\.pageOnly \? null/);
   assert.match(reportsRoutes, /q\.pageOnly \|\| q\.groupBy === "none" \? \[\]/);
   assert.match(reportsRoutes, /q\.pageOnly \? q\.limit \+ 1 : q\.limit/);
-  assert.match(reportsRoutes, /hasMore: hasExtraPageRow/);
+  assert.match(reportsRoutes, /hasMore:q\.pageOnly \? hasExtraPageRow/);
   assert.match(reportsPage, /productionQueryParams\(offset,\s*true\)/);
   assert.match(reportsPage, /while\s*\(hasMore\)/);
 });
