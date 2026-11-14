@@ -20,6 +20,7 @@ function fakeClient(handler: (sql: string, values: unknown[]) => Promise<{ rows?
 test("difference allocation creates a fresh immutable allocation for each reallocation cycle", async () => {
   const allocationIds = ["allocation-cycle-1", "allocation-cycle-2"];
   const eventAmounts: number[] = [];
+  const eventAllocationIds: string[] = [];
   let activeAllocation = false;
   let remainingDifference = 40;
   let cycle = 0;
@@ -40,6 +41,7 @@ test("difference allocation creates a fresh immutable allocation for each reallo
     }
     if (sql.includes("INSERT INTO worker_payment_settlement_difference_events")) {
       eventAmounts.push(Number(values[3]));
+      eventAllocationIds.push(String(values[8]));
       return { rowCount: 1 };
     }
     if (sql.includes("SELECT GREATEST($2::numeric")) {
@@ -70,7 +72,7 @@ test("difference allocation creates a fresh immutable allocation for each reallo
   assert.deepEqual(eventAmounts, [40, 40]);
   const inserts = calls.filter(call => call.sql.includes("INSERT INTO worker_payment_order_allocations"));
   assert.equal(inserts.length, 2, "each cycle must have a distinct allocation row");
-  assert.notDeepEqual(inserts[0].values, inserts[1].values);
+  assert.deepEqual(eventAllocationIds, allocationIds, "each event must point to its own newly inserted allocation row");
 });
 
 test("difference allocation ignores production entries without a target order", async () => {
@@ -95,7 +97,7 @@ test("matured-difference sweep keeps the unpaid-approved-production blocker", as
 
   const transferred = await processMaturedWorkerPaymentDifferences(client, { actorUserId: null, actorType: "SYSTEM" });
   assert.equal(transferred, 0);
-  assert.match(candidateSql, /AND NOT EXISTS\([\s\S]*?FROM production_entries p[\s\S]*?p\.status='APPROVED'[\s\S]*?productionRemainingSql/);
-  assert.match(candidateSql, /productionRemainingSql/);
+  assert.match(candidateSql, /AND NOT EXISTS\\([\\s\\S]*?FROM production_entries p[\\s\\S]*?p\\.status='APPROVED'/);
+  assert.match(candidateSql, /GREATEST\\(COALESCE\\(p\\.total_earning_amount,p\\.earning_amount,0\\)/);
   assert.match(candidateSql, /FOR UPDATE OF e,d SKIP LOCKED/);
 });
