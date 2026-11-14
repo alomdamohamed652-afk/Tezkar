@@ -115,6 +115,11 @@ test("migration runner retries a transient lock timeout and reports the migratio
     });
 
     await retryNotice;
+    const diagnosticDeadline = Date.now() + 5_000;
+    while (!output.includes("migration lock holders:") && Date.now() < diagnosticDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.ok(output.includes("migration lock holders:"), output);
     await blocker.query("COMMIT");
     await blocker.end();
     blocker = undefined;
