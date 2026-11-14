@@ -1,5 +1,12 @@
 const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
+const BADGE_COUNT_CACHE_TTL_MS = 15_000;
 const MAX_GET_CACHE_ENTRIES = 100;
+
+const BADGE_COUNT_PATHS = new Set([
+  "/api/tasks/pending-count",
+  "/api/payment-requests/pending-count",
+  "/api/notifications/unread-count"
+]);
 
 const REFERENCE_DATA_PATHS = new Set([
   "/api/products",
@@ -19,6 +26,7 @@ const NEVER_CACHE_PATH_PREFIXES = [
 export function getApiCacheTtl(path) {
   const pathname = path.split("?")[0] ?? path;
   if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
+  if (BADGE_COUNT_PATHS.has(pathname)) return BADGE_COUNT_CACHE_TTL_MS;
   return REFERENCE_DATA_PATHS.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : 0;
 }
 
