@@ -63,7 +63,7 @@ export default function ReportsPage(){
  async function load(initial=false){
   setLoading(true);setError("");
   try{
-   const params=new URLSearchParams({limit:"5000",offset:"0",groupBy});
+   const params=new URLSearchParams({limit:"500",offset:"0",groupBy});
    if(from)params.set("from",from);if(to)params.set("to",to);
    if(employeeId)params.set("employeeId",employeeId);
    if(orderId)params.set("orderId",orderId);if(stageId)params.set("stageId",stageId);if(shiftId)params.set("shiftId",shiftId);
@@ -73,12 +73,9 @@ export default function ReportsPage(){
     api<{data:Production[];pagination?:{total:number;hasMore:boolean};groups?:Array<{group_name:string;entries:number;quantity:number|string;earnings:number|string;hours:number|string}>}>(`/api/reports/production?${params.toString()}`),
     api<{data:EmployeeEarning[]}>(`/api/reports/employee-earnings${earningParams.toString()?"?"+earningParams.toString():""}`)
    ]);
-   let completeRows=p.data;
-   let offset=completeRows.length;
-   const total=p.pagination?.total??completeRows.length;
-   while(offset<total){const nextParams=new URLSearchParams(params);nextParams.set("offset",String(offset));const next=await api<{data:Production[]}>(`/api/reports/production?${nextParams.toString()}`);if(!next.data.length)break;completeRows=completeRows.concat(next.data);offset=completeRows.length;}
-   setProduction(completeRows);setEarnings(e.data);setGroups(p.groups??[]);
-   if(initial){setAllProduction(completeRows);setAllEarnings(e.data);}
+   const reportRows=p.data;
+   setProduction(reportRows);setEarnings(e.data);setGroups(p.groups??[]);
+   if(initial){setAllProduction(reportRows);setAllEarnings(e.data);}
    if(initial){
     const s=await api<{data:Summary}>("/api/reports/summary");setSummary(s.data);
     if(canAudit){const a=await api<{data:Audit[]}>("/api/audit-log?limit=100");setAudit(a.data);}
