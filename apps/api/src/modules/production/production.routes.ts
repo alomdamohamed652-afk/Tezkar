@@ -289,14 +289,22 @@ export async function productionRoutes(app: FastifyInstance) {
       - COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=wpa.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
       - COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
       - ${differenceAllocatedSql},0)`;
-    const summaryResult=await pool.query(
-      `SELECT COALESCE(SUM(p.quantity),0)::float8 AS quantity,
-              COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount,0)),0)::float8 AS earned,
-              COALESCE(SUM(${paidSql}),0)::float8 AS paid,
-              COALESCE(SUM(${remainingSql}),0)::float8 AS remaining
-         FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
-      filterParams
-    );
+    // Users without financial permission only need the production quantity summary.
+    // Avoid running correlated payment/reversal subqueries across the full filtered dataset.
+    const summaryResult=canViewFinancials
+      ? await pool.query(
+          `SELECT COALESCE(SUM(p.quantity),0)::float8 AS quantity,
+                  COALESCE(SUM(COALESCE(p.total_earning_amount,p.earning_amount,0)),0)::float8 AS earned,
+                  COALESCE(SUM(${paidSql}),0)::float8 AS paid,
+                  COALESCE(SUM(${remainingSql}),0)::float8 AS remaining
+             FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
+          filterParams
+        )
+      : await pool.query(
+          `SELECT COALESCE(SUM(p.quantity),0)::float8 AS quantity
+             FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
+          filterParams
+        );
     const rawSummary=summaryResult.rows[0]??{};
     const summary=canViewFinancials
       ? {quantity:Number(rawSummary.quantity??0),earned:Number(rawSummary.earned??0),paid:Number(rawSummary.paid??0),remaining:Number(rawSummary.remaining??0)}
