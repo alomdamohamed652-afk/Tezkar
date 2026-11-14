@@ -98,19 +98,8 @@ export async function productionRoutes(app: FastifyInstance) {
   app.get("/api/production/destinations", {
     preHandler: [authenticateRequest, requirePermission("production.create")]
   }, async () => {
-    const paidSql = `COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=a.worker_payment_id)),0)
-      + COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=wpa.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
-      + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-        + ${differenceAllocatedSql}`;
-
     const result = await pool.query(
-      `WITH page AS (
-         SELECT p.id
-           FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
-          ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC
-          LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
-       )
-       SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
+      `SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
          FROM warehouse_locations l
          JOIN warehouses w ON w.id=l.warehouse_id
         WHERE l.is_active=TRUE AND w.is_active=TRUE
@@ -182,6 +171,11 @@ export async function productionRoutes(app: FastifyInstance) {
     }
     if (query.data.from) { params.push(query.data.from); where.push(`p.work_date >= $${params.length}`); }
     if (query.data.to) { params.push(query.data.to); where.push(`p.work_date <= $${params.length}`); }
+
+    const paidSql = `COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=a.worker_payment_id)),0)
+      + COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=wpa.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
+      + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
+        + ${differenceAllocatedSql}`;
 
     const paymentStatusSql = `CASE
       WHEN EXISTS(SELECT 1 FROM worker_payments wp
