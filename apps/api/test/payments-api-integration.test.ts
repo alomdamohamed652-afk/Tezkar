@@ -1084,6 +1084,43 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM worker_payments WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
       assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM accounting_expenses WHERE idempotency_key=$1",[unrelatedOrderKey])).rows[0].count),0);
 
+      // An explicit all-dues overpayment becomes a negative employee balance and is
+      // automatically netted against the next settlement, without touching production cost allocations.
+      const carryWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Test Settlement Carry Forward Worker') RETURNING id")).rows[0];
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',980,$2,'carry-forward initial entitlement')",[carryWorker.id,manager.id]);
+      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,description,created_by) VALUES($1,'IN',1000,'carry-forward test opening cash',$2)",[managerEmployee.id,manager.id]);
+      const carryFirstKey=randomUUID();
+      const carryFirst=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:carryWorker.id,cashCustodyEmployeeId:managerEmployee.id,settlementSource:"CURRENT_CUSTODY",
+          settlementMode:"ALL_DUES",amount:1000,method:"CASH",allowOverpayment:true,idempotencyKey:carryFirstKey}});
+      assert.equal(carryFirst.statusCode,201,carryFirst.body);
+      assert.equal(Number(carryFirst.json().data.grossAmount),1000);
+      const carryFirstPaymentId=carryFirst.json().data.payment.id;
+      assert.equal(Number((await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[carryFirstPaymentId])).rows[0].debit_amount),1000);
+      const carryAfterFirst=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${carryWorker.id}`,headers:{cookie:managerCookie}});
+      assert.equal(carryAfterFirst.statusCode,200,carryAfterFirst.body);
+      assert.equal(Number(carryAfterFirst.json().data.availableForSettlement),-20,
+        "the 20 overpayment must remain as a negative carried balance, not production earnings or a new advance");
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',620,$2,'carry-forward next entitlement')",[carryWorker.id,manager.id]);
+      const carryBeforeSecond=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${carryWorker.id}`,headers:{cookie:managerCookie}});
+      assert.equal(Number(carryBeforeSecond.json().data.availableForSettlement),600,
+        "the next 620 entitlement must be reduced by the carried 20 automatically");
+      const carrySecond=await app.inject({method:"POST",url:"/api/worker-payments/direct",headers:{cookie:managerCookie},
+        payload:{employeeId:carryWorker.id,settlementSource:"PREVIOUS_CUSTODY",settlementMode:"ALL_DUES",
+          amount:600,method:"CASH",allowOverpayment:false,idempotencyKey:randomUUID()}});
+      assert.equal(carrySecond.statusCode,201,carrySecond.body);
+      assert.equal(Number(carrySecond.json().data.grossAmount),600);
+      const carryFinal=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${carryWorker.id}`,headers:{cookie:managerCookie}});
+      assert.equal(Number(carryFinal.json().data.availableForSettlement),0,
+        "settling the net 600 must clear the carried 20 without double deduction");
+      const carryCustodyOut=await apiPool.query("SELECT COUNT(*)::int AS count FROM cash_custody_transactions WHERE source_type='WORKER_PAYMENT' AND source_id=$1",[carrySecond.json().data.payment.id]);
+      assert.equal(Number(carryCustodyOut.rows[0].count),0,
+        "a previous-custody carry-forward settlement must not create a current cash custody debit");
+      await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',10,$2,'carry-forward insufficient next entitlement')",[carryWorker.id,manager.id]);
+      const carryInsufficient=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${carryWorker.id}`,headers:{cookie:managerCookie}});
+      assert.equal(Number(carryInsufficient.json().data.availableForSettlement),10,
+        "once the carry is cleared, later earned amounts remain payable");
+
       // Direct payout requires no prior payment request and must serialize concurrent attempts.
       // Direct payouts must use the same net production entitlement as allocation:
       // base 100 + bonus 50 - deduction 20 = 130, not the base amount alone.
