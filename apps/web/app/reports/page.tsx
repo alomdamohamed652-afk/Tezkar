@@ -52,7 +52,7 @@ export default function ReportsPage(){
  const [groupBy,setGroupBy]=useState("none");
  const [weeklyMode,setWeeklyMode]=useState(false);
  const [groups,setGroups]=useState<Array<{group_name:string;entries:number;quantity:number|string;earnings:number|string;hours:number|string}>>([]);
- const [loading,setLoading]=useState(true);
+ const [loading,setLoading]=useState(false);
  const [error,setError]=useState("");
  const filtersInitialized=useRef(false);
 
@@ -88,8 +88,8 @@ export default function ReportsPage(){
   finally{setLoading(false);}
  }
 
- useEffect(()=>{void load(true).finally(()=>{filtersInitialized.current=true;});},[]);
- useEffect(()=>{if(filtersInitialized.current)void load(false);},[from,to,employeeId,orderId,stageId,shiftId,status,paymentStatus,groupBy]);
+ // Reports are intentionally idle on page entry and while filters are edited.
+ // The user explicitly runs the selected report with the action button.
  const money=(x:string|number|null|undefined)=>formatMoney(x??0);
  const productionTotal=production.reduce((sum,x)=>sum+Number(x.total_earning_amount??x.earning_amount??0),0);
  const scrapTotal=production.reduce((sum,x)=>sum+Number(x.scrap_quantity??0),0);
