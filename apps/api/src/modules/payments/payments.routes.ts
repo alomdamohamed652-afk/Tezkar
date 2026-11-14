@@ -1915,8 +1915,11 @@ export async function paymentsRoutes(app:FastifyInstance){
       if (value.productionEntryIds && new Set(value.productionEntryIds).size !== value.productionEntryIds.length) {
         ctx.addIssue({ code: "custom", path: ["productionEntryIds"], message: "لا يمكن تكرار سجل الإنتاج في التسوية نفسها" });
       }
-      if (value.allowOverpayment && (value.settlementMode !== "ALL_DUES" || value.productionEntryIds?.length || value.orderId)) {
-        ctx.addIssue({ code: "custom", path: ["allowOverpayment"], message: "ترحيل زيادة التسوية متاح مع التصفية الإجمالية للعامل فقط، وليس عند حصرها في إنتاج أو طلبية محددة" });
+      if (value.allowOverpayment && !(
+        (value.settlementMode === "ALL_DUES" && !value.productionEntryIds?.length && !value.orderId)
+        || (value.settlementSource === "PREVIOUS_CUSTODY" && Boolean(value.orderId))
+      )) {
+        ctx.addIssue({ code: "custom", path: ["allowOverpayment"], message: "ترحيل زيادة التسوية متاح مع التصفية الإجمالية للعامل، أو مع تسوية العهدة السابقة المرتبطة بطلبية" });
       }
       if (["VODAFONE_CASH", "INSTAPAY", "BANK"].includes(value.method) && !value.transferReference?.trim()) {
         ctx.addIssue({ code: "custom", path: ["transferReference"], message: "رقم التحويل مطلوب لطريقة الدفع المختارة" });
