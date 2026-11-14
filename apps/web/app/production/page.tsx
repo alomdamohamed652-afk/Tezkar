@@ -65,7 +65,7 @@ export default function ProductionPage(){
    setShiftLeaderEmployeeId(accountEmployeeId&&assignedLeaders.some(x=>x.employee_id===accountEmployeeId)?accountEmployeeId:(assignedLeaders[0]?.employee_id||""));
    setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
    setReferenceDataLoaded(true);
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات المرجعية")}finally{setReferenceDataLoaded(true);setLoading(false)}
  }
  useEffect(()=>{void load()},[]);
  useEffect(()=>{
