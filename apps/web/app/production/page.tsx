@@ -28,6 +28,7 @@ export default function ProductionPage(){
  const canSettleWorkers=has("worker_payments.pay");
  const canAddLegacyExpense=has("finance.expenses.create");
  const [employees,setEmployees]=useState<Employee[]>([]),[orders,setOrders]=useState<Order[]>([]),[allOrders,setAllOrders]=useState<Order[]>([]),[products,setProducts]=useState<Item[]>([]),[stages,setStages]=useState<Item[]>([]),[shifts,setShifts]=useState<Shift[]>([]),[shiftLeaders,setShiftLeaders]=useState<ShiftLeader[]>([]),[orderStages,setOrderStages]=useState<OrderStage[]>([]),[productionTypes,setProductionTypes]=useState<ProductionType[]>([]),[entries,setEntries]=useState<Entry[]>([]);
+ const [referenceDataLoaded,setReferenceDataLoaded]=useState(false);
  const [employeeId,setEmployeeId]=useState(""),[shiftLeaderEmployeeId,setShiftLeaderEmployeeId]=useState(""),[shiftLeaderTouched,setShiftLeaderTouched]=useState(false),[orderId,setOrderId]=useState(""),[orderStageId,setOrderStageId]=useState(""),[productId,setProductId]=useState(""),[stageId,setStageId]=useState(""),[productionTypeId,setProductionTypeId]=useState(""),[shiftId,setShiftId]=useState(""),[workDate,setWorkDate]=useState(localDateKey()),[quantity,setQuantity]=useState(""),[scrapQuantity,setScrapQuantity]=useState("0"),[scrapType,setScrapType]=useState<"WORKER_SCRAP"|"MANUFACTURING_DEFECT">("WORKER_SCRAP"),[scrapNotes,setScrapNotes]=useState(""),[baseAmount,setBaseAmount]=useState(""),[hoursWorked,setHoursWorked]=useState(""),[status,setStatus]=useState(""),[recordEmployeeFilter,setRecordEmployeeFilter]=useState(""),[recordOrderFilter,setRecordOrderFilter]=useState(""),[recordStageFilter,setRecordStageFilter]=useState(""),[recordShiftFilter,setRecordShiftFilter]=useState(""),[recordProductFilter,setRecordProductFilter]=useState(""),[recordTypeFilter,setRecordTypeFilter]=useState(""),[recordSearch,setRecordSearch]=useState(""),[recordPaymentFilter,setRecordPaymentFilter]=useState(""),[recordEntries,setRecordEntries]=useState<Entry[]>([]),[recordLoading,setRecordLoading]=useState(false),[reviewSavingId,setReviewSavingId]=useState("");
  const selectedOrderStage=useMemo(()=>orderStages.find(x=>x.id===orderStageId),[orderStages,orderStageId]);
  const employeeOrderIds=useMemo(()=>new Set(entries.filter(x=>!recordEmployeeFilter||x.employee_id===recordEmployeeFilter).map(x=>x.order_stage_id?orderStages.find(os=>os.id===x.order_stage_id)?.order_id:"").filter(Boolean)),[entries,recordEmployeeFilter,orderStages]);
@@ -50,12 +51,11 @@ export default function ProductionPage(){
  async function load(){
   setLoading(true);setError("");
   try{
-   const [e,o,p,s,h,leaders,os,pt,r]=await Promise.all([
+   const [e,o,p,s,h,leaders,os,pt]=await Promise.all([
     api<{data:Employee[]}>("/api/employees"),api<{data:Order[]}>("/api/orders"),api<{data:Item[]}>("/api/products"),api<{data:Item[]}>("/api/stages"),api<{data:Shift[]}>("/api/shifts"),api<{data:ShiftLeader[]}>("/api/shift-leaders"),
     api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
-    api<{data:Entry[]}>("/api/production")
    ]);
-   setEmployees(e.data);setStages(s.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);setEntries(r.data);
+   setEmployees(e.data);setStages(s.data);setShiftLeaders(leaders.data);setAllOrders(o.data);setOrders(o.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));setProducts(p.data);setShifts(h.data);setOrderStages(os.data);setProductionTypes(pt.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
    setEmployeeId((pref.data as any).employeeId||"");
    const preferredShiftId=(pref.data as any).shiftId||"";
@@ -64,6 +64,7 @@ export default function ProductionPage(){
    const accountEmployeeId=session?.employeeId ?? undefined;
    setShiftLeaderEmployeeId(accountEmployeeId&&assignedLeaders.some(x=>x.employee_id===accountEmployeeId)?accountEmployeeId:(assignedLeaders[0]?.employee_id||""));
    setProductionTypeId((pref.data as any).productionTypeId||pt.data[0]?.id||"");
+   setReferenceDataLoaded(true);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الإنتاج")}finally{setLoading(false)}
  }
  useEffect(()=>{void load()},[]);
@@ -109,7 +110,7 @@ export default function ProductionPage(){
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحديث سجل الإنتاج")}
   finally{if(showLoading)setRecordLoading(false)}
  },[status,recordEmployeeFilter,recordOrderFilter,recordStageFilter,recordShiftFilter,recordProductFilter,recordTypeFilter,recordSearch,recordPaymentFilter,recordPage,recordRangeMode,recordWeekStart,recordWeekEnd,recordMonth,recordYear,recordFrom,recordTo]);
- useEffect(()=>{void refreshProductionData()},[refreshProductionData]);
+ useEffect(()=>{if(referenceDataLoaded)void refreshProductionData()},[referenceDataLoaded,refreshProductionData]);
 
  async function reconcileHistoricalPayments(){
   setLegacyReconcileLoading(true);setLegacyReconcileMessage("");
