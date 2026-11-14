@@ -25,8 +25,8 @@ const NEVER_CACHE_PATH_PREFIXES = [
 
 export function getApiCacheTtl(path) {
   const pathname = path.split("?")[0] ?? path;
-  if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
   if (BADGE_COUNT_PATHS.has(pathname)) return BADGE_COUNT_CACHE_TTL_MS;
+  if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
   return REFERENCE_DATA_PATHS.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : 0;
 }
 
