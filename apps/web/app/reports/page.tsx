@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../../lib/api";
 import { Sidebar, usePermissions } from "../../components/sidebar";
 import { formatMoney, formatInteger } from "../../lib/format";
