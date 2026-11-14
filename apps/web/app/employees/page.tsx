@@ -34,8 +34,7 @@ export default function EmployeesPage(){
         api<{data:Employee[]}>("/api/employees"),api<{data:Department[]}>("/api/departments"),
         api<{data:JobTitle[]}>("/api/job-titles"),api<{data:Role[]}>("/api/roles")
       ]);
-      const s=await api<{data:Shift[]}>("/api/shifts");
-      setEmployees(e.data);setDepartments(d.data);setJobs(j.data);setRoles(r.data);setShiftList(s.data);
+      setEmployees(e.data);setDepartments(d.data);setJobs(j.data);setRoles(r.data);
       if(!r.data.some(x=>x.code===roleCode)&&r.data[0])setRoleCode(r.data[0].code);
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات");}
     finally{setLoading(false);}
@@ -80,7 +79,7 @@ export default function EmployeesPage(){
   }
   async function openShifts(employee:Employee){
     setShiftTarget(employee);setAssignShiftId("");
-    try{const x=await api<{data:ShiftAssignment[]}>("/api/employees/"+employee.id+"/shifts");setAssignedShifts(x.data)}
+    try{const [x,s]=await Promise.all([api<{data:ShiftAssignment[]}>("/api/employees/"+employee.id+"/shifts"),api<{data:Shift[]}>("/api/shifts")]);setAssignedShifts(x.data);setShiftList(s.data)}
     catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ورديات الموظف")}
   }
   async function assignShift(){
