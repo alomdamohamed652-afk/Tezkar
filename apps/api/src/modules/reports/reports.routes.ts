@@ -94,7 +94,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       `SELECT COUNT(*)::int AS total FROM production_entries p ${countQueryJoins} ${whereSql}`,
       params
     );
-    const summaryJoins = `    const summaryJoins = `
+    const summaryJoins = `
       LEFT JOIN order_stages os ON os.id=p.order_stage_id
       LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
 ` + (q.paymentStatus ? `
