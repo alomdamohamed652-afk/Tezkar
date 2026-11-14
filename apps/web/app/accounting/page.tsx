@@ -121,7 +121,8 @@ export default function AccountingPage() {
 
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
-  useEffect(()=>{void load();if(has("cash_custody.view")||has("cash_custody.view_own"))void loadDashboardCustody()},[]);
+  useEffect(()=>{void load()},[]);
+  useEffect(()=>{void loadDashboardCustody()},[has]);
   useEffect(()=>{if(tab==="reversals")void loadReversals();if(tab==="differences")void loadWorkerDifferences();if(tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own")))void loadCustodyData();if(tab==="periods"&&has("finance.period_close.view"))void loadPeriods();if(tab==="profitability"&&has("finance.profitability.view"))void loadOrderFinance("");},[tab,has]);
 
   useEffect(()=>{
