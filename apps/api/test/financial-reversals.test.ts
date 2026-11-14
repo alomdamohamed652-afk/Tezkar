@@ -228,6 +228,68 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
     "each append-only ledger correction must be linked to its financial reversal header");
   assert.equal(workerState.rows[0].advance_status,'OPEN');
 
+  // An overpayment carry-forward is the worker's existing ledger debit. Reversing
+  // the worker payment must restore that exact balance, restore only the recorded
+  // physical custody OUT, reverse the expense once, and remain idempotent.
+  const carryWorker=(await db.query("INSERT INTO employees(full_name) VALUES('Overpayment Carry Reversal Test') RETURNING id")).rows[0].id;
+  await db.query(
+    "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',980,$2,'initial entitlement before overpayment')",
+    [carryWorker,user]
+  );
+  const carryPaymentKey=randomUUID();
+  const carryPayment=(await db.query(
+    `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key,idempotency_fingerprint,settlement_source)
+     VALUES($1,1000,1000,0,'CASH',$2,$3,'overpayment-carry-reversal-test','CURRENT_CUSTODY') RETURNING id`,
+    [carryWorker,user,carryPaymentKey]
+  )).rows[0].id;
+  const carrySettlement=(await db.query(
+    `INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,notes,created_by,worker_payment_id)
+     VALUES($1,1000,1000,0,CURRENT_DATE,'تسوية زيادة مرحّلة اختبارية',$2,$3) RETURNING id`,
+    [carryWorker,user,carryPayment]
+  )).rows[0].id;
+  await db.query(
+    `INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,worker_payment_id,settlement_id,created_by,notes)
+     VALUES($1,'WORKER_PAYMENT',1000,$2,$3,$4,'overpayment carry-forward gross debit')`,
+    [carryWorker,carryPayment,carrySettlement,user]
+  );
+  const carryCustodyOut=(await db.query(
+    `INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by,source_type,source_id)
+     VALUES($1,'OUT',1000,CURRENT_DATE,'overpayment carry test cash out',$2,'WORKER_PAYMENT',$3) RETURNING id`,
+    [emp,user,carryPayment]
+  )).rows[0].id;
+  await db.query(
+    `INSERT INTO accounting_expenses(category,description,amount,expense_date,payment_method,created_by,expense_type,paid_from_employee_id,idempotency_key,idempotency_payload_hash,cash_custody_transaction_id,allocation_type,source_worker_payment_id)
+     VALUES('WORKER_PAYMENT','overpayment carry reversal expense',1000,CURRENT_DATE,'CASH',$1,'DIRECT',$2,$3,'overpayment-carry-reversal-test',$4,'GENERAL',$5)`,
+    [user,emp,randomUUID(),carryCustodyOut,carryPayment]
+  );
+  const carryBefore=(await db.query(
+    "SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance FROM employee_earnings_ledger WHERE employee_id=$1",
+    [carryWorker]
+  )).rows[0];
+  assert.equal(Number(carryBefore.balance),-20,'the original overpayment must remain as a negative carried balance');
+  const carryPayload={sourceType:'WORKER_PAYMENT',sourceId:carryPayment,amount:1000,reason:'عكس تسوية الزيادة المرحّلة اختبارية',idempotencyKey:randomUUID()};
+  const carryReversal=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:carryPayload});
+  assert.equal(carryReversal.statusCode,201,carryReversal.body);
+  const carryReplay=await server.inject({method:'POST',url:'/api/accounting/reversals',headers:{cookie:cookieHeader},payload:carryPayload});
+  assert.equal(carryReplay.statusCode,200,carryReplay.body);
+  assert.equal(carryReplay.json().data.reversal.id,carryReversal.json().data.reversal.id);
+  const carryAfter=await db.query(
+    `SELECT
+      (SELECT COALESCE(SUM(credit_amount-debit_amount),0) FROM employee_earnings_ledger WHERE employee_id=$1) AS balance,
+      (SELECT COUNT(*)::int FROM financial_reversal_lines WHERE source_type='WORKER_PAYMENT' AND source_id=$2) AS payment_reversals,
+      (SELECT COUNT(*)::int FROM accounting_expense_reversals WHERE source_worker_payment_id=$2) AS expense_reversals,
+      (SELECT COALESCE(SUM(amount),0) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='IN') AS custody_restored,
+      (SELECT COUNT(*)::int FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3) AS custody_rows,
+      (SELECT COUNT(*)::int FROM employee_earnings_ledger WHERE financial_reversal_id=$3) AS reversal_ledger_rows`,
+    [carryWorker,carryPayment,carryReversal.json().data.reversal.id]
+  );
+  assert.equal(Number(carryAfter.rows[0].balance),980,'reversal must restore the worker to the original 980 entitlement');
+  assert.equal(Number(carryAfter.rows[0].payment_reversals),1,'payment reversal must be recorded once');
+  assert.equal(Number(carryAfter.rows[0].expense_reversals),1,'expense reversal must be recorded once');
+  assert.equal(Number(carryAfter.rows[0].custody_restored),1000,'the actual custody out must be restored exactly');
+  assert.equal(Number(carryAfter.rows[0].custody_rows),1,'replay must not duplicate the custody restoration');
+  assert.equal(Number(carryAfter.rows[0].reversal_ledger_rows),1,'replay must not duplicate the ledger restoration');
+
   // Previous-custody settlements have no current cash OUT and must not create a
   // fictitious cash IN when reversed.
   const previousPayment=(await db.query(
