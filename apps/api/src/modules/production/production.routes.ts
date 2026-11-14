@@ -107,7 +107,7 @@ export async function productionRoutes(app: FastifyInstance) {
       `WITH page AS (
          SELECT p.id
            FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
-          ORDER BY p.work_date DESC,p.created_at DESC
+          ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC
           LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
        )
        SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
@@ -225,7 +225,7 @@ export async function productionRoutes(app: FastifyInstance) {
       `WITH page AS (
          SELECT p.id
            FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
-          ORDER BY p.work_date DESC,p.created_at DESC
+          ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC
           LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
        )
        SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.wage_type_method_snapshot AS rate_method,p.earning_amount,p.bonus_amount,p.deduction_amount,
@@ -285,7 +285,7 @@ payment_totals.paid_amount,
          JOIN units u ON u.id=p.unit_id
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
          CROSS JOIN LATERAL (SELECT ${paidSql} AS paid_amount) payment_totals
-        ORDER BY p.work_date DESC,p.created_at DESC`,
+        ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC`,
       params
     );
 
