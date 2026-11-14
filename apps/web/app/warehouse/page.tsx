@@ -40,14 +40,16 @@ export default function WarehousePage(){
    const qs=new URLSearchParams();if(warehouseId)qs.set("warehouseId",warehouseId);if(from)qs.set("from",from);if(to)qs.set("to",to);const suffix=qs.toString()?"?"+qs.toString():"";
    const stockQs=new URLSearchParams();if(warehouseId)stockQs.set("warehouseId",warehouseId);const stockSuffix=stockQs.toString()?"?"+stockQs.toString():"";
    const needOverview=activeView==="overview",needProducts=activeView==="products",needMovements=activeView==="movements",needWarehouses=activeView==="warehouses";
+   const stockRequest=needOverview||needProducts?api<{data:Stock[]}>("/api/warehouse/stock"+stockSuffix):Promise.resolve({data:stock});
+   const allStockRequest=needOverview?(warehouseId?api<{data:Stock[]}>("/api/warehouse/stock"):stockRequest):Promise.resolve({data:allStockForAlerts});
    const [w,l,p,o,u,s,allStock,m,c,lotData]=await Promise.all([
     needOverview||needMovements||needWarehouses?api<{data:Warehouse[]}>("/api/warehouses"):Promise.resolve({data:warehouses}),
     needWarehouses?api<{data:Location[]}>("/api/warehouse/locations"):Promise.resolve({data:locations}),
     needOverview||needProducts?api<{data:Product[]}>("/api/products"):Promise.resolve({data:products}),
     needOverview&&canViewOrderDetails?api<{data:Order[]}>("/api/orders"):Promise.resolve({data:orders}),
     (needOverview||needProducts)?api<{data:Unit[]}>("/api/units"):Promise.resolve({data:units}),
-    needOverview||needProducts?api<{data:Stock[]}>("/api/warehouse/stock"+stockSuffix):Promise.resolve({data:stock}),
-    needOverview?api<{data:Stock[]}>("/api/warehouse/stock"):Promise.resolve({data:allStockForAlerts}),
+    stockRequest,
+    allStockRequest,
     needMovements||needOverview?api<{data:Movement[]}>("/api/warehouse/movements"+suffix):Promise.resolve({data:movements}),
     needOverview&&canViewCosts?api<{data:Cost}>("/api/warehouse/dashboard"+suffix):Promise.resolve({data:cost}),
     needProducts&&canViewCosts?api<{data:Lot[]}>("/api/warehouse/lots"+(warehouseId?"?warehouseId="+warehouseId:"")):Promise.resolve({data:lots})
