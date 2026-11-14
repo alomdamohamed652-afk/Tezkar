@@ -405,7 +405,7 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
       {has("finance.profitability.view")&&<button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبيات</button>}
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
-      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
+      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>setTab("periods")}>تصفية الفترة</button>}
       {has("finance.reversals.create")&&<button className={"tab "+(tab==="reversals"?"active":"")} onClick={()=>setTab("reversals")}>العكس المحاسبي</button>}
       {has("finance.worker_settlement_differences.view")&&<button className={"tab "+(tab==="differences"?"active":"")} onClick={()=>setTab("differences")}>فروق تسويات العمال</button>}
      </div>
