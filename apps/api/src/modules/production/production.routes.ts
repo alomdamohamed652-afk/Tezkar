@@ -226,7 +226,7 @@ export async function productionRoutes(app: FastifyInstance) {
          SELECT p.id
            FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
           ORDER BY p.work_date DESC,p.created_at DESC
-          LIMIT ${params.length - 1} OFFSET ${params.length}
+          LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
        )
        SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.wage_type_method_snapshot AS rate_method,p.earning_amount,p.bonus_amount,p.deduction_amount,
               (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='BONUS' ORDER BY a.created_at DESC LIMIT 1) AS bonus_reason,
