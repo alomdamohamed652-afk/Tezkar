@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ToastProvider } from "../components/toast-provider";
 import { SessionProvider } from "../components/session-provider";
+import { RouteLoadingIndicator } from "../components/route-loading-indicator";
 
 export const metadata: Metadata = {
   title: "تذكار | إدارة وتشغيل المصنع",
@@ -22,7 +23,7 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap"
         />
       </head>
-      <body><ToastProvider><SessionProvider>{children}</SessionProvider></ToastProvider></body>
+      <body><ToastProvider><SessionProvider><RouteLoadingIndicator />{children}</SessionProvider></ToastProvider></body>
     </html>
   );
 }
