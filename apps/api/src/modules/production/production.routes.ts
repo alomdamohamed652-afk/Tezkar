@@ -108,7 +108,7 @@ export async function productionRoutes(app: FastifyInstance) {
          SELECT p.id
            FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
           ORDER BY p.work_date DESC,p.created_at DESC
-          LIMIT ${params.length - 1} OFFSET ${params.length}
+          LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
        )
        SELECT l.id,l.code,l.name,l.warehouse_id,w.code AS warehouse_code,w.name AS warehouse_name
          FROM warehouse_locations l
@@ -220,7 +220,6 @@ export async function productionRoutes(app: FastifyInstance) {
       filterParams
     );
     const total = Number(countResult.rows[0]?.total ?? 0);
-    params.push(query.data.limit, (query.data.page - 1) * query.data.limit);
 
     const result = await pool.query(
       `WITH page AS (
