@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { pool } from "../../db/pool.js";
+import { pool, getPoolStats } from "../../db/pool.js";
 import type { SessionUser } from "./auth.types.js";
 import { getSessionUser } from "./session.service.js";
 
@@ -22,7 +22,13 @@ export async function authenticateRequest(
     return;
   }
 
-  const client = await pool.connect();
+  const client = await pool.connect().catch(error => {
+    request.log.error(
+      { err: error, dbPool: getPoolStats() },
+      "Database pool connection acquisition failed during authentication"
+    );
+    throw error;
+  });
   try {
     request.user = await getSessionUser(client, token);
   } finally {
