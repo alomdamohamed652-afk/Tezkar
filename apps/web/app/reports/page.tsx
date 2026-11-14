@@ -64,7 +64,7 @@ export default function ReportsPage(){
  async function load(initial=false){
   setLoading(true);setError("");
   try{
-   const params=new URLSearchParams({limit:"5000",offset:"0",groupBy});
+   const params=new URLSearchParams({limit:"500",offset:"0",groupBy});
    if(from)params.set("from",from);if(to)params.set("to",to);
    if(employeeId)params.set("employeeId",employeeId);
    if(orderId)params.set("orderId",orderId);if(stageId)params.set("stageId",stageId);if(shiftId)params.set("shiftId",shiftId);
