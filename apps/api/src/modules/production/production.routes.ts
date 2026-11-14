@@ -307,7 +307,7 @@ export async function productionRoutes(app: FastifyInstance) {
       : {quantity:Number(rawSummary.quantity??0)};
     if(!canViewFinancials){
       const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
-      return {data, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit), totalWeeks};
+      return {data, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
     }
     return { data: result.rows, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
   });
