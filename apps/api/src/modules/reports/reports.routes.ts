@@ -63,9 +63,7 @@ export async function reportsRoutes(app: FastifyInstance) {
 
     // The count and totals use all of the same business filters (including payment state).
     // Keep joins for allocation-based filters so pagination cannot hide matching rows.
-    const countJoins = `
-      LEFT JOIN order_stages os ON os.id=p.order_stage_id
-      LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
+    const paymentFilterJoins = q.paymentStatus ? `LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
             AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
@@ -86,7 +84,10 @@ export async function reportsRoutes(app: FastifyInstance) {
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
           AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
            AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
-      ) unallocated ON TRUE`;
+      ) unallocated ON TRUE` : "";
+    const countJoins = `
+      LEFT JOIN order_stages os ON os.id=p.order_stage_id
+      ${paymentFilterJoins}`;
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
       params
@@ -94,28 +95,7 @@ export async function reportsRoutes(app: FastifyInstance) {
     const summaryJoins = `
       LEFT JOIN order_stages os ON os.id=p.order_stage_id
       LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
-      LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
-        +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
-          WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
-              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-              WHERE es.worker_payment_id=ev.worker_payment_id)
-            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
-              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS paid_amount
-        FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) pa ON TRUE
-      LEFT JOIN LATERAL (SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
-       LEFT JOIN LATERAL (SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) AS paid_amount FROM worker_payment_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) wa ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT COALESCE(BOOL_OR(TRUE),FALSE) OR EXISTS(
-             SELECT 1 FROM worker_payment_settlement_differences d
-              WHERE d.employee_id=p.employee_id AND d.source_order_id=os.order_id
-                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED','REQUIRES_REVIEW')
-           ) AS has_unallocated FROM worker_payments wp
-        JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-        WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
-          AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
-      ) unallocated ON TRUE`;
+      ${paymentFilterJoins}`;
     const summaryResult = await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
               COALESCE(SUM(p.hours_worked),0) AS hours,
@@ -225,28 +205,8 @@ export async function reportsRoutes(app: FastifyInstance) {
          JOIN products pr ON pr.id=p.product_id JOIN shifts sh ON sh.id=p.shift_id
          LEFT JOIN order_stages os ON os.id=p.order_stage_id LEFT JOIN production_orders po ON po.id=os.order_id
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
-         LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
-        +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
-          WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
-            AND EXISTS(SELECT 1 FROM employee_earnings_settlements es
-              JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-              WHERE es.worker_payment_id=ev.worker_payment_id)
-            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
-              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0) AS paid_amount
-        FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) pa ON TRUE
-         LEFT JOIN LATERAL (SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) AS paid_amount FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id) sa ON TRUE
-       LEFT JOIN LATERAL (SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=a.id),0)) AS paid_amount FROM worker_payment_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=a.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=a.worker_payment_id)) wa ON TRUE
-         LEFT JOIN LATERAL (
-           SELECT COALESCE(BOOL_OR(TRUE),FALSE) OR EXISTS(
-             SELECT 1 FROM worker_payment_settlement_differences d
-              WHERE d.employee_id=p.employee_id AND d.source_order_id=os.order_id
-                AND d.status IN ('PENDING','PARTIALLY_ALLOCATED','REQUIRES_REVIEW')
-           ) AS has_unallocated FROM worker_payments wp
-           JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key
-           WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
-             AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
-           AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
-         ) unallocated ON TRUE
+         ${paymentFilterJoins}
+
         ${whereSql}
         GROUP BY 1 ORDER BY 1`,
       params
