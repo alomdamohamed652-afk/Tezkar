@@ -119,12 +119,11 @@ export default function AccountingPage() {
       ]);
       setOrders(o.data);setExpenses(e.data);setRevenues(r.data.filter(x=>x.source!=="EXTERNAL_CUSTODY_TOP_UP"));
       if(has("finance.profitability.view"))void loadOrderFinance("");
-      if(has("cash_custody.view")||has("cash_custody.view_own"))api<{data:CashTx[]}>("/api/cash-custody").then(x=>setCashTransactions(x.data)).catch(()=>{});
+
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
-  useEffect(()=>{void loadReversals()},[has]);
-  useEffect(()=>{if(tab==="differences")void loadWorkerDifferences()},[tab]);
+  useEffect(()=>{if(tab==="reversals")void loadReversals();if(tab==="differences")void loadWorkerDifferences();if(tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own")))void loadCustodyData();if(tab==="periods"&&has("finance.period_close.view"))void loadPeriods();},[tab,has]);
 
   useEffect(()=>{
     let active=true;
@@ -134,12 +133,7 @@ export default function AccountingPage() {
       .catch(()=>{if(active)setExpenseStages([])});
     return()=>{active=false};
   },[eForm.orderId,eForm.expenseType]);
-  useEffect(()=>{
-    let active=true;
-    api<{data:Employee[]}>("/api/custodies/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
-    if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
-    return()=>{active=false};
-  },[has]);
+  async function loadCustodyData(){try{setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);if(has("cash_custody.view")||has("cash_custody.view_own"))setCashTransactions((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بيانات العهدة")}}
   async function loadReversals(){
     if(!has("finance.expenses.view"))return;
     try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
