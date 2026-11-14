@@ -54,7 +54,6 @@ export default function ReportsPage(){
  const [groups,setGroups]=useState<Array<{group_name:string;entries:number;quantity:number|string;earnings:number|string;hours:number|string}>>([]);
  const [loading,setLoading]=useState(false);
  const [error,setError]=useState("");
- const filtersInitialized=useRef(false);
 
  const employees=useMemo(()=>allEarnings.map(x=>({id:x.employee_id,label:x.employee_name,code:x.employee_code})),[allEarnings]);
  const orders=useMemo(()=>{const m=new Map<string,string>();for(const x of allProduction)if(x.order_id)m.set(x.order_id,[x.order_code,x.order_name].filter(Boolean).join(" — ")||"طلبية");return [...m].map(([id,label])=>({id,label})).sort((a,b)=>a.label.localeCompare(b.label,"ar"));},[allProduction]);
