@@ -118,12 +118,11 @@ export default function AccountingPage() {
         api<{data:Revenue[]}>("/api/accounting/revenues")
       ]);
       setOrders(o.data);setExpenses(e.data);setRevenues(r.data.filter(x=>x.source!=="EXTERNAL_CUSTODY_TOP_UP"));
-      if(has("finance.profitability.view"))void loadOrderFinance("");
 
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
-  useEffect(()=>{void load()},[]);
-  useEffect(()=>{if(tab==="reversals")void loadReversals();if(tab==="differences")void loadWorkerDifferences();if(tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own")))void loadCustodyData();if(tab==="periods"&&has("finance.period_close.view"))void loadPeriods();},[tab,has]);
+  useEffect(()=>{void load();if(has("cash_custody.view")||has("cash_custody.view_own"))void loadDashboardCustody()},[]);
+  useEffect(()=>{if(tab==="reversals")void loadReversals();if(tab==="differences")void loadWorkerDifferences();if(tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own")))void loadCustodyData();if(tab==="periods"&&has("finance.period_close.view"))void loadPeriods();if(tab==="profitability"&&has("finance.profitability.view"))void loadOrderFinance("");},[tab,has]);
 
   useEffect(()=>{
     let active=true;
@@ -134,6 +133,7 @@ export default function AccountingPage() {
     return()=>{active=false};
   },[eForm.orderId,eForm.expenseType]);
   async function loadCustodyData(){try{setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);if(has("cash_custody.view")||has("cash_custody.view_own"))setCashTransactions((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بيانات العهدة")}}
+  async function loadDashboardCustody(){if(!has("cash_custody.view")&&!has("cash_custody.view_own")){setCashTransactions([]);return;}try{setCashTransactions((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ملخص العهدة النقدية")}}
   async function loadReversals(){
     if(!has("finance.expenses.view"))return;
     try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
