@@ -1095,6 +1095,8 @@ test("approving a worker payout atomically marks it paid and debits the availabl
           settlementMode:"ALL_DUES",amount:1000,method:"CASH",allowOverpayment:true,idempotencyKey:carryFirstKey}});
       assert.equal(carryFirst.statusCode,201,carryFirst.body);
       assert.equal(Number(carryFirst.json().data.grossAmount),1000);
+      assert.equal(Number(carryFirst.json().data.carryForwardAmount),20,
+        "the carried amount must equal the full amount above the worker's available balance");
       const carryFirstPaymentId=carryFirst.json().data.payment.id;
       assert.equal(Number((await apiPool.query("SELECT debit_amount FROM employee_earnings_ledger WHERE worker_payment_id=$1",[carryFirstPaymentId])).rows[0].debit_amount),1000);
       const carryAfterFirst=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${carryWorker.id}`,headers:{cookie:managerCookie}});
