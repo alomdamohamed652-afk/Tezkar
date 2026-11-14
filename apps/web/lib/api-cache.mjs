@@ -65,6 +65,33 @@ export function createMemoryGetCache({ maxEntries = MAX_GET_CACHE_ENTRIES, now =
   };
 }
 
+export function createSessionStorageGetCache({ key = "tezkar-reference-cache-v1", storage = typeof window !== "undefined" ? window.sessionStorage : null, now = Date.now } = {}) {
+  function read() {
+    if (!storage) return {};
+    try { return JSON.parse(storage.getItem(key) || "{}"); } catch { return {}; }
+  }
+  return {
+    get(cacheKey) {
+      const entries = read();
+      const entry = entries[cacheKey];
+      if (!entry || entry.expiresAt <= now()) {
+        if (entry) { delete entries[cacheKey]; try { storage?.setItem(key, JSON.stringify(entries)); } catch {} }
+        return undefined;
+      }
+      return entry.value;
+    },
+    set(cacheKey, value, ttlMs) {
+      if (!storage || ttlMs <= 0) return;
+      const entries = read();
+      entries[cacheKey] = { value, expiresAt: now() + ttlMs };
+      const keys = Object.keys(entries);
+      for (const oldKey of keys.slice(0, Math.max(0, keys.length - 40))) delete entries[oldKey];
+      try { storage.setItem(key, JSON.stringify(entries)); } catch {}
+    },
+    clear() { try { storage?.removeItem(key); } catch {} }
+  };
+}
+
 export function createPendingGetRegistry() {
   const pending = new Map();
   return {
