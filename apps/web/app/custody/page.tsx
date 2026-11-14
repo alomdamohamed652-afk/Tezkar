@@ -43,7 +43,7 @@ export default function CustodyPage(){
 
  }
  useEffect(()=>{if(permissions!==null)void load()},[permissions]);
- useEffect(()=>{if(permissions!==null&&has("finance.expenses.view"))void loadAdministrativeExpenses()},[permissions]);
+ useEffect(()=>{if(permissions!==null&&unifiedOperation==="ADMIN_EXPENSE"&&has("finance.expenses.view"))void loadAdministrativeExpenses()},[permissions,unifiedOperation]);
  // Load order options only for users allowed to create cash-custody postings.
  useEffect(()=>{
   if(!permissions?.some(code=>["cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"].includes(code)))return;
