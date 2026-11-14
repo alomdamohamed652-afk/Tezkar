@@ -122,7 +122,7 @@ export default function AccountingPage() {
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
-  useEffect(()=>{void loadDashboardCustody()},[has]);
+  useEffect(()=>{if(tab==="dashboard")void loadDashboardCustody()},[has,tab]);
   useEffect(()=>{if(tab==="reversals")void loadReversals();if(tab==="differences")void loadWorkerDifferences();if(tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own")))void loadCustodyData();if(tab==="periods"&&has("finance.period_close.view"))void loadPeriods();if(tab==="profitability"&&has("finance.profitability.view"))void loadOrderFinance("");},[tab,has]);
 
   useEffect(()=>{
@@ -133,7 +133,7 @@ export default function AccountingPage() {
       .catch(()=>{if(active)setExpenseStages([])});
     return()=>{active=false};
   },[eForm.orderId,eForm.expenseType]);
-  async function loadCustodyData(){try{setEmployees((await api<{data:Employee[]}>("/api/custodies/eligible-employees")).data);if(has("cash_custody.view")||has("cash_custody.view_own"))setCashTransactions((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بيانات العهدة")}}
+  async function loadCustodyData(){try{const [eligible,cashResult]=await Promise.all([api<{data:Employee[]}>("/api/custodies/eligible-employees"),has("cash_custody.view")||has("cash_custody.view_own")?api<{data:CashTx[]}>("/api/cash-custody"):Promise.resolve({data:[] as CashTx[]})]);setEmployees(eligible.data);setCashTransactions(cashResult.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بيانات العهدة")}}
   async function loadDashboardCustody(){if(!has("cash_custody.view")&&!has("cash_custody.view_own")){setCashTransactions([]);return;}try{setCashTransactions((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ملخص العهدة النقدية")}}
   async function loadReversals(){
     if(!has("finance.expenses.view"))return;
