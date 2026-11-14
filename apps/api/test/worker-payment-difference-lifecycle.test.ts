@@ -97,7 +97,7 @@ test("matured-difference sweep keeps the unpaid-approved-production blocker", as
 
   const transferred = await processMaturedWorkerPaymentDifferences(client, { actorUserId: null, actorType: "SYSTEM" });
   assert.equal(transferred, 0);
-  assert.match(candidateSql, /AND NOT EXISTS\\([\\s\\S]*?FROM production_entries p[\\s\\S]*?p\\.status='APPROVED'/);
-  assert.match(candidateSql, /GREATEST\\(COALESCE\\(p\\.total_earning_amount,p\\.earning_amount,0\\)/);
+  assert.match(candidateSql, /AND NOT EXISTS\([\s\S]*?FROM production_entries p[\s\S]*?p\.status='APPROVED'/);
+  assert.match(candidateSql, /GREATEST\(COALESCE\(p\.total_earning_amount,p\.earning_amount,0\)/);
   assert.match(candidateSql, /FOR UPDATE OF e,d SKIP LOCKED/);
 });
