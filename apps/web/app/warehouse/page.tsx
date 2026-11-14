@@ -45,7 +45,7 @@ export default function WarehousePage(){
     needWarehouses?api<{data:Location[]}>("/api/warehouse/locations"):Promise.resolve({data:locations}),
     needOverview||needProducts?api<{data:Product[]}>("/api/products"):Promise.resolve({data:products}),
     needOverview&&canViewOrderDetails?api<{data:Order[]}>("/api/orders"):Promise.resolve({data:orders}),
-    (needProducts||showQuickProduct)?api<{data:Unit[]}>("/api/units"):Promise.resolve({data:units}),
+    (needOverview||needProducts)?api<{data:Unit[]}>("/api/units"):Promise.resolve({data:units}),
     needOverview||needProducts?api<{data:Stock[]}>("/api/warehouse/stock"+stockSuffix):Promise.resolve({data:stock}),
     needOverview?api<{data:Stock[]}>("/api/warehouse/stock"):Promise.resolve({data:allStockForAlerts}),
     needMovements||needOverview?api<{data:Movement[]}>("/api/warehouse/movements"+suffix):Promise.resolve({data:movements}),
@@ -56,13 +56,13 @@ export default function WarehousePage(){
    if(needWarehouses)setLocations(l.data);
    if(needOverview||needProducts){setProducts(p.data);setMinimumStockDrafts(prev=>{const next={...prev};for(const item of p.data)if(next[item.id]===undefined)next[item.id]=String(item.minimum_stock??0);return next});setStock(s.data)}
    if(needOverview&&canViewOrderDetails)setOrders(o.data);
-   if(needProducts||showQuickProduct){setUnits(u.data);if(!quickProductUnit)setQuickProductUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"")}
+   if(needOverview||needProducts){setUnits(u.data);if(!quickProductUnit)setQuickProductUnit(u.data.find(x=>x.code==="PCS")?.id||u.data[0]?.id||"")}
    if(needOverview)setAllStockForAlerts(allStock.data);
    if(needMovements||needOverview)setMovements(m.data);
    if(needOverview&&canViewCosts)setCost(c.data);
    if(needProducts&&canViewCosts)setLots(lotData.data);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المخزن")}}
- useEffect(()=>{if(session)void load()},[activeView,from,to,warehouseId,session,has,canViewCosts,canViewOrderDetails,showQuickProduct]);
+ useEffect(()=>{if(session)void load()},[activeView,from,to,warehouseId,session,has,canViewCosts,canViewOrderDetails]);
  useEffect(()=>{if(year){setFrom(year+"-01-01");setTo(year+"-12-31")}},[year]);
 
  const lowStockProducts=useMemo(()=>{const eligibleWarehouseIds=new Set(warehouses.filter(w=>w.is_active&&w.warehouse_type!=="SCRAP"&&(!warehouseId||w.id===warehouseId)).map(w=>w.id));return products.flatMap(p=>{const quantity=allStockForAlerts.reduce((sum,row)=>row.product_id===p.id&&eligibleWarehouseIds.has(row.warehouse_id)?sum+Number(row.quantity||0):sum,0);const minimum=Number(p.minimum_stock??0);return p.track_inventory!==false&&p.minimum_stock!==undefined&&p.minimum_stock!==null&&minimum>0&&quantity<=minimum?[{...p,current_quantity:quantity,shortage_quantity:Math.max(0,minimum-quantity)}]:[];}).sort((a,b)=>a.current_quantity-b.current_quantity)},[products,allStockForAlerts,warehouses,warehouseId]);
