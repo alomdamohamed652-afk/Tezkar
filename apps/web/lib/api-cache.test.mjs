@@ -4,10 +4,11 @@ import {
   createGetCacheKey,
   createMemoryGetCache,
   createPendingGetRegistry,
-  getApiCacheTtl
+  getApiCacheTtl,
+  createSessionStorageGetCache
 } from "./api-cache.mjs";
 
-test("cache miss then cache hit", () => {
+test("session storage cache persists only until TTL and can be cleared", () => {\n  let now = 10;\n  const values = new Map();\n  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };\n  const cache = createSessionStorageGetCache({ storage, now: () => now });\n  cache.set("reference", { rows: [1] }, 100);\n  assert.deepEqual(cache.get("reference"), { rows: [1] });\n  now = 111;\n  assert.equal(cache.get("reference"), undefined);\n  cache.set("another", 2, 100);\n  cache.clear();\n  assert.equal(values.has("tezkar-reference-cache-v1"), false);\n});\n\ntest("cache miss then cache hit", () => {
   let now = 100;
   const cache = createMemoryGetCache({ now: () => now });
   assert.equal(cache.get("products"), undefined);
@@ -75,11 +76,11 @@ test("sensitive and frequently changing endpoints bypass caching", () => {
   ]) assert.equal(getApiCacheTtl(path), 0, path);
 });
 
-test("only reviewed reference endpoints receive the 30-second TTL", () => {
+test("only reviewed reference endpoints receive the two-minute TTL", () => {
   for (const path of [
     "/api/products", "/api/stages",
     "/api/shifts/rate-groups", "/api/machines"
-  ]) assert.equal(getApiCacheTtl(path), 30_000, path);
+  ]) assert.equal(getApiCacheTtl(path), 120_000, path);
   assert.equal(getApiCacheTtl("/api/products?page=2"), 30_000);
   assert.equal(getApiCacheTtl("/api/rates"), 0);
   assert.equal(getApiCacheTtl("/api/shifts"), 0);
