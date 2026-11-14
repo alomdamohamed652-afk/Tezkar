@@ -18,6 +18,7 @@ const NEVER_CACHE_PATH_PREFIXES = [
 
 export function getApiCacheTtl(path) {
   const pathname = path.split("?")[0] ?? path;
+  if (pathname === "/api/tasks/pending-count" || pathname === "/api/payment-requests/pending-count" || pathname === "/api/notifications/unread-count") return 15_000;
   if (NEVER_CACHE_PATH_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))) return 0;
   return REFERENCE_DATA_PATHS.has(pathname) ? REFERENCE_DATA_CACHE_TTL_MS : 0;
 }
