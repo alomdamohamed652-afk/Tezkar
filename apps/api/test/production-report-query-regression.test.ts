@@ -50,7 +50,17 @@ test("report lookup indexes use concurrent builds with safe interrupted-build re
   assert.ok(migrationRunner.includes("pg_advisory_unlock(0, hashtext("));
   assert.match(migrationRunner, /RESET lock_timeout/);
   assert.match(migrationRunner, /RESET statement_timeout/);
+  assert.match(migrationRunner, /blockCommentDepth/);
+  assert.match(migrationRunner, /dollarQuote/);
+  assert.match(migrationRunner, /singleQuoted/);
   assert.match(migrationRunner, /indisvalid/);
   assert.match(migrationRunner, /DROP INDEX CONCURRENTLY IF EXISTS/);
   assert.match(migrationRunner, /isConcurrentIndexMigration/);
+});
+
+test("production details skip paid allocation aggregation without financial permission", () => {
+  assert.match(
+    readFileSync(new URL("../src/modules/production/production.routes.ts", import.meta.url), "utf8"),
+    /CROSS JOIN LATERAL \(SELECT \$\{canViewFinancials \? paidSql : "NULL::numeric"\} AS paid_amount\)/,
+  );
 });
