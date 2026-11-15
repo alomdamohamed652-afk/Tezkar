@@ -64,3 +64,14 @@ test("production details skip paid allocation aggregation without financial perm
     /CROSS JOIN LATERAL \(SELECT \$\{canViewFinancials \? paidSql : "NULL::numeric"\} AS paid_amount\)/,
   );
 });
+
+test("production details skip hidden remaining and payment status aggregates without financial permission", () => {
+  const source = readFileSync(
+    new URL("../src/modules/production/production.routes.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /remainingDetailSql = canViewFinancials/);
+  assert.match(source, /paymentStatusDetailSql = canViewFinancials/);
+  assert.match(source, /remainingDetailSql\} AS remaining_amount/);
+  assert.match(source, /paymentStatusDetailSql\} AS payment_status/);
+});
