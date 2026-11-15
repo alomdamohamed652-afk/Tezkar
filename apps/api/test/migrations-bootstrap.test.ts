@@ -103,6 +103,25 @@ test("migrations apply to an empty PostgreSQL database and are idempotent", { sk
         [leader.rows[0].id]
       );
       assert.deepEqual(missingWorkerPermissions.rows, [], "shift leader must inherit every existing worker permission");
+      const reportIndexes = await verification.query(
+        `SELECT index_class.relname AS index_name, index_state.indisvalid AS is_valid
+           FROM pg_index index_state
+           JOIN pg_class index_class ON index_class.oid=index_state.indexrelid
+          WHERE index_class.relname=ANY($1::text[])
+          ORDER BY index_class.relname`,
+        [[
+          "worker_payment_settlement_differences_employee_order_status_idx",
+          "worker_payment_settlement_difference_events_production_idx"
+        ]]
+      );
+      assert.deepEqual(
+        reportIndexes.rows,
+        [
+          { index_name: "worker_payment_settlement_difference_events_production_idx", is_valid: true },
+          { index_name: "worker_payment_settlement_differences_employee_order_status_idx", is_valid: true }
+        ],
+        "production report lookup indexes must be created and valid after bootstrap migrations"
+      );
     } finally {
       await verification.end();
     }

@@ -118,13 +118,12 @@ export default function AccountingPage() {
         api<{data:Revenue[]}>("/api/accounting/revenues")
       ]);
       setOrders(o.data);setExpenses(e.data);setRevenues(r.data.filter(x=>x.source!=="EXTERNAL_CUSTODY_TOP_UP"));
-      if(has("finance.profitability.view"))void loadOrderFinance("");
-      if(has("cash_custody.view")||has("cash_custody.view_own"))api<{data:CashTx[]}>("/api/cash-custody").then(x=>setCashTransactions(x.data)).catch(()=>{});
+
     } catch(e) { setError(e instanceof Error?e.message:"تعذر تحميل المالية"); }
   }
   useEffect(()=>{void load()},[]);
-  useEffect(()=>{void loadReversals()},[has]);
-  useEffect(()=>{if(tab==="differences")void loadWorkerDifferences()},[tab]);
+  useEffect(()=>{if(tab==="dashboard")void loadDashboardCustody()},[has,tab]);
+  useEffect(()=>{if(tab==="reversals")void loadReversals();if(tab==="differences")void loadWorkerDifferences();if(tab==="custody"&&(has("cash_custody.view")||has("cash_custody.view_own")))void loadCustodyData();if(tab==="periods"&&has("finance.period_close.view"))void loadPeriods();if(tab==="profitability"&&has("finance.profitability.view"))void loadOrderFinance("");},[tab,has]);
 
   useEffect(()=>{
     let active=true;
@@ -134,12 +133,8 @@ export default function AccountingPage() {
       .catch(()=>{if(active)setExpenseStages([])});
     return()=>{active=false};
   },[eForm.orderId,eForm.expenseType]);
-  useEffect(()=>{
-    let active=true;
-    api<{data:Employee[]}>("/api/custodies/eligible-employees").then(r=>{if(active)setEmployees(r.data)}).catch(()=>{});
-    if(has("finance.period_close.view"))api<{data:AccountingPeriod[]}>("/api/accounting/periods").then(r=>{if(active)setPeriods(r.data)}).catch(()=>{});
-    return()=>{active=false};
-  },[has]);
+  async function loadCustodyData(){try{const [eligible,cashResult]=await Promise.all([api<{data:Employee[]}>("/api/custodies/eligible-employees"),has("cash_custody.view")||has("cash_custody.view_own")?api<{data:CashTx[]}>("/api/cash-custody"):Promise.resolve({data:[] as CashTx[]})]);setEmployees(eligible.data);setCashTransactions(cashResult.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بيانات العهدة")}}
+  async function loadDashboardCustody(){if(!has("cash_custody.view")&&!has("cash_custody.view_own")){setCashTransactions([]);return;}try{setCashTransactions((await api<{data:CashTx[]}>("/api/cash-custody")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل ملخص العهدة النقدية")}}
   async function loadReversals(){
     if(!has("finance.expenses.view"))return;
     try{setReversals((await api<{data:typeof reversals}>("/api/accounting/reversals")).data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل العكسيات")}
@@ -411,7 +406,7 @@ export default function AccountingPage() {
       <button className={"tab "+(tab==="out"?"active":"")} onClick={()=>setTab("out")}>الخارج</button>
       {has("finance.profitability.view")&&<button className={"tab "+(tab==="profitability"?"active":"")} onClick={()=>setTab("profitability")}>ربحية الطلبيات</button>}
       {(has("cash_custody.view")||has("cash_custody.view_own"))&&<button className={"tab "+(tab==="custody"?"active":"")} onClick={()=>setTab("custody")}>حركة العهدة النقدية</button>}
-      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>{setTab("periods");void loadPeriods()}}>تصفية الفترة</button>}
+      {has("finance.period_close.view")&&<button className={"tab "+(tab==="periods"?"active":"")} onClick={()=>setTab("periods")}>تصفية الفترة</button>}
       {has("finance.reversals.create")&&<button className={"tab "+(tab==="reversals"?"active":"")} onClick={()=>setTab("reversals")}>العكس المحاسبي</button>}
       {has("finance.worker_settlement_differences.view")&&<button className={"tab "+(tab==="differences"?"active":"")} onClick={()=>setTab("differences")}>فروق تسويات العمال</button>}
      </div>
