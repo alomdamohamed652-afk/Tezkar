@@ -8,32 +8,32 @@ const migrationsDir = path.resolve(currentDir, "migrations");
 const migrationLockKey = "tezkar:schema-migrations";
 
 const files = (await readdir(migrationsDir))
-  .filter((name) => /^\\d+_.+\\.sql$/.test(name))
+  .filter((name) => /^\d+_.+\.sql$/.test(name))
   .sort((a, b) => {
-    const an = Number(a.match(/^\\d+/)?.[0] ?? 0);
-    const bn = Number(b.match(/^\\d+/)?.[0] ?? 0);
+    const an = Number(a.match(/^\d+/)?.[0] ?? 0);
+    const bn = Number(b.match(/^\d+/)?.[0] ?? 0);
     return an - bn || a.localeCompare(b);
   });
 
-await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+await pool.query(\`CREATE TABLE IF NOT EXISTS schema_migrations (
   version TEXT PRIMARY KEY,
   applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)`);
+)\`);
 
 function getConcurrentIndexNames(sql: string): string[] {
-  return [...sql.matchAll(/CREATE\\s+INDEX\\s+CONCURRENTLY\\s+IF\\s+NOT\\s+EXISTS\\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi)]
+  return [...sql.matchAll(/CREATE\s+INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi)]
     .map((match) => match[1]!);
 }
 
 function splitSqlStatements(sql: string): string[] {
   return sql
     .split(";")
-    .map((statement) => statement.replace(/^\\s*--.*$/gm, "").trim())
+    .map((statement) => statement.replace(/^\s*--.*$/gm, "").trim())
     .filter(Boolean);
 }
 
 for (const file of files) {
-  const version = file.replace(/\\.sql$/, "");
+  const version = file.replace(/\.sql$/, "");
   const client = await pool.connect();
   let migrationLockAcquired = false;
 
@@ -48,7 +48,7 @@ for (const file of files) {
     );
 
     if (existing.rowCount) {
-      console.log(`skipped: ${file}`);
+      console.log(\`skipped: \${file}\`);
       continue;
     }
 
@@ -58,7 +58,7 @@ for (const file of files) {
     if (isConcurrentIndexMigration) {
       const indexNames = getConcurrentIndexNames(sql);
       if (indexNames.length === 0) {
-        throw new Error(`Concurrent-index migration has no supported index statements: ${file}`);
+        throw new Error(\`Concurrent-index migration has no supported index statements: \${file}\`);
       }
 
       // CONCURRENTLY cannot run in a transaction. A failed build can leave an invalid
@@ -68,22 +68,22 @@ for (const file of files) {
 
       for (const indexName of indexNames) {
         const state = await client.query(
-          `SELECT i.indisvalid
+          \`SELECT i.indisvalid
              FROM pg_class c
              JOIN pg_index i ON i.indexrelid = c.oid
-            WHERE c.oid = to_regclass($1)`,
+            WHERE c.oid = to_regclass($1)\`,
           [indexName]
         );
         if (state.rows[0]?.indisvalid === false) {
-          console.warn(`removing invalid index before retry: ${indexName}`);
-          await client.query(`DROP INDEX CONCURRENTLY IF EXISTS "${indexName}"`);
+          console.warn(\`removing invalid index before retry: \${indexName}\`);
+          await client.query(\`DROP INDEX CONCURRENTLY IF EXISTS "\${indexName}"\`);
         }
       }
 
       for (const statement of splitSqlStatements(sql)) {
         await client.query(statement);
       }
-      console.log(`applied concurrently: ${file}`);
+      console.log(\`applied concurrently: \${file}\`);
       continue;
     }
 
@@ -91,7 +91,7 @@ for (const file of files) {
     let applied = false;
 
     for (let attempt = 1; attempt <= maxLockAttempts; attempt += 1) {
-      console.log(`applying: ${file} (attempt ${attempt}/${maxLockAttempts})`);
+      console.log(\`applying: \${file} (attempt \${attempt}/\${maxLockAttempts})\`);
       await client.query("BEGIN");
 
       try {
@@ -101,7 +101,7 @@ for (const file of files) {
           [version]
         );
         await client.query("COMMIT");
-        console.log(`applied: ${file}`);
+        console.log(\`applied: \${file}\`);
         applied = true;
         break;
       } catch (error) {
@@ -116,14 +116,14 @@ for (const file of files) {
 
         const delayMs = attempt * 2_000;
         console.warn(
-          `lock timeout: ${file}; retrying in ${delayMs}ms (${attempt}/${maxLockAttempts})`
+          \`lock timeout: \${file}; retrying in \${delayMs}ms (\${attempt}/\${maxLockAttempts})\`
         );
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
 
     if (!applied) {
-      throw new Error(`Migration did not complete: ${file}`);
+      throw new Error(\`Migration did not complete: \${file}\`);
     }
   } finally {
     if (migrationLockAcquired) {
