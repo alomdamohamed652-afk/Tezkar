@@ -77,7 +77,7 @@ export function createMemoryGetCache({ maxEntries = MAX_GET_CACHE_ENTRIES, now =
 export function createSessionStorageGetCache({ key = "tezkar-reference-cache-v1", storage = typeof window !== "undefined" ? window.sessionStorage : null, now = Date.now } = {}) {
   function read() {
     if (!storage) return {};
-    try { return JSON.parse(storage.getItem(key) || "{}"); } catch { /* Ignore unavailable or malformed session storage. */ return {}; }
+    try { const parsed = JSON.parse(storage.getItem(key) || "{}"); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { /* Ignore unavailable or malformed session storage. */ return {}; }
   }
   return {
     get(cacheKey) {
