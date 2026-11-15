@@ -217,27 +217,12 @@ export async function productionRoutes(app: FastifyInstance) {
 
     // Do not execute per-row payment/reversal aggregates for users who cannot see them.
     // The paymentStatus filter remains unchanged and is evaluated only when explicitly requested.
-    const remainingDetailSql = canViewFinancials ? `${remainingDetailSql}` : "NULL::numeric";
-    const paymentStatusDetailSql = canViewFinancials ? `${paymentStatusDetailSql}` : "NULL::text";
-
-    const result = await pool.query(
-      `WITH page AS (
-         SELECT p.id
-           FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
-          ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC
-          LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
-       )
-       SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.wage_type_method_snapshot AS rate_method,p.earning_amount,p.bonus_amount,p.deduction_amount,
-              (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='BONUS' ORDER BY a.created_at DESC LIMIT 1) AS bonus_reason,
-              (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
-              p.total_earning_amount,p.status,
-payment_totals.paid_amount,
-              GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
+    const remainingDetailSql = canViewFinancials ? `GREATEST(COALESCE(p.total_earning_amount,p.earning_amount,0)
                 - COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)) FROM worker_payment_order_allocations a WHERE a.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=a.worker_payment_id)),0)
                 - COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_allocations wpa WHERE wpa.production_entry_id=p.id AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es_dupe JOIN employee_earnings_settlement_allocations esa_dupe ON esa_dupe.settlement_id=es_dupe.id WHERE es_dupe.worker_payment_id=wpa.worker_payment_id) AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations owa WHERE owa.worker_payment_id=wpa.worker_payment_id)),0)
                 - COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
-                - ${differenceAllocatedSql},0) AS remaining_amount,
-              CASE
+                - ${differenceAllocatedSql},0)` : "NULL::numeric";
+    const paymentStatusDetailSql = canViewFinancials ? `CASE
                 WHEN EXISTS(SELECT 1 FROM worker_payments wp
                   JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
                   JOIN order_stages os2 ON os2.id=p.order_stage_id
@@ -265,7 +250,22 @@ payment_totals.paid_amount,
                    + COALESCE((SELECT SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=a.id),0)) FROM employee_earnings_settlement_allocations a WHERE a.production_entry_id=p.id),0)
         + ${differenceAllocatedSql}>0.009 THEN 'PARTIAL'
                 ELSE 'UNPAID'
-              END AS payment_status,
+              END` : "NULL::text";
+
+    const result = await pool.query(
+      `WITH page AS (
+         SELECT p.id
+           FROM production_entries p ${where.length ? "WHERE " + where.join(" AND ") : ""}
+          ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC
+          LIMIT ${query.data.limit} OFFSET ${(query.data.page - 1) * query.data.limit}
+       )
+       SELECT p.id,p.code,to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.responsible_name,p.employee_id,p.shift_id,p.shift_leader_employee_id,p.product_id,p.stage_id,p.base_amount,p.hours_worked,p.quantity,p.rate_snapshot,p.wage_type_method_snapshot AS rate_method,p.earning_amount,p.bonus_amount,p.deduction_amount,
+              (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='BONUS' ORDER BY a.created_at DESC LIMIT 1) AS bonus_reason,
+              (SELECT a.reason FROM employee_earnings_adjustments a WHERE a.production_entry_id=p.id AND a.adjustment_type='DEDUCTION' ORDER BY a.created_at DESC LIMIT 1) AS deduction_reason,
+              p.total_earning_amount,p.status,
+payment_totals.paid_amount,
+              ${remainingDetailSql} AS remaining_amount,
+              ${paymentStatusDetailSql} AS payment_status,
               e.code AS employee_code,e.full_name AS employee_name,
               sle.full_name AS shift_leader_name,
               pr.code AS product_code,pr.name AS product_name,
