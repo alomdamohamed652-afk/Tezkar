@@ -66,6 +66,46 @@ for (const file of files) {
           throw error;
         }
 
+        if (file === "2026111201_worker_difference_reallocation_cycles.sql") {
+          try {
+            const lockHolders = await client.query<{
+              pid: number;
+              application_name: string;
+              state: string | null;
+              wait_event_type: string | null;
+              wait_event: string | null;
+              transaction_age_seconds: number | null;
+              lock_mode: string;
+            }>(`
+              SELECT a.pid,
+                     a.application_name,
+                     a.state,
+                     a.wait_event_type,
+                     a.wait_event,
+                     CASE WHEN a.xact_start IS NULL THEN NULL
+                          ELSE floor(extract(epoch FROM (clock_timestamp() - a.xact_start)))::int
+                      END AS transaction_age_seconds,
+                     l.mode AS lock_mode
+                FROM pg_locks l
+                JOIN pg_stat_activity a ON a.pid = l.pid
+               WHERE l.locktype = 'relation'
+                 AND l.relation = to_regclass('worker_payment_order_allocations')
+                 AND l.granted
+                 AND a.pid <> pg_backend_pid()
+               ORDER BY a.xact_start NULLS LAST, a.pid
+               LIMIT 20
+            `);
+            console.warn(
+              `migration lock holders: ${JSON.stringify(lockHolders.rows)}`
+            );
+          } catch (diagnosticError) {
+            const message = diagnosticError instanceof Error
+              ? diagnosticError.message
+              : String(diagnosticError);
+            console.warn(`migration lock diagnostics unavailable: ${message}`);
+          }
+        }
+
         const delayMs = attempt * 2_000;
         console.warn(
           `lock timeout: ${file}; retrying in ${delayMs}ms (${attempt}/${maxLockAttempts})`
