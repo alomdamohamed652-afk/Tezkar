@@ -87,13 +87,17 @@ export async function reportsRoutes(app: FastifyInstance) {
           AND NOT EXISTS (SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
            AND NOT EXISTS (SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id) AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id WHERE es.worker_payment_id=wp.id)
       ) unallocated ON TRUE`;
+    const countQueryJoins = q.paymentStatus
+      ? countJoins
+      : "LEFT JOIN order_stages os ON os.id=p.order_stage_id";
     const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM production_entries p ${countJoins} ${whereSql}`,
+      `SELECT COUNT(*)::int AS total FROM production_entries p ${countQueryJoins} ${whereSql}`,
       params
     );
     const summaryJoins = `
       LEFT JOIN order_stages os ON os.id=p.order_stage_id
       LEFT JOIN LATERAL (SELECT SUM(s.quantity) AS scrap_quantity FROM production_scrap_records s WHERE s.production_entry_id=p.id) scrap ON TRUE
+` + (q.paymentStatus ? `
       LEFT JOIN LATERAL (SELECT COALESCE(SUM(a.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=a.id),0)),0)
         +COALESCE((SELECT SUM(ev.amount) FROM worker_payment_settlement_difference_events ev
           WHERE ev.production_entry_id=p.id AND ev.event_type='ALLOCATED_TO_PRODUCTION'
@@ -115,7 +119,8 @@ export async function reportsRoutes(app: FastifyInstance) {
         WHERE wp.employee_id=p.employee_id AND os.order_id IS NOT NULL AND ae.order_id=os.order_id AND NOT EXISTS(SELECT 1 FROM financial_reversal_lines fr WHERE fr.source_type='WORKER_PAYMENT' AND fr.source_id=wp.id)
           AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations wpa WHERE wpa.worker_payment_id=wp.id)
               AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations direct WHERE direct.worker_payment_id=wp.id)
-      ) unallocated ON TRUE`;
+      ) unallocated ON TRUE
+` : "");
     const summaryResult = await pool.query(
       `SELECT COUNT(*)::int AS entries,COALESCE(SUM(p.quantity),0) AS quantity,
               COALESCE(SUM(p.hours_worked),0) AS hours,
