@@ -34,12 +34,8 @@ jobs:
         run: corepack enable
       - name: Setup pnpm
         run: corepack prepare pnpm@10.34.6 --activate
-      - name: Generate pnpm lockfile
-        run: |
-          pnpm install --lockfile-only --no-frozen-lockfile
-          echo "LOCKFILE_BASE64:$(base64 -w0 pnpm-lock.yaml)"
       - name: Install
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
       - name: Lint
         run: pnpm lint
       - name: Typecheck
