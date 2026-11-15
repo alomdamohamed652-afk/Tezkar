@@ -46,8 +46,8 @@ test("report lookup indexes use concurrent builds with safe interrupted-build re
   assert.match(lookupIndexesMigration, /^-- @non-transactional-indexes/);
   assert.match(lookupIndexesMigration, /CREATE INDEX CONCURRENTLY IF NOT EXISTS worker_payment_settlement_difference_events_production_idx/);
   assert.match(lookupIndexesMigration, /CREATE INDEX CONCURRENTLY IF NOT EXISTS worker_payment_settlement_differences_employee_order_status_idx/);
-  assert.match(migrationRunner, /pg_advisory_lock\\(0, hashtext/);
-  assert.match(migrationRunner, /pg_advisory_unlock\\(0, hashtext/);
+  assert.ok(migrationRunner.includes("pg_advisory_lock(0, hashtext("));
+  assert.ok(migrationRunner.includes("pg_advisory_unlock(0, hashtext("));
   assert.match(migrationRunner, /RESET lock_timeout/);
   assert.match(migrationRunner, /RESET statement_timeout/);
   assert.match(migrationRunner, /indisvalid/);
