@@ -4,6 +4,7 @@ import {
   createGetCacheKey,
   createMemoryGetCache,
   createPendingGetRegistry,
+  createSessionStorageGetCache,
   getApiCacheTtl
 } from "./api-cache.mjs";
 
@@ -93,4 +94,18 @@ test("only navigation badge counts receive a short 15-second TTL", () => {
   }
   assert.equal(getApiCacheTtl("/api/notifications"), 0);
   assert.equal(getApiCacheTtl("/api/tasks"), 0);
+});
+
+test("session storage cache expires and clears safely", () => {
+  let now = 10;
+  const values = new Map();
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage, now: () => now });
+  cache.set("reference", { rows: [1] }, 30_000);
+  assert.deepEqual(cache.get("reference"), { rows: [1] });
+  now = 30_011;
+  assert.equal(cache.get("reference"), undefined);
+  cache.set("another", 2, 30_000);
+  cache.clear();
+  assert.equal(values.has("tezkar-reference-cache-v1"), false);
 });
