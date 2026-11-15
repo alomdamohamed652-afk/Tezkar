@@ -126,10 +126,13 @@ for (const file of files) {
       throw new Error(`Migration did not complete: ${file}`);
     }
   } finally {
-    if (migrationLockAcquired) {
-      await client.query("SELECT pg_advisory_unlock(hashtext($1))", [migrationLockKey]);
+    try {
+      if (migrationLockAcquired) {
+        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [migrationLockKey]);
+      }
+    } finally {
+      client.release();
     }
-    client.release();
   }
 }
 
