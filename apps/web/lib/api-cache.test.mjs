@@ -109,3 +109,12 @@ test("session storage cache expires and clears safely", () => {
   cache.clear();
   assert.equal(values.has("tezkar-reference-cache-v1"), false);
 });
+
+test("session storage cache ignores malformed or non-object payloads", () => {
+  const values = new Map([["tezkar-reference-cache-v1", "null"]]);
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage });
+  assert.equal(cache.get("reference"), undefined);
+  cache.set("reference", { rows: [2] }, 30_000);
+  assert.deepEqual(cache.get("reference"), { rows: [2] });
+});
