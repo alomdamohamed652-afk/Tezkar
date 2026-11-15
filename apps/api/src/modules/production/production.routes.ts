@@ -215,6 +215,11 @@ export async function productionRoutes(app: FastifyInstance) {
     );
     const total = Number(countResult.rows[0]?.total ?? 0);
 
+    // Do not execute per-row payment/reversal aggregates for users who cannot see them.
+    // The paymentStatus filter remains unchanged and is evaluated only when explicitly requested.
+    const remainingDetailSql = canViewFinancials ? `${remainingDetailSql}` : "NULL::numeric";
+    const paymentStatusDetailSql = canViewFinancials ? `${paymentStatusDetailSql}` : "NULL::text";
+
     const result = await pool.query(
       `WITH page AS (
          SELECT p.id
