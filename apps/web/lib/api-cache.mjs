@@ -83,8 +83,11 @@ export function createSessionStorageGetCache({ key = "tezkar-reference-cache-v1"
     get(cacheKey) {
       const entries = read();
       const entry = entries[cacheKey];
-      if (!entry || entry.expiresAt <= now()) {
-        if (entry) { delete entries[cacheKey]; try { storage?.setItem(key, JSON.stringify(entries)); } catch { /* Session storage may be disabled or full. */ } }
+      if (!entry || typeof entry !== "object" || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= now() || !Object.prototype.hasOwnProperty.call(entry, "value")) {
+        if (Object.prototype.hasOwnProperty.call(entries, cacheKey)) {
+          delete entries[cacheKey];
+          try { storage?.setItem(key, JSON.stringify(entries)); } catch { /* Session storage may be disabled or full. */ }
+        }
         return undefined;
       }
       return entry.value;
