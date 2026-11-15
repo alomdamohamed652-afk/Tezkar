@@ -2858,6 +2858,26 @@ test("approving a worker payout atomically marks it paid and debits the availabl
         "production reports must include active difference allocations backed by canonical worker settlements");
       assert.equal(Number(reportedLaterProduction.remaining_amount),0);
       assert.equal(reportedLaterProduction.payment_status,"PAID");
+      const groupedProductionReport=await app.inject({
+        method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}&groupBy=employee`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(groupedProductionReport.statusCode,200,groupedProductionReport.body);
+      const groupedProductionData=groupedProductionReport.json().data;
+      const groupedProductionGroups=groupedProductionReport.json().groups;
+      assert.equal(groupedProductionGroups.reduce((sum:any,group:any)=>sum+Number(group.entries),0),groupedProductionData.length,
+        "unfiltered employee groups must aggregate the same filtered production rows as the detail query");
+      assert.equal(Number(groupedProductionGroups.reduce((sum:any,group:any)=>sum+Number(group.earnings),0)),
+        Number(groupedProductionData.reduce((sum:any,row:any)=>sum+Number(row.total_earning_amount),0)),
+        "unfiltered group earnings must equal the sum of detailed production earnings");
+      const groupedPaidProductionReport=await app.inject({
+        method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}&paymentStatus=PAID&groupBy=employee`,
+        headers:{cookie:managerCookie}
+      });
+      assert.equal(groupedPaidProductionReport.statusCode,200,groupedPaidProductionReport.body);
+      assert.equal(groupedPaidProductionReport.json().groups.reduce((sum:any,group:any)=>sum+Number(group.entries),0),
+        groupedPaidProductionReport.json().data.length,
+        "PAID-filtered employee groups must retain the payment-allocation joins and match detail rows");
       const orderDashboardAfterDifference=await app.inject({
         method:"GET",url:`/api/orders/${differenceOrderId}/dashboard`,headers:{cookie:managerCookie}
       });
@@ -3070,6 +3090,14 @@ test("approving a worker payout atomically marks it paid and debits the availabl
        assert.equal(reviewDifferenceReport.statusCode,200,reviewDifferenceReport.body);
        assert.ok(reviewDifferenceReport.json().data.some((row:any)=>row.id===sourceProduction.id),
          "production reporting must keep a worker's source order visible as unallocated while its reversed difference awaits accounting review");
+       const groupedUnallocatedReport=await app.inject({
+         method:"GET",url:`/api/reports/production?employeeId=${differenceWorker.id}&orderId=${differenceOrderId}&paymentStatus=UNALLOCATED&groupBy=employee`,
+         headers:{cookie:managerCookie}
+       });
+       assert.equal(groupedUnallocatedReport.statusCode,200,groupedUnallocatedReport.body);
+       assert.equal(groupedUnallocatedReport.json().groups.reduce((sum:any,group:any)=>sum+Number(group.entries),0),
+         groupedUnallocatedReport.json().data.length,
+         "UNALLOCATED-filtered employee groups must match detail rows while preserving settlement-difference joins");
 
       // After reversing the later-production allocation, every financial view
       // must restore exactly that production's unpaid balance without creating
