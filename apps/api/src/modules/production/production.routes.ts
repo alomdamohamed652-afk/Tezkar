@@ -278,7 +278,7 @@ payment_totals.paid_amount,
          JOIN shifts sh ON sh.id=p.shift_id
          JOIN units u ON u.id=p.unit_id
          LEFT JOIN production_types pt ON pt.id=p.production_type_id
-         CROSS JOIN LATERAL (SELECT ${paidSql} AS paid_amount) payment_totals
+         CROSS JOIN LATERAL (SELECT ${canViewFinancials ? paidSql : "NULL::numeric"} AS paid_amount) payment_totals
         ORDER BY p.work_date DESC,p.created_at DESC,p.id DESC`,
       params
     );
