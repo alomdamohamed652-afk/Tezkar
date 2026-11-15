@@ -95,7 +95,7 @@ export function createSessionStorageGetCache({ key = "tezkar-reference-cache-v1"
       entries[cacheKey] = { value, expiresAt: now() + ttlMs };
       const keys = Object.keys(entries);
       for (const oldKey of keys.slice(0, Math.max(0, keys.length - 40))) delete entries[oldKey];
-      try { storage.setItem(key, JSON.stringify(entries)); } catch {}
+      try { storage.setItem(key, JSON.stringify(entries)); } catch { /* Session storage may be disabled or full. */ }
     },
     clear() { try { storage?.removeItem(key); } catch { /* Session storage may be disabled. */ } }
   };
