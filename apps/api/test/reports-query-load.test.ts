@@ -28,3 +28,15 @@ test("production report summary skips payment allocation joins unless payment st
     /FROM production_entries p \$\{summaryJoins\}[\s\S]*?\$\{whereSql\}/,
   );
 });
+
+
+test("production report group query skips payment allocation joins unless payment status is filtered", () => {
+  assert.match(
+    reportsRoutes,
+    /const groupPaymentJoins = q\.paymentStatus\s*\?\s*countJoins\.replace\(/,
+  );
+  assert.match(
+    reportsRoutes,
+    /LEFT JOIN production_types pt ON pt\.id=p\.production_type_id\s*\$\{groupPaymentJoins\}/,
+  );
+});
