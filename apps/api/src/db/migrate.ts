@@ -39,7 +39,7 @@ for (const file of files) {
 
   try {
     // Serialize migration runners across app instances, including non-transactional DDL.
-    await client.query("SELECT pg_advisory_lock(hashtext($1))", [migrationLockKey]);
+    await client.query("SELECT pg_advisory_lock(0, hashtext($1))", [migrationLockKey]);
     migrationLockAcquired = true;
 
     const existing = await client.query(
@@ -63,27 +63,33 @@ for (const file of files) {
 
       // CONCURRENTLY cannot run in a transaction. A failed build can leave an invalid
       // index behind; remove only those invalid indexes before retrying the migration.
-      await client.query("SET lock_timeout = '5s'");
-      await client.query("SET statement_timeout = '0'");
+      try {
+        await client.query("SET lock_timeout = '5s'");
+        await client.query("SET statement_timeout = '0'");
 
-      for (const indexName of indexNames) {
-        const state = await client.query(
-          `SELECT i.indisvalid
-             FROM pg_class c
-             JOIN pg_index i ON i.indexrelid = c.oid
-            WHERE c.oid = to_regclass($1)`,
-          [indexName]
-        );
-        if (state.rows[0]?.indisvalid === false) {
-          console.warn(`removing invalid index before retry: ${indexName}`);
-          await client.query(`DROP INDEX CONCURRENTLY IF EXISTS "${indexName}"`);
+        for (const indexName of indexNames) {
+          const state = await client.query(
+            `SELECT i.indisvalid
+               FROM pg_class c
+               JOIN pg_index i ON i.indexrelid = c.oid
+              WHERE c.oid = to_regclass($1)`,
+            [indexName]
+          );
+          if (state.rows[0]?.indisvalid === false) {
+            console.warn(`removing invalid index before retry: ${indexName}`);
+            await client.query(`DROP INDEX CONCURRENTLY IF EXISTS "${indexName}"`);
+          }
         }
-      }
 
-      for (const statement of splitSqlStatements(sql)) {
-        await client.query(statement);
+        for (const statement of splitSqlStatements(sql)) {
+          await client.query(statement);
+        }
+        console.log(`applied concurrently: ${file}`);
+      } finally {
+        // Do not leak migration-only session settings to the shared connection pool.
+        await client.query("RESET lock_timeout");
+        await client.query("RESET statement_timeout");
       }
-      console.log(`applied concurrently: ${file}`);
       continue;
     }
 
@@ -128,7 +134,7 @@ for (const file of files) {
   } finally {
     try {
       if (migrationLockAcquired) {
-        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [migrationLockKey]);
+        await client.query("SELECT pg_advisory_unlock(0, hashtext($1))", [migrationLockKey]);
       }
     } finally {
       client.release();
