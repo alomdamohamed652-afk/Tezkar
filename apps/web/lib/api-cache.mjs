@@ -1,3 +1,4 @@
+/* global window */
 const REFERENCE_DATA_CACHE_TTL_MS = 120_000;
 const MAX_GET_CACHE_ENTRIES = 100;
 
@@ -69,14 +70,14 @@ export function createMemoryGetCache({ maxEntries = MAX_GET_CACHE_ENTRIES, now =
 export function createSessionStorageGetCache({ key = "tezkar-reference-cache-v1", storage = typeof window !== "undefined" ? window.sessionStorage : null, now = Date.now } = {}) {
   function read() {
     if (!storage) return {};
-    try { return JSON.parse(storage.getItem(key) || "{}"); } catch { return {}; }
+    try { return JSON.parse(storage.getItem(key) || "{}"); } catch { /* Ignore unavailable or malformed session storage. */ return {}; }
   }
   return {
     get(cacheKey) {
       const entries = read();
       const entry = entries[cacheKey];
       if (!entry || entry.expiresAt <= now()) {
-        if (entry) { delete entries[cacheKey]; try { storage?.setItem(key, JSON.stringify(entries)); } catch {} }
+        if (entry) { delete entries[cacheKey]; try { storage?.setItem(key, JSON.stringify(entries)); } catch { /* Session storage may be disabled or full. */ } }
         return undefined;
       }
       return entry.value;
