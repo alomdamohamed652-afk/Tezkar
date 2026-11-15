@@ -26,10 +26,98 @@ function getConcurrentIndexNames(sql: string): string[] {
 }
 
 function splitSqlStatements(sql: string): string[] {
-  return sql
-    .split(";")
-    .map((statement) => statement.replace(/^\s*--.*$/gm, "").trim())
-    .filter(Boolean);
+  const statements: string[] = [];
+  let start = 0;
+  let index = 0;
+  let singleQuoted = false;
+  let doubleQuoted = false;
+  let lineComment = false;
+  let blockCommentDepth = 0;
+  let dollarQuote: string | null = null;
+
+  while (index < sql.length) {
+    const char = sql[index]!;
+    const next = sql[index + 1];
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      index += 1;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (char === "/" && next === "*") {
+        blockCommentDepth += 1;
+        index += 2;
+      } else if (char === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        index += 2;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+    if (dollarQuote) {
+      if (sql.startsWith(dollarQuote, index)) {
+        index += dollarQuote.length;
+        dollarQuote = null;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+    if (singleQuoted) {
+      if (char === "'" && next === "'") index += 2;
+      else {
+        if (char === "'") singleQuoted = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (doubleQuoted) {
+      if (char === '"' && next === '"') index += 2;
+      else {
+        if (char === '"') doubleQuoted = false;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "-" && next === "-") {
+      lineComment = true;
+      index += 2;
+    } else if (char === "/" && next === "*") {
+      blockCommentDepth = 1;
+      index += 2;
+    } else if (char === "'") {
+      singleQuoted = true;
+      index += 1;
+    } else if (char === '"') {
+      doubleQuoted = true;
+      index += 1;
+    } else if (char === "$") {
+      const tag = sql.slice(index).match(/^\$[a-zA-Z_][a-zA-Z0-9_]*\$|^\$\$/)?.[0];
+      if (tag) {
+        dollarQuote = tag;
+        index += tag.length;
+      } else {
+        index += 1;
+      }
+    } else if (char === ";") {
+      const statement = sql.slice(start, index).replace(/^\s*--.*$/gm, "").trim();
+      if (statement) statements.push(statement);
+      start = index + 1;
+      index += 1;
+    } else {
+      index += 1;
+    }
+  }
+
+  if (singleQuoted || doubleQuoted || blockCommentDepth > 0 || dollarQuote) {
+    throw new Error("Unterminated SQL quote or comment in concurrent-index migration");
+  }
+  const finalStatement = sql.slice(start).replace(/^\s*--.*$/gm, "").trim();
+  if (finalStatement) statements.push(finalStatement);
+  return statements;
 }
 
 for (const file of files) {
@@ -87,8 +175,12 @@ for (const file of files) {
         console.log(`applied concurrently: ${file}`);
       } finally {
         // Do not leak migration-only session settings to the shared connection pool.
-        await client.query("RESET lock_timeout");
-        await client.query("RESET statement_timeout");
+        try {
+          await client.query("RESET lock_timeout");
+        } finally {
+          // Attempt both resets even if one session-setting reset fails.
+          await client.query("RESET statement_timeout");
+        }
       }
       continue;
     }
