@@ -1,6 +1,5 @@
 import { API_BASE } from "./api-base";
 import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, createSessionStorageGetCache, getApiCacheTtl } from "./api-cache.mjs";
-import { createGetCacheKey, createMemoryGetCache, createPendingGetRegistry, getApiCacheTtl } from "./api-cache.mjs";
 
 export const API_URL = API_BASE;
 
