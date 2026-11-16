@@ -67,6 +67,10 @@ export default function LaserDesignsPage() {
     }
   }
 
+  async function refreshDesigns() { const r = await api<{ data: Design[] }>("/api/laser-designs"); setDesigns(r.data); }
+  async function refreshVersions() { const r = await api<{ data: DesignVersion[] }>("/api/laser-design-versions"); setVersions(r.data); }
+  async function refreshCompatibility() { const r = await api<{ data: Compatibility[] }>("/api/laser-machine-design-compatibility"); setCompatibility(r.data); }
+
   useEffect(() => { void load(); }, []);
 
   async function submitDesign(e: FormEvent) {
@@ -80,7 +84,7 @@ export default function LaserDesignsPage() {
       }) });
       setDesignName(""); setThumbnailUrl(""); setFileReference("");
       setNotice("تم إنشاء التصميم. أضف إصدارًا له لتحديد الخامة وعدد القطع في الدورة.");
-      await load();
+      await refreshDesigns();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر إنشاء التصميم"); }
     finally { setSaving(""); }
   }
@@ -101,7 +105,7 @@ export default function LaserDesignsPage() {
       }) });
       setVersionNo(String(Number(versionNo) + 1)); setVersionNotes("");
       setNotice("تم حفظ إصدار التصميم.");
-      await load();
+      await Promise.all([refreshDesigns(), refreshVersions()]);
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر إنشاء إصدار التصميم"); }
     finally { setSaving(""); }
   }
@@ -120,7 +124,7 @@ export default function LaserDesignsPage() {
       }) });
       setCompatPieces(""); setCompatSeconds(""); setCompatNotes("");
       setNotice("تم ربط إصدار التصميم بالماكينة.");
-      await load();
+      await refreshCompatibility();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر ربط التصميم بالماكينة"); }
     finally { setSaving(""); }
   }
@@ -131,7 +135,7 @@ export default function LaserDesignsPage() {
     try {
       await api("/api/laser-designs/" + design.id + "/archive", { method: "PATCH" });
       setNotice("تمت أرشفة التصميم مع الاحتفاظ بسجله.");
-      await load();
+      await Promise.all([refreshDesigns(), refreshVersions()]);
     } catch (e) { setError(e instanceof Error ? e.message : "تعذرت أرشفة التصميم"); }
     finally { setSaving(""); }
   }
@@ -142,7 +146,7 @@ export default function LaserDesignsPage() {
     try {
       await api("/api/laser-machine-design-compatibility/" + item.id + "/deactivate", { method: "PATCH" });
       setNotice("تم إيقاف التوافق مع الاحتفاظ بالسجل التاريخي.");
-      await load();
+      await refreshCompatibility();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر إيقاف التوافق"); }
     finally { setSaving(""); }
   }
