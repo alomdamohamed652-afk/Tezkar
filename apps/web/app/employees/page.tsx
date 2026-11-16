@@ -39,6 +39,7 @@ export default function EmployeesPage(){
     }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات");}
     finally{setLoading(false);}
   }
+  async function refreshEmployees(){const result=await api<{data:Employee[]}>("/api/employees");setEmployees(result.data);}
   useEffect(()=>{void load()},[]);
 
   async function resetEmployeePassword(employee:Employee){
@@ -51,8 +52,8 @@ export default function EmployeesPage(){
     finally{setResetPasswordBusy(false)}
   }
 
-  async function deactivate(){if(!deactivateTarget)return;try{await api("/api/employees/"+deactivateTarget.id,{method:"DELETE"});setDeactivateTarget(null);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
-  async function restoreEmployee(employee:Employee){setError("");try{await api("/api/employees/"+employee.id+"/activate",{method:"POST"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تفعيل الموظف")}}
+  async function deactivate(){if(!deactivateTarget)return;try{await api("/api/employees/"+deactivateTarget.id,{method:"DELETE"});setDeactivateTarget(null);await refreshEmployees()}catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الموظف")}}
+  async function restoreEmployee(employee:Employee){setError("");try{await api("/api/employees/"+employee.id+"/activate",{method:"POST"});await refreshEmployees()}catch(e){setError(e instanceof Error?e.message:"تعذر تفعيل الموظف")}}
 
   async function submit(event:FormEvent){
     event.preventDefault();setSaving(true);setError("");setCredentials(null);
@@ -61,7 +62,7 @@ export default function EmployeesPage(){
         method:"POST",body:JSON.stringify({fullName,phone:phone||undefined,departmentId:departmentId||null,jobTitleId:jobTitleId||null,hiredAt:hiredAt||null,roleCode})
       });
       setCredentials(result.data.credentials);
-      setFullName("");setPhone("");setDepartmentId("");setJobTitleId("");setHiredAt("");setShowForm(false);await load();
+      setFullName("");setPhone("");setDepartmentId("");setJobTitleId("");setHiredAt("");setShowForm(false);await refreshEmployees();
     }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ الموظف");}
     finally{setSaving(false);}
   }
@@ -74,7 +75,7 @@ export default function EmployeesPage(){
   }
   async function saveEdit(){
     if(!editTarget)return;setEditSaving(true);setError("");
-    try{await api("/api/employees/"+editTarget.id,{method:"PATCH",body:JSON.stringify({fullName:editName.trim(),phone:editPhone.trim()||null,departmentId:editDepartment||null,jobTitleId:editJob||null,roleCode:editRole.trim()})});setEditTarget(null);await load()}
+    try{await api("/api/employees/"+editTarget.id,{method:"PATCH",body:JSON.stringify({fullName:editName.trim(),phone:editPhone.trim()||null,departmentId:editDepartment||null,jobTitleId:editJob||null,roleCode:editRole.trim()})});setEditTarget(null);await refreshEmployees()}
     catch(e){setError(e instanceof Error?e.message:"تعذر تعديل الموظف")}finally{setEditSaving(false)}
   }
   async function openShifts(employee:Employee){
