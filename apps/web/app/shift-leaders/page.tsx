@@ -31,7 +31,6 @@ export default function ShiftLeadersPage(){
  }
  async function loadLeaders(){const x=await api<{data:Leader[]}>("/api/shift-leaders");setLeaders(x.data)}
  async function loadShifts(){const x=await api<{data:Shift[]}>("/api/shifts");setShifts(x.data)}
- async function loadRateGroups(){const x=await api<{data:RateGroup[]}>("/api/shifts/rate-groups");setRateGroups(x.data.filter(x=>x.is_active))}
  async function loadAssigned(id:string){
   if(!id){setAssigned([]);return}
   try{const x=await api<{data:Assigned[]}>("/api/shifts/"+id+"/employees");setAssigned(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل موظفي الوردية")}
