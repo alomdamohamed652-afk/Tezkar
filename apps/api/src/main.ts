@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import type { SessionUser } from "./modules/auth/auth.types.js";
-import { pool } from "./db/pool.js";
+import { pool, getPoolStats } from "./db/pool.js";
 import { writeAudit } from "./modules/audit/audit.service.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -60,9 +60,14 @@ app.addHook("onResponse", async (request, reply) => {
   if (isRead && (!sensitiveRead || reply.statusCode >= 400)) return;
   const actor = (request as typeof request & { user?: SessionUser | null }).user ?? null;
   const moduleName = route.split("/").filter(Boolean)[1] ?? "api";
-  const client = await pool.connect().catch(() => null);
+  const client = await pool.connect().catch(error => {
+    app.log.error(
+      { err: error, route, method: request.method, dbPool: getPoolStats() },
+      "Unable to acquire database pool connection for audit"
+    );
+    return null;
+  });
   if (!client) {
-    app.log.error({ route, method: request.method }, "Unable to open audit connection");
     return;
   }
   try {
