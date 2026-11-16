@@ -43,24 +43,45 @@ export default function MachineOperationsPage() {
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState("");
 
-  async function load() {
+  async function loadReferenceData() {
     try {
-      const [m,e,s,t,live] = await Promise.all([
+      const [m,e,s,t] = await Promise.all([
         api<{data:Machine[]}>("/api/machines"),
         api<{data:Item[]}>("/api/employees"),
         api<{data:Item[]}>("/api/shifts"),
-        api<{data:Target[]}>("/api/laser-machine-targets"),
-        api<{data:MachineSession[]}>("/api/laser-machine-sessions")
+        api<{data:Target[]}>("/api/laser-machine-targets")
       ]);
-      setMachines(m.data); setEmployees(e.data); setShifts(s.data); setTargets(t.data); setSessions(live.data);
+      setMachines(m.data); setEmployees(e.data); setShifts(s.data); setTargets(t.data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "تعذر تحميل متابعة تشغيل الماكينات");
+      setError(e instanceof Error ? e.message : "تعذر تحميل بيانات تشغيل الماكينات");
     }
+  }
+
+  async function loadSessions() {
+    try {
+      const live = await api<{data:MachineSession[]}>("/api/laser-machine-sessions");
+      setSessions(live.data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "تعذر تحديث حالة الماكينات");
+    }
+  }
+
+  async function loadTargets() {
+    try {
+      const t = await api<{data:Target[]}>("/api/laser-machine-targets");
+      setTargets(t.data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "تعذر تحديث مستهدفات الماكينات");
+    }
+  }
+
+  async function load() {
+    await Promise.all([loadReferenceData(), loadSessions()]);
   }
 
   useEffect(() => {
     void load();
-    const interval = setInterval(() => { void load(); }, 30000);
+    const interval = setInterval(() => { void loadSessions(); }, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -97,7 +118,7 @@ export default function MachineOperationsPage() {
       }) });
       setNotice("تم بدء جلسة التشغيل اليدوية. الحالة تعكس آخر تسجيل في النظام وليست قراءة مباشرة من الماكينة.");
       setSessionNotes(""); setTargetId("");
-      await load();
+      await loadSessions();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر بدء جلسة التشغيل"); }
     finally { setSaving(""); }
   }
@@ -108,7 +129,7 @@ export default function MachineOperationsPage() {
     try {
       await api("/api/laser-machine-sessions/" + session.session_id + "/stop", { method: "POST", body: JSON.stringify({}) });
       setNotice("تم إنهاء جلسة التشغيل وحفظ وقت النهاية.");
-      await load();
+      await loadSessions();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر إنهاء جلسة التشغيل"); }
     finally { setSaving(""); }
   }
@@ -121,7 +142,7 @@ export default function MachineOperationsPage() {
       await api("/api/laser-machine-downtime", { method: "POST", body: JSON.stringify({ machineId: downtimeTarget.machine_id, reason: downtimeReason.trim() }) });
       setNotice("تم تسجيل توقف الماكينة.");
       setDowntimeTarget(null); setDowntimeReason("");
-      await load();
+      await loadSessions();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر تسجيل التوقف"); }
     finally { setSaving(""); }
   }
@@ -132,7 +153,7 @@ export default function MachineOperationsPage() {
     try {
       await api("/api/laser-machine-downtime/" + session.downtime_id + "/end", { method: "PATCH" });
       setNotice("تم إنهاء التوقف واستئناف تسجيل حالة التشغيل.");
-      await load();
+      await loadSessions();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر إنهاء التوقف"); }
     finally { setSaving(""); }
   }
@@ -148,7 +169,7 @@ export default function MachineOperationsPage() {
       }) });
       setNotice("تم حفظ مستهدف الإنتاج. تغيير المستهدف لا يغيّر الفترات التاريخية.");
       setTargetQuantity(""); setTargetCycles(""); setTargetNotes("");
-      await load();
+      await loadTargets();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر حفظ مستهدف الإنتاج"); }
     finally { setSaving(""); }
   }
@@ -159,7 +180,7 @@ export default function MachineOperationsPage() {
     try {
       await api("/api/laser-machine-targets/" + target.id + "/deactivate", { method: "PATCH" });
       setNotice("تم إيقاف المستهدف مع الاحتفاظ بسجله.");
-      await load();
+      await loadTargets();
     } catch (e) { setError(e instanceof Error ? e.message : "تعذر إيقاف المستهدف"); }
     finally { setSaving(""); }
   }
