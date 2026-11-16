@@ -25,6 +25,7 @@ export default function OrdersPage(){
  const [error,setError]=useState(""),[saving,setSaving]=useState(false);
  const [deleteTarget,setDeleteTarget]=useState<Order|null>(null),[deletePassword,setDeletePassword]=useState(""),[deleting,setDeleting]=useState(false);
 
+ async function loadOrders(){const o=await api<{data:Order[]}>("/api/orders");setOrders(o.data)}
  async function load(){try{const [o,t]=await Promise.all([api<{data:Order[]}>("/api/orders"),api<{data:ProductionType[]}>("/api/production-types")]);setOrders(o.data);setProductionTypes(t.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الطلبات أو أنواع الإنتاج")}}
  useEffect(()=>{void load()},[]);
 
@@ -35,14 +36,14 @@ export default function OrdersPage(){
  async function changeOrderStatus(order:Order,status:string){
   if(status===order.status)return;
   setError("");
-  try{await api("/api/orders/"+order.id,{method:"PATCH",body:JSON.stringify({status})});await load()}
-  catch(e){setError(e instanceof Error?e.message:"تعذر تغيير حالة الطلبية");await load()}
+  try{await api("/api/orders/"+order.id,{method:"PATCH",body:JSON.stringify({status})});await loadOrders()}
+  catch(e){setError(e instanceof Error?e.message:"تعذر تغيير حالة الطلبية");await loadOrders()}
  }
 
  async function confirmDeleteOrder(){
   if(!deleteTarget||!deletePassword)return;
   setDeleting(true);setError("");
-  try{await api("/api/orders/"+deleteTarget.id,{method:"DELETE",body:JSON.stringify({password:deletePassword})});setDeleteTarget(null);setDeletePassword("");await load()}
+  try{await api("/api/orders/"+deleteTarget.id,{method:"DELETE",body:JSON.stringify({password:deletePassword})});setDeleteTarget(null);setDeletePassword("");await loadOrders()}
   catch(e){setError(e instanceof Error?e.message:"تعذر حذف الطلبية")}
   finally{setDeleting(false)}
  }
@@ -55,7 +56,7 @@ export default function OrdersPage(){
     lines:[],
     stages:stageRows.filter(x=>x.stageName.trim()).map((x,i)=>({stageName:x.stageName.trim(),outputProductName:x.outputProductName.trim()||undefined,sequenceNo:i+1,plannedQuantity:x.plannedQuantity?Number(normalizeNumber(x.plannedQuantity)):undefined,notes:x.notes||undefined,...(canViewOrderFinancials&&x.stageRate.trim()?{stageRate:Number(normalizeNumber(x.stageRate)),stageRateMethod:x.stageRateMethod}:{}),productionTypeId:x.productionTypeId||undefined,isFinalProduct:x.isFinalProduct}))
    })});
-   setOrderName("");setCustomer("");setContractValue("0");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await load();
+   setOrderName("");setCustomer("");setContractValue("0");setDeliveryStart("");setLastDelivery("");setNotes("");setStageRows([]);await loadOrders();
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الطلبية")}finally{setSaving(false)}
  }
 
