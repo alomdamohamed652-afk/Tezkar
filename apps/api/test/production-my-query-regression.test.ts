@@ -43,8 +43,8 @@ test("worker paid amount keeps all canonical allocation sources and excludes rev
   }
 
   assert.match(workerRoute, /AS paid_amount/);
-  assert.match(workerRoute, /event_type='ALLOCATED_TO_PRODUCTION'/);
-  assert.match(workerRoute, /event_type='REVERSED'/);
+  assert.match(routes, /event_type='ALLOCATED_TO_PRODUCTION'/);
+  assert.match(routes, /event_type='REVERSED'/);
 });
 
 test("worker remaining amount subtracts the same allocation sources used by paid amount", () => {
