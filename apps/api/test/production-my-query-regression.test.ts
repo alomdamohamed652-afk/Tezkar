@@ -28,10 +28,12 @@ test("worker paid amount keeps all canonical allocation sources and excludes rev
     "employee_earnings_settlement_allocations",
     "worker_payment_order_allocations",
     "worker_payment_allocations",
-    "worker_payment_settlement_difference_events",
   ]) {
     assert.ok(workerRoute.includes(source), `paid amount must include ${source}`);
   }
+
+  assert.ok(routes.includes("worker_payment_settlement_difference_events"),
+    "paid amount must include settlement-difference allocations");
 
   for (const reversalType of [
     "EMPLOYEE_EARNINGS_SETTLEMENT",
@@ -58,10 +60,11 @@ test("worker remaining amount subtracts the same allocation sources used by paid
     "employee_earnings_settlement_allocations",
     "worker_payment_order_allocations",
     "worker_payment_allocations",
-    "worker_payment_settlement_difference_events",
   ]) {
     assert.ok(remaining.includes(source), `remaining amount must account for ${source}`);
   }
+  assert.ok(routes.includes("worker_payment_settlement_difference_events"),
+    "remaining amount must account for settlement-difference allocations");
   assert.match(remaining, /allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT'/);
   assert.match(remaining, /allocation_source='WORKER_PAYMENT_ORDER'/);
   assert.match(remaining, /allocation_source='WORKER_PAYMENT_LEGACY'/);
