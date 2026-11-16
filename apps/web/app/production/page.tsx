@@ -182,6 +182,16 @@ export default function ProductionPage(){
   return 0;
  },[resolvedMethod,rateOverride,quantity,scrapQuantity,hoursWorked,baseAmount]);
  const pendingCount=useMemo(()=>entries.filter(x=>x.status==="PENDING").length,[entries]);
+ async function refreshOrderContext(){
+  try{
+   const [ordersResult,stagesResult]=await Promise.all([
+    api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages")
+   ]);
+   setAllOrders(ordersResult.data);
+   setOrders(ordersResult.data.filter(x=>!["COMPLETED","CANCELLED"].includes((x as any).status)));
+   setOrderStages(stagesResult.data);
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحديث بيانات الطلبيات والمراحل")}
+ }
  async function loadAdjustments(){if(!has("production.adjustments.view"))return;try{const x=await api<{data:Adjustment[]}>("/api/production/adjustments");setAdjustments(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البونص والخصومات")}}
  useEffect(()=>{void loadAdjustments()},[has]);
 
@@ -219,7 +229,7 @@ export default function ProductionPage(){
    createdProductionId=created.data.id;setLastProductionSignature(signature);setDuplicateProductionPending(false);
    if(scrap>0){await api("/api/production/scrap",{method:"POST",body:JSON.stringify({productionEntryId:created.data.id,scrapType,quantity:scrap,notes:scrapNotes.trim()||null,idempotencyKey:crypto.randomUUID()})});}
    await api("/api/account/preferences/production",{method:"PUT",body:JSON.stringify({employeeId,shiftId,productionTypeId})}).catch(()=>{});
-   setQuantity("");setScrapQuantity("0");setScrapType("WORKER_SCRAP");setScrapNotes("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await load();
+   setQuantity("");setScrapQuantity("0");setScrapType("WORKER_SCRAP");setScrapNotes("");setBaseAmount("");setHoursWorked("");setResolvedMethod("");setResolvedRate(null);setRateOverride("");setBonusAmount("");setBonusReason("");setDeductionAmount("");setDeductionReason("");await refreshProductionData(false);
   }catch(e){
    const message=e instanceof Error?e.message:"تعذر تسجيل الإنتاج";
    if(message.startsWith("POSSIBLE_DUPLICATE_PRODUCTION::")){
@@ -237,14 +247,14 @@ export default function ProductionPage(){
   setReversing(true);setError("");
   try{
    await api("/api/production/"+reverseTarget.id+"/reverse",{method:"POST",body:JSON.stringify({password:reversePassword,reason:reverseReason.trim()})});
-   setReverseTarget(null);setReversePassword("");setReverseReason("");await load();await loadAdjustments();
+   setReverseTarget(null);setReversePassword("");setReverseReason("");await Promise.all([refreshProductionData(false),loadAdjustments(),refreshOrderContext()]);
   }catch(e){setError(e instanceof Error?e.message:"تعذر التراجع عن عملية الإنتاج")}
   finally{setReversing(false)}
  }
  async function confirmDeleteProduction(){
   if(!deleteTarget||!deletePassword)return;
   setDeleting(true);setError("");
-  try{await api("/api/production/"+deleteTarget.id,{method:"DELETE",body:JSON.stringify({password:deletePassword})});setDeleteTarget(null);setDeletePassword("");await load()}
+  try{await api("/api/production/"+deleteTarget.id,{method:"DELETE",body:JSON.stringify({password:deletePassword})});setDeleteTarget(null);setDeletePassword("");await refreshProductionData(false)}
   catch(e){setError(e instanceof Error?e.message:"تعذر حذف سجل الإنتاج")}
   finally{setDeleting(false)}
  }
@@ -270,7 +280,7 @@ export default function ProductionPage(){
   setEditSaving(true);setError("");
   try{
     await api("/api/production/"+editTarget.id,{method:"PATCH",body:JSON.stringify({employeeId:v.employeeId,orderStageId:v.orderStageId||null,productId:v.productId,stageId:v.stageId,productionTypeId:v.productionTypeId||null,shiftId:v.shiftId,shiftLeaderEmployeeId:v.shiftLeaderEmployeeId||null,workDate:v.workDate,quantity,hoursWorked:v.hoursWorked===""?null:Number(normalizeNumber(v.hoursWorked)),...(canViewProductionFinancials?{baseAmount:v.baseAmount===""?null:Number(normalizeNumber(v.baseAmount)),rateOverride:has("production.rate_override")&&v.rateOverride!==""?Number(normalizeNumber(v.rateOverride)):null,bonusAmount,bonusReason:bonusAmount?v.bonusReason.trim():null,deductionAmount,deductionReason:deductionAmount?v.deductionReason.trim():null}:{})})});
-    setEditTarget(null);await load();await loadAdjustments();
+    setEditTarget(null);await Promise.all([refreshProductionData(false),loadAdjustments()]);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تعديل سجل الإنتاج")}
   finally{setEditSaving(false)}
  }
@@ -279,7 +289,7 @@ export default function ProductionPage(){
   setReviewSavingId(id);setError("");
   try{
    await api("/api/production/"+id+"/approve",{method:"POST"});
-   await refreshProductionData(false);
+   await Promise.all([refreshProductionData(false),refreshOrderContext()]);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تنفيذ المراجعة")}
   finally{setReviewSavingId("")}
  }
