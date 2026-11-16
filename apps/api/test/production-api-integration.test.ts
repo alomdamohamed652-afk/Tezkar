@@ -112,26 +112,71 @@ test("worker production API preserves paid, remaining, reversal and adjustment t
       "SELECT id,code,method FROM wage_types WHERE method='PER_PIECE' LIMIT 1"
     )).rows[0];
 
+    const sourceOrder = (await apiPool.query(
+      "INSERT INTO production_orders(customer_name,order_date,status,created_by) VALUES('Production integration order','2026-11-10','IN_PROGRESS',$1) RETURNING id",
+      [manager.id]
+    )).rows[0];
+    const orderStage = (await apiPool.query(
+      "INSERT INTO order_stages(order_id,stage_id,sequence_no,status) VALUES($1,$2,1,'IN_PROGRESS') RETURNING id",
+      [sourceOrder.id, stage.id]
+    )).rows[0];
+
     const production = (await apiPool.query(
       `INSERT INTO production_entries(
-         employee_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,
+         employee_id,product_id,stage_id,shift_id,order_stage_id,work_date,quantity,unit_id,rate_id,
          rate_snapshot,wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,
          earning_amount,status,submitted_by,approved_by,approved_at
-       ) VALUES($1,$2,$3,$4,'2026-11-10',10,$5,NULL,10,$6,$7,$8,100,'APPROVED',$9,$10,now())
+       ) VALUES($1,$2,$3,$4,$5,'2026-11-10',10,$6,NULL,10,$7,$8,$9,100,'APPROVED',$10,$11,now())
        RETURNING id`,
-      [workerEmployee.id, product.id, stage.id, shift.id, unit.id, wageType.id,
+      [workerEmployee.id, product.id, stage.id, shift.id, orderStage.id, unit.id, wageType.id,
         wageType.code, wageType.method, worker.id, manager.id]
     )).rows[0];
 
+    // This payment has a canonical settlement allocation plus a separately tracked
+    // unmatched amount. The difference event must add to production paid exactly once.
+    const canonicalPayment = (await apiPool.query(
+      `INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,created_at)
+       VALUES($1,45,45,0,'CASH',$2,'2026-11-10') RETURNING id`,
+      [workerEmployee.id, manager.id]
+    )).rows[0];
     const settlement = (await apiPool.query(
       `INSERT INTO employee_earnings_settlements(
-         employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,created_by
-       ) VALUES($1,30,30,0,'2026-11-10',$2) RETURNING id`,
-      [workerEmployee.id, manager.id]
+         employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,created_by,worker_payment_id
+       ) VALUES($1,30,30,0,'2026-11-10',$2,$3) RETURNING id`,
+      [workerEmployee.id, manager.id, canonicalPayment.id]
     )).rows[0];
     const settlementAllocation = (await apiPool.query(
       "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,30) RETURNING id",
       [settlement.id, production.id]
+    )).rows[0];
+
+    const canonicalOrderAllocation = (await apiPool.query(
+      "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,15) RETURNING id",
+      [canonicalPayment.id, production.id]
+    )).rows[0];
+    const sourceExpense = (await apiPool.query(
+      `INSERT INTO accounting_expenses(
+         order_id,category,description,amount,expense_date,created_by,source_worker_payment_id
+       ) VALUES($1,'WORKER_PAYMENT','Integration worker payment with unmatched difference',45,'2026-11-10',$2,$3)
+       RETURNING id`,
+      [sourceOrder.id, manager.id, canonicalPayment.id]
+    )).rows[0];
+    const difference = (await apiPool.query(
+      `INSERT INTO worker_payment_settlement_differences(
+         worker_payment_id,employee_id,source_order_id,source_order_stage_id,source_expense_id,
+         original_amount,payment_date,eligible_at,created_by
+       ) VALUES($1,$2,$3,$4,$5,15,'2026-11-10','2026-11-10',$6) RETURNING id`,
+      [canonicalPayment.id, workerEmployee.id, sourceOrder.id, orderStage.id, sourceExpense.id, manager.id]
+    )).rows[0];
+    const differenceAllocation = (await apiPool.query(
+      `INSERT INTO worker_payment_settlement_difference_events(
+         difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,
+         target_order_id,target_order_stage_id,production_entry_id,worker_payment_order_allocation_id,
+         actor_type,actor_user_id,reason
+       ) VALUES($1,$2,$3,'ALLOCATED_TO_PRODUCTION',15,$4,$4,$5,$6,$7,'USER',$8,'Integration allocation')
+       RETURNING id`,
+      [difference.id, canonicalPayment.id, sourceExpense.id, sourceOrder.id, orderStage.id,
+        production.id, canonicalOrderAllocation.id, manager.id]
     )).rows[0];
 
     const orderPayment = (await apiPool.query(
@@ -185,10 +230,10 @@ test("worker production API preserves paid, remaining, reversal and adjustment t
     const body = response.json();
     assert.equal(body.data.length, 1);
     assert.equal(body.data[0].id, production.id);
-    assert.equal(Number(body.data[0].paid_amount), 55,
-      "settlement, order and legacy sources must be summed once, net of the recorded reversal");
-    assert.equal(Number(body.data[0].remaining_amount), 45,
-      "remaining must subtract the same net allocations as paid");
+    assert.equal(Number(body.data[0].paid_amount), 70,
+      "settlement, difference event, order and legacy sources must be counted once, net of the legacy reversal");
+    assert.equal(Number(body.data[0].remaining_amount), 30,
+      "remaining must subtract the same active allocations as paid");
     assert.equal(body.adjustments.length, 2,
       "the worker adjustment list must retain linked and standalone adjustments");
     assert.equal(body.daily.length, 1);
@@ -196,6 +241,34 @@ test("worker production API preserves paid, remaining, reversal and adjustment t
     assert.equal(Number(body.daily[0].bonuses), 7,
       "the linked adjustment is already represented by production and must not be counted again");
     assert.equal(Number(body.daily[0].net_earned), 107);
+
+    // Reverse the append-only difference event, not the original allocation row.
+    const differenceReversal = (await apiPool.query(
+      `INSERT INTO financial_reversals(idempotency_key,request_fingerprint,reason,created_by)
+       VALUES($1,'production-api-difference-reversal','Reverse difference allocation in integration test',$2)
+       RETURNING id`,
+      [randomUUID(), manager.id]
+    )).rows[0];
+    await apiPool.query(
+      `INSERT INTO worker_payment_settlement_difference_events(
+         difference_id,worker_payment_id,source_expense_id,event_type,amount,source_order_id,
+         target_order_id,target_order_stage_id,reverses_event_id,financial_reversal_id,
+         actor_type,actor_user_id,reason
+       ) VALUES($1,$2,$3,'REVERSED',15,$4,$4,$5,$6,$7,'USER',$8,'Integration reversal')`,
+      [difference.id, canonicalPayment.id, sourceExpense.id, sourceOrder.id, orderStage.id,
+        differenceAllocation.id, differenceReversal.id, manager.id]
+    );
+    const afterDifferenceReversal = await server.inject({
+      method: "GET",
+      url: "/api/production/my?from=2026-11-10&to=2026-11-10",
+      headers: { cookie: workerCookie }
+    });
+    assert.equal(afterDifferenceReversal.statusCode, 200, afterDifferenceReversal.body);
+    const afterReversalBody = afterDifferenceReversal.json();
+    assert.equal(Number(afterReversalBody.data[0].paid_amount), 55,
+      "reversing the difference event must restore exactly 15 to the worker's remaining due");
+    assert.equal(Number(afterReversalBody.data[0].remaining_amount), 45,
+      "the reversed difference event must no longer reduce remaining production dues");
 
     const otherWorker = (await apiPool.query(
       "INSERT INTO employees(full_name) VALUES('Other Production Worker') RETURNING id"
