@@ -29,6 +29,9 @@ export default function ShiftLeadersPage(){
    if(activeShifts[0])await loadAssigned(staffShift&&activeShifts.some(x=>x.id===staffShift)?staffShift:activeShifts[0].id);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل بيانات الورديات")}
  }
+ async function loadLeaders(){const x=await api<{data:Leader[]}>("/api/shift-leaders");setLeaders(x.data)}
+ async function loadShifts(){const x=await api<{data:Shift[]}>("/api/shifts");setShifts(x.data)}
+ async function loadRateGroups(){const x=await api<{data:RateGroup[]}>("/api/shifts/rate-groups");setRateGroups(x.data.filter(x=>x.is_active))}
  async function loadAssigned(id:string){
   if(!id){setAssigned([]);return}
   try{const x=await api<{data:Assigned[]}>("/api/shifts/"+id+"/employees");setAssigned(x.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل موظفي الوردية")}
@@ -43,7 +46,7 @@ export default function ShiftLeadersPage(){
    if(shiftEditId)await api("/api/shifts/"+shiftEditId,{method:"PATCH",body:JSON.stringify(body)});
    else await api("/api/shifts",{method:"POST",body:JSON.stringify(body)});
    setShiftEditId("");setShiftName("");setShiftStart("08:00");setShiftEnd("16:00");setShiftCrossesMidnight(false);
-   setError("");await load();
+   setError("");await Promise.all([loadShifts(),loadLeaders()]);
   }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بيانات الوردية")}finally{setSaving(false)}
  }
  function editShift(x:Shift){
@@ -51,19 +54,19 @@ export default function ShiftLeadersPage(){
  }
  async function reactivateShift(id:string){
   setSaving(true);setError("");
-  try{await api("/api/shifts/"+id,{method:"PATCH",body:JSON.stringify({isActive:true})});await load()}
+  try{await api("/api/shifts/"+id,{method:"PATCH",body:JSON.stringify({isActive:true})});await loadShifts()}
   catch(e){setError(e instanceof Error?e.message:"تعذر إعادة تفعيل الوردية")}finally{setSaving(false)}
  }
  async function deactivateShift(id:string){
   if(!window.confirm("تعطيل الوردية؟ سيتم إنهاء ربط الموظفين ورؤساء الوردية بها مع الاحتفاظ بالسجلات التاريخية."))return;
   setSaving(true);setError("");
-  try{await api("/api/shifts/"+id,{method:"PATCH",body:JSON.stringify({isActive:false})});await load()}
+  try{await api("/api/shifts/"+id,{method:"PATCH",body:JSON.stringify({isActive:false})});await Promise.all([loadShifts(),loadLeaders(),...(staffShift===id?[loadAssigned(id)]:[])])}
   catch(e){setError(e instanceof Error?e.message:"تعذر تعطيل الوردية")}finally{setSaving(false)}
  }
- async function add(e:FormEvent){e.preventDefault();setError("");setSaving(true);try{await api("/api/shifts/"+shift+"/leaders",{method:"POST",body:JSON.stringify({employeeId:employee})});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر تعيين رئيس الوردية")}finally{setSaving(false)}}
+ async function add(e:FormEvent){e.preventDefault();setError("");setSaving(true);try{await api("/api/shifts/"+shift+"/leaders",{method:"POST",body:JSON.stringify({employeeId:employee})});await Promise.all([loadLeaders(),...(staffShift===shift?[loadAssigned(shift)]:[])])}catch(e){setError(e instanceof Error?e.message:"تعذر تعيين رئيس الوردية")}finally{setSaving(false)}}
  async function assignEmployee(e:FormEvent){e.preventDefault();setError("");setSaving(true);try{await api("/api/shifts/"+staffShift+"/employees",{method:"POST",body:JSON.stringify({employeeId:staffEmployee})});await loadAssigned(staffShift)}catch(e){setError(e instanceof Error?e.message:"تعذر ربط الموظف بالوردية")}finally{setSaving(false)}}
  async function removeEmployee(employeeId:string){try{await api("/api/shifts/"+staffShift+"/employees/"+employeeId,{method:"DELETE"});await loadAssigned(staffShift)}catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء ربط الموظف")}}
- async function removeLeader(id:string){try{await api("/api/shift-leaders/"+id,{method:"DELETE"});await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء التكليف")}}
+ async function removeLeader(id:string){try{await api("/api/shift-leaders/"+id,{method:"DELETE"});await loadLeaders()}catch(e){setError(e instanceof Error?e.message:"تعذر إلغاء التكليف")}}
 
  const shiftOptions=useMemo(()=>shifts.filter(x=>x.is_active).map(x=>({value:x.id,label:x.name,meta:x.code})),[shifts]);
  const employeeOptions=useMemo(()=>employees.filter(x=>x.is_active!==false).map(x=>({value:x.id,label:x.full_name,meta:x.code})),[employees]);
