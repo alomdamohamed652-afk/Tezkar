@@ -94,6 +94,6 @@ test("adjustment detail list retains both production-linked and standalone adjus
 
   assert.match(adjustments, /FROM employee_earnings_adjustments a/);
   assert.match(adjustments, /LEFT JOIN production_entries p ON p\.id=a\.production_entry_id/);
-  assert.match(adjustments, /WHERE a\.employee_id=\$1/);
+  assert.match(workerRoute, /const adjustmentWhere=\["a\.employee_id=\$1"\]/);
   assert.doesNotMatch(adjustments, /a\.production_entry_id IS NULL/);
 });
