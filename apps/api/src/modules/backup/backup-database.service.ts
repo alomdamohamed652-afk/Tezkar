@@ -4,12 +4,14 @@ import { createBackupArchive, type BackupPayload, type BackupTable } from "./bac
 const EXCLUDED_TABLES = new Set([
   "schema_migrations",
   "user_sessions",
-  "password_reset_requests"
+  "password_reset_requests",
+  "auth_login_attempts"
 ]);
 const MAX_EXPORTED_ROWS = 2_000_000;
 
 type TableInfo = { table_name: string; primary_key_columns: string[] };
 type ColumnInfo = { column_name: string; pg_type: string };
+type SequenceInfo = { sequence_name: string };
 
 async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
   const result = await client.query<{ table_name: string; primary_key_columns: string[] }>(`
@@ -32,6 +34,30 @@ function quoteLiteral(value: string): string { return "'" + value.replace(/'/g, 
 
 function quoteIdentifier(identifier: string): string {
   return '"' + identifier.replace(/"/g, '""') + '"';
+}
+
+async function exportSequences(client: pg.PoolClient): Promise<{ name: string; lastValue: string; isCalled: boolean }[]> {
+  const listed = await client.query<SequenceInfo>(`
+    SELECT c.relname AS sequence_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relkind='S'
+     ORDER BY c.relname
+  `);
+  const sequences: { name: string; lastValue: string; isCalled: boolean }[] = [];
+  for (const sequence of listed.rows) {
+    const result = await client.query<{ last_value: string; is_called: boolean }>(
+      `SELECT last_value::text, is_called FROM public.${quoteIdentifier(sequence.sequence_name)}`
+    );
+    if (result.rows[0]) {
+      sequences.push({
+        name: sequence.sequence_name,
+        lastValue: result.rows[0].last_value,
+        isCalled: result.rows[0].is_called
+      });
+    }
+  }
+  return sequences;
 }
 
 export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> {
@@ -63,6 +89,7 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
       if (totalRows > MAX_EXPORTED_ROWS) throw new Error("عدد السجلات أكبر من الحد المدعوم حاليًا؛ أوقف التصدير دون إنشاء نسخة ناقصة");
       exported.push({ name: table.table_name, primaryKey: table.primary_key_columns, columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type })), rows: result.rows.map(row => row.row_data) });
     }
+    const sequences = await exportSequences(client);
     const version = await client.query<{ version: string }>(
       "SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"
     ).catch(() => ({ rows: [] as {version:string}[] }));
@@ -72,7 +99,8 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
       version: 1,
       createdAt: new Date().toISOString(),
       sourceSchemaVersion: version.rows[0]?.version ?? null,
-      tables: exported
+      tables: exported,
+      sequences
     };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
