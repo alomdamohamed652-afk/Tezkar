@@ -25,6 +25,9 @@ function orderTables(names: string[], foreignKeys: ForeignKey[]): string[] {
   const indegree = new Map(names.map(name => [name, 0]));
   for (const fk of foreignKeys) {
     if (!included.has(fk.table_name) || !included.has(fk.referenced_table)) continue;
+    // All deferrable constraints are explicitly deferred by the restore transaction.
+    // They therefore do not impose an insert ordering edge and may safely form cycles.
+    if (fk.is_deferrable) continue;
     if (fk.table_name === fk.referenced_table) continue;
     const children = outgoing.get(fk.referenced_table)!;
     if (!children.has(fk.table_name)) {
