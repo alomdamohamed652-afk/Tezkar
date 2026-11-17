@@ -116,6 +116,23 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     assert.equal(sequence.rows[0]?.last_value, "50",
       "restoring an older archive must never move a sequence backwards");
     assert.equal(sequence.rows[0]?.is_called, true);
+    const forwardPayload: BackupPayload = {
+      ...payload,
+      sequences: [{ name: "backup_it_seq", lastValue: "75", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+    };
+    const forward = await restoreBackupIntoCurrentDatabase(pool, forwardPayload);
+    assert.equal(forward.conflicts.length, 0);
+    const advanced = await pool.query<{ last_value: string; is_called: boolean }>("SELECT last_value::text, is_called FROM backup_it_seq");
+    assert.equal(advanced.rows[0]?.last_value, "75");
+    assert.equal(advanced.rows[0]?.is_called, true);
+    const mismatchPayload: BackupPayload = {
+      ...forwardPayload,
+      sequences: [{ ...forwardPayload.sequences![0]!, incrementBy: "2" }]
+    };
+    const mismatch = await restoreBackupIntoCurrentDatabase(pool, mismatchPayload);
+    assert.equal(mismatch.conflicts.length, 1);
+    const unchanged = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(unchanged.rows[0]?.last_value, "75");
   } finally {
     await pool.end();
     const cleanup = new pg.Client({ connectionString: adminUrl });
