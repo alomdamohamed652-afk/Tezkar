@@ -79,7 +79,7 @@ export async function readBackupArchive(archive: Buffer, password: string): Prom
   const nonce = archive.subarray(offset, offset += NONCE_BYTES);
   const tag = archive.subarray(offset, offset += TAG_BYTES);
   const encrypted = archive.subarray(offset);
-  const key = await scrypt(password, salt, KEY_BYTES, SCRYPT_OPTIONS) as Buffer;
+  const key = await deriveKey(password, salt);
   try {
     const decipher = createDecipheriv("aes-256-gcm", key, nonce);
     decipher.setAAD(MAGIC);
