@@ -1,7 +1,12 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
-
-const scrypt = promisify(scryptCallback);
+function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCallback(password, salt, KEY_BYTES, SCRYPT_OPTIONS, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(derivedKey as Buffer);
+    });
+  });
+}
 const MAGIC = Buffer.from("TZKBACK1");
 const FORMAT_VERSION = 1;
 const SALT_BYTES = 16;
@@ -42,7 +47,7 @@ export async function createBackupArchive(payload: BackupPayload, password: stri
   if (plaintext.length > MAX_ARCHIVE_BYTES) throw new Error("حجم النسخة أكبر من الحد المسموح حاليًا");
   const salt = randomBytes(SALT_BYTES);
   const nonce = randomBytes(NONCE_BYTES);
-  const key = await scrypt(password, salt, KEY_BYTES, SCRYPT_OPTIONS) as Buffer;
+  const key = await deriveKey(password, salt);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
   cipher.setAAD(MAGIC);
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
