@@ -7,7 +7,7 @@ const payload: BackupPayload = {
   version: 1,
   createdAt: "2026-11-17T00:00:00.000Z",
   sourceSchemaVersion: "test-schema",
-  tables: [{ name: "employees", columns: [{ name: "id", pgType: "uuid" }, { name: "full_name", pgType: "text" }, { name: "amount", pgType: "numeric(12,2)" }, { name: "at", pgType: "timestamp with time zone" }], rows: [{ id: "1", full_name: "عامل تجريبي", amount: "125.50", at: "2026-11-17 01:02:03.123456+00" }] }]
+  tables: [{ name: "employees", primaryKey: ["id"], columns: [{ name: "id", pgType: "uuid" }, { name: "full_name", pgType: "text" }, { name: "amount", pgType: "numeric(12,2)" }, { name: "at", pgType: "timestamp with time zone" }], rows: [{ id: "1", full_name: "عامل تجريبي", amount: "125.50", at: "2026-11-17 01:02:03.123456+00" }] }]
 };
 
 test("backup archive encrypts and round-trips payload without changing text or decimal strings", async () => {
