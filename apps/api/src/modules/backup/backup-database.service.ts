@@ -9,6 +9,7 @@ const EXCLUDED_TABLES = new Set([
 const MAX_EXPORTED_ROWS = 2_000_000;
 
 type TableInfo = { table_name: string; primary_key_columns: string[] };
+type ColumnInfo = { column_name: string; pg_type: string };
 
 async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
   const result = await client.query<{ table_name: string; primary_key_columns: string[] }>(`
@@ -27,6 +28,8 @@ async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
   return result.rows.filter(row => !EXCLUDED_TABLES.has(row.table_name));
 }
 
+function quoteLiteral(value: string): string { return "'" + value.replace(/'/g, "''") + "'"; }
+
 function quoteIdentifier(identifier: string): string {
   return '"' + identifier.replace(/"/g, '""') + '"';
 }
@@ -42,12 +45,23 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
       if (table.primary_key_columns.length === 0) {
         throw new Error(`لا يمكن أخذ نسخة آمنة: الجدول ${table.table_name} لا يحتوي مفتاحًا أساسيًا`);
       }
-      const result = await client.query<{ row_data: Record<string, unknown> }>(
-        `SELECT to_jsonb(t) AS row_data FROM public.${quoteIdentifier(table.table_name)} t`
+      const columnsResult = await client.query<ColumnInfo>(`
+        SELECT a.attname AS column_name, format_type(a.atttypid,a.atttypmod) AS pg_type
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid=a.attrelid
+          JOIN pg_namespace n ON n.oid=c.relnamespace
+         WHERE n.nspname='public' AND c.relname=$1 AND a.attnum>0 AND NOT a.attisdropped
+         ORDER BY a.attnum
+      `, [table.table_name]);
+      const columns = columnsResult.rows;
+      if (!columns.length) throw new Error(`لا يمكن قراءة أعمدة الجدول ${table.table_name}`);
+      const fields = columns.flatMap(column => [quoteLiteral(column.column_name), `t.${quoteIdentifier(column.column_name)}::text`]).join(",");
+      const result = await client.query<{ row_data: Record<string, string | null> }>(
+        `SELECT jsonb_build_object(${fields}) AS row_data FROM public.${quoteIdentifier(table.table_name)} t`
       );
       totalRows += result.rowCount ?? 0;
       if (totalRows > MAX_EXPORTED_ROWS) throw new Error("عدد السجلات أكبر من الحد المدعوم حاليًا؛ أوقف التصدير دون إنشاء نسخة ناقصة");
-      exported.push({ name: table.table_name, rows: result.rows.map(row => row.row_data) });
+      exported.push({ name: table.table_name, columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type })), rows: result.rows.map(row => row.row_data) });
     }
     const version = await client.query<{ version: string }>(
       "SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"
