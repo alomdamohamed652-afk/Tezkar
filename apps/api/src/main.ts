@@ -61,6 +61,8 @@ await app.register(cookie, { secret: env.SESSION_SECRET });
 
 app.addHook("onResponse", async (request, reply) => {
   const route = request.routeOptions.url ?? request.url.split("?")[0] ?? request.url;
+  // Backup endpoints write their own domain-specific audit records; avoid a duplicate generic entry.
+  if (route.startsWith("/api/system-backups/")) return;
   const isRead = ["GET", "HEAD", "OPTIONS"].includes(request.method);
   const sensitiveRead = request.method === "GET" && (/^\/api\/admin\/security/.test(route) || route === "/api/account/profile" || route === "/api/auth/sessions");
   if (isRead && (!sensitiveRead || reply.statusCode >= 400)) return;
