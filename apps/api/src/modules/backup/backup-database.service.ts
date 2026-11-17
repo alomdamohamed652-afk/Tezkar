@@ -40,8 +40,7 @@ function quoteIdentifier(identifier: string): string {
 
 async function exportSequences(client: pg.PoolClient): Promise<NonNullable<BackupPayload["sequences"]>> {
   const listed = await client.query<{
-    sequence_name: string; last_value: string; is_called: boolean;
-    increment_by: string; min_value: string; max_value: string;
+    sequence_name: string; increment_by: string; min_value: string; max_value: string;
     start_value: string; cache_size: string; cycle: boolean;
   }>(`
     SELECT c.relname AS sequence_name,
@@ -50,30 +49,32 @@ async function exportSequences(client: pg.PoolClient): Promise<NonNullable<Backu
            s.seqmax::text AS max_value,
            s.seqstart::text AS start_value,
            s.seqcache::text AS cache_size,
-           s.seqcycle AS cycle,
-           state.last_value::text AS last_value,
-           state.is_called
+           s.seqcycle AS cycle
       FROM pg_class c
       JOIN pg_namespace n ON n.oid=c.relnamespace
       JOIN pg_sequence s ON s.seqrelid=c.oid
-      CROSS JOIN LATERAL (
-        SELECT last_value, is_called
-          FROM public.${quoteIdentifier(c.relname)}
-      ) state
      WHERE n.nspname='public' AND c.relkind='S'
      ORDER BY c.relname
   `);
-  return listed.rows.map(sequence => ({
-    name: sequence.sequence_name,
-    lastValue: sequence.last_value,
-    isCalled: sequence.is_called,
-    incrementBy: sequence.increment_by,
-    minValue: sequence.min_value,
-    maxValue: sequence.max_value,
-    startValue: sequence.start_value,
-    cacheSize: sequence.cache_size,
-    cycle: sequence.cycle
-  }));
+  const sequences: NonNullable<BackupPayload["sequences"]> = [];
+  for (const sequence of listed.rows) {
+    const state = await client.query<{ last_value: string; is_called: boolean }>(
+      `SELECT last_value::text, is_called FROM public.${quoteIdentifier(sequence.sequence_name)}`
+    );
+    if (!state.rows[0]) throw new Error(`تعذر قراءة حالة التسلسل ${sequence.sequence_name}`);
+    sequences.push({
+      name: sequence.sequence_name,
+      lastValue: state.rows[0].last_value,
+      isCalled: state.rows[0].is_called,
+      incrementBy: sequence.increment_by,
+      minValue: sequence.min_value,
+      maxValue: sequence.max_value,
+      startValue: sequence.start_value,
+      cacheSize: sequence.cache_size,
+      cycle: sequence.cycle
+    });
+  }
+  return sequences;
 }
 
 export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> {
