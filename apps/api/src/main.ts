@@ -52,7 +52,6 @@ await app.register(cors, {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 });
 await app.register(cookie, { secret: env.SESSION_SECRET });
-await app.register(backupRoutes);
 
 
 app.addHook("onResponse", async (request, reply) => {
@@ -110,6 +109,7 @@ app.setErrorHandler((error, _request, reply) => {
   });
 });
 
+await app.register(backupRoutes);
 await app.register(healthRoutes);
 await app.register(authRoutes);
 await app.register(registrationRoutes);
