@@ -168,7 +168,8 @@ export type RestoreReport = {
 
 export async function restoreBackupIntoCurrentDatabase(
   pool: pg.Pool,
-  payload: BackupPayload
+  payload: BackupPayload,
+  dryRun = false
 ): Promise<RestoreReport> {
   if (payload.format !== "tezkar-full-backup" || payload.version !== 1 || !Array.isArray(payload.tables)) {
     throw new Error("صيغة النسخة غير مدعومة");
@@ -222,9 +223,9 @@ export async function restoreBackupIntoCurrentDatabase(
         }
       }
     }
-    if (report.conflicts.length) {
+    if (report.conflicts.length || dryRun) {
       await client.query("ROLLBACK");
-      report.added = 0;
+      if (report.conflicts.length) report.added = 0;
       return report;
     }
     await client.query("COMMIT");
