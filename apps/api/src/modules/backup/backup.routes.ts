@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { pool, withTransaction } from "../../db/pool.js";
+import { pool } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
@@ -70,24 +70,21 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
     }
     let report;
     try {
-      report = await restoreBackupIntoCurrentDatabase(pool, payload, dryRun);
-    } catch (error) {
-      request.log.error({ err: error }, "System backup restore validation failed");
-      throw new AppError("BACKUP_RESTORE_FAILED", error instanceof Error ? error.message : "تعذر استرداد النسخة", 422);
-    }
-    if (!dryRun) {
-      await withTransaction(async client => {
+      report = await restoreBackupIntoCurrentDatabase(pool, payload, dryRun, dryRun ? undefined : async (client, restoreReport) => {
         await writeAudit(client, {
           actorUserId: request.user!.userId,
           actorEmployeeId: request.user!.employeeId,
           action: "restore",
           module: "system",
           entityType: "system_backup",
-          metadata: { added: report.added, exactDuplicates: report.exactDuplicates, conflicts: report.conflicts.length },
+          metadata: { added: restoreReport.added, exactDuplicates: restoreReport.exactDuplicates, conflicts: restoreReport.conflicts.length },
           ipAddress: request.ip,
           userAgent: request.headers["user-agent"] ?? null
         });
       });
+    } catch (error) {
+      request.log.error({ err: error }, "System backup restore validation failed");
+      throw new AppError("BACKUP_RESTORE_FAILED", error instanceof Error ? error.message : "تعذر استرداد النسخة", 422);
     }
     return reply.header("cache-control", "no-store, private").send({
       mode: dryRun ? "preview" : "restore",
