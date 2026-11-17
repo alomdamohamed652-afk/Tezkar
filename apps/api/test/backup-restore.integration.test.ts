@@ -56,7 +56,7 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
         rows: [{ id: parentId, label: "parent" }]
       }
     ],
-    sequences: [{ name: "backup_it_seq", lastValue: "20", isCalled: true }]
+    sequences: [{ name: "backup_it_seq", lastValue: "20", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
   };
 
   try {
