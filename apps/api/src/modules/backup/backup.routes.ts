@@ -6,10 +6,25 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { createDatabaseBackup } from "./backup-database.service.js";
+import { readBackupArchive } from "./backup-archive.js";
+import { restoreBackupIntoCurrentDatabase } from "./backup-restore.service.js";
 
 const exportSchema = z.object({ password: z.string().min(12).max(200) });
+const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+
+function getRestorePassword(request: { headers: Record<string, string | string[] | undefined> }): string {
+  const value = request.headers["x-backup-password"];
+  if (typeof value !== "string" || value.length < 12 || value.length > 200) {
+    throw new AppError("VALIDATION_ERROR", "أرسل كلمة مرور النسخة في ترويسة X-Backup-Password (12 حرفًا على الأقل)", 422);
+  }
+  return value;
+}
 
 export async function backupRoutes(app: FastifyInstance): Promise<void> {
+  app.addContentTypeParser("application/vnd.tezkar.backup", { parseAs: "buffer" }, (_request, body, done) => {
+    done(null, body);
+  });
+
   app.post("/api/system-backups/export", {
     preHandler: [authenticateRequest, requirePermission("system.backup.export")]
   }, async (request, reply) => {
@@ -41,4 +56,52 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
       .header("x-content-type-options", "nosniff")
       .send(archive);
   });
+
+  const restoreHandler = (dryRun: boolean) => async (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+    if (!Buffer.isBuffer(request.body) || request.body.length === 0 || request.body.length > MAX_ARCHIVE_BYTES + 4096) {
+      throw new AppError("INVALID_BACKUP_FILE", "ملف النسخة غير صالح أو حجمه غير مسموح", 422);
+    }
+    const password = getRestorePassword(request);
+    let payload;
+    try {
+      payload = await readBackupArchive(request.body, password);
+    } catch (error) {
+      throw new AppError("BACKUP_DECRYPT_FAILED", error instanceof Error ? error.message : "تعذر قراءة ملف النسخة", 422);
+    }
+    let report;
+    try {
+      report = await restoreBackupIntoCurrentDatabase(pool, payload, dryRun);
+    } catch (error) {
+      request.log.error({ err: error }, "System backup restore validation failed");
+      throw new AppError("BACKUP_RESTORE_FAILED", error instanceof Error ? error.message : "تعذر استرداد النسخة", 422);
+    }
+    if (!dryRun) {
+      await withTransaction(async client => {
+        await writeAudit(client, {
+          actorUserId: request.user!.userId,
+          actorEmployeeId: request.user!.employeeId,
+          action: "restore",
+          module: "system",
+          entityType: "system_backup",
+          metadata: { added: report.added, exactDuplicates: report.exactDuplicates, conflicts: report.conflicts.length },
+          ipAddress: request.ip,
+          userAgent: request.headers["user-agent"] ?? null
+        });
+      });
+    }
+    return reply.header("cache-control", "no-store, private").send({
+      mode: dryRun ? "preview" : "restore",
+      ...report
+    });
+  };
+
+  app.post("/api/system-backups/restore/preview", {
+    bodyLimit: MAX_ARCHIVE_BYTES + 4096,
+    preHandler: [authenticateRequest, requirePermission("system.backup.restore")]
+  }, restoreHandler(true));
+
+  app.post("/api/system-backups/restore", {
+    bodyLimit: MAX_ARCHIVE_BYTES + 4096,
+    preHandler: [authenticateRequest, requirePermission("system.backup.restore")]
+  }, restoreHandler(false));
 }
