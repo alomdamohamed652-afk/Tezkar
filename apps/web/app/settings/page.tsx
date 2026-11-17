@@ -134,6 +134,35 @@ export default function SettingsPage(){
  async function previewResetData(){setResetPreviewBusy(true);setResetPreview(null);try{const result=await api<{data:{deletedRows:Record<string,number>;totalRows:number;preservedTables:string[];previewToken:string}}>("/api/system/reset/preview");setResetPreview(result.data);toast.info("تمت المعاينة فقط؛ لم يتم حذف أي بيانات.","معاينة آمنة");}catch(e){toast.error(e instanceof Error?e.message:"تعذرت معاينة البيانات")}finally{setResetPreviewBusy(false)}}
  async function resetAllData(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!resetPreview){toast.warning("نفّذ المعاينة أولًا قبل المسح");return}if(resetPhrase!=="امسح كل بيانات النظام"){toast.warning("اكتب عبارة التأكيد كاملة كما هي قبل المتابعة");return}setResetBusy(true);try{await api<{data:{deletedRows:Record<string,number>;preservedTables:string[]}}>("/api/system/reset/execute",{method:"POST",body:JSON.stringify({confirmation:resetPhrase,previewToken:resetPreview.previewToken})});toast.success("تم مسح جميع البيانات اليدوية والتشغيلية. سيتم تسجيل خروجك للحفاظ على جلسات الدخول.","اكتمل المسح");setResetPhrase("");setResetPreview(null);setResetUsed(true);setResetEnabled(false);setResetVisible(false);setTimeout(()=>window.location.assign("/login"),1300);}catch(e){toast.error(e instanceof Error?e.message:"تعذر مسح بيانات النظام")}finally{setResetBusy(false)}}
 
+
+ async function backupRequest(path:string,body:BodyInit,headers:HeadersInit){
+  const response=await fetch(API_URL+path,{method:"POST",credentials:"include",headers,body,cache:"no-store"});
+  if(!response.ok){const data=await response.json().catch(()=>null);throw new Error(data?.error?.message||"تعذر تنفيذ عملية النسخ الاحتياطي")}
+  return response;
+ }
+ async function exportFullBackup(){
+  if(backupPassword.length<12){toast.warning("كلمة المرور يجب ألا تقل عن 12 حرفًا");return}
+  setBackupBusy(true);
+  try{
+   const response=await backupRequest("/api/system-backups/export",JSON.stringify({password:backupPassword}),{"Content-Type":"application/json"});
+   const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download="tezkar-backup.tzk";document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+   toast.success("تم إنشاء ملف النسخة المشفر وتنزيله.");
+  }catch(e){toast.error(e instanceof Error?e.message:"تعذر إنشاء النسخة")}finally{setBackupBusy(false)}
+ }
+ async function previewFullRestore(){
+  if(!backupFile){toast.warning("اختر ملف النسخة أولًا");return}if(backupPassword.length<12){toast.warning("أدخل كلمة مرور النسخة (12 حرفًا على الأقل)");return}
+  setRestoreBusy(true);setRestoreReport(null);
+  try{const response=await backupRequest("/api/system-backups/restore/preview",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});const report=await response.json();setRestoreReport(report);toast.info("اكتملت المعاينة فقط؛ لم يتم حفظ أي بيانات.","معاينة الاستعادة");}
+  catch(e){toast.error(e instanceof Error?e.message:"تعذرت معاينة النسخة")}finally{setRestoreBusy(false)}
+ }
+ async function executeFullRestore(){
+  if(!backupFile||!restoreReport)return;if(restoreReport.conflicts.length){toast.warning("عالج التعارضات أولًا؛ لن يتم استيراد أي سجل عند وجود تعارض.");return}
+  if(!window.confirm("تأكيد الاستعادة الإضافية إلى قاعدة البيانات الحالية؟ لن يتم حذف أو استبدال أي سجل موجود. سيتم تخطي المتطابق وإضافة السجلات الجديدة فقط."))return;
+  setRestoreBusy(true);
+  try{const response=await backupRequest("/api/system-backups/restore",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});const report=await response.json();setRestoreReport(report);toast.success("اكتملت الاستعادة الإضافية بنجاح.");}
+  catch(e){toast.error(e instanceof Error?e.message:"تعذرت استعادة النسخة")}finally{setRestoreBusy(false)}
+ }
+
  return <div className="app-shell"><Sidebar active="/settings"/><main className="main">
   <header className="topbar"><div><h1 className="page-title">الإعدادات والإدارة</h1><p className="page-subtitle">تحكم كامل في الحسابات، الصلاحيات والبيانات الإدارية.</p></div></header>
   <section className="content">
