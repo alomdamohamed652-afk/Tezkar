@@ -177,6 +177,45 @@ export type RestoreReport = {
   conflicts: { table: string; reason: string }[];
 };
 
+async function restoreSequenceState(
+  client: pg.PoolClient,
+  payload: BackupPayload,
+  report: RestoreReport
+): Promise<void> {
+  if (!payload.sequences) return;
+  const seen = new Set<string>();
+  for (const sequence of payload.sequences) {
+    if (!sequence || typeof sequence.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(sequence.name) ||
+        !/^-?\\d+$/.test(sequence.lastValue) || typeof sequence.isCalled !== "boolean" || seen.has(sequence.name)) {
+      throw new Error("بيانات تسلسل الترقيم داخل النسخة غير صالحة");
+    }
+    seen.add(sequence.name);
+    const exists = await client.query<{ sequence_name: string }>(
+      `SELECT c.relname AS sequence_name
+         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relname=$1 AND c.relkind='S'`,
+      [sequence.name]
+    );
+    if (!exists.rowCount) {
+      report.conflicts.push({ table: sequence.name, reason: "التسلسل غير موجود في قاعدة البيانات الحالية" });
+      continue;
+    }
+    const identifier = `public.${quoteIdentifier(sequence.name)}`;
+    const current = await client.query<{ last_value: string; is_called: boolean }>(
+      `SELECT last_value::text, is_called FROM ${identifier}`
+    );
+    const currentValue = BigInt(current.rows[0].last_value);
+    const archivedValue = BigInt(sequence.lastValue);
+    if (archivedValue > currentValue) {
+      await client.query("SELECT setval($1::regclass, $2::bigint, $3::boolean)", [
+        identifier, sequence.lastValue, sequence.isCalled
+      ]);
+    } else if (archivedValue === currentValue && sequence.isCalled && !current.rows[0].is_called) {
+      await client.query("SELECT setval($1::regclass, $2::bigint, true)", [identifier, sequence.lastValue]);
+    }
+  }
+}
+
 export async function restoreBackupIntoCurrentDatabase(
   pool: pg.Pool,
   payload: BackupPayload,
@@ -234,6 +273,9 @@ export async function restoreBackupIntoCurrentDatabase(
           throw error;
         }
       }
+    }
+    if (!report.conflicts.length && !dryRun) {
+      await restoreSequenceState(client, payload, report);
     }
     if (report.conflicts.length || dryRun) {
       await client.query("ROLLBACK");
