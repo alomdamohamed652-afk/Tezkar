@@ -110,6 +110,22 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_parents")).rows[0].count, 1,
       "audit failure must roll back the restore transaction");
 
+    const auditFailureForwardPayload: BackupPayload = {
+      ...payload,
+      sequences: [{ name: "backup_it_seq", lastValue: "80", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+    };
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, auditFailureForwardPayload, false, async () => {
+        throw new Error("audit write failed before sequence advancement");
+      }),
+      /audit write failed before sequence advancement/
+    );
+    const sequenceAfterAuditFailure = await pool.query<{ last_value: string }>(
+      "SELECT last_value::text FROM backup_it_seq"
+    );
+    assert.equal(sequenceAfterAuditFailure.rows[0]?.last_value, "50",
+      "a failed audit must not leave a non-transactional sequence advance behind");
+
     const sequence = await pool.query<{ last_value: string; is_called: boolean }>(
       "SELECT last_value::text, is_called FROM backup_it_seq"
     );
