@@ -17,7 +17,13 @@ test("backup archive encrypts and round-trips payload without changing text or d
   assert.deepEqual(await readBackupArchive(archive, "a-strong-backup-password"), payload);
 });
 
-test("backup archive preserves sequence state exactly", async () => {\n  const archive = await createBackupArchive(payload, "a-strong-backup-password");\n  const restored = await readBackupArchive(archive, "a-strong-backup-password");\n  assert.deepEqual(restored.sequences, payload.sequences);\n});\n\ntest("backup archive rejects incorrect password and tampering", async () => {
+test("backup archive preserves sequence state exactly", async () => {
+  const archive = await createBackupArchive(payload, "a-strong-backup-password");
+  const restored = await readBackupArchive(archive, "a-strong-backup-password");
+  assert.deepEqual(restored.sequences, payload.sequences);
+});
+
+test("backup archive rejects incorrect password and tampering", async () => {
   const archive = await createBackupArchive(payload, "a-strong-backup-password");
   await assert.rejects(() => readBackupArchive(archive, "another-strong-password"), /كلمة المرور غير صحيحة/);
   const damaged = Buffer.from(archive);
