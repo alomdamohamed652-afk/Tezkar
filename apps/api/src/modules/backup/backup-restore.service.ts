@@ -201,13 +201,17 @@ export async function restoreBackupIntoCurrentDatabase(
           continue;
         }
         const values = source.columns.map(column => row[column.name]);
+        await client.query("SAVEPOINT restore_row");
         try {
           await client.query(
             `INSERT INTO public.${quoteIdentifier(tableName)} (${columns}) VALUES (${placeholders})`,
             values
           );
+          await client.query("RELEASE SAVEPOINT restore_row");
           report.added += 1;
         } catch (error) {
+          await client.query("ROLLBACK TO SAVEPOINT restore_row");
+          await client.query("RELEASE SAVEPOINT restore_row");
           const code = typeof error === "object" && error !== null && "code" in error
             ? (error as { code?: string }).code : undefined;
           if (code === "23505" || code === "23503" || code === "23502" || code === "22P02" || code === "22007" || code === "22008") {
