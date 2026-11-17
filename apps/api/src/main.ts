@@ -42,6 +42,7 @@ import { notificationRoutes } from "./modules/notifications/notifications.routes
 import { systemResetRoutes } from "./modules/system-reset/system-reset.routes.js";
 import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
 import { runMaturedWorkerPaymentDifferenceJob } from "./modules/payments/worker-payment-differences.service.js";
+import { backupRoutes } from "./modules/backup/backup.routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -51,6 +52,7 @@ await app.register(cors, {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 });
 await app.register(cookie, { secret: env.SESSION_SECRET });
+await app.register(backupRoutes);
 
 
 app.addHook("onResponse", async (request, reply) => {
