@@ -37,6 +37,11 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
   const parentId = "11111111-1111-4111-8111-111111111111";
   const childId = "22222222-2222-4222-8222-222222222222";
   const extraId = "33333333-3333-4333-8333-333333333333";
+  const additionalChildRows = Array.from({ length: 100 }, (_, index) => ({
+    id: `44444444-4444-4444-8444-${String(index + 1).padStart(12, "0")}`,
+    parent_id: parentId,
+    label: `child-${index + 1}`
+  }));
   const payload: BackupPayload = {
     format: "tezkar-full-backup",
     version: 1,
@@ -47,7 +52,7 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
         name: "backup_it_children",
         primaryKey: ["id"],
         columns: [{ name: "id", pgType: "uuid" }, { name: "parent_id", pgType: "uuid" }, { name: "label", pgType: "text" }],
-        rows: [{ id: childId, parent_id: parentId, label: "child" }]
+        rows: [{ id: childId, parent_id: parentId, label: "child" }, ...additionalChildRows]
       },
       {
         name: "backup_it_parents",
@@ -98,20 +103,20 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) DEFERRABLE INITIALLY DEFERRED");
 
     const preview = await restoreBackupIntoCurrentDatabase(pool, payload, true);
-    assert.equal(preview.added, 2);
+    assert.equal(preview.added, 102, "preview must count records across multiple lookup batches");
     assert.equal(preview.conflicts.length, 0);
     assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_parents")).rows[0].count, 0,
       "preview must roll back all inserted rows");
 
     const first = await restoreBackupIntoCurrentDatabase(pool, payload);
-    assert.equal(first.added, 2);
+    assert.equal(first.added, 102, "restore must insert all records across multiple lookup batches");
     assert.equal(first.exactDuplicates, 0);
     assert.equal(first.conflicts.length, 0);
-    assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_children")).rows[0].count, 1);
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_children")).rows[0].count, 101);
 
     const second = await restoreBackupIntoCurrentDatabase(pool, payload);
     assert.equal(second.added, 0);
-    assert.equal(second.exactDuplicates, 2);
+    assert.equal(second.exactDuplicates, 102, "restore must recognize exact duplicates across lookup batches");
     assert.equal(second.conflicts.length, 0);
 
     const conflictPayload: BackupPayload = {
