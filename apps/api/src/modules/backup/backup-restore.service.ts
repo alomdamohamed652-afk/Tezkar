@@ -230,7 +230,17 @@ async function restoreSequenceState(
     }
     const currentValue = BigInt(currentState.last_value);
     const archivedValue = BigInt(sequence.lastValue);
-    if (archivedValue > currentValue) {
+    const increment = BigInt(sequence.incrementBy);
+    if (archivedValue < BigInt(sequence.minValue) || archivedValue > BigInt(sequence.maxValue)) {
+      report.conflicts.push({ table: sequence.name, reason: "Sequence value is outside configured bounds" });
+      continue;
+    }
+    if (sequence.cycle && archivedValue !== currentValue) {
+      report.conflicts.push({ table: sequence.name, reason: "Cannot safely advance a cycling sequence without risking a backward move" });
+      continue;
+    }
+    const advances = increment > 0n ? archivedValue > currentValue : archivedValue < currentValue;
+    if (advances) {
       await client.query("SELECT setval($1::regclass, $2::bigint, $3::boolean)", [
         identifier, sequence.lastValue, sequence.isCalled
       ]);
