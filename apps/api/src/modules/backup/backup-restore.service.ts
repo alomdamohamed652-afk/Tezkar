@@ -190,7 +190,8 @@ export type RestoreReport = {
 async function restoreSequenceState(
   client: pg.PoolClient,
   payload: BackupPayload,
-  report: RestoreReport
+  report: RestoreReport,
+  applyState: boolean
 ): Promise<void> {
   if (!payload.sequences) return;
   const seen = new Set<string>();
@@ -240,6 +241,7 @@ async function restoreSequenceState(
       continue;
     }
     const advances = increment > 0n ? archivedValue > currentValue : archivedValue < currentValue;
+    if (!applyState) continue;
     if (advances) {
       await client.query("SELECT setval($1::regclass, $2::bigint, $3::boolean)", [
         identifier, sequence.lastValue, sequence.isCalled
@@ -308,8 +310,10 @@ export async function restoreBackupIntoCurrentDatabase(
         }
       }
     }
-    if (!report.conflicts.length && !dryRun) {
-      await restoreSequenceState(client, payload, report);
+    if (!report.conflicts.length) {
+      // Preview validates sequence existence/configuration/state too, but must
+      // never call setval: PostgreSQL sequence changes are not rolled back.
+      await restoreSequenceState(client, payload, report, !dryRun);
     }
     if (report.conflicts.length || dryRun) {
       await client.query("ROLLBACK");
