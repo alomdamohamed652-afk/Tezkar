@@ -204,13 +204,18 @@ async function restoreSequenceState(
     const current = await client.query<{ last_value: string; is_called: boolean }>(
       `SELECT last_value::text, is_called FROM ${identifier}`
     );
-    const currentValue = BigInt(current.rows[0].last_value);
+    const currentState = current.rows[0];
+    if (!currentState) {
+      report.conflicts.push({ table: sequence.name, reason: "تعذر قراءة حالة التسلسل الحالية" });
+      continue;
+    }
+    const currentValue = BigInt(currentState.last_value);
     const archivedValue = BigInt(sequence.lastValue);
     if (archivedValue > currentValue) {
       await client.query("SELECT setval($1::regclass, $2::bigint, $3::boolean)", [
         identifier, sequence.lastValue, sequence.isCalled
       ]);
-    } else if (archivedValue === currentValue && sequence.isCalled && !current.rows[0].is_called) {
+    } else if (archivedValue === currentValue && sequence.isCalled && !currentState.is_called) {
       await client.query("SELECT setval($1::regclass, $2::bigint, true)", [identifier, sequence.lastValue]);
     }
   }
