@@ -193,7 +193,15 @@ async function restoreSequenceState(
   report: RestoreReport,
   applyState: boolean
 ): Promise<void> {
-  if (!payload.sequences) return;
+  if (!Array.isArray(payload.sequences)) throw new Error("النسخة لا تحتوي بيانات تسلسلات الترقيم المطلوبة");
+  const targetSequences = await client.query<{ sequence_name: string }>(
+    "SELECT c.relname AS sequence_name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S' ORDER BY c.relname"
+  );
+  const expectedNames = targetSequences.rows.map(row => row.sequence_name).sort();
+  const archivedNames = payload.sequences.map(sequence => sequence?.name).sort();
+  if (new Set(archivedNames).size !== archivedNames.length || JSON.stringify(archivedNames) !== JSON.stringify(expectedNames)) {
+    throw new Error("النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة أو تحتوي تسلسلًا غير متوقع");
+  }
   const seen = new Set<string>();
   for (const sequence of payload.sequences) {
     if (!sequence || typeof sequence.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(sequence.name) ||
@@ -269,6 +277,11 @@ export async function restoreBackupIntoCurrentDatabase(
     const catalog = await readCatalog(client);
     const sourceNames = payload.tables.map(table => table.name);
     if (new Set(sourceNames).size !== sourceNames.length) throw new Error("النسخة تحتوي أسماء جداول مكررة");
+    const expectedTables = [...catalog.tables.keys()].filter(name => !EXCLUDED_TABLES.has(name)).sort();
+    const archivedTables = [...sourceNames].sort();
+    if (JSON.stringify(archivedTables) !== JSON.stringify(expectedTables)) {
+      throw new Error("النسخة لا تحتوي جميع جداول النظام المطلوبة؛ تم إيقاف الاستعادة لتجنب استيراد نسخة ناقصة");
+    }
     for (const source of payload.tables) {
       const target = catalog.tables.get(source.name);
       if (!target) throw new Error(`الجدول غير موجود في قاعدة البيانات الحالية: ${source.name}`);
