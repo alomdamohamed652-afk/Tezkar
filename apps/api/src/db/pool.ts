@@ -33,7 +33,7 @@ pool.on("error", (error) => {
   // surface the failure without logging connection strings or credentials.
   console.error("Unexpected idle PostgreSQL client error", {
     message: error.message,
-    code: error.code
+    code: (error as Error & { code?: string }).code
   });
 });
 
