@@ -65,6 +65,27 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     await pool.query("CREATE SEQUENCE backup_it_seq START 1 INCREMENT 1");
     await pool.query("SELECT setval('backup_it_seq', 50, true)");
 
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, tables: payload.tables.slice(1) }, true),
+      /النسخة لا تحتوي جميع جداول النظام المطلوبة/,
+      "restore must reject an archive missing a required table before importing any rows"
+    );
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, sequences: [] }, true),
+      /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
+      "restore must reject an archive missing a required sequence"
+    );
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, sequences: [...payload.sequences!, { ...payload.sequences![0]!, name: "unexpected_sequence" }] }, true),
+      /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
+      "restore must reject unexpected sequences"
+    );
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, sequences: [...payload.sequences!, { ...payload.sequences![0]! }] }, true),
+      /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
+      "restore must reject duplicate sequence entries"
+    );
+
     const preview = await restoreBackupIntoCurrentDatabase(pool, payload, true);
     assert.equal(preview.added, 2);
     assert.equal(preview.conflicts.length, 0);
