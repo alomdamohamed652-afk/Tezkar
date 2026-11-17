@@ -200,6 +200,15 @@ async function restoreSequenceState(
       report.conflicts.push({ table: sequence.name, reason: "التسلسل غير موجود في قاعدة البيانات الحالية" });
       continue;
     }
+    const config = await client.query<{ increment_by: string; min_value: string; max_value: string; start_value: string; cache_size: string; cycle: boolean }>(
+      "SELECT s.seqincrement::text AS increment_by, s.seqmin::text AS min_value, s.seqmax::text AS max_value, s.seqstart::text AS start_value, s.seqcache::text AS cache_size, s.seqcycle AS cycle FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_sequence s ON s.seqrelid=c.oid WHERE n.nspname=$1 AND c.relname=$2 AND c.relkind=$3",
+      ["public", sequence.name, "S"]
+    );
+    const targetConfig = config.rows[0];
+    if (!targetConfig || targetConfig.increment_by !== sequence.incrementBy || targetConfig.min_value !== sequence.minValue || targetConfig.max_value !== sequence.maxValue || targetConfig.start_value !== sequence.startValue || targetConfig.cache_size !== sequence.cacheSize || targetConfig.cycle !== sequence.cycle) {
+      report.conflicts.push({ table: sequence.name, reason: "Sequence configuration mismatch" });
+      continue;
+    }
     const identifier = `public.${quoteIdentifier(sequence.name)}`;
     const current = await client.query<{ last_value: string; is_called: boolean }>(
       `SELECT last_value::text, is_called FROM ${identifier}`
