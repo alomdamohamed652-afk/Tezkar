@@ -61,7 +61,7 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
       );
       totalRows += result.rowCount ?? 0;
       if (totalRows > MAX_EXPORTED_ROWS) throw new Error("عدد السجلات أكبر من الحد المدعوم حاليًا؛ أوقف التصدير دون إنشاء نسخة ناقصة");
-      exported.push({ name: table.table_name, columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type })), rows: result.rows.map(row => row.row_data) });
+      exported.push({ name: table.table_name, primaryKey: table.primary_key_columns, columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type })), rows: result.rows.map(row => row.row_data) });
     }
     const version = await client.query<{ version: string }>(
       "SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"
