@@ -65,7 +65,8 @@ export default function SettingsPage(){
  const [showCreateUser,setShowCreateUser]=useState(false),[newUsername,setNewUsername]=useState(""),[newPassword,setNewPassword]=useState(""),[newUserRoleCode,setNewUserRoleCode]=useState(""),[creatingUser,setCreatingUser]=useState(false);
  const [showCreateRole,setShowCreateRole]=useState(false),[newRoleCode,setNewRoleCode]=useState(""),[newRoleName,setNewRoleName]=useState(""),[creatingRole,setCreatingRole]=useState(false);
  const [resetEnabled,setResetEnabled]=useState(false),[resetVisible,setResetVisible]=useState(false),[resetUsed,setResetUsed]=useState(false),[resetBusy,setResetBusy]=useState(false),[resetPhrase,setResetPhrase]=useState("");
- const [resetPreview,setResetPreview]=useState<{deletedRows:Record<string,number>;totalRows:number;preservedTables:string[];previewToken:string}|null>(null),[resetPreviewBusy,setResetPreviewBusy]=useState(false);\n const [backupPassword,setBackupPassword]=useState(""),[backupBusy,setBackupBusy]=useState(false),[backupFile,setBackupFile]=useState<File|null>(null),[restoreReport,setRestoreReport]=useState<{added:number;exactDuplicates:number;conflicts:{table:string;reason:string}[]}|null>(null),[restoreBusy,setRestoreBusy]=useState(false);
+ const [resetPreview,setResetPreview]=useState<{deletedRows:Record<string,number>;totalRows:number;preservedTables:string[];previewToken:string}|null>(null),[resetPreviewBusy,setResetPreviewBusy]=useState(false);
+ const [backupPassword,setBackupPassword]=useState(""),[backupBusy,setBackupBusy]=useState(false),[backupFile,setBackupFile]=useState<File|null>(null),[restoreReport,setRestoreReport]=useState<{added:number;exactDuplicates:number;conflicts:{table:string;reason:string}[]}|null>(null),[restoreBusy,setRestoreBusy]=useState(false);
 
  async function load(){
   try{
