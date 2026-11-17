@@ -324,9 +324,9 @@ export async function restoreBackupIntoCurrentDatabase(
       }
     }
     if (!report.conflicts.length) {
-      // Preview validates sequence existence/configuration/state too, but must
-      // never call setval: PostgreSQL sequence changes are not rolled back.
-      await restoreSequenceState(client, payload, report, !dryRun);
+      // Validate sequence metadata/state before audit. PostgreSQL setval is not
+      // transactional, so never advance a sequence before the audit succeeds.
+      await restoreSequenceState(client, payload, report, false);
     }
     if (report.conflicts.length || dryRun) {
       await client.query("ROLLBACK");
@@ -334,6 +334,8 @@ export async function restoreBackupIntoCurrentDatabase(
       return report;
     }
     if (beforeCommit) await beforeCommit(client, report);
+    // Apply sequence advancement only after the audit write has succeeded.
+    await restoreSequenceState(client, payload, report, true);
     await client.query("COMMIT");
     return report;
   } catch (error) {
