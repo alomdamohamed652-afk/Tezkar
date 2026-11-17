@@ -24,7 +24,7 @@ export type BackupPayload = {
   createdAt: string;
   sourceSchemaVersion: string | null;
   tables: BackupTable[];
-  sequences?: { name: string; lastValue: string; isCalled: boolean }[];
+  sequences?: { name: string; lastValue: string; isCalled: boolean; incrementBy: string; minValue: string; maxValue: string; startValue: string; cacheSize: string; cycle: boolean }[];
 };
 export type BackupHeader = {
   format: "tezkar-full-backup";
