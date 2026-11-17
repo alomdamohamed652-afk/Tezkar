@@ -145,6 +145,16 @@ function validateArchiveTable(source: BackupTable, target: CatalogTable): void {
       }
     }
   }
+  const sourcePrimaryKeys = new Set<string>();
+  for (const row of source.rows) {
+    const keyValues = source.primaryKey.map(column => row[column]);
+    if (!source.primaryKey.length || keyValues.some(value => value === null || typeof value !== "string")) {
+      throw new Error("Invalid primary key in backup table " + source.name);
+    }
+    const key = JSON.stringify(keyValues);
+    if (sourcePrimaryKeys.has(key)) throw new Error("Duplicate primary key in backup table " + source.name);
+    sourcePrimaryKeys.add(key);
+  }
 }
 
 async function rowByPrimaryKey(
