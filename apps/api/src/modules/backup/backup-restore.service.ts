@@ -160,24 +160,36 @@ function validateArchiveTable(source: BackupTable, target: CatalogTable): void {
   }
 }
 
-async function rowByPrimaryKey(
+const RESTORE_LOOKUP_BATCH_SIZE = 100;
+
+async function rowsByPrimaryKeys(
   client: pg.PoolClient,
   table: CatalogTable,
   source: BackupTable,
-  row: Record<string, string | null>
-): Promise<Record<string, string | null> | null> {
-  const where = source.primaryKey.map((column, index) =>
-    `${quoteIdentifier(column)} IS NOT DISTINCT FROM $${index + 1}`
-  ).join(" AND ");
-  const values = source.primaryKey.map(column => row[column]);
+  rows: Record<string, string | null>[]
+): Promise<Map<string, Record<string, string | null>>> {
+  const found = new Map<string, Record<string, string | null>>();
+  if (!rows.length) return found;
   const selected = source.columns.map(column =>
-    `${quoteIdentifier(column.name)}::text AS ${quoteIdentifier(column.name)}`
+    `t.${quoteIdentifier(column.name)}::text AS ${quoteIdentifier(column.name)}`
   ).join(",");
+  const values: string[] = [];
+  const predicates = rows.map(row => {
+    const keyPredicate = source.primaryKey.map(column => {
+      values.push(row[column]!);
+      return `t.${quoteIdentifier(column)}::text = $${values.length}::text`;
+    }).join(" AND ");
+    return `(${keyPredicate})`;
+  });
   const result = await client.query(
-    `SELECT ${selected} FROM public.${quoteIdentifier(table.name)} WHERE ${where} LIMIT 1`,
+    `SELECT ${selected} FROM public.${quoteIdentifier(table.name)} t WHERE ${predicates.join(" OR ")}`,
     values
   );
-  return (result.rows[0] as Record<string, string | null> | undefined) ?? null;
+  for (const raw of result.rows as Record<string, string | null>[]) {
+    const key = JSON.stringify(source.primaryKey.map(column => raw[column]));
+    found.set(key, raw);
+  }
+  return found;
 }
 
 function sameRow(a: Record<string, string | null>, b: Record<string, string | null>, columns: BackupTable["columns"]): boolean {
@@ -297,32 +309,37 @@ export async function restoreBackupIntoCurrentDatabase(
       const target = catalog.tables.get(tableName)!;
       const columns = source.columns.map(column => quoteIdentifier(column.name)).join(",");
       const placeholders = source.columns.map((_, index) => `$${index + 1}`).join(",");
-      for (const row of source.rows) {
-        const existing = await rowByPrimaryKey(client, target, source, row);
-        if (existing) {
-          if (sameRow(existing, row, source.columns)) report.exactDuplicates += 1;
-          else report.conflicts.push({ table: tableName, reason: "المفتاح الأساسي موجود لكن محتوى السجل مختلف" });
-          continue;
-        }
-        const values = source.columns.map(column => row[column.name]);
-        await client.query("SAVEPOINT restore_row");
-        try {
-          await client.query(
-            `INSERT INTO public.${quoteIdentifier(tableName)} (${columns}) VALUES (${placeholders})`,
-            values
-          );
-          await client.query("RELEASE SAVEPOINT restore_row");
-          report.added += 1;
-        } catch (error) {
-          await client.query("ROLLBACK TO SAVEPOINT restore_row");
-          await client.query("RELEASE SAVEPOINT restore_row");
-          const code = typeof error === "object" && error !== null && "code" in error
-            ? (error as { code?: string }).code : undefined;
-          if (code === "23505" || code === "23503" || code === "23502" || code === "22P02" || code === "22007" || code === "22008") {
-            report.conflicts.push({ table: tableName, reason: "تعارض قيد فريد أو علاقة أو قيمة غير متوافقة" });
+      for (let offset = 0; offset < source.rows.length; offset += RESTORE_LOOKUP_BATCH_SIZE) {
+        const batchRows = source.rows.slice(offset, offset + RESTORE_LOOKUP_BATCH_SIZE);
+        const existingByKey = await rowsByPrimaryKeys(client, target, source, batchRows);
+        for (const row of batchRows) {
+          const key = JSON.stringify(source.primaryKey.map(column => row[column]));
+          const existing = existingByKey.get(key);
+          if (existing) {
+            if (sameRow(existing, row, source.columns)) report.exactDuplicates += 1;
+            else report.conflicts.push({ table: tableName, reason: "المفتاح الأساسي موجود لكن محتوى السجل مختلف" });
             continue;
           }
-          throw error;
+          const values = source.columns.map(column => row[column.name]);
+          await client.query("SAVEPOINT restore_row");
+          try {
+            await client.query(
+              `INSERT INTO public.${quoteIdentifier(tableName)} (${columns}) VALUES (${placeholders})`,
+              values
+            );
+            await client.query("RELEASE SAVEPOINT restore_row");
+            report.added += 1;
+          } catch (error) {
+            await client.query("ROLLBACK TO SAVEPOINT restore_row");
+            await client.query("RELEASE SAVEPOINT restore_row");
+            const code = typeof error === "object" && error !== null && "code" in error
+              ? (error as { code?: string }).code : undefined;
+            if (code === "23505" || code === "23503" || code === "23502" || code === "22P02" || code === "22007" || code === "22008") {
+              report.conflicts.push({ table: tableName, reason: "تعارض قيد فريد أو علاقة أو قيمة غير متوافقة" });
+              continue;
+            }
+            throw error;
+          }
         }
       }
     }
