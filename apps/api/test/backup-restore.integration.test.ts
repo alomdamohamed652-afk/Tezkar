@@ -120,8 +120,8 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
         {
           ...payload.tables[1]!,
           rows: [
-            { id: parentId, label: "changed-content" },
-            { id: extraId, label: "must-rollback" }
+            { id: parentId, child_id: childId, label: "changed-content" },
+            { id: extraId, child_id: childId, label: "must-rollback" }
           ]
         },
         payload.tables[0]!
