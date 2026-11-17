@@ -107,15 +107,26 @@ function validateArchiveTable(source: BackupTable, target: CatalogTable): void {
   if (sourcePk !== JSON.stringify(target.primaryKey)) {
     throw new Error(`المفتاح الأساسي غير متوافق في الجدول ${source.name}`);
   }
-  const targetColumns = new Map(target.columns.map(column => [column.name, column]));
   if (!Array.isArray(source.columns) || !Array.isArray(source.rows)) {
     throw new Error(`بنية الجدول غير صالحة: ${source.name}`);
   }
+  const targetColumns = new Map(target.columns.map(column => [column.name, column]));
+  if (source.columns.length !== target.columns.length) {
+    throw new Error(`عدد أعمدة النسخة لا يطابق الجدول الحالي: ${source.name}`);
+  }
+  const sourceColumnNames = new Set<string>();
   for (const column of source.columns) {
+    if (sourceColumnNames.has(column.name)) {
+      throw new Error(`النسخة تحتوي عمودًا مكررًا: ${source.name}.${column.name}`);
+    }
+    sourceColumnNames.add(column.name);
     const actual = targetColumns.get(column.name);
     if (!actual || actual.type !== column.pgType) {
       throw new Error(`العمود أو نوعه غير متوافق: ${source.name}.${column.name}`);
     }
+  }
+  if (target.columns.some(column => !sourceColumnNames.has(column.name))) {
+    throw new Error(`أعمدة النسخة لا تطابق الجدول الحالي: ${source.name}`);
   }
   const sourceNames = new Set(source.columns.map(column => column.name));
   for (const column of target.columns) {
@@ -169,7 +180,8 @@ export type RestoreReport = {
 export async function restoreBackupIntoCurrentDatabase(
   pool: pg.Pool,
   payload: BackupPayload,
-  dryRun = false
+  dryRun = false,
+  beforeCommit?: (client: pg.PoolClient, report: RestoreReport) => Promise<void>
 ): Promise<RestoreReport> {
   if (payload.format !== "tezkar-full-backup" || payload.version !== 1 || !Array.isArray(payload.tables)) {
     throw new Error("صيغة النسخة غير مدعومة");
@@ -228,6 +240,7 @@ export async function restoreBackupIntoCurrentDatabase(
       if (report.conflicts.length) report.added = 0;
       return report;
     }
+    if (beforeCommit) await beforeCommit(client, report);
     await client.query("COMMIT");
     return report;
   } catch (error) {
