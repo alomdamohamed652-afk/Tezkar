@@ -11,7 +11,8 @@ const KEY_BYTES = 32;
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const SCRYPT_OPTIONS = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 
-export type BackupTable = { name: string; rows: Record<string, unknown>[] };
+export type BackupColumn = { name: string; pgType: string };
+export type BackupTable = { name: string; columns: BackupColumn[]; rows: Record<string, string | null>[] };
 export type BackupPayload = {
   format: "tezkar-full-backup";
   version: 1;
