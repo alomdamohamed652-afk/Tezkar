@@ -186,7 +186,7 @@ async function restoreSequenceState(
   const seen = new Set<string>();
   for (const sequence of payload.sequences) {
     if (!sequence || typeof sequence.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(sequence.name) ||
-        !/^-?\\d+$/.test(sequence.lastValue) || typeof sequence.isCalled !== "boolean" || seen.has(sequence.name)) {
+        !/^-?\d+$/.test(sequence.lastValue) || typeof sequence.isCalled !== "boolean" || seen.has(sequence.name)) {
       throw new Error("بيانات تسلسل الترقيم داخل النسخة غير صالحة");
     }
     seen.add(sequence.name);
