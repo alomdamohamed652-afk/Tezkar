@@ -37,8 +37,10 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
       request.log.error({ err: error }, "System backup export failed");
       throw new AppError("BACKUP_EXPORT_FAILED", error instanceof Error ? error.message : "تعذر إنشاء النسخة الاحتياطية", 422);
     }
-    await withTransaction(async client => {
-      await writeAudit(client, {
+    const auditClient = await pool.connect();
+    try {
+      await auditClient.query("BEGIN");
+      await writeAudit(auditClient, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
         action: "export",
@@ -48,7 +50,13 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
-    });
+      await auditClient.query("COMMIT");
+    } catch (error) {
+      await auditClient.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      auditClient.release();
+    }
     return reply
       .header("content-type", "application/vnd.tezkar.backup")
       .header("content-disposition", 'attachment; filename="tezkar-backup.tzk"')
