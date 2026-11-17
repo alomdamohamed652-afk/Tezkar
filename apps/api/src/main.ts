@@ -44,7 +44,12 @@ import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
 import { runMaturedWorkerPaymentDifferenceJob } from "./modules/payments/worker-payment-differences.service.js";
 import { backupRoutes } from "./modules/backup/backup.routes.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: {
+    level: "info",
+    redact: { paths: ["req.headers.x-backup-password"], censor: "[REDACTED]" }
+  }
+});
 
 await app.register(cors, {
   origin: env.WEB_ORIGIN,
