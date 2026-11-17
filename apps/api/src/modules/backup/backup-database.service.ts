@@ -1,5 +1,4 @@
 import type pg from "pg";
-import { createHash } from "node:crypto";
 import { createBackupArchive, type BackupPayload, type BackupTable } from "./backup-archive.js";
 
 const EXCLUDED_TABLES = new Set([
@@ -18,8 +17,8 @@ async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
              FILTER (WHERE a.attname IS NOT NULL), ARRAY[]::text[]) AS primary_key_columns
       FROM pg_class c
       JOIN pg_namespace n ON n.oid=c.relnamespace
-      JOIN pg_index i ON i.indrelid=c.oid AND i.indisprimary
-      JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ordinality) ON TRUE
+      LEFT JOIN pg_index i ON i.indrelid=c.oid AND i.indisprimary
+      LEFT JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ordinality) ON TRUE
       LEFT JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
      WHERE n.nspname='public' AND c.relkind IN ('r','p')
      GROUP BY c.relname
@@ -72,8 +71,5 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
 export async function createDatabaseBackup(pool: pg.Pool, password: string): Promise<Buffer> {
   const payload = await buildBackupPayload(pool);
   const archive = await createBackupArchive(payload, password);
-  // Hash is returned in the archive manifest in a later format revision; for now,
-  // GCM authentication protects the complete encrypted payload.
-  createHash("sha256").update(archive).digest("hex");
   return archive;
 }
