@@ -7,7 +7,7 @@ const payload: BackupPayload = {
   version: 1,
   createdAt: "2026-11-17T00:00:00.000Z",
   sourceSchemaVersion: "test-schema",
-  sequences: [{ name: "employee_code_seq", lastValue: "42", isCalled: true }, { name: "user_code_seq", lastValue: "7", isCalled: false }],
+  sequences: [{ name: "employee_code_seq", lastValue: "42", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "2147483647", startValue: "1", cacheSize: "1", cycle: false }, { name: "user_code_seq", lastValue: "7", isCalled: false, incrementBy: "1", minValue: "1", maxValue: "2147483647", startValue: "1", cacheSize: "1", cycle: false }],
   tables: [{ name: "employees", primaryKey: ["id"], columns: [{ name: "id", pgType: "uuid" }, { name: "full_name", pgType: "text" }, { name: "amount", pgType: "numeric(12,2)" }, { name: "at", pgType: "timestamp with time zone" }], rows: [{ id: "1", full_name: "عامل تجريبي", amount: "125.50", at: "2026-11-17 01:02:03.123456+00" }] }]
 };
 
