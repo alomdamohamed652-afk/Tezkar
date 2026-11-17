@@ -129,6 +129,12 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
       ...forwardPayload,
       sequences: [{ ...forwardPayload.sequences![0]!, incrementBy: "2" }]
     };
+    const mismatchPreview = await restoreBackupIntoCurrentDatabase(pool, mismatchPayload, true);
+    assert.equal(mismatchPreview.conflicts.length, 1,
+      "preview must report sequence configuration conflicts before confirmation");
+    const afterPreview = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterPreview.rows[0]?.last_value, "75",
+      "preview must not mutate sequence state");
     const mismatch = await restoreBackupIntoCurrentDatabase(pool, mismatchPayload);
     assert.equal(mismatch.conflicts.length, 1);
     const unchanged = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
