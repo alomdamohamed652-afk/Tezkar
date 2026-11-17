@@ -52,16 +52,17 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
       {
         name: "backup_it_parents",
         primaryKey: ["id"],
-        columns: [{ name: "id", pgType: "uuid" }, { name: "label", pgType: "text" }],
-        rows: [{ id: parentId, label: "parent" }]
+        columns: [{ name: "id", pgType: "uuid" }, { name: "child_id", pgType: "uuid" }, { name: "label", pgType: "text" }],
+        rows: [{ id: parentId, child_id: childId, label: "parent" }]
       }
     ],
     sequences: [{ name: "backup_it_seq", lastValue: "20", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
   };
 
   try {
-    await pool.query("CREATE TABLE backup_it_parents(id uuid PRIMARY KEY, label text NOT NULL)");
+    await pool.query("CREATE TABLE backup_it_parents(id uuid PRIMARY KEY, child_id uuid, label text NOT NULL)");
     await pool.query("CREATE TABLE backup_it_children(id uuid PRIMARY KEY, parent_id uuid NOT NULL REFERENCES backup_it_parents(id), label text NOT NULL)");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) DEFERRABLE INITIALLY DEFERRED");
     await pool.query("CREATE SEQUENCE backup_it_seq START 1 INCREMENT 1");
     await pool.query("SELECT setval('backup_it_seq', 50, true)");
 
@@ -85,6 +86,16 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
       /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
       "restore must reject duplicate sequence entries"
     );
+
+    await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_child_fk");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) NOT DEFERRABLE");
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, true),
+      /توجد علاقات دائرية بين الجداول/,
+      "restore must reject cycles that include non-deferrable foreign keys"
+    );
+    await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_child_fk");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) DEFERRABLE INITIALLY DEFERRED");
 
     const preview = await restoreBackupIntoCurrentDatabase(pool, payload, true);
     assert.equal(preview.added, 2);
