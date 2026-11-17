@@ -8,6 +8,8 @@ const EXCLUDED_TABLES = new Set([
   "auth_login_attempts"
 ]);
 const MAX_EXPORTED_ROWS = 2_000_000;
+const MAX_ESTIMATED_PAYLOAD_BYTES = 220 * 1024 * 1024;
+const EXPORT_BATCH_SIZE = 500;
 
 type TableInfo = { table_name: string; primary_key_columns: string[] };
 type ColumnInfo = { column_name: string; pg_type: string };
@@ -67,6 +69,7 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
     const tables = await listBackupTables(client);
     const exported: BackupTable[] = [];
     let totalRows = 0;
+    let estimatedPayloadBytes = 0;
     for (const table of tables) {
       if (table.primary_key_columns.length === 0) {
         throw new Error(`لا يمكن أخذ نسخة آمنة: الجدول ${table.table_name} لا يحتوي مفتاحًا أساسيًا`);
@@ -82,12 +85,32 @@ export async function buildBackupPayload(pool: pg.Pool): Promise<BackupPayload> 
       const columns = columnsResult.rows;
       if (!columns.length) throw new Error(`لا يمكن قراءة أعمدة الجدول ${table.table_name}`);
       const fields = columns.flatMap(column => [quoteLiteral(column.column_name), `t.${quoteIdentifier(column.column_name)}::text`]).join(",");
-      const result = await client.query<{ row_data: Record<string, string | null> }>(
-        `SELECT jsonb_build_object(${fields}) AS row_data FROM public.${quoteIdentifier(table.table_name)} t`
+      await client.query(
+        `DECLARE backup_export_cursor NO SCROLL CURSOR FOR SELECT jsonb_build_object(${fields}) AS row_data FROM public.${quoteIdentifier(table.table_name)} t`
       );
-      totalRows += result.rowCount ?? 0;
-      if (totalRows > MAX_EXPORTED_ROWS) throw new Error("عدد السجلات أكبر من الحد المدعوم حاليًا؛ أوقف التصدير دون إنشاء نسخة ناقصة");
-      exported.push({ name: table.table_name, primaryKey: table.primary_key_columns, columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type })), rows: result.rows.map(row => row.row_data) });
+      const rows: Record<string, string | null>[] = [];
+      while (true) {
+        const batch = await client.query<{ row_data: Record<string, string | null> }>(
+          `FETCH FORWARD ${EXPORT_BATCH_SIZE} FROM backup_export_cursor`
+        );
+        if (!batch.rows.length) break;
+        totalRows += batch.rows.length;
+        if (totalRows > MAX_EXPORTED_ROWS) {
+          await client.query("CLOSE backup_export_cursor");
+          throw new Error("عدد السجلات أكبر من الحد المدعوم حاليًا؛ أوقف التصدير دون إنشاء نسخة ناقصة");
+        }
+        for (const item of batch.rows) {
+          const rowBytes = Buffer.byteLength(JSON.stringify(item.row_data), "utf8") + 1;
+          estimatedPayloadBytes += rowBytes;
+          if (estimatedPayloadBytes > MAX_ESTIMATED_PAYLOAD_BYTES) {
+            await client.query("CLOSE backup_export_cursor");
+            throw new Error("حجم بيانات النسخة تجاوز الحد الآمن للتصدير؛ لم يتم إنشاء ملف ناقص");
+          }
+          rows.push(item.row_data);
+        }
+      }
+      await client.query("CLOSE backup_export_cursor");
+      exported.push({ name: table.table_name, primaryKey: table.primary_key_columns, columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type })), rows });
     }
     const sequences = await exportSequences(client);
     const version = await client.query<{ version: string }>(
