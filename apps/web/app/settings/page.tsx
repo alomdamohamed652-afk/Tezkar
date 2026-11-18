@@ -160,7 +160,18 @@ export default function SettingsPage(){
   if(!backupFile||!restoreReport)return;if(restoreReport.conflicts.length){toast.warning("عالج التعارضات أولًا؛ لن يتم استيراد أي سجل عند وجود تعارض.");return}
   if(!window.confirm("تأكيد الاستعادة الإضافية إلى قاعدة البيانات الحالية؟ لن يتم حذف أو استبدال أي سجل موجود. سيتم تخطي المتطابق وإضافة السجلات الجديدة فقط."))return;
   setRestoreBusy(true);
-  try{const response=await backupRequest("/api/system-backups/restore",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});const report=await response.json();setRestoreReport(report);setBackupFile(null);setBackupPassword("");toast.success("اكتملت الاستعادة الإضافية بنجاح. سيتم تحديث بيانات الشاشة.");window.setTimeout(()=>window.location.reload(),1200);}
+  try{
+   const response=await backupRequest("/api/system-backups/restore",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});
+   const report=await response.json();
+   setRestoreReport(report);
+   if(Array.isArray(report.conflicts)&&report.conflicts.length>0){
+    toast.warning("ظهرت تعارضات أثناء التنفيذ؛ لم يتم اعتماد أي تغييرات. راجع تفاصيل التعارضات قبل المحاولة مرة أخرى.");
+    return;
+   }
+   setBackupFile(null);setBackupPassword("");
+   toast.success(report.added>0?"اكتملت الاستعادة الإضافية بنجاح. سيتم تحديث بيانات الشاشة.":"النسخة متطابقة مع البيانات الحالية؛ لم تكن هناك سجلات جديدة لإضافتها.");
+   window.setTimeout(()=>window.location.reload(),1200);
+  }
   catch(e){toast.error(e instanceof Error?e.message:"تعذرت استعادة النسخة")}finally{setRestoreBusy(false)}
  }
 
