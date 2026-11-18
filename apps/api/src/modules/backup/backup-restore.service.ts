@@ -281,14 +281,27 @@ async function restoreSequenceState(
       continue;
     }
     const advances = increment > 0n ? archivedValue > currentValue : archivedValue < currentValue;
-    if (!applyState) continue;
-    if (advances) {
-      await client.query("SELECT setval($1::regclass, $2::bigint, $3::boolean)", [
-        identifier, sequence.lastValue, sequence.isCalled
-      ]);
-    } else if (archivedValue === currentValue && sequence.isCalled && !currentState.is_called) {
-      await client.query("SELECT setval($1::regclass, $2::bigint, true)", [identifier, sequence.lastValue]);
+    const mustAdvance = advances || (archivedValue === currentValue && sequence.isCalled && !currentState.is_called);
+    if (!applyState || !mustAdvance) continue;
+    // ALTER SEQUENCE RESTART is transactional and blocks concurrent nextval/
+    // setval calls, unlike setval itself. Cached values in other backends are
+    // not invalidated, however, so only advance sequences configured CACHE 1.
+    if (BigInt(sequence.cacheSize) !== 1n) {
+      report.conflicts.push({ table: sequence.name, reason: "Cannot safely advance a sequence with CACHE greater than 1 while application sessions may hold preallocated values" });
+      continue;
     }
+    if (sequence.cycle) {
+      report.conflicts.push({ table: sequence.name, reason: "Cannot safely restart a cycling sequence during additive restore" });
+      continue;
+    }
+    const nextValue = sequence.isCalled ? archivedValue + increment : archivedValue;
+    if (nextValue < BigInt(sequence.minValue) || nextValue > BigInt(sequence.maxValue)) {
+      report.conflicts.push({ table: sequence.name, reason: "Archived sequence is exhausted; refusing an unsafe restart" });
+      continue;
+    }
+    // RESTART WITH stores the next value to be returned (is_called=false).
+    // Numeric input is derived from validated bigint metadata; identifier is quoted.
+    await client.query(`ALTER SEQUENCE ${identifier} RESTART WITH ${nextValue.toString()}`);
   }
 }
 
