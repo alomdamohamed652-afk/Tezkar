@@ -62,20 +62,6 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
       .header("x-content-type-options", "nosniff")
       .send(archive);
   });
-      await auditClient.query("COMMIT");
-    } catch (error) {
-      await auditClient.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      auditClient.release();
-    }
-    return reply
-      .header("content-type", "application/vnd.tezkar.backup")
-      .header("content-disposition", 'attachment; filename="tezkar-backup.tzk"')
-      .header("cache-control", "no-store, private")
-      .header("x-content-type-options", "nosniff")
-      .send(archive);
-  });
 
   const restoreHandler = (dryRun: boolean) => async (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
     if (!Buffer.isBuffer(request.body) || request.body.length === 0 || request.body.length > MAX_ARCHIVE_BYTES + 4096) {
