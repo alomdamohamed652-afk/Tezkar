@@ -178,6 +178,22 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     const advanced = await pool.query<{ last_value: string; is_called: boolean }>("SELECT last_value::text, is_called FROM backup_it_seq");
     assert.equal(advanced.rows[0]?.last_value, "75");
     assert.equal(advanced.rows[0]?.is_called, true);
+
+    // Simulate application traffic advancing a sequence after pre-validation
+    // but before restore applies the archived state. Restore must re-read and
+    // preserve the newer live value rather than moving the sequence backwards.
+    const staleSequencePayload: BackupPayload = {
+      ...payload,
+      sequences: [{ name: "backup_it_seq", lastValue: "90", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+    };
+    const concurrentAdvance = await restoreBackupIntoCurrentDatabase(pool, staleSequencePayload, false, async client => {
+      await client.query("SELECT setval('backup_it_seq', 100, true)");
+    });
+    assert.equal(concurrentAdvance.conflicts.length, 0);
+    const afterConcurrentAdvance = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterConcurrentAdvance.rows[0]?.last_value, "100",
+      "restore must preserve a sequence advanced after validation");
+
     const mismatchPayload: BackupPayload = {
       ...forwardPayload,
       sequences: [{ ...forwardPayload.sequences![0]!, incrementBy: "2" }]
@@ -186,12 +202,12 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     assert.equal(mismatchPreview.conflicts.length, 1,
       "preview must report sequence configuration conflicts before confirmation");
     const afterPreview = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
-    assert.equal(afterPreview.rows[0]?.last_value, "75",
+    assert.equal(afterPreview.rows[0]?.last_value, "100",
       "preview must not mutate sequence state");
     const mismatch = await restoreBackupIntoCurrentDatabase(pool, mismatchPayload);
     assert.equal(mismatch.conflicts.length, 1);
     const unchanged = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
-    assert.equal(unchanged.rows[0]?.last_value, "75");
+    assert.equal(unchanged.rows[0]?.last_value, "100");
   } finally {
     await pool.end();
     const cleanup = new pg.Client({ connectionString: adminUrl });
