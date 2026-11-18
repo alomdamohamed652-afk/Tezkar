@@ -261,6 +261,12 @@ async function restoreSequenceState(
       continue;
     }
     const identifier = `public.${quoteIdentifier(sequence.name)}`;
+    // In the apply pass, acquire and retain the sequence relation lock before
+    // reading its live value. This closes the read-then-restart race with
+    // concurrent nextval calls for CACHE 1 sequences.
+    if (applyState && BigInt(sequence.cacheSize) === 1n) {
+      await client.query(`ALTER SEQUENCE ${identifier} CACHE 1`);
+    }
     const current = await client.query<{ last_value: string; is_called: boolean }>(
       `SELECT last_value::text, is_called FROM ${identifier}`
     );
