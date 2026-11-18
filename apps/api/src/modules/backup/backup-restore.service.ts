@@ -28,7 +28,8 @@ function orderTables(names: string[], foreignKeys: ForeignKey[]): string[] {
     // All deferrable constraints are explicitly deferred by the restore transaction.
     // They therefore do not impose an insert ordering edge and may safely form cycles.
     if (fk.is_deferrable) continue;
-    if (fk.table_name === fk.referenced_table) continue;
+    // A non-deferrable self-reference is an ordering cycle too; reject it
+    // before row insertion rather than depending on archive row order.
     const children = outgoing.get(fk.referenced_table)!;
     if (!children.has(fk.table_name)) {
       children.add(fk.table_name);
