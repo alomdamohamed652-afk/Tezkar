@@ -1,4 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { PassThrough, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     scryptCallback(password, salt, KEY_BYTES, SCRYPT_OPTIONS, (error, derivedKey) => {
@@ -9,6 +11,7 @@ function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
 }
 const MAGIC = Buffer.from("TZKBACK1");
 const FORMAT_VERSION = 1;
+const STREAM_FORMAT_VERSION = 2;
 const SALT_BYTES = 16;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
@@ -28,7 +31,7 @@ export type BackupPayload = {
 };
 export type BackupHeader = {
   format: "tezkar-full-backup";
-  version: 1;
+  version: 1 | 2;
   kdf: "scrypt";
   cipher: "aes-256-gcm";
 };
@@ -37,6 +40,18 @@ function validatePassword(password: string): void {
   if (typeof password !== "string" || password.length < 12 || password.length > 200) {
     throw new Error("كلمة مرور النسخة يجب أن تكون من 12 إلى 200 حرف");
   }
+}
+
+function makeHeader(version: 1 | 2): Buffer {
+  const header = Buffer.from(JSON.stringify({
+    format: "tezkar-full-backup",
+    version,
+    kdf: "scrypt",
+    cipher: "aes-256-gcm"
+  } satisfies BackupHeader), "utf8");
+  const headerLength = Buffer.alloc(2);
+  headerLength.writeUInt16BE(header.length);
+  return Buffer.concat([MAGIC, headerLength, header]);
 }
 
 export async function createBackupArchive(payload: BackupPayload, password: string): Promise<Buffer> {
@@ -53,10 +68,46 @@ export async function createBackupArchive(payload: BackupPayload, password: stri
   cipher.setAAD(MAGIC);
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
-  const header = Buffer.from(JSON.stringify({ format: "tezkar-full-backup", version: FORMAT_VERSION, kdf: "scrypt", cipher: "aes-256-gcm" } satisfies BackupHeader), "utf8");
-  const headerLength = Buffer.alloc(2);
-  headerLength.writeUInt16BE(header.length);
-  return Buffer.concat([MAGIC, headerLength, header, salt, nonce, tag, encrypted]);
+  return Buffer.concat([makeHeader(FORMAT_VERSION), salt, nonce, tag, encrypted]);
+}
+
+/**
+ * Encrypt an already-streaming JSON payload without buffering the complete
+ * plaintext or ciphertext. Version 2 places the GCM tag at the end so the
+ * encrypted body can be emitted as it is produced. Version 1 remains readable.
+ */
+export function createBackupArchiveStream(
+  plaintext: AsyncIterable<string | Buffer>,
+  password: string
+): Readable {
+  validatePassword(password);
+  return Readable.from((async function* () {
+    const salt = randomBytes(SALT_BYTES);
+    const nonce = randomBytes(NONCE_BYTES);
+    const key = await deriveKey(password, salt);
+    const cipher = createCipheriv("aes-256-gcm", key, nonce);
+    cipher.setAAD(MAGIC);
+    const encryptedOutput = new PassThrough();
+    const pipelineTask = pipeline(Readable.from(plaintext), cipher, encryptedOutput);
+    let encryptedBytes = 0;
+    try {
+      yield Buffer.concat([makeHeader(STREAM_FORMAT_VERSION), salt, nonce]);
+      for await (const chunk of encryptedOutput) {
+        encryptedBytes += chunk.length;
+        if (encryptedBytes > MAX_ARCHIVE_BYTES) {
+          encryptedOutput.destroy(new Error("حجم النسخة أكبر من الحد المسموح حاليًا"));
+          throw new Error("حجم النسخة أكبر من الحد المسموح حاليًا");
+        }
+        yield chunk;
+      }
+      await pipelineTask;
+      yield cipher.getAuthTag();
+    } catch (error) {
+      encryptedOutput.destroy(error instanceof Error ? error : new Error("فشل تشفير النسخة"));
+      await pipelineTask.catch(() => undefined);
+      throw error;
+    }
+  })());
 }
 
 export async function readBackupArchive(archive: Buffer, password: string): Promise<BackupPayload> {
@@ -72,14 +123,21 @@ export async function readBackupArchive(archive: Buffer, password: string): Prom
   let header: BackupHeader;
   try { header = JSON.parse(archive.subarray(headerStart, headerEnd).toString("utf8")) as BackupHeader; }
   catch { throw new Error("بيانات تعريف النسخة تالفة"); }
-  if (header.format !== "tezkar-full-backup" || header.version !== FORMAT_VERSION || header.kdf !== "scrypt" || header.cipher !== "aes-256-gcm") {
+  if (header.format !== "tezkar-full-backup" || (header.version !== FORMAT_VERSION && header.version !== STREAM_FORMAT_VERSION) || header.kdf !== "scrypt" || header.cipher !== "aes-256-gcm") {
     throw new Error("إصدار النسخة غير مدعوم");
   }
   let offset = headerEnd;
   const salt = archive.subarray(offset, offset += SALT_BYTES);
   const nonce = archive.subarray(offset, offset += NONCE_BYTES);
-  const tag = archive.subarray(offset, offset += TAG_BYTES);
-  const encrypted = archive.subarray(offset);
+  let tag: Buffer;
+  let encrypted: Buffer;
+  if (header.version === FORMAT_VERSION) {
+    tag = archive.subarray(offset, offset += TAG_BYTES);
+    encrypted = archive.subarray(offset);
+  } else {
+    tag = archive.subarray(archive.length - TAG_BYTES);
+    encrypted = archive.subarray(offset, archive.length - TAG_BYTES);
+  }
   const key = await deriveKey(password, salt);
   try {
     const decipher = createDecipheriv("aes-256-gcm", key, nonce);
