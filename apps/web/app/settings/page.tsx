@@ -146,6 +146,7 @@ export default function SettingsPage(){
   try{
    const response=await backupRequest("/api/system-backups/export",JSON.stringify({password:backupPassword}),{"Content-Type":"application/json"});
    const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download="tezkar-backup.tzk";document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+   setBackupPassword("");
    toast.success("تم إنشاء ملف النسخة المشفر وتنزيله.");
   }catch(e){toast.error(e instanceof Error?e.message:"تعذر إنشاء النسخة")}finally{setBackupBusy(false)}
  }
@@ -159,7 +160,7 @@ export default function SettingsPage(){
   if(!backupFile||!restoreReport)return;if(restoreReport.conflicts.length){toast.warning("عالج التعارضات أولًا؛ لن يتم استيراد أي سجل عند وجود تعارض.");return}
   if(!window.confirm("تأكيد الاستعادة الإضافية إلى قاعدة البيانات الحالية؟ لن يتم حذف أو استبدال أي سجل موجود. سيتم تخطي المتطابق وإضافة السجلات الجديدة فقط."))return;
   setRestoreBusy(true);
-  try{const response=await backupRequest("/api/system-backups/restore",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});const report=await response.json();setRestoreReport(report);setBackupFile(null);toast.success("اكتملت الاستعادة الإضافية بنجاح. سيتم تحديث بيانات الشاشة.");window.setTimeout(()=>window.location.reload(),1200);}
+  try{const response=await backupRequest("/api/system-backups/restore",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});const report=await response.json();setRestoreReport(report);setBackupFile(null);setBackupPassword("");toast.success("اكتملت الاستعادة الإضافية بنجاح. سيتم تحديث بيانات الشاشة.");window.setTimeout(()=>window.location.reload(),1200);}
   catch(e){toast.error(e instanceof Error?e.message:"تعذرت استعادة النسخة")}finally{setRestoreBusy(false)}
  }
 
