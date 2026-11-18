@@ -227,6 +227,17 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
       ],
       sequences: [{ ...payload.sequences![0]!, lastValue: "120", isCalled: true }]
     };
+    const deferredPreview = await restoreBackupIntoCurrentDatabase(pool, deferredFailurePayload, true);
+    assert.equal(deferredPreview.added, 0,
+      "preview must not report rows as restorable when a deferred FK would fail at commit");
+    assert.equal(deferredPreview.conflicts.length, 1,
+      "preview must surface deferred FK violations before confirmation");
+    assert.equal((await pool.query("SELECT 1 FROM backup_it_parents WHERE id=$1", ["77777777-7777-4777-8777-777777777777"])).rowCount, 0,
+      "deferred-constraint preview validation must roll back all inserted rows");
+    const afterDeferredPreview = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterDeferredPreview.rows[0]?.last_value, "100",
+      "deferred-constraint preview must not mutate sequence state");
+
     await assert.rejects(
       () => restoreBackupIntoCurrentDatabase(pool, deferredFailurePayload),
       /violates foreign key constraint|foreign key constraint/i,
