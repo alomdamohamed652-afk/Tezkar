@@ -200,7 +200,7 @@ export default function SettingsPage(){
     <div className="card-header"><div><h2 className="card-title">نسخة كاملة من النظام</h2><div className="settings-help">نسخة مشفرة تشمل بيانات النظام التشغيلية والمالية. لن يتم تضمين جلسات الدخول أو رموز إعادة تعيين كلمة المرور.</div></div><span className="status">نسخة مشفرة</span></div>
     <div className="form-grid">
      <label>كلمة مرور ملف النسخة<input type="password" value={backupPassword} disabled={backupBusy||restoreBusy} onChange={e=>setBackupPassword(e.target.value)} minLength={12} maxLength={200} autoComplete="new-password" placeholder="12 حرفًا على الأقل" /></label>
-     <label>ملف النسخة للاستعادة<input type="file" accept=".tzk,application/vnd.tezkar.backup" disabled={backupBusy||restoreBusy} onChange={e=>{setBackupFile(e.target.files?.[0]||null);setRestoreReport(null)}} /></label>
+     <label>ملف النسخة للاستعادة<input type="file" accept=".tzk,application/vnd.tezkar.backup" disabled={backupBusy||restoreBusy} onChange={e=>{const file=e.target.files?.[0]||null;if(file&&file.size>256*1024*1024+4096){toast.warning("حجم ملف النسخة أكبر من الحد المسموح (256 ميجابايت)");e.currentTarget.value="";setBackupFile(null);setRestoreReport(null);return;}setBackupFile(file);setRestoreReport(null)}} /></label>
     </div>
     <p className="form-hint">احتفظ بكلمة المرور في مكان آمن منفصل عن ملف النسخة. فقدانها يعني عدم إمكانية فك التشفير. لا ترفع الملف إلى GitHub أو تشاركه عبر قنوات عامة.</p>
     <div className="form-actions">
