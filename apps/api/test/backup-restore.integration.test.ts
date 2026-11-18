@@ -209,14 +209,14 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     const deferredFailurePayload: BackupPayload = {
       ...payload,
       tables: [
+        payload.tables[0]!,
         {
-          ...payload.tables[0]!,
+          ...payload.tables[1]!,
           rows: [
-            ...payload.tables[0]!.rows,
-            { id: "55555555-5555-4555-8555-555555555555", parent_id: "66666666-6666-4666-8666-666666666666", label: "deferred-fk-failure" }
+            ...payload.tables[1]!.rows,
+            { id: "77777777-7777-4777-8777-777777777777", child_id: "88888888-8888-4888-8888-888888888888", label: "deferred-fk-failure" }
           ]
-        },
-        payload.tables[1]!
+        }
       ],
       sequences: [{ ...payload.sequences![0]!, lastValue: "120", isCalled: true }]
     };
@@ -228,7 +228,7 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     const afterDeferredFailure = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
     assert.equal(afterDeferredFailure.rows[0]?.last_value, "100",
       "transactional sequence RESTART must roll back when the restore transaction cannot commit");
-    assert.equal((await pool.query("SELECT 1 FROM backup_it_children WHERE id=$1", ["55555555-5555-4555-8555-555555555555"])).rowCount, 0,
+    assert.equal((await pool.query("SELECT 1 FROM backup_it_children WHERE id=$1", ["77777777-7777-4777-8777-777777777777"])).rowCount, 0,
       "rows from a failed deferred-constraint restore must roll back");
 
     const mismatchPayload: BackupPayload = {
