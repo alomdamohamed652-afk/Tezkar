@@ -187,9 +187,9 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     };
     const forward = await restoreBackupIntoCurrentDatabase(pool, forwardPayload);
     assert.equal(forward.conflicts.length, 0);
-    const advanced = await pool.query<{ last_value: string; is_called: boolean }>("SELECT last_value::text, is_called FROM backup_it_seq");
-    assert.equal(advanced.rows[0]?.last_value, "75");
-    assert.equal(advanced.rows[0]?.is_called, true);
+    const nextAfterRestore = await pool.query<{ value: string }>("SELECT nextval('backup_it_seq')::text AS value");
+    assert.equal(nextAfterRestore.rows[0]?.value, "76",
+      "transactional RESTART must preserve the archived next-value semantics");
 
     // Simulate application traffic advancing a sequence after pre-validation
     // but before restore applies the archived state. Restore must re-read and
@@ -220,6 +220,20 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     assert.equal(mismatch.conflicts.length, 1);
     const unchanged = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
     assert.equal(unchanged.rows[0]?.last_value, "100");
+
+    // A sequence with preallocated values in other sessions cannot be safely
+    // advanced by this restore; the operation must report a conflict.
+    await pool.query("ALTER SEQUENCE backup_it_seq CACHE 5");
+    const cachedSequencePayload: BackupPayload = {
+      ...payload,
+      sequences: [{ ...payload.sequences![0]!, lastValue: "200", isCalled: true, cacheSize: "5" }]
+    };
+    const cachedSequenceRestore = await restoreBackupIntoCurrentDatabase(pool, cachedSequencePayload);
+    assert.equal(cachedSequenceRestore.added, 0);
+    assert.equal(cachedSequenceRestore.conflicts.length, 1);
+    const cachedSequenceState = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(cachedSequenceState.rows[0]?.last_value, "100",
+      "restore must not advance a sequence configured with CACHE greater than one");
   } finally {
     await pool.end();
     const cleanup = new pg.Client({ connectionString: adminUrl });
