@@ -71,6 +71,18 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     await pool.query("CREATE SEQUENCE backup_it_seq START 1 INCREMENT 1");
     await pool.query("SELECT setval('backup_it_seq', 50, true)");
 
+    // Version 1 does not model PostgreSQL inheritance/partition topology.
+    // Reject such targets rather than risk duplicated or misrouted records.
+    await pool.query("CREATE TABLE backup_it_inherited_parent(id integer PRIMARY KEY)");
+    await pool.query("CREATE TABLE backup_it_inherited_child() INHERITS (backup_it_inherited_parent)");
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, true),
+      /وراثة أو تقسيم جداول/,
+      "restore must fail closed when the target schema uses inheritance or partitioning"
+    );
+    await pool.query("DROP TABLE backup_it_inherited_child");
+    await pool.query("DROP TABLE backup_it_inherited_parent");
+
     await assert.rejects(
       () => restoreBackupIntoCurrentDatabase(pool, { ...payload, tables: payload.tables.slice(1) }, true),
       /النسخة لا تحتوي جميع جداول النظام المطلوبة/,
