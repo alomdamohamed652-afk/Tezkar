@@ -111,6 +111,11 @@ export function createBackupArchiveStream(
       encryptedOutput.destroy(error instanceof Error ? error : new Error("فشل تشفير النسخة"));
       await pipelineTask.catch(() => undefined);
       throw error;
+    } finally {
+      // Client disconnects must cancel the cipher pipeline and return the
+      // underlying database generator, which rolls back and releases its cursor.
+      if (!encryptedOutput.destroyed) encryptedOutput.destroy();
+      await pipelineTask.catch(() => undefined);
     }
   })());
 }
