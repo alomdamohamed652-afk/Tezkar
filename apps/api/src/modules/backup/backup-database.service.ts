@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { createBackupArchive, type BackupPayload, type BackupTable } from "./backup-archive.js";
+import { createBackupArchive, createBackupArchiveStream, type BackupPayload, type BackupTable } from "./backup-archive.js";
 
 const EXCLUDED_TABLES = new Set([
   "schema_migrations",
@@ -171,4 +171,110 @@ export async function createDatabaseBackup(pool: pg.Pool, password: string): Pro
   const payload = await buildBackupPayload(pool);
   const archive = await createBackupArchive(payload, password);
   return archive;
+}
+
+
+/**
+ * Yield a consistent JSON snapshot a table/batch at a time. The cursor and
+ * repeatable-read transaction stay open only while the HTTP stream is consumed;
+ * destroying the response closes the cursor and rolls the read-only transaction back.
+ */
+async function* buildBackupJsonChunks(pool: pg.Pool): AsyncGenerator<string> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    transactionOpen = true;
+    const tables = await listBackupTables(client);
+    const createdAt = new Date().toISOString();
+    const version = await client.query<{ version: string }>(
+      "SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"
+    ).catch(() => ({ rows: [] as { version: string }[] }));
+    yield JSON.stringify({
+      format: "tezkar-full-backup",
+      version: 1,
+      createdAt,
+      sourceSchemaVersion: version.rows[0]?.version ?? null
+    }).slice(0, -1) + ',"tables":[';
+
+    let totalRows = 0;
+    let estimatedPayloadBytes = 0;
+    for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+      const table = tables[tableIndex]!;
+      if (table.primary_key_columns.length === 0) {
+        throw new Error(`لا يمكن أخذ نسخة آمنة: الجدول ${table.table_name} لا يحتوي مفتاحًا أساسيًا`);
+      }
+      const columnsResult = await client.query<ColumnInfo>(`
+        SELECT a.attname AS column_name, format_type(a.atttypid,a.atttypmod) AS pg_type
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid=a.attrelid
+          JOIN pg_namespace n ON n.oid=c.relnamespace
+         WHERE n.nspname='public' AND c.relname=$1 AND a.attnum>0 AND NOT a.attisdropped
+         ORDER BY a.attnum
+      `, [table.table_name]);
+      const columns = columnsResult.rows;
+      if (!columns.length) throw new Error(`لا يمكن قراءة أعمدة الجدول ${table.table_name}`);
+      const tableHeader = {
+        name: table.table_name,
+        primaryKey: table.primary_key_columns,
+        columns: columns.map(column => ({ name: column.column_name, pgType: column.pg_type }))
+      };
+      yield (tableIndex === 0 ? "" : ",") + JSON.stringify(tableHeader).slice(0, -1) + ',"rows":[';
+
+      const fields = columns.flatMap(column => [
+        quoteLiteral(column.column_name),
+        `t.${quoteIdentifier(column.column_name)}::text`
+      ]).join(",");
+      await client.query(
+        `DECLARE backup_export_cursor NO SCROLL CURSOR FOR SELECT jsonb_build_object(${fields}) AS row_data FROM public.${quoteIdentifier(table.table_name)} t`
+      );
+      let cursorOpen = true;
+      let firstRow = true;
+      try {
+        while (true) {
+          const batch = await client.query<{ row_data: Record<string, string | null> }>(
+            `FETCH FORWARD ${EXPORT_BATCH_SIZE} FROM backup_export_cursor`
+          );
+          if (!batch.rows.length) break;
+          totalRows += batch.rows.length;
+          if (totalRows > MAX_EXPORTED_ROWS) {
+            throw new Error("عدد السجلات أكبر من الحد المدعوم حاليًا؛ أوقف التصدير دون إنشاء نسخة ناقصة");
+          }
+          for (const item of batch.rows) {
+            const serialized = JSON.stringify(item.row_data);
+            estimatedPayloadBytes += Buffer.byteLength(serialized, "utf8") + 1;
+            if (estimatedPayloadBytes > MAX_ESTIMATED_PAYLOAD_BYTES) {
+              throw new Error("حجم بيانات النسخة تجاوز الحد الآمن للتصدير؛ لم يتم إنشاء ملف ناقص");
+            }
+            yield (firstRow ? "" : ",") + serialized;
+            firstRow = false;
+          }
+        }
+      } finally {
+        if (cursorOpen) {
+          await client.query("CLOSE backup_export_cursor").catch(() => undefined);
+          cursorOpen = false;
+        }
+      }
+      yield "]}";
+    }
+    const sequences = await exportSequences(client);
+    yield '],"sequences":' + JSON.stringify(sequences) + "}";
+    await client.query("COMMIT");
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+  }
+}
+
+export function createDatabaseBackupStream(
+  pool: pg.Pool,
+  password: string,
+  onComplete?: () => Promise<void>
+) {
+  return createBackupArchiveStream(buildBackupJsonChunks(pool), password, onComplete);
 }
