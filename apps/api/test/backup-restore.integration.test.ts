@@ -262,6 +262,44 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
     const cachedSequenceState = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
     assert.equal(cachedSequenceState.rows[0]?.last_value, "100",
       "restore must not advance a sequence configured with CACHE greater than one");
+
+    // ALTER SEQUENCE CACHE 1 must retain a relation lock until the restore
+    // transaction ends, so a concurrent nextval cannot slip between the
+    // live-state read and transactional RESTART.
+    await pool.query("CREATE SEQUENCE backup_it_lock_seq START 1 INCREMENT 1 CACHE 1");
+    const lockOwner = await pool.connect();
+    const nextvalClient = await pool.connect();
+    try {
+      await lockOwner.query("BEGIN");
+      await lockOwner.query("ALTER SEQUENCE backup_it_lock_seq CACHE 1");
+      const contenderPid = (await nextvalClient.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+      const pendingNextval = nextvalClient.query<{ value: string }>(
+        "SELECT nextval('backup_it_lock_seq')::text AS value"
+      );
+      let blockedByLock = false;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const activity = await lockOwner.query<{ wait_event_type: string | null }>(
+          "SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1",
+          [contenderPid]
+        );
+        if (activity.rows[0]?.wait_event_type === "Lock") {
+          blockedByLock = true;
+          break;
+        }
+        await lockOwner.query("SELECT pg_sleep(0.025)");
+      }
+      assert.equal(blockedByLock, true,
+        "a concurrent nextval must wait while the restore transaction holds the sequence DDL lock");
+      await lockOwner.query("COMMIT");
+      const resumed = await pendingNextval;
+      assert.equal(resumed.rows[0]?.value, "1",
+        "the blocked nextval must continue after the restore transaction releases the sequence lock");
+    } finally {
+      await lockOwner.query("ROLLBACK").catch(() => undefined);
+      lockOwner.release();
+      nextvalClient.release();
+      await pool.query("DROP SEQUENCE IF EXISTS backup_it_lock_seq");
+    }
   } finally {
     await pool.end();
     const cleanup = new pg.Client({ connectionString: adminUrl });
