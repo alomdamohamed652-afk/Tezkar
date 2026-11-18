@@ -356,6 +356,14 @@ export async function restoreBackupIntoCurrentDatabase(
     if (beforeCommit) await beforeCommit(client, report);
     // Apply sequence advancement only after the audit write has succeeded.
     await restoreSequenceState(client, payload, report, true);
+    // Sequence metadata/state can change after pre-validation (for example,
+    // concurrent administrative DDL). Never commit restored rows/audit when
+    // the final sequence pass discovers a conflict.
+    if (report.conflicts.length) {
+      await client.query("ROLLBACK");
+      report.added = 0;
+      return report;
+    }
     await client.query("COMMIT");
     return report;
   } catch (error) {
