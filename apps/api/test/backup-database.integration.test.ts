@@ -77,6 +77,21 @@ test("database backup streams bounded cursor batches into an authenticated v2 ar
     assert.equal(restored.sequences?.length, 1);
     assert.equal(restored.sequences?.[0]?.name, "backup_stream_seq");
     assert.equal(restored.sequences?.[0]?.lastValue, "1205");
+
+    // Simulate a browser closing the download after encrypted bytes have begun.
+    // The stream must cancel its cursor transaction and must not write a success audit.
+    const cancelled = createDatabaseBackupStream(pool, password, async () => {
+      auditCompleted += 100;
+    });
+    const iterator = cancelled[Symbol.asyncIterator]();
+    const firstChunk = await iterator.next();
+    assert.equal(firstChunk.done, false, "stream should emit its archive header");
+    const encryptedChunk = await iterator.next();
+    assert.equal(encryptedChunk.done, false, "stream should begin encrypted output before the download completes");
+    cancelled.destroy();
+    await new Promise<void>(resolve => cancelled.once("close", resolve));
+    await pool.query("SELECT 1");
+    assert.equal(auditCompleted, 1, "an interrupted download must not be audited as a completed export");
   } finally {
     await pool.end();
     const cleanup = new pg.Client({ connectionString: adminUrl });
