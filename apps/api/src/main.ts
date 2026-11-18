@@ -42,8 +42,14 @@ import { notificationRoutes } from "./modules/notifications/notifications.routes
 import { systemResetRoutes } from "./modules/system-reset/system-reset.routes.js";
 import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
 import { runMaturedWorkerPaymentDifferenceJob } from "./modules/payments/worker-payment-differences.service.js";
+import { backupRoutes } from "./modules/backup/backup.routes.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: {
+    level: "info",
+    redact: { paths: ["req.headers.x-backup-password"], censor: "[REDACTED]" }
+  }
+});
 
 await app.register(cors, {
   origin: env.WEB_ORIGIN,
@@ -55,6 +61,8 @@ await app.register(cookie, { secret: env.SESSION_SECRET });
 
 app.addHook("onResponse", async (request, reply) => {
   const route = request.routeOptions.url ?? request.url.split("?")[0] ?? request.url;
+  // Backup endpoints write their own domain-specific audit records; avoid a duplicate generic entry.
+  if (route.startsWith("/api/system-backups/")) return;
   const isRead = ["GET", "HEAD", "OPTIONS"].includes(request.method);
   const sensitiveRead = request.method === "GET" && (/^\/api\/admin\/security/.test(route) || route === "/api/account/profile" || route === "/api/auth/sessions");
   if (isRead && (!sensitiveRead || reply.statusCode >= 400)) return;
@@ -108,6 +116,7 @@ app.setErrorHandler((error, _request, reply) => {
   });
 });
 
+await app.register(backupRoutes);
 await app.register(healthRoutes);
 await app.register(authRoutes);
 await app.register(registrationRoutes);
