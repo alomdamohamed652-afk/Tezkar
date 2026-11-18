@@ -16,6 +16,24 @@ type ColumnInfo = { column_name: string; pg_type: string };
 type SequenceInfo = { sequence_name: string };
 
 async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
+  // A plain SELECT from an inheritance/partition parent can include descendant
+  // rows while those descendants are also enumerated as separate relations.
+  // Until the archive format models relation topology explicitly, fail closed
+  // rather than silently duplicate rows or restore them to the wrong relation.
+  const inheritance = await client.query<{ relation_name: string }>(`
+    SELECT DISTINCT parent.relname AS relation_name
+      FROM pg_inherits i
+      JOIN pg_class parent ON parent.oid=i.inhparent
+      JOIN pg_namespace pn ON pn.oid=parent.relnamespace
+      JOIN pg_class child ON child.oid=i.inhrelid
+      JOIN pg_namespace cn ON cn.oid=child.relnamespace
+     WHERE pn.nspname='public' OR cn.nspname='public'
+     ORDER BY parent.relname
+     LIMIT 1
+  `);
+  if (inheritance.rows.length) {
+    throw new Error(`لا يمكن إنشاء نسخة آمنة حاليًا لوجود وراثة أو تقسيم جداول في public (الجدول: ${inheritance.rows[0].relation_name})`);
+  }
   const result = await client.query<{ table_name: string; primary_key_columns: string[] }>(`
     SELECT c.relname AS table_name,
            COALESCE(array_agg(a.attname ORDER BY k.ordinality)
