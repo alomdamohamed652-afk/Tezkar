@@ -276,22 +276,18 @@ async function restoreSequenceState(
       report.conflicts.push({ table: sequence.name, reason: "Sequence value is outside configured bounds" });
       continue;
     }
-    if (sequence.cycle && archivedValue !== currentValue) {
-      report.conflicts.push({ table: sequence.name, reason: "Cannot safely advance a cycling sequence without risking a backward move" });
-      continue;
-    }
     const advances = increment > 0n ? archivedValue > currentValue : archivedValue < currentValue;
     const mustAdvance = advances || (archivedValue === currentValue && sequence.isCalled && !currentState.is_called);
+    if (sequence.cycle && mustAdvance) {
+      report.conflicts.push({ table: sequence.name, reason: "Cannot safely advance a cycling sequence during additive restore" });
+      continue;
+    }
     if (!applyState || !mustAdvance) continue;
     // ALTER SEQUENCE RESTART is transactional and blocks concurrent nextval/
     // setval calls, unlike setval itself. Cached values in other backends are
     // not invalidated, however, so only advance sequences configured CACHE 1.
     if (BigInt(sequence.cacheSize) !== 1n) {
       report.conflicts.push({ table: sequence.name, reason: "Cannot safely advance a sequence with CACHE greater than 1 while application sessions may hold preallocated values" });
-      continue;
-    }
-    if (sequence.cycle) {
-      report.conflicts.push({ table: sequence.name, reason: "Cannot safely restart a cycling sequence during additive restore" });
       continue;
     }
     const nextValue = sequence.isCalled ? archivedValue + increment : archivedValue;
