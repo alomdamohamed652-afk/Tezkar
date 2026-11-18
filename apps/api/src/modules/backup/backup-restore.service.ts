@@ -58,6 +58,22 @@ async function readCatalog(client: pg.PoolClient): Promise<{
   tables: Map<string, CatalogTable>;
   foreignKeys: ForeignKey[];
 }> {
+  // Version 1 archives do not encode inheritance/partition topology. Reject
+  // these schemas on restore too, including archives created elsewhere.
+  const inheritance = await client.query<{ relation_name: string }>(`
+    SELECT DISTINCT parent.relname AS relation_name
+      FROM pg_inherits i
+      JOIN pg_class parent ON parent.oid=i.inhparent
+      JOIN pg_namespace pn ON pn.oid=parent.relnamespace
+      JOIN pg_class child ON child.oid=i.inhrelid
+      JOIN pg_namespace cn ON cn.oid=child.relnamespace
+     WHERE pn.nspname='public' OR cn.nspname='public'
+     ORDER BY parent.relname
+     LIMIT 1
+  `);
+  if (inheritance.rows.length) {
+    throw new Error(`لا يمكن استعادة نسخة الإصدار الحالي بأمان لوجود وراثة أو تقسيم جداول في public (الجدول: ${inheritance.rows[0].relation_name})`);
+  }
   const columns = await client.query<{
     table_name: string; column_name: string; pg_type: string; not_null: boolean; has_default: boolean;
   }>(`
