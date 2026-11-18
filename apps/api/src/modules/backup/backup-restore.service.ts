@@ -377,6 +377,28 @@ export async function restoreBackupIntoCurrentDatabase(
         }
       }
     }
+    if (dryRun && !report.conflicts.length) {
+      // Deferred constraints are normally checked at COMMIT. A preview rolls
+      // back instead, so force validation inside a savepoint to avoid showing
+      // a false-success preview for data that cannot be committed.
+      await client.query("SAVEPOINT restore_preview_constraints");
+      try {
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+        await client.query("RELEASE SAVEPOINT restore_preview_constraints");
+      } catch (error) {
+        await client.query("ROLLBACK TO SAVEPOINT restore_preview_constraints");
+        await client.query("RELEASE SAVEPOINT restore_preview_constraints");
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: string }).code : undefined;
+        if (typeof code === "string" && code.startsWith("23")) {
+          const table = typeof error === "object" && error !== null && "table" in error
+            ? String((error as { table?: unknown }).table ?? "قيود مؤجلة") : "قيود مؤجلة";
+          report.conflicts.push({ table, reason: "فشل التحقق من قيد مؤجل؛ لن يمكن اعتماد هذه السجلات" });
+        } else {
+          throw error;
+        }
+      }
+    }
     if (!report.conflicts.length) {
       // Validate sequence metadata/state before audit. Sequence advancement is
       // deferred until the audit succeeds so failed audit writes cannot change it.
