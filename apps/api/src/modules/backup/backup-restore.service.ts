@@ -374,8 +374,8 @@ export async function restoreBackupIntoCurrentDatabase(
       }
     }
     if (!report.conflicts.length) {
-      // Validate sequence metadata/state before audit. PostgreSQL setval is not
-      // transactional, so never advance a sequence before the audit succeeds.
+      // Validate sequence metadata/state before audit. Sequence advancement is
+      // deferred until the audit succeeds so failed audit writes cannot change it.
       await restoreSequenceState(client, payload, report, false);
     }
     if (report.conflicts.length || dryRun) {
