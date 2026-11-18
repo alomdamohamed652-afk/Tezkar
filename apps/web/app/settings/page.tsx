@@ -1,7 +1,7 @@
 "use client";
 
 import {FormEvent,useEffect,useMemo,useState} from "react";
-import {api} from "../../lib/api";
+import {api,API_URL} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 import {SearchableSelect} from "../../components/searchable-select";
 import {useToast} from "../../components/toast-provider";
@@ -66,6 +66,7 @@ export default function SettingsPage(){
  const [showCreateRole,setShowCreateRole]=useState(false),[newRoleCode,setNewRoleCode]=useState(""),[newRoleName,setNewRoleName]=useState(""),[creatingRole,setCreatingRole]=useState(false);
  const [resetEnabled,setResetEnabled]=useState(false),[resetVisible,setResetVisible]=useState(false),[resetUsed,setResetUsed]=useState(false),[resetBusy,setResetBusy]=useState(false),[resetPhrase,setResetPhrase]=useState("");
  const [resetPreview,setResetPreview]=useState<{deletedRows:Record<string,number>;totalRows:number;preservedTables:string[];previewToken:string}|null>(null),[resetPreviewBusy,setResetPreviewBusy]=useState(false);
+ const [backupPassword,setBackupPassword]=useState(""),[backupBusy,setBackupBusy]=useState(false),[backupFile,setBackupFile]=useState<File|null>(null),[restoreReport,setRestoreReport]=useState<{added:number;exactDuplicates:number;conflicts:{table:string;reason:string}[]}|null>(null),[restoreBusy,setRestoreBusy]=useState(false);
 
  async function load(){
   try{
@@ -133,6 +134,47 @@ export default function SettingsPage(){
  async function previewResetData(){setResetPreviewBusy(true);setResetPreview(null);try{const result=await api<{data:{deletedRows:Record<string,number>;totalRows:number;preservedTables:string[];previewToken:string}}>("/api/system/reset/preview");setResetPreview(result.data);toast.info("تمت المعاينة فقط؛ لم يتم حذف أي بيانات.","معاينة آمنة");}catch(e){toast.error(e instanceof Error?e.message:"تعذرت معاينة البيانات")}finally{setResetPreviewBusy(false)}}
  async function resetAllData(event:FormEvent<HTMLFormElement>){event.preventDefault();if(!resetPreview){toast.warning("نفّذ المعاينة أولًا قبل المسح");return}if(resetPhrase!=="امسح كل بيانات النظام"){toast.warning("اكتب عبارة التأكيد كاملة كما هي قبل المتابعة");return}setResetBusy(true);try{await api<{data:{deletedRows:Record<string,number>;preservedTables:string[]}}>("/api/system/reset/execute",{method:"POST",body:JSON.stringify({confirmation:resetPhrase,previewToken:resetPreview.previewToken})});toast.success("تم مسح جميع البيانات اليدوية والتشغيلية. سيتم تسجيل خروجك للحفاظ على جلسات الدخول.","اكتمل المسح");setResetPhrase("");setResetPreview(null);setResetUsed(true);setResetEnabled(false);setResetVisible(false);setTimeout(()=>window.location.assign("/login"),1300);}catch(e){toast.error(e instanceof Error?e.message:"تعذر مسح بيانات النظام")}finally{setResetBusy(false)}}
 
+
+ async function backupRequest(path:string,body:BodyInit,headers:HeadersInit){
+  const response=await fetch(API_URL+path,{method:"POST",credentials:"include",headers,body,cache:"no-store"});
+  if(!response.ok){const data=await response.json().catch(()=>null);throw new Error(data?.error?.message||"تعذر تنفيذ عملية النسخ الاحتياطي")}
+  return response;
+ }
+ async function exportFullBackup(){
+  if(backupPassword.length<12){toast.warning("كلمة المرور يجب ألا تقل عن 12 حرفًا");return}
+  setBackupBusy(true);
+  try{
+   const response=await backupRequest("/api/system-backups/export",JSON.stringify({password:backupPassword}),{"Content-Type":"application/json"});
+   const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download="tezkar-backup.tzk";document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+   setBackupPassword("");
+   toast.success("تم إنشاء ملف النسخة المشفر وتنزيله.");
+  }catch(e){toast.error(e instanceof Error?e.message:"تعذر إنشاء النسخة")}finally{setBackupBusy(false)}
+ }
+ async function previewFullRestore(){
+  if(!backupFile){toast.warning("اختر ملف النسخة أولًا");return}if(backupPassword.length<12){toast.warning("أدخل كلمة مرور النسخة (12 حرفًا على الأقل)");return}
+  setRestoreBusy(true);setRestoreReport(null);
+  try{const response=await backupRequest("/api/system-backups/restore/preview",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});const report=await response.json();setRestoreReport(report);toast.info("اكتملت المعاينة فقط؛ لم يتم حفظ أي بيانات.","معاينة الاستعادة");}
+  catch(e){toast.error(e instanceof Error?e.message:"تعذرت معاينة النسخة")}finally{setRestoreBusy(false)}
+ }
+ async function executeFullRestore(){
+  if(!backupFile||!restoreReport)return;if(restoreReport.conflicts.length){toast.warning("عالج التعارضات أولًا؛ لن يتم استيراد أي سجل عند وجود تعارض.");return}
+  if(!window.confirm("تأكيد الاستعادة الإضافية إلى قاعدة البيانات الحالية؟ لن يتم حذف أو استبدال أي سجل موجود. سيتم تخطي المتطابق وإضافة السجلات الجديدة فقط."))return;
+  setRestoreBusy(true);
+  try{
+   const response=await backupRequest("/api/system-backups/restore",backupFile,{"Content-Type":"application/vnd.tezkar.backup","X-Backup-Password":backupPassword});
+   const report=await response.json();
+   setRestoreReport(report);
+   if(Array.isArray(report.conflicts)&&report.conflicts.length>0){
+    toast.warning("ظهرت تعارضات أثناء التنفيذ؛ لم يتم اعتماد أي تغييرات. راجع تفاصيل التعارضات قبل المحاولة مرة أخرى.");
+    return;
+   }
+   setBackupFile(null);setBackupPassword("");
+   toast.success(report.added>0?"اكتملت الاستعادة الإضافية بنجاح. سيتم تحديث بيانات الشاشة.":"النسخة متطابقة مع البيانات الحالية؛ لم تكن هناك سجلات جديدة لإضافتها.");
+   window.setTimeout(()=>window.location.reload(),1200);
+  }
+  catch(e){toast.error(e instanceof Error?e.message:"تعذرت استعادة النسخة")}finally{setRestoreBusy(false)}
+ }
+
  return <div className="app-shell"><Sidebar active="/settings"/><main className="main">
   <header className="topbar"><div><h1 className="page-title">الإعدادات والإدارة</h1><p className="page-subtitle">تحكم كامل في الحسابات، الصلاحيات والبيانات الإدارية.</p></div></header>
   <section className="content">
@@ -142,6 +184,7 @@ export default function SettingsPage(){
     <button className={"tab "+(tab==="users"?"active":"")} onClick={()=>setTab("users")}>حسابات المستخدمين</button>
     <button className={"tab "+(tab==="employees"?"active":"")} onClick={()=>setTab("employees")}>الموظفون</button>
     <button className={"tab "+(tab==="structure"?"active":"")} onClick={()=>setTab("structure")}>الهيكل الإداري</button>
+    {(has("system.backup.export")||has("system.backup.restore"))&&<button className={"tab "+(tab==="backup"?"active":"")} onClick={()=>setTab("backup")}>النسخ الاحتياطي والاستعادة</button>}
     {resetVisible&&<button className={"tab "+(tab==="reset"?"active":"")} onClick={()=>setTab("reset")}>مسح بيانات التجربة</button>}
    </div>
 
@@ -165,6 +208,22 @@ export default function SettingsPage(){
    </section>}
 
    {tab==="structure"&&<div className="settings-grid"><section className="card"><div className="card-header"><h2 className="card-title">الأقسام</h2><span className="count-badge">{departments.length}</span></div><div className="simple-list">{departments.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section><section className="card"><div className="card-header"><h2 className="card-title">الوظائف</h2><span className="count-badge">{jobs.length}</span></div><div className="simple-list">{jobs.map(x=><div key={x.id}><b>{x.code}</b><span>{x.name}</span></div>)}</div></section></div>}
+   {tab==="backup"&&(has("system.backup.export")||has("system.backup.restore"))&&<section className="card settings-wide">
+    <div className="card-header"><div><h2 className="card-title">نسخة كاملة من النظام</h2><div className="settings-help">نسخة مشفرة تشمل بيانات النظام التشغيلية والمالية. لن يتم تضمين جلسات الدخول أو رموز إعادة تعيين كلمة المرور.</div></div><span className="status">نسخة مشفرة</span></div>
+    <div className="form-grid">
+     <label>كلمة مرور ملف النسخة<input type="password" value={backupPassword} disabled={backupBusy||restoreBusy} onChange={e=>setBackupPassword(e.target.value)} minLength={12} maxLength={200} autoComplete="new-password" placeholder="12 حرفًا على الأقل" /></label>
+     <label>ملف النسخة للاستعادة<input type="file" accept=".tzk,application/vnd.tezkar.backup" disabled={backupBusy||restoreBusy} onChange={e=>{const file=e.target.files?.[0]||null;if(file&&file.size>256*1024*1024+4096){toast.warning("حجم ملف النسخة أكبر من الحد المسموح (256 ميجابايت)");e.currentTarget.value="";setBackupFile(null);setRestoreReport(null);return;}setBackupFile(file);setRestoreReport(null)}} /></label>
+    </div>
+    <p className="form-hint">احتفظ بكلمة المرور في مكان آمن منفصل عن ملف النسخة. فقدانها يعني عدم إمكانية فك التشفير. لا ترفع الملف إلى GitHub أو تشاركه عبر قنوات عامة.</p>
+    <div className="form-actions">
+     {has("system.backup.export")&&<button type="button" className="primary-button" onClick={()=>void exportFullBackup()} disabled={backupBusy||restoreBusy||backupPassword.length<12}>{backupBusy?"جارٍ تجهيز النسخة...":"تصدير نسخة كاملة مشفرة"}</button>}
+     {has("system.backup.restore")&&<button type="button" className="secondary-btn" onClick={()=>void previewFullRestore()} disabled={backupBusy||restoreBusy||!backupFile||backupPassword.length<12}>{restoreBusy?"جارٍ فحص الملف...":"فحص النسخة ومعاينة الاستعادة"}</button>}
+    </div>
+    {restoreReport&&<div className="card" style={{marginTop:18}}><h3 className="card-title">نتيجة المعاينة — لم يتم تعديل قاعدة البيانات</h3><div className="settings-account-row"><strong>سجلات جديدة متوقعة</strong><strong>{restoreReport.added.toLocaleString("ar-EG")}</strong></div><div className="settings-account-row"><strong>سجلات متطابقة سيتم تخطيها</strong><strong>{restoreReport.exactDuplicates.toLocaleString("ar-EG")}</strong></div><div className="settings-account-row"><strong>التعارضات</strong><strong>{restoreReport.conflicts.length.toLocaleString("ar-EG")}</strong></div>
+     {restoreReport.conflicts.length>0&&<div className="alert error" style={{marginTop:12}}><strong>تم إيقاف الاستعادة بسبب التعارضات التالية:</strong>{restoreReport.conflicts.map((item,index)=><div key={item.table+index} style={{padding:"6px 0"}}><code dir="ltr">{item.table}</code> — {item.reason}</div>)}</div>}
+     {restoreReport.conflicts.length===0&&has("system.backup.restore")&&<div className="form-actions"><button type="button" className="danger-button" disabled={backupBusy||restoreBusy} onClick={()=>void executeFullRestore()}>تأكيد الاستعادة الإضافية إلى قاعدة البيانات الحالية</button></div>}
+    </div>}
+   </section>}
    {tab==="reset"&&resetVisible&&<section className="card settings-wide"><div className="card-header"><div><h2 className="card-title">{resetUsed?"تم استخدام أداة مسح البيانات":"مسح جميع البيانات اليدوية — إجراء نهائي"}</h2><div className="settings-help">{resetUsed?"تم تنفيذ العملية مرة واحدة بالفعل، ولن يقبل الخادم إعادة تنفيذها.":"هذه الوظيفة مؤقتة ومقفولة افتراضيًا على الخادم. لن تعمل حتى يتم تفعيل TEZKAR_ENABLE_ONE_TIME_RESET=true، ولا تستخدمها إلا بعد التأكد من أن قاعدة البيانات تحتوي بيانات تجريبية فقط."}</div></div><span className="status rejected">حذف نهائي</span></div><div className="card-body"><div className="alert error" style={{marginBottom:16}}>سيتم حذف جميع البيانات التي أُدخلت يدويًا أو نتجت عن التشغيل، بما فيها الطلبيات والإنتاج والتكويد والكرتونات والتسليمات والمخزون والموظفون والمهام والحسابات والعهد والمصروفات والإيرادات والتحصيلات والتسويات والقيود المالية والتفضيلات والإشعارات وسجلات النشاط والتدقيق والتقارير وسجلات الجلسات والمخازن ومواقعها. سيُحفظ حساب المدير الحالي ودور مدير النظام والصلاحيات الأساسية وتعريفات النظام الافتراضية والإعدادات المرجعية فقط، بالإضافة إلى سجل قفل عملية المسح لمرة واحدة. الأدوار المخصصة التي أُنشئت يدويًا ستُحذف.</div><div className="stack-form"><div className="form-actions" style={{padding:"0"}}><button type="button" className="secondary-button" onClick={previewResetData} disabled={!resetEnabled||resetUsed||resetPreviewBusy||resetBusy}>{resetPreviewBusy?"جارٍ حساب السجلات...":"١. معاينة البيانات التي ستُحذف"}</button></div>{resetPreview&&<div className="alert error" style={{marginBottom:16}}><strong>معاينة فقط — لم يتم الحذف</strong><p>إجمالي السجلات المستهدفة: {resetPreview.totalRows.toLocaleString("ar-EG")}</p><div style={{maxHeight:240,overflowY:"auto"}}><table><thead><tr><th>الجدول</th><th>السجلات المستهدفة</th></tr></thead><tbody>{Object.entries(resetPreview.deletedRows).sort((a,b)=>b[1]-a[1]).map(([table,count])=><tr key={table}><td dir="ltr">{table}</td><td>{count.toLocaleString("ar-EG")}</td></tr>)}</tbody></table></div><p>سيُحفظ حساب المدير الحالي والبيانات المرجعية الأساسية فقط. المخازن والموظفون واللوجات والتقارير التشغيلية ضمن الحذف.</p></div>}<form onSubmit={resetAllData} className="stack-form"><label>اكتب العبارة التالية للتأكيد: <strong>امسح كل بيانات النظام</strong><input value={resetPhrase} onChange={e=>setResetPhrase(e.target.value)} autoComplete="off" placeholder="اكتب عبارة التأكيد حرفيًا" required/></label><div className="form-actions" style={{padding:"0"}}><button className="danger-button" type="submit" disabled={!resetEnabled||resetUsed||resetBusy||!resetPreview||resetPhrase!=="امسح كل بيانات النظام"}>{resetBusy?"جارٍ مسح البيانات...":"٢. مسح جميع البيانات اليدوية نهائيًا"}</button></div><p className="form-hint">{resetUsed?"تم قفل الأداة بعد الاستخدام الأول.":!resetEnabled?"زر المسح مقفول على الخادم.":!resetPreview?"يجب تشغيل المعاينة أولًا؛ المعاينة لا تحذف أي بيانات.":"راجع الأعداد أعلاه، ثم أكد المسح يدويًا. لا يمكن التراجع بعد التنفيذ."}</p></form></div></div></section>}
   </section>
  </main></div>;
