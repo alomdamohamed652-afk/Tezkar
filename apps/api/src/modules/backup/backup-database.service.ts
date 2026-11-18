@@ -31,8 +31,9 @@ async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
      ORDER BY parent.relname
      LIMIT 1
   `);
-  if (inheritance.rows.length) {
-    throw new Error(`لا يمكن إنشاء نسخة آمنة حاليًا لوجود وراثة أو تقسيم جداول في public (الجدول: ${inheritance.rows[0].relation_name})`);
+  const inheritedRelation = inheritance.rows[0]?.relation_name;
+  if (inheritedRelation) {
+    throw new Error(`لا يمكن إنشاء نسخة آمنة حاليًا لوجود وراثة أو تقسيم جداول في public (الجدول: ${inheritedRelation})`);
   }
   const result = await client.query<{ table_name: string; primary_key_columns: string[] }>(`
     SELECT c.relname AS table_name,
