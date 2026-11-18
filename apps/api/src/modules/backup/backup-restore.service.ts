@@ -71,8 +71,9 @@ async function readCatalog(client: pg.PoolClient): Promise<{
      ORDER BY parent.relname
      LIMIT 1
   `);
-  if (inheritance.rows.length) {
-    throw new Error(`لا يمكن استعادة نسخة الإصدار الحالي بأمان لوجود وراثة أو تقسيم جداول في public (الجدول: ${inheritance.rows[0].relation_name})`);
+  const inheritedRelation = inheritance.rows[0]?.relation_name;
+  if (inheritedRelation) {
+    throw new Error(`لا يمكن استعادة نسخة الإصدار الحالي بأمان لوجود وراثة أو تقسيم جداول في public (الجدول: ${inheritedRelation})`);
   }
   const columns = await client.query<{
     table_name: string; column_name: string; pg_type: string; not_null: boolean; has_default: boolean;
