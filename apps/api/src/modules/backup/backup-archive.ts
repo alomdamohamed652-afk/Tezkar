@@ -78,7 +78,8 @@ export async function createBackupArchive(payload: BackupPayload, password: stri
  */
 export function createBackupArchiveStream(
   plaintext: AsyncIterable<string | Buffer>,
-  password: string
+  password: string,
+  onComplete?: () => Promise<void>
 ): Readable {
   validatePassword(password);
   return Readable.from((async function* () {
@@ -101,6 +102,10 @@ export function createBackupArchiveStream(
         yield chunk;
       }
       await pipelineTask;
+      // The archive is not valid until the final GCM tag is emitted. Complete
+      // the audit before exposing that tag, so an audit failure leaves an
+      // intentionally unreadable/incomplete download rather than an unaudited backup.
+      await onComplete?.();
       yield cipher.getAuthTag();
     } catch (error) {
       encryptedOutput.destroy(error instanceof Error ? error : new Error("فشل تشفير النسخة"));
