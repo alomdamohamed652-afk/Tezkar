@@ -71,9 +71,10 @@ test("database backup streams bounded cursor batches into an authenticated v2 ar
     assert.equal(restored.tables.length, 1);
     assert.equal(restored.tables[0]?.name, "backup_stream_rows");
     assert.equal(restored.tables[0]?.rows.length, 1205, "all rows must be emitted across multiple cursor fetch batches");
-    assert.equal(restored.tables[0]?.rows[0]?.amount, "0.1429");
-    assert.equal(restored.tables[0]?.rows[1]?.note, "سجل عربي 2");
-    assert.equal(restored.tables[0]?.rows[1204]?.id, "1205");
+    assert.equal(restored.tables[0]?.rows.find(row => row.id === "1")?.amount, "0.1429");
+    assert.equal(restored.tables[0]?.rows.find(row => row.id === "2")?.note, "سجل عربي 2");
+    assert.ok(restored.tables[0]?.rows.some(row => row.id === "1205"),
+      "the final inserted row must be present regardless of PostgreSQL scan order");
     assert.equal(restored.sequences?.length, 1);
     assert.equal(restored.sequences?.[0]?.name, "backup_stream_seq");
     assert.equal(restored.sequences?.[0]?.lastValue, "1205");
