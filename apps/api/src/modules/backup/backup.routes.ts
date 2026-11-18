@@ -5,7 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
-import { createDatabaseBackup } from "./backup-database.service.js";
+import { createDatabaseBackupStream } from "./backup-database.service.js";
 import { readBackupArchive } from "./backup-archive.js";
 import { restoreBackupIntoCurrentDatabase } from "./backup-restore.service.js";
 
@@ -30,26 +30,38 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const parsed = exportSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "كلمة مرور النسخة يجب أن تكون 12 حرفًا على الأقل", 422);
-    let archive: Buffer;
-    try {
-      archive = await createDatabaseBackup(pool, parsed.data.password);
-    } catch (error) {
-      request.log.error({ err: error }, "System backup export failed");
-      throw new AppError("BACKUP_EXPORT_FAILED", error instanceof Error ? error.message : "تعذر إنشاء النسخة الاحتياطية", 422);
-    }
-    const auditClient = await pool.connect();
-    try {
-      await auditClient.query("BEGIN");
-      await writeAudit(auditClient, {
-        actorUserId: request.user!.userId,
-        actorEmployeeId: request.user!.employeeId,
-        action: "export",
-        module: "system",
-        entityType: "system_backup",
-        metadata: { formatVersion: 1, bytes: archive.length },
-        ipAddress: request.ip,
-        userAgent: request.headers["user-agent"] ?? null
-      });
+    const archive = createDatabaseBackupStream(pool, parsed.data.password, async () => {
+      const auditClient = await pool.connect();
+      try {
+        await auditClient.query("BEGIN");
+        await writeAudit(auditClient, {
+          actorUserId: request.user!.userId,
+          actorEmployeeId: request.user!.employeeId,
+          action: "export",
+          module: "system",
+          entityType: "system_backup",
+          metadata: { formatVersion: 2, streamed: true },
+          ipAddress: request.ip,
+          userAgent: request.headers["user-agent"] ?? null
+        });
+        await auditClient.query("COMMIT");
+      } catch (error) {
+        await auditClient.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        auditClient.release();
+      }
+    });
+    archive.on("error", error => {
+      request.log.error({ err: error }, "System backup streaming export failed");
+    });
+    return reply
+      .header("content-type", "application/vnd.tezkar.backup")
+      .header("content-disposition", 'attachment; filename="tezkar-backup.tzk"')
+      .header("cache-control", "no-store, private")
+      .header("x-content-type-options", "nosniff")
+      .send(archive);
+  });
       await auditClient.query("COMMIT");
     } catch (error) {
       await auditClient.query("ROLLBACK").catch(() => undefined);
