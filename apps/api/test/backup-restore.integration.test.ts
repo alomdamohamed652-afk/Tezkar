@@ -112,6 +112,13 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
       "restore must reject cycles that include non-deferrable foreign keys"
     );
     await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_child_fk");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_self_fk FOREIGN KEY(child_id) REFERENCES backup_it_parents(id) NOT DEFERRABLE");
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, true),
+      /توجد علاقات دائرية بين الجداول/,
+      "restore must reject non-deferrable self-referencing foreign keys before relying on archive row order"
+    );
+    await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_self_fk");
     await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) DEFERRABLE INITIALLY DEFERRED");
 
     const preview = await restoreBackupIntoCurrentDatabase(pool, payload, true);
