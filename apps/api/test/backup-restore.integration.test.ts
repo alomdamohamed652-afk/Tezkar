@@ -253,6 +253,9 @@ test("backup restore is additive, idempotent, FK ordered, transactional and sequ
       ...payload,
       sequences: [{ ...payload.sequences![0]!, lastValue: "200", isCalled: true, cacheSize: "5" }]
     };
+    const cachedSequencePreview = await restoreBackupIntoCurrentDatabase(pool, cachedSequencePayload, true);
+    assert.equal(cachedSequencePreview.conflicts.length, 1,
+      "preview must report unsafe cached-sequence advancement before confirmation");
     const cachedSequenceRestore = await restoreBackupIntoCurrentDatabase(pool, cachedSequencePayload);
     assert.equal(cachedSequenceRestore.added, 0);
     assert.equal(cachedSequenceRestore.conflicts.length, 1);
