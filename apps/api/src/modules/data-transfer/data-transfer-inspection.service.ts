@@ -224,7 +224,7 @@ export function databaseIdentity(connectionString: string): string | null {
     const directSupabase = host.match(/^db\.([a-z0-9]+)\.supabase\.co$/);
     const isSupabasePooler = host.endsWith(".pooler.supabase.com");
     const poolerUser = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
-    const pooledSupabase = poolerUser.match(/^postgres\.([a-z0-9]+)$/);
+    const pooledSupabase = poolerUser.match(/^postgres\.([a-z0-9_-]+)$/);
     const supabaseProjectRef = directSupabase?.[1] ?? pooledSupabase?.[1];
     if (supabaseProjectRef && database) return `supabase:${supabaseProjectRef}/${database}`;
     return host && database ? `${host}:${port}/${database}` : null;
