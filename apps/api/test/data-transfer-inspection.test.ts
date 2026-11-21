@@ -4,6 +4,7 @@ import {
   databaseIdentity,
   inspectDatabaseTransfer
 } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
+import { parseRequestedTables } from "../src/modules/data-transfer/data-transfer-counts.service.js";
 
 test("database identity normalizes hostname case and PostgreSQL default port", () => {
   assert.equal(
@@ -43,4 +44,19 @@ test("database identity still treats different users on the same direct PostgreS
     databaseIdentity("postgres://user_a:secret@db.example/tezkar"),
     databaseIdentity("postgres://user_b:secret@db.example:5432/tezkar")
   );
+});
+
+
+test("selected table parser accepts unique schema-qualified public table names", () => {
+  assert.deepEqual(parseRequestedTables("public.users, public.employees"), [
+    { schema: "public", table: "users", key: "public.users" },
+    { schema: "public", table: "employees", key: "public.employees" }
+  ]);
+});
+
+test("selected table parser rejects duplicates, empty entries, unsupported schemas, and SQL fragments", () => {
+  assert.throws(() => parseRequestedTables("public.users,public.users"));
+  assert.throws(() => parseRequestedTables("public.users,,public.employees"));
+  assert.throws(() => parseRequestedTables("auth.users"));
+  assert.throws(() => parseRequestedTables("public.users; DROP TABLE users"));
 });
