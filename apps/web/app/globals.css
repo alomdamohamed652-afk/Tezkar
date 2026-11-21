@@ -69,11 +69,12 @@ a{color:inherit;text-decoration:none}
 ::selection{background:#dbeafe;color:#1e3a8a}
 :focus-visible{outline:0;box-shadow:var(--focus)!important}
 
-.app-shell{min-height:100vh;display:flex;background:var(--bg)}
+.app-shell{width:100%;min-width:0;min-height:100vh;display:flex;flex-direction:row;align-items:stretch;direction:rtl;background:var(--bg)}
 
 .sidebar{
   width:270px;
   flex:0 0 270px;
+  flex-shrink:0;
   min-height:100vh;
   height:100vh;
   position:sticky;
@@ -189,9 +190,13 @@ a{color:inherit;text-decoration:none}
 }
 .logout-item{font-family:inherit}
 .main{
+  display:block;
+  width:0;
+  max-width:100%;
   min-width:0;
-  flex:1;
+  flex:1 1 0%;
   padding:26px 28px 40px;
+  overflow-x:clip;
 }
 .topbar{
   max-width:1320px;
@@ -236,7 +241,7 @@ a{color:inherit;text-decoration:none}
 }
 .user-name{font-size:13px;font-weight:700;color:var(--ink)}
 .user-role{font-size:11px;color:var(--muted)}
-.content{max-width:1320px;margin:0 auto}
+.content{width:100%;max-width:1320px;min-width:0;margin:0 auto}
 
 .stats{
   display:grid;
@@ -2078,5 +2083,5 @@ textarea:hover:not(:disabled) {
   }
   .sidebar .sidebar-footer .nav-label,
   .sidebar.sidebar-collapsed .sidebar-footer .nav-label{display:block}
-  .main{min-width:0;padding:18px 14px 28px}
+  .main{width:100%;max-width:100%;min-width:0;flex:0 0 auto;padding:18px 14px 28px}
 }
