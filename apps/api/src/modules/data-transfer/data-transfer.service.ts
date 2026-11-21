@@ -261,15 +261,6 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const extensionDifferences = JSON.stringify(extensionSignature(legacy.extensions)) !== JSON.stringify(extensionSignature(target.extensions))
     ? ["اختلاف أسماء أو إصدارات PostgreSQL Extensions بين المصدر والوجهة؛ يلزم توحيدها قبل النقل"]
     : [];
-  const transferPlan = buildTransferOrder(
-    legacy.tables.map(table => ({ name: table.name, primaryKey: table.primaryKey })),
-    legacy.foreignKeys.map(fk => ({
-      table: fk.table,
-      referencedTable: fk.referencedTable,
-      deferrable: fk.deferrable,
-      initiallyDeferred: fk.initiallyDeferred
-    }))
-  );
   const globalBlockers = [
     ...customTypeDifferences,
     ...extensionDifferences,
@@ -336,6 +327,19 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (from.rlsEnabled !== to.rlsEnabled || from.rlsForced !== to.rlsForced) differences.push("اختلاف إعدادات Row Level Security");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
   });
+  const unsafeTables = comparison
+    .filter(item => item.status === "source_only" || item.status === "schema_mismatch")
+    .map(item => item.table);
+  const transferPlan = buildTransferOrder(
+    legacy.tables.map(table => ({ name: table.name, primaryKey: table.primaryKey })),
+    legacy.foreignKeys.map(fk => ({
+      table: fk.table,
+      referencedTable: fk.referencedTable,
+      deferrable: fk.deferrable,
+      initiallyDeferred: fk.initiallyDeferred
+    })),
+    unsafeTables
+  );
   return {
     source: { tableCount: legacy.tables.length, estimatedRows: legacy.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: legacy.foreignKeys.length },
     target: { tableCount: target.tables.length, estimatedRows: target.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: target.foreignKeys.length },
