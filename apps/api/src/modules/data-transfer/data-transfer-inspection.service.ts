@@ -219,11 +219,14 @@ export function databaseIdentity(connectionString: string): string | null {
     const host = parsed.hostname.toLowerCase();
     const port = parsed.port || "5432";
     const database = decodeURIComponent(parsed.pathname.slice(1));
-    // Supabase regional pooler hostnames are shared across projects. The project
-    // reference is encoded in the pooler username, so include it in endpoint identity.
+    // Normalize direct and pooled Supabase endpoints to the same project identity.
+    const directSupabase = host.match(/^db\\.([a-z0-9]+)\\.supabase\\.co$/);
     const isSupabasePooler = host.endsWith(".pooler.supabase.com");
-    const username = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
-    return host && database ? `${host}:${port}/${database}${username ? `/${username}` : ""}` : null;
+    const poolerUser = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
+    const pooledSupabase = poolerUser.match(/^postgres\\.([a-z0-9]+)$/);
+    const supabaseProjectRef = directSupabase?.[1] ?? pooledSupabase?.[1];
+    if (supabaseProjectRef && database) return `supabase:${supabaseProjectRef}/${database}`;
+    return host && database ? `${host}:${port}/${database}` : null;
   } catch {
     return null;
   }
