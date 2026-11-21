@@ -222,7 +222,9 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             (SELECT count(*) FROM pg_extension)::int AS extensions,
             (SELECT count(*) FROM pg_largeobject_metadata)::int AS large_objects,
             (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'\n                AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type\n                  WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
+              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
+                AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type
+                  WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
               WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w'))::int AS routines,
             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
