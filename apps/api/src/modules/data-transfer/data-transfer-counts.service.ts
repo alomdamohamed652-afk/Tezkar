@@ -41,6 +41,8 @@ export async function countRequestedTable(
     await client.query("BEGIN READ ONLY");
     transactionOpen = true;
     await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
+    // Fail closed if this connection is subject to RLS; never report a policy-filtered partial count as exact.
+    await client.query("SET LOCAL row_security = off");
     const exists = await client.query(
       `SELECT 1
          FROM pg_class c
