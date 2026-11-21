@@ -25,6 +25,10 @@ export function buildTransferOrder(
   const names = new Set(tables.map(table => table.name));
   const blockers: string[] = [];
   const blocked = new Set<string>(initiallyBlockedTables.filter(name => names.has(name)));
+  if (names.size !== tables.length) {
+    blockers.push("Duplicate table names were supplied to the transfer planner; the entire plan is blocked");
+    for (const name of names) blocked.add(name);
+  }
   for (const name of [...blocked].sort()) {
     blockers.push(`Table ${name} has schema differences or is missing from the target; transfer is blocked`);
   }
@@ -43,7 +47,11 @@ export function buildTransferOrder(
   }
 
   for (const fk of foreignKeys) {
-    if (!names.has(fk.table)) continue;
+    if (!names.has(fk.table)) {
+      blockers.push(`Foreign key source table ${fk.table} is missing from the inspected table set; the entire plan is blocked`);
+      for (const name of names) blocked.add(name);
+      continue;
+    }
     if (!names.has(fk.referencedTable)) {
       blocked.add(fk.table);
       blockers.push(`Foreign key from ${fk.table} references a table outside the inspected set (${fk.referencedTable})`);
@@ -77,7 +85,7 @@ export function buildTransferOrder(
     }
   }
 
-  const cyclic = [...names].filter(name => !orderedTables.includes(name)).sort();
+  const cyclic = [...names].filter(name => !orderedTables.includes(name) && !blocked.has(name)).sort();
   if (cyclic.length) {
     for (const name of cyclic) blocked.add(name);
     blockers.push(`Foreign-key cycle or dependency on a cycle detected: ${cyclic.join(", ")}; automatic transfer is blocked`);
