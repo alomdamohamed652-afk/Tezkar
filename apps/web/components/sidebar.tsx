@@ -49,7 +49,7 @@ const groups:NavGroup[]=[
   {icon:"↻",label:"طلبات إعادة تعيين كلمة المرور",href:"/password-reset-requests",permissions:["users.create"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
   {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
-  {icon:"⇄",label:"نقل بيانات النظام القديم",href:"/settings/data-transfer",permissions:["users.view"]},
+  {icon:"⇄",label:"نقل بيانات النظام القديم",href:"/settings/data-transfer",permissions:["system.backup.restore"]},
   {icon:"◉",label:"أمان الحسابات وسجل النشاط",href:"/admin/security",permissions:["users.view"]}
  ]}
 ];
