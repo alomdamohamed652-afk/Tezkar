@@ -166,11 +166,12 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     `);
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
-      foreign_table_name: string; foreign_column_name: string; ordinal: number;
+      foreign_table_name: string; foreign_table_schema: string; foreign_column_name: string; ordinal: number;
       deferrable: boolean; initially_deferred: boolean; update_rule: string; delete_rule: string;
     }>(`
       SELECT src.relname AS table_name, con.conname AS constraint_name,
              src_col.attname AS column_name, dst.relname AS foreign_table_name,
+             dst_ns.nspname AS foreign_table_schema,
              dst_col.attname AS foreign_column_name, key.ordinality::int AS ordinal,
              con.condeferrable AS deferrable, con.condeferred AS initially_deferred,
              CASE con.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
@@ -181,6 +182,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         JOIN pg_class src ON src.oid=con.conrelid
         JOIN pg_namespace ns ON ns.oid=src.relnamespace
         JOIN pg_class dst ON dst.oid=con.confrelid
+        JOIN pg_namespace dst_ns ON dst_ns.oid=dst.relnamespace
         CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
           WITH ORDINALITY AS key(src_attnum, dst_attnum, ordinality)
         JOIN pg_attribute src_col ON src_col.attrelid=src.oid AND src_col.attnum=key.src_attnum
@@ -210,7 +212,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       const key = f.table_name + "." + f.constraint_name;
       const group = fkGroups.get(key) ?? {
         table: f.table_name, name: f.constraint_name, columns: [],
-        referencedTable: f.foreign_table_name, referencedColumns: [],
+        referencedTable: f.foreign_table_schema === "public" ? f.foreign_table_name : `${f.foreign_table_schema}.${f.foreign_table_name}`, referencedColumns: [],
         deferrable: f.deferrable,
         initiallyDeferred: f.initially_deferred,
         onUpdate: f.update_rule,
