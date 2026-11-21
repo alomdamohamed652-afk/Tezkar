@@ -163,11 +163,25 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                      FROM pg_enum e WHERE e.enumtypid = t.oid
                  ) ELSE NULL END AS enum_values,
                  CASE WHEN t.typtype = 'd' THEN pg_get_constraintdef(c.oid, true) ELSE NULL END AS domain_constraints,
-                 CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE NULL END AS domain_base
+                 CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE NULL END AS domain_base,
+                 CASE WHEN t.typtype = 'c' THEN (
+                   SELECT string_agg(
+                     format('%s:%s:%s:%s', a.attname, format_type(a.atttypid, a.atttypmod),
+                       a.attnotnull, COALESCE(coll.collname, '')),
+                     ',' ORDER BY a.attnum
+                   )
+                     FROM pg_attribute a
+                     LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+                    WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped
+                 ) ELSE NULL END AS composite_attributes
             FROM pg_type t
             JOIN pg_namespace n ON n.oid = t.typnamespace
             LEFT JOIN pg_constraint c ON c.contypid = t.oid
-           WHERE t.typtype IN ('e','d') AND n.nspname = 'public'
+           WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
+             AND (t.typtype <> 'c' OR NOT EXISTS (
+               SELECT 1 FROM pg_class row_type
+                WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c'
+             ))
            ORDER BY n.nspname, t.typname, c.conname
     `);
     const sequences = await client.query(`
@@ -194,7 +208,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                  p.prokind, pg_get_functiondef(p.oid) AS definition
             FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
-           WHERE n.nspname = 'public' AND p.prokind IN ('f','p')
+           WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w')
            ORDER BY n.nspname, p.proname, identity_arguments
     `);
     const features = await client.query(`
@@ -208,7 +222,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             (SELECT count(*) FROM pg_extension)::int AS extensions,
             (SELECT count(*) FROM pg_largeobject_metadata)::int AS large_objects,
             (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-              WHERE t.typtype IN ('e','d') AND n.nspname = 'public')::int AS custom_types,
+              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'\n                AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type\n                  WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
               WHERE n.nspname = 'public' AND p.prokind IN ('f','p'))::int AS routines,
             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -287,7 +301,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       extensions: extensions.rows.map((row: any) =>
         `${row.extname}:${row.extversion}:${row.schema_name}`),
       customTypes: customTypes.rows.map((row: any) =>
-        `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}`),
+        `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}:${row.composite_attributes ?? ""}`),
       routines: routines.rows.map((row: any) =>
         `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${fingerprint(row.definition)}`),
       sequences: sequences.rows.map((row: any) =>
