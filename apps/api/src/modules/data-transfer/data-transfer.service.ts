@@ -28,7 +28,7 @@ type Column = { name: string; dataType: string; udtName: string; nullable: boole
 type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean };
 
-async function inspect(pool: pg.Pool) {
+async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -38,7 +38,7 @@ async function inspect(pool: pg.Pool) {
         FROM pg_roles r WHERE r.rolname = current_user
     `);
     if (safety.rows[0]?.readOnly !== true) throw new Error("Legacy source transaction is not read-only");
-    if (safety.rows[0]?.superuser || safety.rows[0]?.bypassRls) {
+    if (requireRestrictedRole && (safety.rows[0]?.superuser || safety.rows[0]?.bypassRls)) {
       throw new Error("Legacy source role must not be superuser or BYPASSRLS");
     }
     const tablesResult = await client.query<{ name: string; kind: string; estimate: string }>(`
@@ -142,7 +142,7 @@ async function inspect(pool: pg.Pool) {
 
 export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const source = getLegacyPool();
-  const [legacy, target] = await Promise.all([inspect(source), inspect(targetPool)]);
+  const [legacy, target] = await Promise.all([inspect(source, true), inspect(targetPool)]);
   const targetByName = new Map(target.tables.map(table => [table.name, table]));
   const legacyByName = new Map(legacy.tables.map(table => [table.name, table]));
   const allNames = [...new Set([...legacyByName.keys(), ...targetByName.keys()])].sort();
