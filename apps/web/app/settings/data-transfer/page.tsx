@@ -18,7 +18,7 @@ type Inspection = {
     differences: { missingInTarget: string[]; missingInSource: string[] };
   }>;
   sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number; sequences: number };
-  targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number };
+  targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number; sequences: number };
 };
 const labels: Record<string,string> = {compatible:"متوافق مبدئيًا",schema_mismatch:"اختلاف في البنية",source_only:"غير موجود في الوجهة",target_only:"موجود في الوجهة فقط"};
 
