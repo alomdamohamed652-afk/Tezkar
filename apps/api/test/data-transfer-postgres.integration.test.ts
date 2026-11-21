@@ -126,7 +126,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     const sourceReadOnlyPool = createReadOnlySourcePool(databaseUrl(sourceName));
     try {
       await assert.rejects(
-        () => sourceReadOnlyPool.query("INSERT INTO public.workers(name) VALUES ($must-not-write$)"),
+        () => sourceReadOnlyPool.query("INSERT INTO public.workers(name) VALUES ($tag$must-not-write$tag$)"),
         (error: unknown) => Boolean(error && typeof error === "object" && "code" in error &&
           (error as { code?: string }).code === "25006")
       );
