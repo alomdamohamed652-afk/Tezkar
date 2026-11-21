@@ -3,7 +3,7 @@ import { databaseIdentity } from "./data-transfer-inspection.service.js";
 
 const MAX_TABLES = 5;
 const STATEMENT_TIMEOUT_MS = 1500;
-const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_][a-zA-Z0-9_]*$/;
+const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 export type RequestedTable = { schema: string; table: string; key: string };
 
