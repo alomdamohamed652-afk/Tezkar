@@ -37,7 +37,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
           SELECT n.nspname AS schema_name, c.relname AS table_name,
                  GREATEST(c.reltuples, 0)::bigint AS estimated_rows
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-           WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
              AND n.nspname NOT LIKE 'pg_toast%'
            ORDER BY n.nspname,c.relname
     `);
@@ -47,7 +47,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                  COALESCE(NULLIF(data_type,''),udt_name) AS type,
                  is_nullable='YES' AS nullable,column_default
             FROM information_schema.columns
-           WHERE table_schema NOT IN ('pg_catalog','information_schema')
+           WHERE table_schema = 'public'
            ORDER BY table_schema,table_name,ordinal_position
     `);
     const primaryKeys = await client.query(`
@@ -57,7 +57,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             JOIN information_schema.key_column_usage kcu
               ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
              AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
-           WHERE tc.constraint_type='PRIMARY KEY'
+           WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema = 'public'
            ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position
     `);
     const foreignKeys = await client.query(`
@@ -67,7 +67,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
-           WHERE con.contype='f' AND n.nspname NOT IN ('pg_catalog','information_schema')
+           WHERE con.contype='f' AND n.nspname = 'public'
            ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid,true)
     `);
     const indexes = await client.query(`
@@ -76,7 +76,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                  (CASE WHEN indexdef LIKE 'CREATE UNIQUE INDEX %' THEN 'UNIQUE' ELSE 'NONUNIQUE' END)
                  || substring(indexdef FROM ' USING .*$') AS definition
             FROM pg_indexes
-           WHERE schemaname NOT IN ('pg_catalog','information_schema')
+           WHERE schemaname = 'public'
            ORDER BY schemaname,tablename,definition
     `);
     const constraints = await client.query(`
@@ -86,19 +86,19 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
-           WHERE con.contype IN ('u','c','x') AND n.nspname NOT IN ('pg_catalog','information_schema')
+           WHERE con.contype IN ('u','c','x') AND n.nspname = 'public'
            ORDER BY n.nspname,t.relname,con.contype,pg_get_constraintdef(con.oid,true)
     `);
     const views = await client.query(`
 
           SELECT schemaname,viewname,definition FROM pg_views
-           WHERE schemaname NOT IN ('pg_catalog','information_schema')
+           WHERE schemaname = 'public'
            ORDER BY schemaname,viewname
     `);
     const materializedViews = await client.query(`
 
           SELECT schemaname,matviewname,definition FROM pg_matviews
-           WHERE schemaname NOT IN ('pg_catalog','information_schema')
+           WHERE schemaname = 'public'
            ORDER BY schemaname,matviewname
     `);
     const triggers = await client.query(`
@@ -107,23 +107,23 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                  pg_get_triggerdef(t.oid,true) AS definition
             FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
             JOIN pg_namespace n ON n.oid=c.relnamespace
-           WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema')
+           WHERE NOT t.tgisinternal AND n.nspname = 'public'
            ORDER BY n.nspname,c.relname,t.tgname
     `);
     const features = await client.query(`
 
           SELECT
-            (SELECT count(*) FROM pg_views WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS views,
-            (SELECT count(*) FROM pg_matviews WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS materialized_views,
+            (SELECT count(*) FROM pg_views WHERE schemaname = 'public')::int AS views,
+            (SELECT count(*) FROM pg_matviews WHERE schemaname = 'public')::int AS materialized_views,
             (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
                JOIN pg_namespace n ON n.oid=c.relnamespace
-              WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema'))::int AS triggers,
+              WHERE NOT t.tgisinternal AND n.nspname = 'public')::int AS triggers,
             (SELECT count(*) FROM pg_extension)::int AS extensions,
             (SELECT count(*) FROM pg_largeobject_metadata)::int AS large_objects,
             (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-              WHERE t.typtype IN ('e','d','c') AND n.nspname NOT IN ('pg_catalog','information_schema'))::int AS custom_types,
+              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public')::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-              WHERE n.nspname NOT IN ('pg_catalog','information_schema'))::int AS routines
+              WHERE n.nspname = 'public')::int AS routines
     `);
 
     const tableMap = new Map<string, TableShape>();
@@ -219,11 +219,14 @@ export function databaseIdentity(connectionString: string): string | null {
     const host = parsed.hostname.toLowerCase();
     const port = parsed.port || "5432";
     const database = decodeURIComponent(parsed.pathname.slice(1));
-    // Supabase regional pooler hostnames are shared across projects. The project
-    // reference is encoded in the pooler username, so include it in endpoint identity.
+    // Normalize direct and pooled Supabase endpoints to the same project identity.
+    const directSupabase = host.match(/^db\\.([a-z0-9]+)\\.supabase\\.co$/);
     const isSupabasePooler = host.endsWith(".pooler.supabase.com");
-    const username = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
-    return host && database ? `${host}:${port}/${database}${username ? `/${username}` : ""}` : null;
+    const poolerUser = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
+    const pooledSupabase = poolerUser.match(/^postgres\\.([a-z0-9]+)$/);
+    const supabaseProjectRef = directSupabase?.[1] ?? pooledSupabase?.[1];
+    if (supabaseProjectRef && database) return `supabase:${supabaseProjectRef}/${database}`;
+    return host && database ? `${host}:${port}/${database}` : null;
   } catch {
     return null;
   }

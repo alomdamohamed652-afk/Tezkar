@@ -10,11 +10,11 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/inspection", {
     preHandler: [authenticateRequest, requirePermission("system.backup.export")]
   }, async (request, reply) => {
-    if (!env.LEGACY_DATABASE_URL) {
+    if (!env.TARGET_DATABASE_URL) {
       return reply.code(503).header("cache-control", "no-store, private").send({
         error: {
-          code: "LEGACY_DATABASE_NOT_CONFIGURED",
-          message: "قاعدة البيانات القديمة غير مُعدة على خدمة API؛ لم يتم بدء الفحص."
+          code: "TARGET_DATABASE_NOT_CONFIGURED",
+          message: "قاعدة البيانات الهدف غير مُعدة على خدمة API؛ لم يتم بدء الفحص."
         }
       });
     }
@@ -25,7 +25,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      const report = await inspectDatabaseTransfer(env.LEGACY_DATABASE_URL, env.DATABASE_URL);
+      const report = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL!);
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
       app.log.error({ err: error }, "Read-only database transfer inspection failed");
@@ -40,9 +40,9 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/counts", {
     preHandler: [authenticateRequest, requirePermission("system.backup.export")]
   }, async (request, reply) => {
-    if (!env.LEGACY_DATABASE_URL) {
+    if (!env.TARGET_DATABASE_URL) {
       return reply.code(503).header("cache-control", "no-store, private").send({
-        error: { code: "LEGACY_DATABASE_NOT_CONFIGURED", message: "قاعدة البيانات القديمة غير مُعدة؛ لم يبدأ فحص الأعداد." }
+        error: { code: "TARGET_DATABASE_NOT_CONFIGURED", message: "قاعدة البيانات الهدف غير مُعدة؛ لم يبدأ فحص الأعداد." }
       });
     }
 
@@ -65,7 +65,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      const report = await inspectSelectedTableCounts(env.LEGACY_DATABASE_URL, env.DATABASE_URL, tables);
+      const report = await inspectSelectedTableCounts(env.DATABASE_URL, env.TARGET_DATABASE_URL!, tables);
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
       app.log.error({ err: error }, "Read-only selected table count inspection failed");
