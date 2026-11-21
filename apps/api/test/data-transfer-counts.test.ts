@@ -42,10 +42,11 @@ test("table count uses a read-only transaction, local timeout, quoted identifier
   assert.deepEqual(result, { table: "public.workers", status: "counted", exactRows: "42" });
   assert.equal(calls[0]?.sql, "BEGIN READ ONLY");
   assert.match(calls[1]?.sql ?? "", /statement_timeout = '1500ms'/);
-  assert.match(calls[2]?.sql ?? "", /n\.nspname = \$1 AND c\.relname = \$2/);
-  assert.deepEqual(calls[2]?.values, ["public", "workers"]);
-  assert.match(calls[3]?.sql ?? "", /FROM "public"\."workers"/);
-  assert.equal(calls[4]?.sql, "COMMIT");
+  assert.equal(calls[2]?.sql, "SET LOCAL row_security = off");
+  assert.match(calls[3]?.sql ?? "", /n\.nspname = \$1 AND c\.relname = \$2/);
+  assert.deepEqual(calls[3]?.values, ["public", "workers"]);
+  assert.match(calls[4]?.sql ?? "", /FROM "public"\."workers"/);
+  assert.equal(calls[5]?.sql, "COMMIT");
   assert.equal(calls.some(call => call.sql === "ROLLBACK"), false);
 });
 
@@ -80,5 +81,24 @@ test("statement timeout rolls back and is reported without an exact count", asyn
     schema: "public", table: "large_table", key: "public.large_table"
   });
   assert.deepEqual(result, { table: "public.large_table", status: "timeout", exactRows: null });
+  assert.equal(calls.at(-1), "ROLLBACK");
+});
+
+
+test("row-level security errors fail closed instead of returning a partial exact count", async () => {
+  const calls: string[] = [];
+  const client = {
+    async query(sql: string) {
+      calls.push(sql);
+      if (sql.startsWith("SELECT 1")) return { rowCount: 1, rows: [{}] };
+      if (sql.startsWith("SELECT count(*)")) throw Object.assign(new Error("row-level security is enabled"), { code: "42501" });
+      return { rowCount: null, rows: [] };
+    }
+  };
+  const result = await countRequestedTable(client as never, {
+    schema: "public", table: "secured_table", key: "public.secured_table"
+  });
+  assert.deepEqual(result, { table: "public.secured_table", status: "unavailable", exactRows: null });
+  assert.ok(calls.includes("SET LOCAL row_security = off"));
   assert.equal(calls.at(-1), "ROLLBACK");
 });
