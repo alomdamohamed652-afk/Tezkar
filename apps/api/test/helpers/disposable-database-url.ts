@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function normalizeHost(value: string): string {
-  return value.trim().toLowerCase().replace(/^\\[|\\]$/g, "");
+  return value.trim().toLowerCase().replace(/^\[|\]$/g, "");
 }
 
 /**
