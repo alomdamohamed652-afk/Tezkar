@@ -135,3 +135,21 @@ test("blocks every member of a multi-table FK cycle", () => {
   assert.deepEqual(result.orderedTables, []);
   assert.deepEqual(result.blockedTables, ["a", "b", "c"]);
 });
+
+
+test("blocks schema-incompatible tables and all dependent children", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "parent", primaryKey: ["id"] },
+      { name: "child", primaryKey: ["id"] },
+      { name: "independent", primaryKey: ["id"] }
+    ],
+    [
+      { table: "child", referencedTable: "parent", deferrable: false, initiallyDeferred: false }
+    ],
+    ["parent"]
+  );
+  assert.deepEqual(result.orderedTables, ["independent"]);
+  assert.deepEqual(result.blockedTables, ["child", "parent"]);
+  assert.match(result.blockers.join(" "), /schema differences/);
+});
