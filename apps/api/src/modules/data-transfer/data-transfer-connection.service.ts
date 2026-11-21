@@ -42,3 +42,33 @@ export function createTargetPool(connectionString: string): pg.Pool {
     idleTimeoutMillis: 1_000
   });
 }
+
+/**
+ * Compares the actual PostgreSQL server endpoint after both connections are open.
+ * This catches aliases that resolve to the same server/database even when URLs differ.
+ */
+export async function assertDistinctConnectedDatabases(
+  source: Pick<pg.PoolClient, "query">,
+  target: Pick<pg.PoolClient, "query">
+): Promise<void> {
+  const sql = `
+    SELECT current_database() AS database_name,
+           (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS database_oid,
+           inet_server_addr()::text AS server_address,
+           inet_server_port() AS server_port
+  `;
+  const [sourceResult, targetResult] = await Promise.all([source.query(sql), target.query(sql)]);
+  const identity = (row: Record<string, unknown>) => {
+    const database = String(row.database_name ?? "");
+    const oid = String(row.database_oid ?? "");
+    const address = String(row.server_address ?? "");
+    const port = String(row.server_port ?? "");
+    if (!database || !oid || !address || !port) return null;
+    return `${address}:${port}/${oid}/${database}`;
+  };
+  const sourceIdentity = identity(sourceResult.rows[0] ?? {});
+  const targetIdentity = identity(targetResult.rows[0] ?? {});
+  if (!sourceIdentity || !targetIdentity || sourceIdentity === targetIdentity) {
+    throw new Error("تعذر إثبات اختلاف قاعدتي البيانات من خادم PostgreSQL نفسه؛ تم إيقاف الفحص لحماية المصدر.");
+  }
+}
