@@ -221,10 +221,10 @@ export function databaseIdentity(connectionString: string): string | null {
     const port = parsed.port || "5432";
     const database = decodeURIComponent(parsed.pathname.slice(1));
     // Normalize direct and pooled Supabase endpoints to the same project identity.
-    const directSupabase = host.match(/^db\\.([a-z0-9]+)\\.supabase\\.co$/);
+    const directSupabase = host.match(/^db\.([a-z0-9]+)\.supabase\.co$/);
     const isSupabasePooler = host.endsWith(".pooler.supabase.com");
     const poolerUser = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
-    const pooledSupabase = poolerUser.match(/^postgres\\.([a-z0-9]+)$/);
+    const pooledSupabase = poolerUser.match(/^postgres\.([a-z0-9]+)$/);
     const supabaseProjectRef = directSupabase?.[1] ?? pooledSupabase?.[1];
     if (supabaseProjectRef && database) return `supabase:${supabaseProjectRef}/${database}`;
     return host && database ? `${host}:${port}/${database}` : null;
