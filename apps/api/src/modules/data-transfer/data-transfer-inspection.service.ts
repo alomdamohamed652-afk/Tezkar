@@ -7,6 +7,7 @@ type TableShape = {
   columns: ColumnShape[];
   primaryKey: string[];
   foreignKeys: string[];
+  dependencies: string[];
 };
 type FeatureCounts = {
   views: number;
@@ -64,10 +65,13 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const foreignKeys = await client.query(`
 
           SELECT n.nspname AS table_schema,t.relname AS table_name,
-                 pg_get_constraintdef(con.oid,true) AS signature
+                 pg_get_constraintdef(con.oid,true) AS signature,
+                 rn.nspname AS referenced_schema, rt.relname AS referenced_table
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
+            JOIN pg_class rt ON rt.oid=con.confrelid
+            JOIN pg_namespace rn ON rn.oid=rt.relnamespace
            WHERE con.contype='f' AND n.nspname = 'public'
            ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid,true)
     `);
@@ -130,7 +134,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const tableMap = new Map<string, TableShape>();
     for (const row of tables.rows) {
       tableMap.set(`${row.schema_name}.${row.table_name}`, {
-        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: []
+        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: []
       });
     }
     for (const row of columns.rows) {
@@ -142,7 +146,9 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       tableMap.get(`${row.table_schema}.${row.table_name}`)?.primaryKey.push(row.column_name);
     }
     for (const row of foreignKeys.rows) {
-      tableMap.get(`${row.table_schema}.${row.table_name}`)?.foreignKeys.push(row.signature);
+      const table = tableMap.get(`${row.table_schema}.${row.table_name}`);
+      table?.foreignKeys.push(row.signature);
+      table?.dependencies.push(`${row.referenced_schema}.${row.referenced_table}`);
     }
 
     const featureRow = features.rows[0] ?? {};
@@ -209,7 +215,7 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       differences.length ? "schema_mismatch" : "compatible";
     return {
       table: name, status, sourceEstimate: left?.estimate ?? 0,
-      targetEstimate: right?.estimate ?? 0, differences
+      targetEstimate: right?.estimate ?? 0, dependencies: left?.dependencies ?? [], differences
     };
   });
 }
