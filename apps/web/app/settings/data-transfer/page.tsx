@@ -9,7 +9,7 @@ type Inspection = {
   target: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
   comparison: Array<{ table: string; status: string; sourceEstimate: number; targetEstimate: number; differences: string[] }>;
   blockers: Array<{ table: string | null; status: string; differences: string[] }>;
-  sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number };
+  sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number };
   globalBlockers?: string[];
   note: string;
