@@ -26,7 +26,7 @@ function getLegacyPool(): pg.Pool {
 }
 
 type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string; generationExpression: string; collation: string | null };
-type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
+type Table = { name: string; kind: string; persistence: string; isPartition: boolean; partitionBound: string | null; hasInheritance: boolean; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; validated: boolean; onUpdate: string; onDelete: string };
 
 async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
@@ -51,8 +51,11 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
          AND nspname NOT IN ('auth','storage','realtime','extensions','vault','graphql_public','supabase_functions','supabase_migrations','_realtime','net','cron','pgsodium')
        ORDER BY nspname
     `);
-    const tablesResult = await client.query<{ name: string; kind: string; estimate: string; rls_enabled: boolean; rls_forced: boolean }>(`
-      SELECT c.relname AS name, c.relkind AS kind,
+    const tablesResult = await client.query<{ name: string; kind: string; persistence: string; is_partition: boolean; partition_bound: string | null; has_inheritance: boolean; estimate: string; rls_enabled: boolean; rls_forced: boolean }>(`
+      SELECT c.relname AS name, c.relkind AS kind, c.relpersistence AS persistence,
+             c.relispartition AS is_partition,
+             CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) ELSE NULL END AS partition_bound,
+             EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid=c.oid OR i.inhparent=c.oid) AS has_inheritance,
              GREATEST(c.reltuples, 0)::bigint::text AS estimate,
              c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -211,7 +214,8 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       pkByTable.set(p.table_name, list);
     }
     const tables: Table[] = tablesResult.rows.map(t => ({
-      name: t.name, kind: t.kind === "p" ? "partitioned" : "table",
+      name: t.name, kind: t.kind === "p" ? "partitioned" : "table", persistence: t.persistence,
+      isPartition: t.is_partition, partitionBound: t.partition_bound, hasInheritance: t.has_inheritance,
       columns: columnsByTable.get(t.name) ?? [], primaryKey: pkByTable.get(t.name) ?? [],
       rowEstimate: Number(t.estimate), rlsEnabled: t.rls_enabled, rlsForced: t.rls_forced
     }));
@@ -322,7 +326,9 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     }
     for (const c of to.columns) if (!sourceColumns.has(c.name) && !c.nullable && c.defaultValue === null) differences.push("عمود إلزامي إضافي بالوجهة: " + c.name);
     if (from.primaryKey.length === 0) differences.push("جدول المصدر بلا مفتاح أساسي؛ لا يمكن ضمان نقل آمن قابل للاستئناف");
-    if (from.kind === "partitioned") differences.push("الجدول مقسّم إلى partitions؛ النقل الآلي متوقف لحين معالجة التقسيم صراحةً");
+    if (from.kind === "partitioned" || from.isPartition || from.hasInheritance) differences.push("الجدول ضمن بنية Partition أو Inheritance؛ النقل الآلي متوقف لحين معالجة علاقات التقسيم والوراثة صراحةً");
+    if (from.persistence !== to.persistence) differences.push("اختلاف Persistence mode للجدول (logged/unlogged/temporary)");
+    if (from.isPartition !== to.isPartition || from.partitionBound !== to.partitionBound || from.hasInheritance !== to.hasInheritance) differences.push("اختلاف بنية Partition/Inheritance أو حدود التقسيم");
     if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف المفتاح الأساسي");
     if (JSON.stringify(fkSignature(legacy.foreignKeys, name)) !== JSON.stringify(fkSignature(target.foreignKeys, name))) differences.push("اختلاف علاقات المفاتيح الخارجية");
     if (JSON.stringify(constraintSignature(legacy.constraints, name)) !== JSON.stringify(constraintSignature(target.constraints, name))) differences.push("اختلاف قيود UNIQUE أو CHECK أو EXCLUDE");
