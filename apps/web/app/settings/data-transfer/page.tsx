@@ -8,7 +8,10 @@ type Inspection = {
   source: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
   target: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
   comparison: Array<{ table: string; status: string; sourceEstimate: number; targetEstimate: number; differences: string[] }>;
-  blockers: Array<{ table: string; status: string; differences: string[] }>;
+  blockers: Array<{ table: string | null; status: string; differences: string[] }>;
+  sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number };
+  targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number; customTypes: number; routines: number };
+  globalBlockers?: string[];
   note: string;
 };
 
@@ -86,7 +89,17 @@ export default function DataTransferPage() {
               <span className="text-sm text-slate-500">{report.comparison.length.toLocaleString("ar-EG")} جدول</span>
             </div>
             {report.blockers.length > 0 && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-              توجد {report.blockers.length.toLocaleString("ar-EG")} حالة تحتاج مراجعة قبل تصميم خطة النقل. لن يتم تجاوزها تلقائيًا.
+              توجد {report.blockers.length.toLocaleString("ar-EG")} حالة تمنع اعتماد النقل الآلي حاليًا. لن يتم تجاوز أي منها تلقائيًا.
+              <ul className="mt-2 list-disc space-y-1 pr-5">
+                {report.blockers.map((blocker, index) => <li key={`${blocker.table ?? "global"}-${index}`}>
+                  {blocker.table ? <strong>{blocker.table}: </strong> : <strong>عائق عام: </strong>}
+                  {blocker.differences.join("، ")}
+                </li>)}
+              </ul>
+            </div>}
+            {report.sourceFeatures && report.targetFeatures && <div className="mt-4 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+              <p>كائنات إضافية بالمصدر: Views {report.sourceFeatures.views}، Materialized Views {report.sourceFeatures.materializedViews}، Triggers {report.sourceFeatures.triggers}، Functions {report.sourceFeatures.routines}، Large Objects {report.sourceFeatures.largeObjects}، Types {report.sourceFeatures.customTypes}</p>
+              <p>كائنات إضافية بالوجهة: Views {report.targetFeatures.views}، Materialized Views {report.targetFeatures.materializedViews}، Triggers {report.targetFeatures.triggers}، Functions {report.targetFeatures.routines}، Large Objects {report.targetFeatures.largeObjects}، Types {report.targetFeatures.customTypes}</p>
             </div>}
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[680px] text-right text-sm">
