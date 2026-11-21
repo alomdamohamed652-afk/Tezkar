@@ -39,7 +39,7 @@ export default function DataTransferPage() {
 
   return (
     <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-900">
-      <Sidebar />
+      <Sidebar active="/settings/data-transfer" />
       <main className="mx-auto max-w-7xl space-y-6 p-4 md:p-8">
         <header>
           <p className="text-sm font-medium text-slate-500">إدارة النظام</p>
