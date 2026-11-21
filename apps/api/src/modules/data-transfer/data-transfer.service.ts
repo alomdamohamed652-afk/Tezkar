@@ -1,4 +1,5 @@
 import pg from "pg";
+import { buildTransferOrder } from "./data-transfer-plan.js";
 
 const { Pool } = pg;
 let legacyPool: pg.Pool | null = null;
@@ -249,7 +250,20 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const extensionDifferences = JSON.stringify(extensionSignature(legacy.extensions)) !== JSON.stringify(extensionSignature(target.extensions))
     ? ["اختلاف أسماء أو إصدارات PostgreSQL Extensions بين المصدر والوجهة؛ يلزم توحيدها قبل النقل"]
     : [];
-  const globalBlockers = [...customTypeDifferences, ...extensionDifferences];
+  const transferPlan = buildTransferOrder(
+    legacy.tables.map(table => ({ name: table.name, primaryKey: table.primaryKey })),
+    legacy.foreignKeys.map(fk => ({
+      table: fk.table,
+      referencedTable: fk.referencedTable,
+      deferrable: fk.deferrable,
+      initiallyDeferred: fk.initiallyDeferred
+    }))
+  );
+  const globalBlockers = [
+    ...customTypeDifferences,
+    ...extensionDifferences,
+    ...transferPlan.blockers.map(message => `ترتيب النقل: ${message}`)
+  ];
   type UnsupportedFeatureKey = "views" | "materializedViews" | "routines" | "largeObjects" | "triggers";
   const unsupportedObjects: Array<[UnsupportedFeatureKey, string]> = [
     ["views", "Views"],
@@ -310,6 +324,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     target: { tableCount: target.tables.length, estimatedRows: target.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: target.foreignKeys.length },
     comparison,
     foreignKeys: legacy.foreignKeys,
+    transferPlan,
     sourceConstraints: legacy.constraints,
     targetConstraints: target.constraints,
     sourceUniqueIndexes: legacy.uniqueIndexes,
