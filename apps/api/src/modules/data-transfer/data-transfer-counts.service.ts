@@ -1,5 +1,6 @@
 import pg from "pg";
 import { databaseIdentity } from "./data-transfer-inspection.service.js";
+import { assertDistinctDatabaseIdentities, assertReadOnlySourceSession } from "./data-transfer-connection.service.js";
 
 const MAX_TABLES = 5;
 const STATEMENT_TIMEOUT_MS = 1500;
@@ -75,17 +76,19 @@ export async function countRequestedTable(
   }
 }
 
-async function countOnDatabase(connectionString: string, tables: RequestedTable[]) {
+async function countOnDatabase(connectionString: string, tables: RequestedTable[], enforceSourceReadOnly = false) {
   const pool = new pg.Pool({
     connectionString,
     max: 1,
     connectionTimeoutMillis: 5000,
-    idleTimeoutMillis: 1000
+    idleTimeoutMillis: 1000,
+    ...(enforceSourceReadOnly ? { options: "-c default_transaction_read_only=on" } : {})
   });
 
   try {
     const client = await pool.connect();
     try {
+      if (enforceSourceReadOnly) await assertReadOnlySourceSession(client);
       const results = [];
       for (const item of tables) {
         results.push(await countRequestedTable(client, item));
@@ -109,11 +112,9 @@ export async function inspectSelectedTableCounts(
   }
   const sourceIdentity = databaseIdentity(sourceUrl);
   const targetIdentity = databaseIdentity(targetUrl);
-  if (sourceUrl === targetUrl || (sourceIdentity && targetIdentity && sourceIdentity === targetIdentity)) {
-    throw new Error("مصدر البيانات والوجهة يشيران إلى نفس قاعدة البيانات؛ أوقف الفحص لحماية البيانات.");
-  }
+  assertDistinctDatabaseIdentities(sourceIdentity, targetIdentity);
   const [source, target] = await Promise.all([
-    countOnDatabase(sourceUrl, tables),
+    countOnDatabase(sourceUrl, tables, true),
     countOnDatabase(targetUrl, tables)
   ]);
   return {
