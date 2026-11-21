@@ -35,7 +35,8 @@ Create or use three services in the same Railway project and production environm
 - Health check path: `/api/health`
 - Set `API_PORT=4000` so the API listens on the same port used by the private proxy target.
 - Set `WEB_ORIGIN` to the exact public origin of the Railway Web service, including `https://` and without a trailing slash.
-- Set `DATABASE_URL` using the Railway PostgreSQL connection string.
+- Set `DATABASE_URL` using the Railway PostgreSQL connection string (the existing/source database; inspection enforces read-only sessions).
+- Optionally set `TARGET_DATABASE_URL` to the separate Supabase target database when enabling the in-app inspection screen. Keep it server-side only. The inspection feature refuses to run if it cannot prove source and target are distinct; it does not write to either database.
 - Set `SESSION_SECRET` to a random secret of at least 32 characters.
 - Set `SESSION_COOKIE_SAMESITE=lax` and `DB_POOL_MAX=10`.
 
