@@ -29,9 +29,13 @@ export default function DataTransferPage() {
   const [selectedTables,setSelectedTables]=useState("public.users, public.employees");
   const [countReport,setCountReport]=useState<CountReport|null>(null);
   const [countLoading,setCountLoading]=useState(false);
-  const [countError,setCountError]=useState("");\n  const [plan,setPlan]=useState<TransferPlan|null>(null);\n  const [planLoading,setPlanLoading]=useState(false);\n  const [planError,setPlanError]=useState("");
+  const [countError,setCountError]=useState("");
+  const [plan,setPlan]=useState<TransferPlan|null>(null);
+  const [planLoading,setPlanLoading]=useState(false);
+  const [planError,setPlanError]=useState("");
   async function inspect(){setLoading(true);setError("");try{setReport(await api<Inspection>("/api/admin/data-transfer/inspection"));}catch(e){setError(e instanceof Error?e.message:"تعذر فحص القاعدتين");}finally{setLoading(false);}}
-  async function inspectPlan(){setPlanLoading(true);setPlanError("");try{setPlan(await api<TransferPlan>("/api/admin/data-transfer/plan"));}catch(e){setPlanError(e instanceof Error?e.message:"تعذر إنشاء خطة النقل");}finally{setPlanLoading(false);}}\n  async function inspectCounts(){setCountLoading(true);setCountError("");try{const query=new URLSearchParams({tables:selectedTables});setCountReport(await api<CountReport>("/api/admin/data-transfer/counts?"+query.toString()));}catch(e){setCountError(e instanceof Error?e.message:"تعذر فحص أعداد السجلات");}finally{setCountLoading(false);}}
+  async function inspectPlan(){setPlanLoading(true);setPlanError("");try{setPlan(await api<TransferPlan>("/api/admin/data-transfer/plan"));}catch(e){setPlanError(e instanceof Error?e.message:"تعذر إنشاء خطة النقل");}finally{setPlanLoading(false);}}
+  async function inspectCounts(){setCountLoading(true);setCountError("");try{const query=new URLSearchParams({tables:selectedTables});setCountReport(await api<CountReport>("/api/admin/data-transfer/counts?"+query.toString()));}catch(e){setCountError(e instanceof Error?e.message:"تعذر فحص أعداد السجلات");}finally{setCountLoading(false);}}
   return <div dir="rtl" className="app-shell min-h-screen bg-slate-50 text-slate-900"><Sidebar active="/settings/data-transfer"/><main className="main mx-auto max-w-7xl min-w-0 space-y-6 p-4 md:p-8">
     <header><p className="text-sm text-slate-500">إدارة النظام</p><h1 className="mt-1 text-2xl font-bold">نقل بيانات النظام القديم</h1><p className="mt-2 text-sm text-slate-600">فحص القاعدتين ومقارنة البنية قبل اعتماد أي نقل.</p></header>
     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">فحص للقراءة فقط. لن يتم تعديل القاعدة القديمة أو إدخال بيانات في القاعدة الجديدة.</div>
