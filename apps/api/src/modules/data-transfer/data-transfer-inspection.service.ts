@@ -21,6 +21,10 @@ type DatabaseSnapshot = {
   tables: Map<string, TableShape>;
   estimatedRows: number;
   foreignKeyCount: number;
+  indexes: string[];
+  constraints: string[];
+  views: string[];
+  triggers: string[];
   features: FeatureCounts;
 };
 
@@ -28,7 +32,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   await client.query("BEGIN READ ONLY");
   try {
     await client.query("SET LOCAL statement_timeout = '15000'");
-    const [tables, columns, primaryKeys, foreignKeys, features] = await Promise.all([
+    const [tables, columns, primaryKeys, foreignKeys, indexes, constraints, views, triggers, features] = await Promise.all([
       client.query(`
         SELECT n.nspname AS schema_name, c.relname AS table_name,
                GREATEST(c.reltuples, 0)::bigint AS estimated_rows
@@ -62,6 +66,35 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
          GROUP BY tc.table_schema,tc.table_name,tc.constraint_name
          ORDER BY tc.table_schema,tc.table_name,tc.constraint_name`),
       client.query(`
+        SELECT schemaname, tablename, indexname, indexdef
+          FROM pg_indexes
+         WHERE schemaname NOT IN ('pg_catalog','information_schema')
+         ORDER BY schemaname,tablename,indexname`),
+      client.query(`
+        SELECT tc.table_schema,tc.table_name,tc.constraint_type,
+               tc.constraint_name, string_agg(COALESCE(kcu.column_name, cc.check_clause), ',' ORDER BY kcu.ordinal_position) AS definition
+          FROM information_schema.table_constraints tc
+          LEFT JOIN information_schema.key_column_usage kcu
+            ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
+           AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
+          LEFT JOIN information_schema.check_constraints cc
+            ON cc.constraint_catalog=tc.constraint_catalog AND cc.constraint_schema=tc.constraint_schema
+           AND cc.constraint_name=tc.constraint_name
+         WHERE tc.constraint_type IN ('UNIQUE','CHECK','EXCLUDE')
+         GROUP BY tc.table_schema,tc.table_name,tc.constraint_type,tc.constraint_name,cc.check_clause
+         ORDER BY tc.table_schema,tc.table_name,tc.constraint_type,tc.constraint_name`),
+      client.query(`
+        SELECT schemaname,viewname,definition FROM pg_views
+         WHERE schemaname NOT IN ('pg_catalog','information_schema')
+         ORDER BY schemaname,viewname`),
+      client.query(`
+        SELECT n.nspname AS schema_name,c.relname AS table_name,t.tgname AS trigger_name,
+               pg_get_triggerdef(t.oid,true) AS definition
+          FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+          JOIN pg_namespace n ON n.oid=c.relnamespace
+         WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema')
+         ORDER BY n.nspname,c.relname,t.tgname`),
+      client.query(`
         SELECT
           (SELECT count(*) FROM pg_views WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS views,
           (SELECT count(*) FROM pg_matviews WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS materialized_views,
@@ -88,6 +121,10 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     for (const row of primaryKeys.rows) map.get(`${row.table_schema}.${row.table_name}`)?.primaryKey.push(row.column_name);
     for (const row of foreignKeys.rows) map.get(`${row.table_schema}.${row.table_name}`)?.foreignKeys.push(row.signature);
     const tableMap = map;
+    const indexSignatures = indexes.rows.map((r: any) => `${r.schemaname}.${r.tablename}.${r.indexname}:${r.indexdef}`);
+    const constraintSignatures = constraints.rows.map((r: any) => `${r.table_schema}.${r.table_name}:${r.constraint_type}:${r.constraint_name}:${r.definition ?? ""}`);
+    const viewSignatures = views.rows.map((r: any) => `${r.schemaname}.${r.viewname}:${r.definition}`);
+    const triggerSignatures = triggers.rows.map((r: any) => `${r.schema_name}.${r.table_name}.${r.trigger_name}:${r.definition}`);
     const featureRow = features.rows[0] ?? {};
     const featureCounts: FeatureCounts = {
       views: Number(featureRow.views) || 0,
@@ -102,12 +139,15 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       tables: tableMap,
       estimatedRows: [...tableMap.values()].reduce((sum, table) => sum + table.estimate, 0),
       foreignKeyCount: [...tableMap.values()].reduce((sum, table) => sum + table.foreignKeys.length, 0),
+      indexes: indexSignatures, constraints: constraintSignatures, views: viewSignatures, triggers: triggerSignatures,
       features: featureCounts
     };
   } finally {
     await client.query("ROLLBACK").catch(() => undefined);
   }
 }
+
+function diff(source: string[], target: string[]) { return { missingInTarget: source.filter(x => !target.includes(x)), missingInSource: target.filter(x => !source.includes(x)) }; }
 
 function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
   const names = [...new Set([...source.tables.keys(), ...target.tables.keys()])].sort();
@@ -148,6 +188,12 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         source: { tableCount: source.tables.size, estimatedRows: source.estimatedRows, foreignKeyCount: source.foreignKeyCount },
         target: { tableCount: target.tables.size, estimatedRows: target.estimatedRows, foreignKeyCount: target.foreignKeyCount },
         comparison, blockers,
+        objectComparison: {
+          indexes: { source: source.indexes.length, target: target.indexes.length, differences: diff(source.indexes, target.indexes) },
+          constraints: { source: source.constraints.length, target: target.constraints.length, differences: diff(source.constraints, target.constraints) },
+          views: { source: source.views.length, target: target.views.length, differences: diff(source.views, target.views) },
+          triggers: { source: source.triggers.length, target: target.triggers.length, differences: diff(source.triggers, target.triggers) }
+        },
         sourceFeatures: source.features, targetFeatures: target.features,
         note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. لا ينفذ نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
       };
