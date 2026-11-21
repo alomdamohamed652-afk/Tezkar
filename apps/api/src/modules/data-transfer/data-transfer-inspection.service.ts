@@ -1,7 +1,12 @@
 import pg from "pg";
 import { assertDistinctDatabaseIdentities, assertReadOnlySourceSession, createReadOnlySourcePool } from "./data-transfer-connection.service.js";
 
-type ColumnShape = { name: string; type: string; nullable: boolean; defaultValue: string | null };
+type ColumnShape = {
+  name: string; type: string; udtSchema: string; udtName: string;
+  domainSchema: string | null; domainName: string | null;
+  nullable: boolean; defaultValue: string | null; identity: string; generated: string;
+  collation: string | null;
+};
 type TableShape = {
   estimate: number;
   columns: ColumnShape[];
@@ -53,7 +58,10 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
 
           SELECT table_schema,table_name,column_name,
                  COALESCE(NULLIF(data_type,''),udt_name) AS type,
-                 is_nullable='YES' AS nullable,column_default
+                 udt_schema, udt_name, domain_schema, domain_name,
+                 is_nullable='YES' AS nullable, column_default,
+                 CASE WHEN is_identity='YES' THEN identity_generation ELSE '' END AS identity_generation,
+                 is_generated, collation_schema || '.' || collation_name AS collation
             FROM information_schema.columns
            WHERE table_schema = 'public'
            ORDER BY table_schema,table_name,ordinal_position
@@ -145,7 +153,11 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     }
     for (const row of columns.rows) {
       tableMap.get(`${row.table_schema}.${row.table_name}`)?.columns.push({
-        name: row.column_name, type: row.type, nullable: row.nullable, defaultValue: row.column_default
+        name: row.column_name, type: row.type, udtSchema: row.udt_schema, udtName: row.udt_name,
+        domainSchema: row.domain_schema, domainName: row.domain_name,
+        nullable: row.nullable, defaultValue: row.column_default,
+        identity: row.identity_generation ?? "", generated: row.is_generated ?? "",
+        collation: row.collation ?? null
       });
     }
     for (const row of primaryKeys.rows) {
@@ -221,7 +233,7 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
     if (left && right) {
       const columnSignature = (table: TableShape) =>
         table.columns.map(column =>
-          `${column.name}:${column.type}:${column.nullable}:${column.defaultValue ?? ""}`).sort();
+          `${column.name}:${column.type}:${column.udtSchema}.${column.udtName}:${column.domainSchema ?? ""}.${column.domainName ?? ""}:${column.nullable}:${column.defaultValue ?? ""}:${column.identity}:${column.generated}:${column.collation ?? ""}`).sort();
       if (JSON.stringify(columnSignature(left)) !== JSON.stringify(columnSignature(right))) {
         differences.push("اختلاف الأعمدة أو أنواعها أو خصائصها");
       }
