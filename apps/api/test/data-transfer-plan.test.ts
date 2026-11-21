@@ -108,3 +108,30 @@ test("produces deterministic order for disconnected tables", () => {
   );
   assert.deepEqual(result.orderedTables, ["alpha", "middle", "zeta"]);
 });
+
+test("blocks even initially-deferred self references until transfer support exists", () => {
+  const result = buildTransferOrder(
+    [{ name: "tree", primaryKey: ["id"] }],
+    [{ table: "tree", referencedTable: "tree", deferrable: true, initiallyDeferred: true }]
+  );
+  assert.deepEqual(result.orderedTables, []);
+  assert.deepEqual(result.blockedTables, ["tree"]);
+  assert.match(result.blockers.join(" "), /deferred-constraint transfer strategy/);
+});
+
+test("blocks every member of a multi-table FK cycle", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "a", primaryKey: ["id"] },
+      { name: "b", primaryKey: ["id"] },
+      { name: "c", primaryKey: ["id"] }
+    ],
+    [
+      { table: "a", referencedTable: "b", deferrable: false, initiallyDeferred: false },
+      { table: "b", referencedTable: "c", deferrable: false, initiallyDeferred: false },
+      { table: "c", referencedTable: "a", deferrable: false, initiallyDeferred: false }
+    ]
+  );
+  assert.deepEqual(result.orderedTables, []);
+  assert.deepEqual(result.blockedTables, ["a", "b", "c"]);
+});
