@@ -26,7 +26,8 @@ function getLegacyPool(): pg.Pool {
 }
 
 type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string; generationExpression: string; collation: string | null };
-type Table = { name: string; kind: string; persistence: string; isPartition: boolean; partitionBound: string | null; hasInheritance: boolean; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean; canSelect: boolean; canInsert: boolean };
+type PrimaryKeyConstraint = { name: string; definition: string; deferrable: boolean; initiallyDeferred: boolean; validated: boolean };
+type Table = { name: string; kind: string; persistence: string; isPartition: boolean; partitionBound: string | null; hasInheritance: boolean; columns: Column[]; primaryKey: string[]; primaryKeyConstraint: PrimaryKeyConstraint | null; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean; canSelect: boolean; canInsert: boolean };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; validated: boolean; onUpdate: string; onDelete: string };
 
 async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
@@ -82,12 +83,25 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
        ORDER BY table_name, ordinal_position
     `);
     const pkResult = await client.query<{ table_name: string; column_name: string; ordinal: number }>(`
-      SELECT tc.table_name, kcu.column_name, kcu.ordinal_position AS ordinal
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema AND tc.table_name=kcu.table_name
-       WHERE tc.table_schema='public' AND tc.constraint_type='PRIMARY KEY'
-       ORDER BY tc.table_name, kcu.ordinal_position
+      SELECT tbl.relname AS table_name, attr.attname AS column_name, key.ordinality::int AS ordinal
+        FROM pg_constraint con
+        JOIN pg_class tbl ON tbl.oid=con.conrelid
+        JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+        CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS key(attnum, ordinality)
+        JOIN pg_attribute attr ON attr.attrelid=tbl.oid AND attr.attnum=key.attnum
+       WHERE ns.nspname='public' AND con.contype='p'
+       ORDER BY tbl.relname, key.ordinality
+    `);
+    const pkConstraintResult = await client.query<{ table_name: string; name: string; definition: string; deferrable: boolean; initially_deferred: boolean; validated: boolean }>(`
+      SELECT tbl.relname AS table_name, con.conname AS name,
+             pg_get_constraintdef(con.oid, true) AS definition,
+             con.condeferrable AS deferrable, con.condeferred AS initially_deferred,
+             con.convalidated AS validated
+        FROM pg_constraint con
+        JOIN pg_class tbl ON tbl.oid=con.conrelid
+        JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+       WHERE ns.nspname='public' AND con.contype='p'
+       ORDER BY tbl.relname, con.conname
     `);
     const sequenceResult = await client.query<{ table_name: string; column_name: string; sequence_name: string | null }>(`
       SELECT table_name, column_name,
@@ -217,10 +231,14 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       list.push(p.column_name);
       pkByTable.set(p.table_name, list);
     }
+    const pkConstraintByTable = new Map<string, PrimaryKeyConstraint>();
+    for (const p of pkConstraintResult.rows) {
+      pkConstraintByTable.set(p.table_name, { name: p.name, definition: p.definition, deferrable: p.deferrable, initiallyDeferred: p.initially_deferred, validated: p.validated });
+    }
     const tables: Table[] = tablesResult.rows.map(t => ({
       name: t.name, kind: t.kind === "p" ? "partitioned" : "table", persistence: t.persistence,
       isPartition: t.is_partition, partitionBound: t.partition_bound, hasInheritance: t.has_inheritance,
-      columns: columnsByTable.get(t.name) ?? [], primaryKey: pkByTable.get(t.name) ?? [],
+      columns: columnsByTable.get(t.name) ?? [], primaryKey: pkByTable.get(t.name) ?? [], primaryKeyConstraint: pkConstraintByTable.get(t.name) ?? null,
       rowEstimate: Number(t.estimate), rlsEnabled: t.rls_enabled, rlsForced: t.rls_forced,
       canSelect: t.can_select, canInsert: t.can_insert
     }));
@@ -343,7 +361,9 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (from.kind === "partitioned" || from.isPartition || from.hasInheritance) differences.push("الجدول ضمن بنية Partition أو Inheritance؛ النقل الآلي متوقف لحين معالجة علاقات التقسيم والوراثة صراحةً");
     if (from.persistence !== to.persistence) differences.push("اختلاف Persistence mode للجدول (logged/unlogged/temporary)");
     if (from.isPartition !== to.isPartition || from.partitionBound !== to.partitionBound || from.hasInheritance !== to.hasInheritance) differences.push("اختلاف بنية Partition/Inheritance أو حدود التقسيم");
-    if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف المفتاح الأساسي");
+    if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف أعمدة أو ترتيب المفتاح الأساسي");
+    const primaryKeySignature = (value: PrimaryKeyConstraint | null) => value === null ? null : JSON.stringify([value.definition, value.deferrable, value.initiallyDeferred, value.validated]);
+    if (primaryKeySignature(from.primaryKeyConstraint) !== primaryKeySignature(to.primaryKeyConstraint)) differences.push("اختلاف تعريف أو خصائص قيد المفتاح الأساسي (بما فيها قابلية التأجيل والتحقق)");
     if (JSON.stringify(fkSignature(legacy.foreignKeys, name)) !== JSON.stringify(fkSignature(target.foreignKeys, name))) differences.push("اختلاف علاقات المفاتيح الخارجية");
     if (JSON.stringify(constraintSignature(legacy.constraints, name)) !== JSON.stringify(constraintSignature(target.constraints, name))) differences.push("اختلاف قيود UNIQUE أو CHECK أو EXCLUDE");
     if (JSON.stringify(objectSignature(legacy.uniqueIndexes, name)) !== JSON.stringify(objectSignature(target.uniqueIndexes, name))) differences.push("اختلاف الفهارس الفريدة UNIQUE INDEX");
