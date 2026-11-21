@@ -39,7 +39,12 @@ export function buildTransferOrder(
   }
 
   for (const fk of foreignKeys) {
-    if (!names.has(fk.table) || !names.has(fk.referencedTable)) continue;
+    if (!names.has(fk.table)) continue;
+    if (!names.has(fk.referencedTable)) {
+      blocked.add(fk.table);
+      blockers.push(`Foreign key from ${fk.table} references a table outside the inspected set (${fk.referencedTable})`);
+      continue;
+    }
     if (fk.table === fk.referencedTable) {
       if (!fk.deferrable || !fk.initiallyDeferred) {
         blocked.add(fk.table);
