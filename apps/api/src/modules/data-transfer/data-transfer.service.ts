@@ -42,6 +42,15 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     if (requireRestrictedRole && (safety.rows[0]?.superuser || safety.rows[0]?.bypassRls)) {
       throw new Error("Legacy source role must not be superuser or BYPASSRLS");
     }
+    const additionalSchemasResult = await client.query<{ schema_name: string }>(`
+      SELECT nspname AS schema_name
+        FROM pg_namespace
+       WHERE nspname <> 'public'
+         AND nspname <> 'information_schema'
+         AND nspname NOT LIKE 'pg_%'
+         AND nspname NOT IN ('auth','storage','realtime','extensions','vault','graphql_public','supabase_functions','supabase_migrations','_realtime','net','cron','pgsodium')
+       ORDER BY nspname
+    `);
     const tablesResult = await client.query<{ name: string; kind: string; estimate: string; rls_enabled: boolean; rls_forced: boolean }>(`
       SELECT c.relname AS name, c.relkind AS kind,
              GREATEST(c.reltuples, 0)::bigint::text AS estimate,
@@ -212,7 +221,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
+    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, additionalSchemas: additionalSchemasResult.rows.map(row => row.schema_name), features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -262,6 +271,12 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const globalBlockers = [
     ...customTypeDifferences,
     ...extensionDifferences,
+    ...(legacy.additionalSchemas.length
+      ? [`توجد مخططات غير مفحوصة في المصدر: ${legacy.additionalSchemas.join(", ")}؛ لا يمكن ضمان اكتمال النقل`]
+      : []),
+    ...(target.additionalSchemas.length
+      ? [`توجد مخططات غير مفحوصة في الوجهة: ${target.additionalSchemas.join(", ")}؛ لا يمكن ضمان عدم وجود تعارضات`]
+      : []),
     ...transferPlan.blockers.map(message => `ترتيب النقل: ${message}`)
   ];
   type UnsupportedFeatureKey = "views" | "materializedViews" | "routines" | "largeObjects" | "triggers";
