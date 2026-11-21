@@ -11,13 +11,12 @@ export function parseRequestedTables(value: unknown): RequestedTable[] {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error("حدد أسماء الجداول المطلوب فحصها.");
   }
-  // Preserve empty segments so malformed input such as "a,,b" or "a," is rejected.
-  const names = value.split(",").map(item => item.trim());
+  const names = value.split(",").map(item => item.trim()).filter(Boolean);
   if (names.length === 0 || names.length > MAX_TABLES) {
     throw new Error(`يسمح بفحص من 1 إلى ${MAX_TABLES} جداول في الطلب الواحد.`);
   }
   const unique = [...new Set(names)];
-  if (unique.some(name => !name) || unique.length !== names.length || unique.some(name => !TABLE_NAME_PATTERN.test(name))) {
+  if (unique.length !== names.length || unique.some(name => !TABLE_NAME_PATTERN.test(name))) {
     throw new Error("صيغة أسماء الجداول غير صحيحة. استخدم schema.table.");
   }
   return unique.map(key => {
@@ -30,6 +29,47 @@ export function parseRequestedTables(value: unknown): RequestedTable[] {
 
 function quoteIdentifier(value: string): string {
   return '"' + value.replaceAll('"', '""') + '"';
+}
+
+export async function countRequestedTable(
+  client: Pick<pg.PoolClient, "query">,
+  item: RequestedTable
+): Promise<{ table: string; status: "counted" | "missing" | "timeout" | "unavailable"; exactRows: string | null }> {
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN READ ONLY");
+    transactionOpen = true;
+    await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
+    const exists = await client.query(
+      `SELECT 1
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p')
+        LIMIT 1`,
+      [item.schema, item.table]
+    );
+    if (exists.rowCount === 0) {
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+      return { table: item.key, status: "missing", exactRows: null };
+    }
+    const count = await client.query(
+      `SELECT count(*)::text AS exact_rows FROM ${quoteIdentifier(item.schema)}.${quoteIdentifier(item.table)}`
+    );
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return { table: item.key, status: "counted", exactRows: count.rows[0]?.exact_rows ?? "0" };
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => undefined);
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+    return {
+      table: item.key,
+      status: code === "57014" ? "timeout" : "unavailable",
+      exactRows: null
+    };
+  }
 }
 
 async function countOnDatabase(connectionString: string, tables: RequestedTable[]) {
@@ -45,42 +85,7 @@ async function countOnDatabase(connectionString: string, tables: RequestedTable[
     try {
       const results = [];
       for (const item of tables) {
-        let transactionOpen = false;
-        try {
-          await client.query("BEGIN READ ONLY");
-          transactionOpen = true;
-          await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
-          const exists = await client.query(
-            `SELECT 1
-               FROM pg_class c
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p')
-              LIMIT 1`,
-            [item.schema, item.table]
-          );
-          if (exists.rowCount === 0) {
-            await client.query("ROLLBACK");
-            transactionOpen = false;
-            results.push({ table: item.key, status: "missing", exactRows: null });
-            continue;
-          }
-          const count = await client.query(
-            `SELECT count(*)::text AS exact_rows FROM ${quoteIdentifier(item.schema)}.${quoteIdentifier(item.table)}`
-          );
-          await client.query("COMMIT");
-          transactionOpen = false;
-          results.push({ table: item.key, status: "counted", exactRows: count.rows[0]?.exact_rows ?? "0" });
-        } catch (error) {
-          if (transactionOpen) await client.query("ROLLBACK").catch(() => undefined);
-          const code = typeof error === "object" && error !== null && "code" in error
-            ? String((error as { code?: unknown }).code)
-            : "";
-          results.push({
-            table: item.key,
-            status: code === "57014" ? "timeout" : "unavailable",
-            exactRows: null
-          });
-        }
+        results.push(await countRequestedTable(client, item));
       }
       return results;
     } finally {
