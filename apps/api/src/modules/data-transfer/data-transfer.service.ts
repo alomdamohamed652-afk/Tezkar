@@ -238,6 +238,27 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const customTypeDifferences = JSON.stringify(typeSignature(legacy.customTypes)) !== JSON.stringify(typeSignature(target.customTypes))
     ? ["اختلاف تعريفات الأنواع المخصصة (ENUM/DOMAIN/RANGE)؛ لا يمكن ضمان إدخال قيمها دون تطابق التعريفات"]
     : [];
+  const globalBlockers = [...customTypeDifferences];
+  const unsupportedObjects: Array<[keyof typeof legacy.features, string]> = [
+    ["views", "Views"],
+    ["materializedViews", "Materialized Views"],
+    ["routines", "Functions/Procedures"],
+    ["largeObjects", "Large Objects"],
+    ["triggers", "Triggers"]
+  ];
+  for (const [key, label] of unsupportedObjects) {
+    const sourceCount = Number(legacy.features?.[key] ?? 0);
+    const targetCount = Number(target.features?.[key] ?? 0);
+    if (sourceCount > 0 || targetCount > 0) {
+      globalBlockers.push(`وجود ${label} (المصدر: ${sourceCount}، الوجهة: ${targetCount})؛ لا يوجد لها مسار نقل آمن مكتمل حتى الآن`);
+    }
+  }
+  if (legacy.customTypes.length > 0 || target.customTypes.length > 0) {
+    globalBlockers.push("توجد أنواع PostgreSQL مخصصة؛ يلزم دعم نقلها والتحقق منها صراحةً قبل السماح بنقل البيانات");
+  }
+  if (legacy.sequences.length > 0 || target.sequences.length > 0) {
+    globalBlockers.push("توجد Sequences؛ مزامنة قيمها النهائية والتحقق منها لم تُنفذ بعد");
+  }
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
     const to = targetByName.get(name);
@@ -261,6 +282,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (JSON.stringify(objectSignature(legacy.triggers, name)) !== JSON.stringify(objectSignature(target.triggers, name))) differences.push("اختلاف Triggers؛ قد تؤثر في السجلات أثناء الإدخال");
     if (JSON.stringify(policySignature(legacy.policies, name)) !== JSON.stringify(policySignature(target.policies, name))) differences.push("اختلاف سياسات Row Level Security");
     if (from.columns.some(column => column.identity || column.generated !== "NEVER")) differences.push("يحتوي المصدر على أعمدة Identity أو Generated؛ يلزم مسار إدخال مخصص قبل النقل");
+    if (from.rlsEnabled) differences.push("RLS مفعّل في المصدر؛ لا يمكن ضمان رؤية كل الصفوف بحساب القراءة الحالي دون إثبات تغطية السياسات");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
     if (from.rlsEnabled !== to.rlsEnabled || from.rlsForced !== to.rlsForced) differences.push("اختلاف إعدادات Row Level Security");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
@@ -282,12 +304,12 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     targetFeatures: target.features,
     sourceCustomTypes: legacy.customTypes,
     targetCustomTypes: target.customTypes,
-    globalBlockers: customTypeDifferences,
+    globalBlockers,
     sourceSequences: legacy.sequences,
     targetSequences: target.sequences,
     blockers: [
       ...comparison.filter(x => x.status === "source_only" || x.status === "schema_mismatch").map(x => ({ table: x.table, status: x.status, differences: x.differences })),
-      ...customTypeDifferences.map(message => ({ table: null, status: "global_schema_mismatch", differences: [message] }))
+      ...globalBlockers.map(message => ({ table: null, status: "global_transfer_blocker", differences: [message] }))
     ],
     note: "أعداد الصفوف تقديرية من إحصاءات PostgreSQL وليست عدًّا دقيقًا. هذه المرحلة قراءة فقط ولا تنقل أو تعدّل أي بيانات."
   };
