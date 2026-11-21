@@ -32,6 +32,15 @@ async function inspect(pool: pg.Pool) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const safety = await client.query<{ readOnly: boolean; superuser: boolean; bypassRls: boolean; roleName: string }>(`
+      SELECT current_setting('transaction_read_only') = 'on' AS "readOnly",
+             r.rolsuper AS superuser, r.rolbypassrls AS "bypassRls", current_user AS "roleName"
+        FROM pg_roles r WHERE r.rolname = current_user
+    `);
+    if (safety.rows[0]?.readOnly !== true) throw new Error("Legacy source transaction is not read-only");
+    if (safety.rows[0]?.superuser || safety.rows[0]?.bypassRls) {
+      throw new Error("Legacy source role must not be superuser or BYPASSRLS");
+    }
     const tablesResult = await client.query<{ name: string; kind: string; estimate: string }>(`
       SELECT c.relname AS name, c.relkind AS kind,
              GREATEST(c.reltuples, 0)::bigint::text AS estimate
@@ -56,6 +65,26 @@ async function inspect(pool: pg.Pool) {
           ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema AND tc.table_name=kcu.table_name
        WHERE tc.table_schema='public' AND tc.constraint_type='PRIMARY KEY'
        ORDER BY tc.table_name, kcu.ordinal_position
+    `);
+    const sequenceResult = await client.query<{ table_name: string; column_name: string; sequence_name: string | null }>(`
+      SELECT table_name, column_name,
+             pg_get_serial_sequence(format('%I.%I', table_schema, table_name), column_name) AS sequence_name
+        FROM information_schema.columns
+       WHERE table_schema='public' AND (column_default LIKE 'nextval(%' OR is_identity='YES')
+       ORDER BY table_name, ordinal_position
+    `);
+    const featureResult = await client.query<{
+      views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number;
+      customTypes: number; routines: number;
+    }>(`
+      SELECT
+        (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='v') AS views,
+        (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='m') AS "materializedViews",
+        (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal) AS triggers,
+        (SELECT count(*)::int FROM pg_extension) AS extensions,
+        (SELECT count(*)::int FROM pg_largeobject_metadata) AS "largeObjects",
+        (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','c') AND t.typcategory <> 'A') AS "customTypes",
+        (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') AS routines
     `);
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
@@ -102,7 +131,7 @@ async function inspect(pool: pg.Pool) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { tables, foreignKeys: [...fkGroups.values()] };
+    return { tables, foreignKeys: [...fkGroups.values()], sequences: sequenceResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -140,6 +169,10 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     target: { tableCount: target.tables.length, estimatedRows: target.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: target.foreignKeys.length },
     comparison,
     foreignKeys: legacy.foreignKeys,
+    sourceFeatures: legacy.features,
+    targetFeatures: target.features,
+    sourceSequences: legacy.sequences,
+    targetSequences: target.sequences,
     blockers: comparison.filter(x => x.status === "source_only" || x.status === "schema_mismatch").map(x => ({ table: x.table, status: x.status, differences: x.differences })),
     note: "أعداد الصفوف تقديرية من إحصاءات PostgreSQL وليست عدًّا دقيقًا. هذه المرحلة قراءة فقط ولا تنقل أو تعدّل أي بيانات."
   };
