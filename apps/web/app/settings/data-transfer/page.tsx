@@ -12,7 +12,7 @@ type Inspection = {
   indexWarnings?: Array<{ table: string; message: string }>;
   transferPlan?: { orderedTables: string[]; blockedTables: string[]; blockers: string[] };
   sourceFeatures?: { views: number; materializedViews: number; foreignTables: number; rules: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
-  targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
+  targetFeatures?: { views: number; materializedViews: number; foreignTables: number; rules: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   globalBlockers?: string[];
   note: string;
 };
