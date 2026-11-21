@@ -238,7 +238,8 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       differences.length ? "schema_mismatch" : "compatible";
     return {
       table: name, status, sourceEstimate: left?.estimate ?? 0,
-      targetEstimate: right?.estimate ?? 0, dependencies: left?.dependencies ?? [],\n      hasPrimaryKey: Boolean(left?.primaryKey.length && right?.primaryKey.length), differences
+      targetEstimate: right?.estimate ?? 0, dependencies: left?.dependencies ?? [],
+      hasPrimaryKey: Boolean(left?.primaryKey.length && right?.primaryKey.length), differences
     };
   });
 }
