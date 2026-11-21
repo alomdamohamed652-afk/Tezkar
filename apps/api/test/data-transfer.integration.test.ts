@@ -56,6 +56,21 @@ test("preflight compares two isolated PostgreSQL databases and reports index dri
     assert.deepEqual(report.indexWarnings.map(item => item.table), ["items"]);
     assert.equal(report.transferPlan.orderedTables.includes("items"), true);
     assert.equal(report.globalBlockers.length, 0);
+
+    // Verify that pointing the read-only source at the target database is blocked.
+    await admin.query(`GRANT CONNECT ON DATABASE ${quoteIdentifier(targetDb)} TO ${quoteIdentifier(sourceRole)}`);
+    await targetPool.query(`GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(sourceRole)}`);
+    await targetPool.query(`GRANT SELECT ON TABLE public.items TO ${quoteIdentifier(sourceRole)}`);
+    const sameDatabaseUrl = new URL(legacyUrl);
+    sameDatabaseUrl.pathname = `/${targetDb}`;
+    process.env.LEGACY_DATABASE_URL = sameDatabaseUrl.toString();
+    await closeLegacyPool();
+    const sameDatabaseReport = await inspectLegacyAndTarget(targetPool);
+    assert.equal(
+      sameDatabaseReport.globalBlockers.some(message => message.includes("المصدر والوجهة يشيران إلى قاعدة البيانات نفسها")),
+      true
+    );
+    assert.equal(sameDatabaseReport.transferPlan.orderedTables.length, 0);
   } finally {
     await closeLegacyPool().catch(() => undefined);
     await sourceAdmin?.end().catch(() => undefined);
