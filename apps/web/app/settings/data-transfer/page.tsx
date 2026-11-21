@@ -9,6 +9,7 @@ type Inspection = {
   target: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
   comparison: Array<{ table: string; status: string; sourceEstimate: number; targetEstimate: number; differences: string[] }>;
   blockers: Array<{ table: string | null; status: string; differences: string[] }>;
+  indexWarnings?: Array<{ table: string; message: string }>;
   transferPlan?: { orderedTables: string[]; blockedTables: string[]; blockers: string[] };
   sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
@@ -96,6 +97,13 @@ export default function DataTransferPage() {
                   {blocker.table ? <strong>{blocker.table}: </strong> : <strong>عائق عام: </strong>}
                   {blocker.differences.join("، ")}
                 </li>)}
+              </ul>
+            </div>}
+            {report.indexWarnings && report.indexWarnings.length > 0 && <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              <strong>ملاحظات أداء الفهارس ({report.indexWarnings.length.toLocaleString("ar-EG")})</strong>
+              <p className="mt-1 text-xs text-slate-500">هذه اختلافات في فهارس غير فريدة، ولا توقف خطة النقل تلقائيًا. يجب مراجعتها لتجنب تراجع أداء الاستعلامات بعد النقل.</p>
+              <ul className="mt-2 list-disc space-y-1 pr-5">
+                {report.indexWarnings.map((warning, index) => <li key={warning.table + "-" + index}><strong>{warning.table}: </strong>{warning.message}</li>)}
               </ul>
             </div>}
             {report.transferPlan && <div className="mt-4 rounded-lg border border-slate-200 p-3 text-sm">
