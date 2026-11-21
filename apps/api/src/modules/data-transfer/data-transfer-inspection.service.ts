@@ -30,6 +30,9 @@ type DatabaseSnapshot = {
   views: string[];
   materializedViews: string[];
   triggers: string[];
+  extensions: string[];
+  customTypes: string[];
+  routines: string[];
   features: FeatureCounts;
 };
 
@@ -185,6 +188,12 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         `${row.schemaname}.${row.matviewname}:${row.definition}`),
       triggers: triggers.rows.map((row: any) =>
         `${row.schema_name}.${row.table_name}.${row.trigger_name}:${row.definition}`),
+      extensions: extensions.rows.map((row: any) =>
+        `${row.extname}:${row.extversion}:${row.schema_name}`),
+      customTypes: customTypes.rows.map((row: any) =>
+        `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}`),
+      routines: routines.rows.map((row: any) =>
+        `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${row.definition}`),
       features: featureCounts
     };
   } finally {
@@ -309,7 +318,13 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
           materializedViews: { source: source.materializedViews.length, target: target.materializedViews.length,
             differences: diff(source.materializedViews, target.materializedViews) },
           triggers: { source: source.triggers.length, target: target.triggers.length,
-            differences: diff(source.triggers, target.triggers) }
+            differences: diff(source.triggers, target.triggers) },
+          extensions: { source: source.extensions.length, target: target.extensions.length,
+            differences: diff(source.extensions, target.extensions) },
+          customTypes: { source: source.customTypes.length, target: target.customTypes.length,
+            differences: diff(source.customTypes, target.customTypes) },
+          routines: { source: source.routines.length, target: target.routines.length,
+            differences: diff(source.routines, target.routines) }
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
