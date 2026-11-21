@@ -88,9 +88,15 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='m') AS "materializedViews",
         (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal) AS triggers,
         (SELECT count(*)::int FROM pg_extension) AS extensions,
+        (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S') AS sequences,
         (SELECT count(*)::int FROM pg_largeobject_metadata) AS "largeObjects",
         (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','r','m')) AS "customTypes",
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') AS routines
+    `);
+    const extensionResult = await client.query<{ name: string; version: string }>(`
+      SELECT extname AS name, extversion AS version
+        FROM pg_extension
+       ORDER BY extname
     `);
     const customTypeResult = await client.query<{ type_name: string; type_kind: string; definition: string; enum_labels: string[] }>(`
       SELECT t.typname AS type_name, t.typtype::text AS type_kind,
@@ -205,7 +211,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
+    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -238,7 +244,12 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const customTypeDifferences = JSON.stringify(typeSignature(legacy.customTypes)) !== JSON.stringify(typeSignature(target.customTypes))
     ? ["اختلاف تعريفات الأنواع المخصصة (ENUM/DOMAIN/RANGE)؛ لا يمكن ضمان إدخال قيمها دون تطابق التعريفات"]
     : [];
-  const globalBlockers = [...customTypeDifferences];
+  const extensionSignature = (items: Array<{name: string; version: string}>) =>
+    items.map(item => JSON.stringify([item.name, item.version])).sort();
+  const extensionDifferences = JSON.stringify(extensionSignature(legacy.extensions)) !== JSON.stringify(extensionSignature(target.extensions))
+    ? ["اختلاف أسماء أو إصدارات PostgreSQL Extensions بين المصدر والوجهة؛ يلزم توحيدها قبل النقل"]
+    : [];
+  const globalBlockers = [...customTypeDifferences, ...extensionDifferences];
   type UnsupportedFeatureKey = "views" | "materializedViews" | "routines" | "largeObjects" | "triggers";
   const unsupportedObjects: Array<[UnsupportedFeatureKey, string]> = [
     ["views", "Views"],
@@ -257,8 +268,8 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   if (legacy.customTypes.length > 0 || target.customTypes.length > 0) {
     globalBlockers.push("توجد أنواع PostgreSQL مخصصة؛ يلزم دعم نقلها والتحقق منها صراحةً قبل السماح بنقل البيانات");
   }
-  if (legacy.sequences.length > 0 || target.sequences.length > 0) {
-    globalBlockers.push("توجد Sequences؛ مزامنة قيمها النهائية والتحقق منها لم تُنفذ بعد");
+  if (Number(legacy.features?.sequences ?? 0) > 0 || Number(target.features?.sequences ?? 0) > 0) {
+    globalBlockers.push("توجد Sequences (بما فيها المستقلة غير المرتبطة بأعمدة)؛ مزامنة قيمها النهائية والتحقق منها لم تُنفذ بعد");
   }
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
@@ -271,7 +282,10 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     for (const c of from.columns) {
       const other = targetColumns.get(c.name);
       if (!other) differences.push("عمود غير موجود بالوجهة: " + c.name);
-      else if (c.udtName !== other.udtName || c.dataType !== other.dataType || c.maxLength !== other.maxLength || c.numericPrecision !== other.numericPrecision || c.numericScale !== other.numericScale || c.datetimePrecision !== other.datetimePrecision) differences.push("اختلاف نوع أو دقة العمود: " + c.name);
+      else {
+        if (c.udtName !== other.udtName || c.dataType !== other.dataType || c.maxLength !== other.maxLength || c.numericPrecision !== other.numericPrecision || c.numericScale !== other.numericScale || c.datetimePrecision !== other.datetimePrecision) differences.push("اختلاف نوع أو دقة العمود: " + c.name);
+        if (c.nullable && !other.nullable) differences.push("الوجهة تمنع NULL بينما المصدر يسمح به في العمود: " + c.name);
+      }
     }
     for (const c of to.columns) if (!sourceColumns.has(c.name) && !c.nullable && c.defaultValue === null) differences.push("عمود إلزامي إضافي بالوجهة: " + c.name);
     if (from.primaryKey.length === 0) differences.push("جدول المصدر بلا مفتاح أساسي؛ لا يمكن ضمان نقل آمن قابل للاستئناف");
@@ -303,6 +317,8 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     targetPolicies: target.policies,
     sourceFeatures: legacy.features,
     targetFeatures: target.features,
+    sourceExtensions: legacy.extensions,
+    targetExtensions: target.extensions,
     sourceCustomTypes: legacy.customTypes,
     targetCustomTypes: target.customTypes,
     globalBlockers,
