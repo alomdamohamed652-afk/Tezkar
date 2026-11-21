@@ -149,6 +149,10 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const targetByName = new Map(target.tables.map(table => [table.name, table]));
   const legacyByName = new Map(legacy.tables.map(table => [table.name, table]));
   const allNames = [...new Set([...legacyByName.keys(), ...targetByName.keys()])].sort();
+  const fkSignature = (items: ForeignKey[], tableName: string) => items
+    .filter(item => item.table === tableName)
+    .map(item => JSON.stringify([item.columns, item.referencedTable, item.referencedColumns, item.deferrable]))
+    .sort();
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
     const to = targetByName.get(name);
@@ -166,6 +170,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (from.primaryKey.length === 0) differences.push("جدول المصدر بلا مفتاح أساسي؛ لا يمكن ضمان نقل آمن قابل للاستئناف");
     if (from.kind === "partitioned") differences.push("الجدول مقسّم إلى partitions؛ النقل الآلي متوقف لحين معالجة التقسيم صراحةً");
     if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف المفتاح الأساسي");
+    if (JSON.stringify(fkSignature(legacy.foreignKeys, name)) !== JSON.stringify(fkSignature(target.foreignKeys, name))) differences.push("اختلاف علاقات المفاتيح الخارجية");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
   });
