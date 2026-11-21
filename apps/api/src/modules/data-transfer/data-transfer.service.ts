@@ -26,7 +26,7 @@ function getLegacyPool(): pg.Pool {
 }
 
 type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string; generationExpression: string; collation: string | null };
-type Table = { name: string; kind: string; persistence: string; isPartition: boolean; partitionBound: string | null; hasInheritance: boolean; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
+type Table = { name: string; kind: string; persistence: string; isPartition: boolean; partitionBound: string | null; hasInheritance: boolean; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean; canSelect: boolean; canInsert: boolean };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; validated: boolean; onUpdate: string; onDelete: string };
 
 async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
@@ -52,13 +52,15 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
          AND nspname NOT IN ('auth','storage','realtime','extensions','vault','graphql_public','supabase_functions','supabase_migrations','_realtime','net','cron','pgsodium')
        ORDER BY nspname
     `);
-    const tablesResult = await client.query<{ name: string; kind: string; persistence: string; is_partition: boolean; partition_bound: string | null; has_inheritance: boolean; estimate: string; rls_enabled: boolean; rls_forced: boolean }>(`
+    const tablesResult = await client.query<{ name: string; kind: string; persistence: string; is_partition: boolean; partition_bound: string | null; has_inheritance: boolean; estimate: string; rls_enabled: boolean; rls_forced: boolean; can_select: boolean; can_insert: boolean }>(`
       SELECT c.relname AS name, c.relkind AS kind, c.relpersistence AS persistence,
              c.relispartition AS is_partition,
              CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) ELSE NULL END AS partition_bound,
              EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid=c.oid OR i.inhparent=c.oid) AS has_inheritance,
              GREATEST(c.reltuples, 0)::bigint::text AS estimate,
-             c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced
+             c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced,
+             has_table_privilege(current_user, c.oid, 'SELECT') AS can_select,
+             has_table_privilege(current_user, c.oid, 'INSERT') AS can_insert
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
        WHERE n.nspname='public' AND c.relkind IN ('r','p')
        ORDER BY c.relname
@@ -218,7 +220,8 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       name: t.name, kind: t.kind === "p" ? "partitioned" : "table", persistence: t.persistence,
       isPartition: t.is_partition, partitionBound: t.partition_bound, hasInheritance: t.has_inheritance,
       columns: columnsByTable.get(t.name) ?? [], primaryKey: pkByTable.get(t.name) ?? [],
-      rowEstimate: Number(t.estimate), rlsEnabled: t.rls_enabled, rlsForced: t.rls_forced
+      rowEstimate: Number(t.estimate), rlsEnabled: t.rls_enabled, rlsForced: t.rls_forced,
+      canSelect: t.can_select, canInsert: t.can_insert
     }));
     const fkGroups = new Map<string, ForeignKey>();
     for (const f of fkResult.rows) {
@@ -317,6 +320,8 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (!from) return { table: name, status: "target_only", sourceEstimate: 0, targetEstimate: to!.rowEstimate, differences: ["الجدول موجود في الوجهة فقط"] };
     if (!to) return { table: name, status: "source_only", sourceEstimate: from.rowEstimate, targetEstimate: 0, differences: ["الجدول غير موجود في الوجهة؛ يلزم مراجعة المخطط قبل النقل"] };
     const differences: string[] = [];
+    if (!from.canSelect) differences.push('حساب المصدر لا يملك صلاحية SELECT على الجدول');
+    if (!to.canInsert) differences.push('حساب الوجهة لا يملك صلاحية INSERT على الجدول');
     const sourceColumns = new Map(from.columns.map(c => [c.name, c]));
     const targetColumns = new Map(to.columns.map(c => [c.name, c]));
     for (const c of from.columns) {
