@@ -56,33 +56,32 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
          WHERE tc.constraint_type='PRIMARY KEY'
          ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position`),
       client.query(`
-        SELECT tc.table_schema,tc.table_name,
-               tc.constraint_name || ':' || string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) AS signature
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage kcu
-            ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
-           AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
-         WHERE tc.constraint_type='FOREIGN KEY'
-         GROUP BY tc.table_schema,tc.table_name,tc.constraint_name
-         ORDER BY tc.table_schema,tc.table_name,tc.constraint_name`),
+        SELECT n.nspname AS table_schema, t.relname AS table_name,
+               pg_get_constraintdef(con.oid, true) AS signature
+          FROM pg_constraint con
+          JOIN pg_class t ON t.oid=con.conrelid
+          JOIN pg_namespace n ON n.oid=t.relnamespace
+         WHERE con.contype='f'
+           AND n.nspname NOT IN ('pg_catalog','information_schema')
+         ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid, true)`),
       client.query(`
-        SELECT schemaname, tablename, indexname, indexdef
+        SELECT schemaname, tablename,
+               regexp_replace(indexdef,
+                 '^CREATE (UNIQUE )?INDEX [^ ]+ ON ',
+                 'CREATE \\1INDEX ON ') AS definition
           FROM pg_indexes
          WHERE schemaname NOT IN ('pg_catalog','information_schema')
-         ORDER BY schemaname,tablename,indexname`),
+         ORDER BY schemaname,tablename,definition`),
       client.query(`
-        SELECT tc.table_schema,tc.table_name,tc.constraint_type,
-               tc.constraint_name, string_agg(COALESCE(kcu.column_name, cc.check_clause), ',' ORDER BY kcu.ordinal_position) AS definition
-          FROM information_schema.table_constraints tc
-          LEFT JOIN information_schema.key_column_usage kcu
-            ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
-           AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
-          LEFT JOIN information_schema.check_constraints cc
-            ON cc.constraint_catalog=tc.constraint_catalog AND cc.constraint_schema=tc.constraint_schema
-           AND cc.constraint_name=tc.constraint_name
-         WHERE tc.constraint_type IN ('UNIQUE','CHECK','EXCLUDE')
-         GROUP BY tc.table_schema,tc.table_name,tc.constraint_type,tc.constraint_name,cc.check_clause
-         ORDER BY tc.table_schema,tc.table_name,tc.constraint_type,tc.constraint_name`),
+        SELECT n.nspname AS table_schema, t.relname AS table_name,
+               con.contype AS constraint_type,
+               pg_get_constraintdef(con.oid, true) AS definition
+          FROM pg_constraint con
+          JOIN pg_class t ON t.oid=con.conrelid
+          JOIN pg_namespace n ON n.oid=t.relnamespace
+         WHERE con.contype IN ('u','c','x')
+           AND n.nspname NOT IN ('pg_catalog','information_schema')
+         ORDER BY n.nspname,t.relname,con.contype,pg_get_constraintdef(con.oid, true)`),
       client.query(`
         SELECT schemaname,viewname,definition FROM pg_views
          WHERE schemaname NOT IN ('pg_catalog','information_schema')
@@ -121,8 +120,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     for (const row of primaryKeys.rows) map.get(`${row.table_schema}.${row.table_name}`)?.primaryKey.push(row.column_name);
     for (const row of foreignKeys.rows) map.get(`${row.table_schema}.${row.table_name}`)?.foreignKeys.push(row.signature);
     const tableMap = map;
-    const indexSignatures = indexes.rows.map((r: any) => `${r.schemaname}.${r.tablename}.${r.indexname}:${r.indexdef}`);
-    const constraintSignatures = constraints.rows.map((r: any) => `${r.table_schema}.${r.table_name}:${r.constraint_type}:${r.constraint_name}:${r.definition ?? ""}`);
+    const indexSignatures = indexes.rows.map((r: any) => `${r.schemaname}.${r.tablename}:${r.definition}`);
+    const constraintSignatures = constraints.rows.map((r: any) => `${r.table_schema}.${r.table_name}:${r.constraint_type}:${r.definition ?? ""}`);
     const viewSignatures = views.rows.map((r: any) => `${r.schemaname}.${r.viewname}:${r.definition}`);
     const triggerSignatures = triggers.rows.map((r: any) => `${r.schema_name}.${r.table_name}.${r.trigger_name}:${r.definition}`);
     const featureRow = features.rows[0] ?? {};
@@ -173,8 +172,25 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
   });
 }
 
+function databaseIdentity(connectionString: string): string | null {
+  try {
+    const parsed = new URL(connectionString);
+    const host = (parsed.hostname || parsed.searchParams.get("host") || "").toLowerCase();
+    const port = parsed.port || "5432";
+    const database = decodeURIComponent(parsed.pathname.replace(/^\\//, ""));
+    if (!host || !database) return null;
+    return `${host}:${port}/${database}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: string) {
-  if (sourceUrl === targetUrl) throw new Error("مصدر البيانات والوجهة يشيران إلى نفس الاتصال؛ أوقف الفحص لحماية البيانات.");
+  const sourceIdentity = databaseIdentity(sourceUrl);
+  const targetIdentity = databaseIdentity(targetUrl);
+  if (sourceUrl === targetUrl || (sourceIdentity && targetIdentity && sourceIdentity === targetIdentity)) {
+    throw new Error("مصدر البيانات والوجهة يشيران إلى نفس قاعدة البيانات؛ أوقف الفحص لحماية البيانات.");
+  }
   const sourcePool = new pg.Pool({ connectionString: sourceUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000 });
   const targetPool = new pg.Pool({ connectionString: targetUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000 });
   try {
