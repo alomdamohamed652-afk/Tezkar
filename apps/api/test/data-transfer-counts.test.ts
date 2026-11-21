@@ -16,6 +16,10 @@ test("selected table counts reject empty, duplicate, malformed, and oversized se
   assert.throws(() => parseRequestedTables(undefined), /حدد أسماء الجداول/);
   assert.throws(() => parseRequestedTables("public.workers,public.workers"), /صيغة أسماء/);
   assert.throws(() => parseRequestedTables("public.workers; DROP TABLE users"), /صيغة أسماء/);
+  assert.throws(() => parseRequestedTables("public.workers,,public.orders"), /صيغة أسماء/);
+  assert.throws(() => parseRequestedTables("public.workers,"), /صيغة أسماء/);
+  assert.throws(() => parseRequestedTables(",public.workers"), /صيغة أسماء/);
+  assert.throws(() => parseRequestedTables("public.workers,   ,public.orders"), /صيغة أسماء/);
   assert.throws(
     () => parseRequestedTables("public.a,public.b,public.c,public.d,public.e,public.f"),
     /من 1 إلى 5/
