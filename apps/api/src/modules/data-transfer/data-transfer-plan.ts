@@ -46,10 +46,8 @@ export function buildTransferOrder(
       continue;
     }
     if (fk.table === fk.referencedTable) {
-      if (!fk.deferrable || !fk.initiallyDeferred) {
-        blocked.add(fk.table);
-        blockers.push(`Self-referencing foreign key on ${fk.table} is not initially deferred`);
-      }
+      blocked.add(fk.table);
+      blockers.push(`Self-referencing foreign key on ${fk.table} requires a deferred-constraint transfer strategy`);
       continue;
     }
     // Edge direction is referenced (parent) -> referencing (child).
