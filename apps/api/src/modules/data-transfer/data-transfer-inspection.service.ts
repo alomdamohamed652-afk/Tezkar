@@ -32,69 +32,86 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   await client.query("BEGIN READ ONLY");
   try {
     await client.query("SET LOCAL statement_timeout = '15000'");
-    const [tables, columns, primaryKeys, foreignKeys, indexes, constraints, views, materializedViews, triggers, features] =
-      await Promise.all([
-        client.query(`
+    const tables = await client.query(`
+
           SELECT n.nspname AS schema_name, c.relname AS table_name,
                  GREATEST(c.reltuples, 0)::bigint AS estimated_rows
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
            WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
              AND n.nspname NOT LIKE 'pg_toast%'
-           ORDER BY n.nspname,c.relname`),
-        client.query(`
+           ORDER BY n.nspname,c.relname
+    `);
+    const columns = await client.query(`
+
           SELECT table_schema,table_name,column_name,
                  COALESCE(NULLIF(data_type,''),udt_name) AS type,
                  is_nullable='YES' AS nullable,column_default
             FROM information_schema.columns
            WHERE table_schema NOT IN ('pg_catalog','information_schema')
-           ORDER BY table_schema,table_name,ordinal_position`),
-        client.query(`
+           ORDER BY table_schema,table_name,ordinal_position
+    `);
+    const primaryKeys = await client.query(`
+
           SELECT tc.table_schema,tc.table_name,kcu.column_name,kcu.ordinal_position
             FROM information_schema.table_constraints tc
             JOIN information_schema.key_column_usage kcu
               ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
              AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
            WHERE tc.constraint_type='PRIMARY KEY'
-           ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position`),
-        client.query(`
+           ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position
+    `);
+    const foreignKeys = await client.query(`
+
           SELECT n.nspname AS table_schema,t.relname AS table_name,
                  pg_get_constraintdef(con.oid,true) AS signature
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
            WHERE con.contype='f' AND n.nspname NOT IN ('pg_catalog','information_schema')
-           ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid,true)`),
-        client.query(`
+           ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid,true)
+    `);
+    const indexes = await client.query(`
+
           SELECT schemaname,tablename,
                  (CASE WHEN indexdef LIKE 'CREATE UNIQUE INDEX %' THEN 'UNIQUE' ELSE 'NONUNIQUE' END)
                  || substring(indexdef FROM ' USING .*$') AS definition
             FROM pg_indexes
            WHERE schemaname NOT IN ('pg_catalog','information_schema')
-           ORDER BY schemaname,tablename,definition`),
-        client.query(`
+           ORDER BY schemaname,tablename,definition
+    `);
+    const constraints = await client.query(`
+
           SELECT n.nspname AS table_schema,t.relname AS table_name,con.contype AS constraint_type,
                  pg_get_constraintdef(con.oid,true) AS definition
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
            WHERE con.contype IN ('u','c','x') AND n.nspname NOT IN ('pg_catalog','information_schema')
-           ORDER BY n.nspname,t.relname,con.contype,pg_get_constraintdef(con.oid,true)`),
-        client.query(`
+           ORDER BY n.nspname,t.relname,con.contype,pg_get_constraintdef(con.oid,true)
+    `);
+    const views = await client.query(`
+
           SELECT schemaname,viewname,definition FROM pg_views
            WHERE schemaname NOT IN ('pg_catalog','information_schema')
-           ORDER BY schemaname,viewname`),
-        client.query(`
+           ORDER BY schemaname,viewname
+    `);
+    const materializedViews = await client.query(`
+
           SELECT schemaname,matviewname,definition FROM pg_matviews
            WHERE schemaname NOT IN ('pg_catalog','information_schema')
-           ORDER BY schemaname,matviewname`),
-        client.query(`
+           ORDER BY schemaname,matviewname
+    `);
+    const triggers = await client.query(`
+
           SELECT n.nspname AS schema_name,c.relname AS table_name,t.tgname AS trigger_name,
                  pg_get_triggerdef(t.oid,true) AS definition
             FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
             JOIN pg_namespace n ON n.oid=c.relnamespace
            WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema')
-           ORDER BY n.nspname,c.relname,t.tgname`),
-        client.query(`
+           ORDER BY n.nspname,c.relname,t.tgname
+    `);
+    const features = await client.query(`
+
           SELECT
             (SELECT count(*) FROM pg_views WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS views,
             (SELECT count(*) FROM pg_matviews WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS materialized_views,
@@ -106,8 +123,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
               WHERE t.typtype IN ('e','d','c') AND n.nspname NOT IN ('pg_catalog','information_schema'))::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-              WHERE n.nspname NOT IN ('pg_catalog','information_schema'))::int AS routines`)
-      ]);
+              WHERE n.nspname NOT IN ('pg_catalog','information_schema'))::int AS routines
+    `);
 
     const tableMap = new Map<string, TableShape>();
     for (const row of tables.rows) {
