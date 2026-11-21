@@ -4,11 +4,10 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticate, hashPassword } from "../auth/auth.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
 import { writeAudit } from "../audit/audit.service.js";
 
 export async function accountRoutes(app: FastifyInstance) {
-  app.post("/api/account/change-password", { preHandler: [authenticateRequest, requirePermission("account.change_password")] }, async (request) => {
+  app.post("/api/account/change-password", { preHandler: [authenticateRequest] }, async (request) => {
     const parsed=z.object({
       currentPassword:z.string().min(1).max(200),
       newPassword:z.string().min(12).max(200),
@@ -20,7 +19,7 @@ export async function accountRoutes(app: FastifyInstance) {
     await withTransaction(async client=>{
       const user=await authenticate(client, request.user!.username, parsed.data.currentPassword);
       if(user.userId!==request.user!.userId) throw new AppError("PASSWORD_INVALID","كلمة المرور الحالية غير صحيحة",401);
-      await client.query("UPDATE users SET password_hash=$1,updated_at=now() WHERE id=$2",[hashPassword(parsed.data.newPassword),request.user!.userId]);
+      await client.query("UPDATE users SET password_hash=$1,must_change_password=FALSE,updated_at=now() WHERE id=$2",[hashPassword(parsed.data.newPassword),request.user!.userId]);
       await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"change_password",module:"auth",entityType:"user",entityId:request.user!.userId,ipAddress:request.ip,userAgent:request.headers["user-agent"] ?? null});
     });
@@ -29,7 +28,7 @@ export async function accountRoutes(app: FastifyInstance) {
 
   app.get("/api/account/profile", { preHandler: [authenticateRequest] }, async (request) => {
     const r=await pool.query(
-      `SELECT u.username,u.code,e.full_name,e.code AS employee_code,
+      `SELECT u.username,u.code,u.must_change_password,e.full_name,e.code AS employee_code,
               COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL),'{}') AS roles
          FROM users u
          LEFT JOIN employees e ON e.id=u.employee_id

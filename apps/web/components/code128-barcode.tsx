@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable no-control-regex -- Code 128 input sanitization intentionally strips ASCII control bytes. */
 
 import { useMemo } from "react";
 
@@ -16,6 +17,7 @@ const PATTERNS = [
   "114131","311141","411131","211412","211214","211232","2331112"
 ];
 
+/* eslint-disable no-control-regex -- barcode normalization strips ASCII control bytes by design. */
 function encodeCode128B(value:string){
   const clean=value.replace(/[\u0000-\u001F]/g," ").slice(0,80);
   const codes=[104,...Array.from(clean).map(ch=>{

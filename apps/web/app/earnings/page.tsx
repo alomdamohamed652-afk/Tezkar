@@ -2,17 +2,18 @@
 
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import {Sidebar,usePermissions} from "../../components/sidebar";
+import {formatMoney} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 import {api} from "../../lib/api";
 
 type Summary={total_earned:string;total_paid:string;remaining:string};
 type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null};
-type Employee={id:string;code:string;name:string};
+type Employee={id:string;code:string;name?:string;full_name?:string};
 type Shift={id:string;code:string;name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null};
 
 export default function EarningsPage(){
- const {has}=usePermissions();
+ const {has,session}=usePermissions();
  const [summary,setSummary]=useState<Summary|null>(null),[entries,setEntries]=useState<Entry[]>([]),[adjustments,setAdjustments]=useState<Adjustment[]>([]);
  const [employees,setEmployees]=useState<Employee[]>([]),[shifts,setShifts]=useState<Shift[]>([]);
  const [employeeId,setEmployeeId]=useState(""),[shiftId,setShiftId]=useState(""),[type,setType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[amount,setAmount]=useState(""),[reason,setReason]=useState(""),[date,setDate]=useState(new Date().toISOString().slice(0,10));
@@ -21,23 +22,23 @@ export default function EarningsPage(){
  async function load(){
   setError("");
   try{
-   const me=await api<{data:{roleCodes:string[]}}>("/api/auth/me");
-   const worker=me.data.roleCodes.includes("worker");setIsWorker(worker);
+   const worker=session?.roleCodes?.some(code=>code.toLowerCase()==="worker")??false;setIsWorker(worker);
    if(worker){
     const [s,l]=await Promise.all([api<{data:Summary}>("/api/earnings/my-summary"),api<{data:Entry[]}>("/api/earnings/my-ledger")]);
     setSummary(s.data);setEntries(l.data);
    }else{
-    const [l,a,e,s]=await Promise.all([
+    const canCreateAdjustment=has("production.adjustments.create");
+    const [l,a,employeeResult,shiftResult]=await Promise.all([
       api<{data:Entry[]}>("/api/earnings"),
-      api<{data:Adjustment[]}>("/api/production/adjustments"),
-      api<{data:Employee[]}>("/api/employees"),
-      api<{data:Shift[]}>("/api/shifts")
+      has("production.adjustments.view")||canCreateAdjustment?api<{data:Adjustment[]}>("/api/production/adjustments"):Promise.resolve({data:[] as Adjustment[]}),
+      canCreateAdjustment?api<{data:Employee[]}>("/api/employees"):Promise.resolve({data:[] as Employee[]}),
+      canCreateAdjustment?api<{data:Shift[]}>("/api/shifts"):Promise.resolve({data:[] as Shift[]})
     ]);
-    setEntries(l.data);setAdjustments(a.data);setEmployees(e.data);setShifts(s.data);
+    setEntries(l.data);setAdjustments(a.data);setEmployees(employeeResult.data);setShifts(shiftResult.data);
    }
   }catch(e){setError(e instanceof Error?e.message:"حدث خطأ أثناء تحميل سجل المستحقات");}
  }
- useEffect(()=>{void load()},[]);
+ useEffect(()=>{if(session)void load()},[session,has]);
 
  async function addAdjustment(e:FormEvent){
   e.preventDefault();setError("");setMessage("");
@@ -47,7 +48,7 @@ export default function EarningsPage(){
   }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل البونص أو الخصم")}
  }
 
- const money=(value:string|number)=>Number(value).toLocaleString("ar-EG",{minimumFractionDigits:2,maximumFractionDigits:2});
+ const money=(value:string|number)=>formatMoney(value);
  const totals=useMemo(()=>adjustments.reduce((a,x)=>({bonus:a.bonus+(x.adjustment_type==="BONUS"?Number(x.amount):0),deduction:a.deduction+(x.adjustment_type==="DEDUCTION"?Number(x.amount):0)}),{bonus:0,deduction:0}),[adjustments]);
 
  return <div className="app-shell"><Sidebar active="/earnings"/><main className="main">
@@ -57,7 +58,7 @@ export default function EarningsPage(){
    {!isWorker&&<section className="card">
     <div className="card-header"><div><h2 className="card-title">بونص / خصم إنتاج</h2><div className="form-hint">كل حركة لازم يكون لها موظف، وردية اختيارية، مبلغ وبيان واضح، وتدخل مباشرة في دفتر مستحقات الموظف.</div></div></div>
     {has("production.adjustments.create")&&<form className="form-grid" onSubmit={addAdjustment}>
-      <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.name,meta:x.code}))} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
+      <label>الموظف<SearchableSelect value={employeeId} onChange={setEmployeeId} options={employees.map(x=>({value:x.id,label:x.full_name||x.name||x.code,meta:x.code}))} placeholder="اختر الموظف" searchPlaceholder="ابحث باسم الموظف"/></label>
       <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shifts.map(x=>({value:x.id,label:x.name,meta:x.code}))} placeholder="اختياري" searchPlaceholder="ابحث عن الوردية"/></label>
       <label>نوع الحركة<select value={type} onChange={e=>setType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">بونص</option><option value="DEDUCTION">خصم</option></select></label>
       <label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} required/></label>
@@ -78,7 +79,7 @@ export default function EarningsPage(){
 
    <section className="card"><div className="card-header"><h2 className="card-title">دفتر المستحقات</h2></div>
     <div className="table-wrap"><table><thead><tr>{!isWorker&&<th>الموظف</th>}<th>الرقم</th><th>النوع</th><th>إضافة</th><th>خصم</th><th>البيان</th><th>المرجع</th><th>التاريخ</th></tr></thead>
-    <tbody>{entries.map(entry=><tr key={entry.id}>{!isWorker&&<td>{entry.employee_code} — {entry.employee_name}</td>}<td>{entry.code}</td><td>{entry.entry_type==="PRODUCTION_APPROVAL"?"اعتماد إنتاج":entry.entry_type==="WORKER_PAYMENT"?"قبض عامل":"تعديل"}</td><td>{entry.credit_amount!=="0.0000"?money(entry.credit_amount):"—"}</td><td>{entry.debit_amount!=="0.0000"?money(entry.debit_amount):"—"}</td><td>{entry.notes||"—"}</td><td>{entry.production_code??entry.payment_code??"—"}</td><td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td></tr>)}{!entries.length&&<tr><td colSpan={isWorker?7:8}>لا توجد حركات حتى الآن.</td></tr>}</tbody></table></div>
+    <tbody>{entries.map(entry=><tr key={entry.id}>{!isWorker&&<td>{entry.employee_code} — {entry.employee_name}</td>}<td>{entry.code}</td><td>{entry.entry_type==="PRODUCTION_APPROVAL"?"اعتماد إنتاج":entry.entry_type==="WORKER_PAYMENT"?"قبض عامل":Number(entry.credit_amount)>0?"إضافة مستحق":"خصم"}</td><td>{entry.credit_amount!=="0.0000"?money(entry.credit_amount):"—"}</td><td>{entry.debit_amount!=="0.0000"?money(entry.debit_amount):"—"}</td><td>{entry.notes||"—"}</td><td>{entry.production_code??entry.payment_code??"—"}</td><td>{new Date(entry.created_at).toLocaleString("ar-EG")}</td></tr>)}{!entries.length&&<tr><td colSpan={isWorker?7:8}>لا توجد حركات حتى الآن.</td></tr>}</tbody></table></div>
    </section>
   </section>
  </main></div>;

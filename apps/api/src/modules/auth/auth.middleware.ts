@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { pool } from "../../db/pool.js";
+import { pool, getPoolStats } from "../../db/pool.js";
 import type { SessionUser } from "./auth.types.js";
 import { getSessionUser } from "./session.service.js";
 
@@ -22,7 +22,13 @@ export async function authenticateRequest(
     return;
   }
 
-  const client = await pool.connect();
+  const client = await pool.connect().catch(error => {
+    request.log.error(
+      { err: error, dbPool: getPoolStats() },
+      "Database pool connection acquisition failed during authentication"
+    );
+    throw error;
+  });
   try {
     request.user = await getSessionUser(client, token);
   } finally {
@@ -33,5 +39,24 @@ export async function authenticateRequest(
     reply.code(401).send({
       error: { code: "SESSION_INVALID", message: "جلسة الدخول غير صالحة أو منتهية" }
     });
+    return;
+  }
+
+  if (request.user.mustChangePassword) {
+    const allowed = new Set([
+      "POST /api/account/change-password",
+      "GET /api/account/profile",
+      "GET /api/auth/me",
+      "GET /api/auth/sessions",
+      "POST /api/auth/logout",
+      "POST /api/auth/logout-all"
+    ]);
+    const path = request.url.split("?")[0];
+    if (!allowed.has(`${request.method} ${path}`)) {
+      reply.code(403).send({
+        error: { code: "PASSWORD_CHANGE_REQUIRED", message: "يجب تغيير كلمة المرور المؤقتة قبل استخدام النظام" }
+      });
+      return;
+    }
   }
 }
