@@ -8,6 +8,9 @@ type TableShape = {
   primaryKey: string[];
   foreignKeys: string[];
   dependencies: string[];
+  indexes: string[];
+  constraints: string[];
+  triggers: string[];
 };
 type FeatureCounts = {
   views: number;
@@ -134,7 +137,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const tableMap = new Map<string, TableShape>();
     for (const row of tables.rows) {
       tableMap.set(`${row.schema_name}.${row.table_name}`, {
-        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: []
+        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: []
       });
     }
     for (const row of columns.rows) {
@@ -149,6 +152,15 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       const table = tableMap.get(`${row.table_schema}.${row.table_name}`);
       table?.foreignKeys.push(row.signature);
       table?.dependencies.push(`${row.referenced_schema}.${row.referenced_table}`);
+    }
+    for (const row of indexes.rows) {
+      tableMap.get(`${row.schemaname}.${row.tablename}`)?.indexes.push(row.definition);
+    }
+    for (const row of constraints.rows) {
+      tableMap.get(`${row.table_schema}.${row.table_name}`)?.constraints.push(`${row.constraint_type}:${row.definition ?? ""}`);
+    }
+    for (const row of triggers.rows) {
+      tableMap.get(`${row.schema_name}.${row.table_name}`)?.triggers.push(`${row.trigger_name}:${row.definition}`);
     }
 
     const featureRow = features.rows[0] ?? {};
@@ -204,11 +216,22 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       if (JSON.stringify(columnSignature(left)) !== JSON.stringify(columnSignature(right))) {
         differences.push("اختلاف الأعمدة أو أنواعها أو خصائصها");
       }
-      if (JSON.stringify(left.primaryKey) !== JSON.stringify(right.primaryKey)) {
+      if (left.primaryKey.length === 0 || right.primaryKey.length === 0) {
+        differences.push("غياب المفتاح الأساسي؛ لا يمكن ضمان استئناف النقل ومنع التكرار بأمان");
+      } else if (JSON.stringify(left.primaryKey) !== JSON.stringify(right.primaryKey)) {
         differences.push("اختلاف المفتاح الأساسي");
       }
       if (JSON.stringify([...left.foreignKeys].sort()) !== JSON.stringify([...right.foreignKeys].sort())) {
         differences.push("اختلاف المفاتيح الخارجية");
+      }
+      if (JSON.stringify([...left.indexes].sort()) !== JSON.stringify([...right.indexes].sort())) {
+        differences.push("اختلاف الفهارس");
+      }
+      if (JSON.stringify([...left.constraints].sort()) !== JSON.stringify([...right.constraints].sort())) {
+        differences.push("اختلاف قيود UNIQUE أو CHECK");
+      }
+      if (JSON.stringify([...left.triggers].sort()) !== JSON.stringify([...right.triggers].sort())) {
+        differences.push("اختلاف المشغلات؛ قد تؤثر على البيانات عند الإدخال");
       }
     }
     const status = !left ? "target_only" : !right ? "source_only" :
