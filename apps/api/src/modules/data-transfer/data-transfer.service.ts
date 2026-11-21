@@ -111,12 +111,14 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
        ORDER BY table_name, ordinal_position
     `);
     const featureResult = await client.query<{
-      views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number;
+      views: number; materializedViews: number; foreignTables: number; rules: number; triggers: number; extensions: number; sequences: number; largeObjects: number;
       customTypes: number; routines: number;
     }>(`
       SELECT
         (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='v') AS views,
         (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='m') AS "materializedViews",
+        (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='f') AS "foreignTables",
+        (SELECT count(*)::int FROM pg_rewrite rw JOIN pg_class c ON c.oid=rw.ev_class JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND rw.rulename <> '_RETURN') AS rules,
         (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal) AS triggers,
         (SELECT count(*)::int FROM pg_extension) AS extensions,
         (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S') AS sequences,
@@ -323,10 +325,12 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
       ? [`توجد مخططات غير مفحوصة في الوجهة: ${target.additionalSchemas.join(", ")}؛ لا يمكن ضمان عدم وجود تعارضات`]
       : [])
   ];
-  type UnsupportedFeatureKey = "views" | "materializedViews" | "routines" | "largeObjects" | "triggers";
+  type UnsupportedFeatureKey = "views" | "materializedViews" | "foreignTables" | "rules" | "routines" | "largeObjects" | "triggers";
   const unsupportedObjects: Array<[UnsupportedFeatureKey, string]> = [
     ["views", "Views"],
     ["materializedViews", "Materialized Views"],
+    ["foreignTables", "Foreign Tables"],
+    ["rules", "Rewrite Rules"],
     ["routines", "Functions/Procedures"],
     ["largeObjects", "Large Objects"],
     ["triggers", "Triggers"]
