@@ -4,6 +4,7 @@ export type TransferPlanTable = {
   sourceEstimate: number;
   targetEstimate: number;
   dependencies: string[];
+  hasPrimaryKey: boolean;
   differences: string[];
 };
 
@@ -33,6 +34,12 @@ export function buildTransferPlan(tables: TransferPlanTable[]): TransferPlan {
           : table.status === "target_only"
             ? "الجدول موجود في الوجهة فقط ولا يقابله جدول مصدر."
             : "اختلاف بنيوي بين المصدر والوجهة؛ يلزم حلّه قبل التخطيط للنقل.",
+        dependencies: [...new Set(table.dependencies)]
+      });
+    } else if (!table.hasPrimaryKey) {
+      blocked.set(table.table, {
+        table: table.table,
+        reason: "الجدول لا يحتوي على مفتاح أساسي صالح في المصدر والوجهة؛ لا يمكن ضمان منع التكرار أو الاستئناف بأمان.",
         dependencies: [...new Set(table.dependencies)]
       });
     } else {
