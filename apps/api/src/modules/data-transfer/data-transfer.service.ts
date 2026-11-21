@@ -269,8 +269,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
       : []),
     ...(target.additionalSchemas.length
       ? [`توجد مخططات غير مفحوصة في الوجهة: ${target.additionalSchemas.join(", ")}؛ لا يمكن ضمان عدم وجود تعارضات`]
-      : []),
-    ...transferPlan.blockers.map(message => `ترتيب النقل: ${message}`)
+      : [])
   ];
   type UnsupportedFeatureKey = "views" | "materializedViews" | "routines" | "largeObjects" | "triggers";
   const unsupportedObjects: Array<[UnsupportedFeatureKey, string]> = [
@@ -340,6 +339,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     })),
     unsafeTables
   );
+  globalBlockers.push(...transferPlan.blockers.map(message => `ترتيب النقل: ${message}`));
   return {
     source: { tableCount: legacy.tables.length, estimatedRows: legacy.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: legacy.foreignKeys.length },
     target: { tableCount: target.tables.length, estimatedRows: target.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: target.foreignKeys.length },
