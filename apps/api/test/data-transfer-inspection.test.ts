@@ -4,6 +4,7 @@ import {
   databaseIdentity,
   inspectDatabaseTransfer
 } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
+import { parseRequestedTables } from "../src/modules/data-transfer/data-transfer-counts.service.js";
 
 test("database identity normalizes hostname case and PostgreSQL default port", () => {
   assert.equal(
@@ -42,5 +43,35 @@ test("database identity still treats different users on the same direct PostgreS
   assert.equal(
     databaseIdentity("postgres://user_a:secret@db.example/tezkar"),
     databaseIdentity("postgres://user_b:secret@db.example:5432/tezkar")
+  );
+});
+
+
+test("selected table parser accepts unique schema-qualified public table names", () => {
+  assert.deepEqual(parseRequestedTables("public.users, public.employees"), [
+    { schema: "public", table: "users", key: "public.users" },
+    { schema: "public", table: "employees", key: "public.employees" }
+  ]);
+});
+
+test("selected table parser rejects duplicates, empty entries, unsupported schemas, and SQL fragments", () => {
+  assert.throws(() => parseRequestedTables("public.users,public.users"));
+  assert.throws(() => parseRequestedTables("public.users,,public.employees"));
+  assert.throws(() => parseRequestedTables("auth.users"));
+  assert.throws(() => parseRequestedTables("public.users; DROP TABLE users"));
+});
+
+
+test("database identity detects the same Supabase project across direct and pooled endpoints", () => {
+  assert.equal(
+    databaseIdentity("postgres://postgres:secret@db.projectref123.supabase.co:5432/postgres"),
+    databaseIdentity("postgres://postgres.projectref123:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres")
+  );
+});
+
+test("database identity distinguishes different Supabase project refs on a shared pooler", () => {
+  assert.notEqual(
+    databaseIdentity("postgres://postgres.projectone:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"),
+    databaseIdentity("postgres://postgres.projecttwo:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres")
   );
 });
