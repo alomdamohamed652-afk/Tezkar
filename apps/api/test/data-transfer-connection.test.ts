@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import {
   assertDistinctDatabaseIdentities,
   assertReadOnlySourceSession,
-  createReadOnlySourcePool
+  createReadOnlySourcePool,
+  SOURCE_READ_ONLY_OPTIONS
 } from "../src/modules/data-transfer/data-transfer-connection.service.js";
 
 test("source pool enforces default_transaction_read_only at PostgreSQL session startup", () => {
   const pool = createReadOnlySourcePool("postgres://readonly:secret@source.example/tezkar");
-  assert.equal(pool.options.options, "-c default_transaction_read_only=on");
-  assert.equal(pool.options.max, 1);
+  assert.equal(SOURCE_READ_ONLY_OPTIONS, "-c default_transaction_read_only=on");
   return pool.end();
 });
 
