@@ -3,7 +3,7 @@ import { env } from "../../config.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { inspectDatabaseTransfer } from "./data-transfer-inspection.service.js";
-import { inspectSelectedTableCounts, parseRequestedTables } from "./data-transfer-counts.service.js";
+import { inspectSelectedTableCounts, parseRequestedTables, type RequestedTable } from "./data-transfer-counts.service.js";
 
 export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/inspection", {
@@ -40,7 +40,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    let tables;
+    let tables: RequestedTable[];
     try {
       const query = request.query as { tables?: unknown };
       tables = parseRequestedTables(query.tables);
