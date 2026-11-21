@@ -153,3 +153,31 @@ test("blocks schema-incompatible tables and all dependent children", () => {
   assert.deepEqual(result.blockedTables, ["child", "parent"]);
   assert.match(result.blockers.join(" "), /schema differences/);
 });
+
+
+test("fails closed when a foreign key source is missing from the inspected set", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "safe_a", primaryKey: ["id"] },
+      { name: "safe_b", primaryKey: ["id"] }
+    ],
+    [{ table: "missing_source", referencedTable: "safe_a", deferrable: false, initiallyDeferred: false }]
+  );
+  assert.deepEqual(result.orderedTables, []);
+  assert.deepEqual(result.blockedTables, ["safe_a", "safe_b"]);
+  assert.match(result.blockers.join(" "), /source table missing_source is missing/);
+});
+
+test("fails closed when duplicate table names are supplied", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "duplicate", primaryKey: ["id"] },
+      { name: "duplicate", primaryKey: ["other_id"] },
+      { name: "independent", primaryKey: ["id"] }
+    ],
+    []
+  );
+  assert.deepEqual(result.orderedTables, []);
+  assert.deepEqual(result.blockedTables, ["duplicate", "independent"]);
+  assert.match(result.blockers.join(" "), /Duplicate table names/);
+});
