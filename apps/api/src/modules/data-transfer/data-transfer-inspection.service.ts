@@ -147,6 +147,36 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            WHERE NOT t.tgisinternal AND n.nspname = 'public'
            ORDER BY n.nspname,c.relname,t.tgname
     `);
+    const extensions = await client.query(`
+          SELECT e.extname, e.extversion, n.nspname AS schema_name
+            FROM pg_extension e
+            JOIN pg_namespace n ON n.oid = e.extnamespace
+           ORDER BY e.extname, n.nspname
+    `);
+    const customTypes = await client.query(`
+          SELECT n.nspname AS schema_name, t.typname, t.typtype,
+                 CASE WHEN t.typtype = 'e' THEN (
+                   SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
+                     FROM pg_enum e WHERE e.enumtypid = t.oid
+                 ) ELSE NULL END AS enum_values,
+                 CASE WHEN t.typtype = 'd' THEN pg_get_constraintdef(c.oid, true) ELSE NULL END AS domain_constraints,
+                 CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE NULL END AS domain_base
+            FROM pg_type t
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            LEFT JOIN pg_constraint c ON c.contypid = t.oid
+           WHERE t.typtype IN ('e','d') AND n.nspname = 'public'
+           ORDER BY n.nspname, t.typname, c.conname
+    `);
+    const routines = await client.query(`
+          SELECT n.nspname AS schema_name, p.proname,
+                 pg_get_function_identity_arguments(p.oid) AS identity_arguments,
+                 pg_get_function_result(p.oid) AS result_type,
+                 p.prokind, pg_get_functiondef(p.oid) AS definition
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname = 'public' AND p.prokind IN ('f','p')
+           ORDER BY n.nspname, p.proname, identity_arguments
+    `);
     const features = await client.query(`
 
           SELECT
