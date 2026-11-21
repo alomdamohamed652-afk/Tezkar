@@ -24,7 +24,7 @@ function getLegacyPool(): pg.Pool {
   return legacyPool;
 }
 
-type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number };
+type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null };
 type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean };
 
@@ -51,9 +51,12 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const columnsResult = await client.query<{
       table_name: string; column_name: string; data_type: string; udt_name: string;
       is_nullable: string; column_default: string | null; ordinal_position: number;
+      character_maximum_length: number | null; numeric_precision: number | null;
+      numeric_scale: number | null; datetime_precision: number | null;
     }>(`
       SELECT table_name, column_name, data_type, udt_name, is_nullable,
-             column_default, ordinal_position
+             column_default, ordinal_position, character_maximum_length,
+             numeric_precision, numeric_scale, datetime_precision
         FROM information_schema.columns
        WHERE table_schema='public'
        ORDER BY table_name, ordinal_position
@@ -104,7 +107,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const columnsByTable = new Map<string, Column[]>();
     for (const c of columnsResult.rows) {
       const list = columnsByTable.get(c.table_name) ?? [];
-      list.push({ name: c.column_name, dataType: c.data_type, udtName: c.udt_name, nullable: c.is_nullable === "YES", defaultValue: c.column_default, ordinal: c.ordinal_position });
+      list.push({ name: c.column_name, dataType: c.data_type, udtName: c.udt_name, nullable: c.is_nullable === "YES", defaultValue: c.column_default, ordinal: c.ordinal_position, maxLength: c.character_maximum_length, numericPrecision: c.numeric_precision, numericScale: c.numeric_scale, datetimePrecision: c.datetime_precision });
       columnsByTable.set(c.table_name, list);
     }
     const pkByTable = new Map<string, string[]>();
@@ -157,9 +160,11 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     for (const c of from.columns) {
       const other = targetColumns.get(c.name);
       if (!other) differences.push("عمود غير موجود بالوجهة: " + c.name);
-      else if (c.udtName !== other.udtName || c.dataType !== other.dataType) differences.push("اختلاف نوع العمود: " + c.name);
+      else if (c.udtName !== other.udtName || c.dataType !== other.dataType || c.maxLength !== other.maxLength || c.numericPrecision !== other.numericPrecision || c.numericScale !== other.numericScale || c.datetimePrecision !== other.datetimePrecision) differences.push("اختلاف نوع أو دقة العمود: " + c.name);
     }
     for (const c of to.columns) if (!sourceColumns.has(c.name) && !c.nullable && c.defaultValue === null) differences.push("عمود إلزامي إضافي بالوجهة: " + c.name);
+    if (from.primaryKey.length === 0) differences.push("جدول المصدر بلا مفتاح أساسي؛ لا يمكن ضمان نقل آمن قابل للاستئناف");
+    if (from.kind === "partitioned") differences.push("الجدول مقسّم إلى partitions؛ النقل الآلي متوقف لحين معالجة التقسيم صراحةً");
     if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف المفتاح الأساسي");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
