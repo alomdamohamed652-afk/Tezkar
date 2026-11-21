@@ -196,7 +196,7 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
   });
 }
 
-function databaseIdentity(connectionString: string): string | null {
+export function databaseIdentity(connectionString: string): string | null {
   try {
     const parsed = new URL(connectionString);
     const host = parsed.hostname.toLowerCase();
