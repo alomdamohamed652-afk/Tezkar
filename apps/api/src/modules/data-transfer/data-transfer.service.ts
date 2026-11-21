@@ -95,7 +95,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const customTypeResult = await client.query<{ type_name: string; type_kind: string; definition: string; enum_labels: string[] }>(`
       SELECT t.typname AS type_name, t.typtype::text AS type_kind,
              CASE
-               WHEN t.typtype = 'd' THEN format('base=%s;notnull=%s;default=%s', format_type(t.typbasetype, t.typtypmod), t.typnotnull, COALESCE(t.typdefault, ''))
+               WHEN t.typtype = 'd' THEN format('base=%s;notnull=%s;default=%s;checks=%s', format_type(t.typbasetype, t.typtypmod), t.typnotnull, COALESCE(t.typdefault, ''), COALESCE(domain_checks.definitions, ''))
                WHEN t.typtype = 'r' THEN format('range_subtype=%s;collation=%s;canonical=%s;subtype_diff=%s',
                  format_type(r.rngsubtype, NULL), COALESCE(coll.collname, ''), COALESCE(r.rngcanonical::regproc::text, ''), COALESCE(r.rngsubdiff::regproc::text, ''))
                ELSE t.typtype::text
@@ -103,8 +103,12 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
              COALESCE(enum_values.labels, ARRAY[]::text[]) AS enum_labels
         FROM pg_type t
         JOIN pg_namespace ns ON ns.oid=t.typnamespace
-        LEFT JOIN pg_range r ON r.rngtypid=t.oid
+        LEFT JOIN pg_range r ON r.rngtypid=t.oid OR r.rngmultitypid=t.oid
         LEFT JOIN pg_collation coll ON coll.oid=r.rngcollation
+        LEFT JOIN LATERAL (
+          SELECT string_agg(pg_get_constraintdef(con.oid, true), ';' ORDER BY con.conname) AS definitions
+            FROM pg_constraint con WHERE con.contypid=t.oid
+        ) domain_checks ON true
         LEFT JOIN LATERAL (
           SELECT array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
             FROM pg_enum e WHERE e.enumtypid=t.oid
