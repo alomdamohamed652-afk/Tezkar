@@ -100,7 +100,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         (SELECT count(*)::int FROM pg_extension) AS extensions,
         (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S') AS sequences,
         (SELECT count(*)::int FROM pg_largeobject_metadata) AS "largeObjects",
-        (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','r','m')) AS "customTypes",
+        (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','r','m','c') AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type WHERE row_type.reltype=t.oid AND row_type.relkind IN ('r','p','v','m','f')))) AS "customTypes",
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') AS routines
     `);
     const extensionResult = await client.query<{ name: string; version: string }>(`
@@ -129,7 +129,8 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
           SELECT array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
             FROM pg_enum e WHERE e.enumtypid=t.oid
         ) enum_values ON true
-       WHERE ns.nspname='public' AND t.typtype IN ('e','d','r','m')
+       WHERE ns.nspname='public' AND t.typtype IN ('e','d','r','m','c')
+         AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type WHERE row_type.reltype=t.oid AND row_type.relkind IN ('r','p','v','m','f')))
        ORDER BY t.typname
     `);
     const constraintResult = await client.query<{ table_name: string; constraint_type: string; definition: string }>(`
@@ -254,7 +255,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const typeSignature = (items: Array<{type_name: string; type_kind: string; definition: string; enum_labels: string[]}>) =>
     items.map(item => JSON.stringify([item.type_name, item.type_kind, item.definition, item.enum_labels])).sort();
   const customTypeDifferences = JSON.stringify(typeSignature(legacy.customTypes)) !== JSON.stringify(typeSignature(target.customTypes))
-    ? ["اختلاف تعريفات الأنواع المخصصة (ENUM/DOMAIN/RANGE)؛ لا يمكن ضمان إدخال قيمها دون تطابق التعريفات"]
+    ? ["اختلاف تعريفات الأنواع المخصصة (ENUM/DOMAIN/RANGE/COMPOSITE)؛ لا يمكن ضمان إدخال قيمها دون تطابق التعريفات"]
     : [];
   const extensionSignature = (items: Array<{name: string; version: string}>) =>
     items.map(item => JSON.stringify([item.name, item.version])).sort();
