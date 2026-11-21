@@ -1,4 +1,5 @@
 import pg from "pg";
+import { createHash } from "node:crypto";
 import { assertDistinctConnectedDatabases, assertDistinctDatabaseIdentities, assertReadOnlySourceSession, createReadOnlySourcePool } from "./data-transfer-connection.service.js";
 
 type ColumnShape = {
@@ -278,17 +279,17 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       indexes: indexes.rows.map((row: any) => `${row.schemaname}.${row.tablename}:${row.definition}`),
       constraints: constraints.rows.map((row: any) =>
         `${row.table_schema}.${row.table_name}:${row.constraint_type}:${row.definition ?? ""}`),
-      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${row.definition}`),
+      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${fingerprint(row.definition)}`),
       materializedViews: materializedViews.rows.map((row: any) =>
-        `${row.schemaname}.${row.matviewname}:${row.definition}`),
+        `${row.schemaname}.${row.matviewname}:${fingerprint(row.definition)}`),
       triggers: triggers.rows.map((row: any) =>
-        `${row.schema_name}.${row.table_name}.${row.trigger_name}:${row.definition}`),
+        `${row.schema_name}.${row.table_name}.${row.trigger_name}:${fingerprint(row.definition)}`),
       extensions: extensions.rows.map((row: any) =>
         `${row.extname}:${row.extversion}:${row.schema_name}`),
       customTypes: customTypes.rows.map((row: any) =>
         `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}`),
       routines: routines.rows.map((row: any) =>
-        `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${row.definition}`),
+        `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${fingerprint(row.definition)}`),
       sequences: sequences.rows.map((row: any) =>
         `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
       features: featureCounts
@@ -296,6 +297,10 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   } finally {
     await client.query("ROLLBACK").catch(() => undefined);
   }
+}
+
+function fingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function diff(source: string[], target: string[]) {
