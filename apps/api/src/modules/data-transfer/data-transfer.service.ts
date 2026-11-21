@@ -27,7 +27,7 @@ function getLegacyPool(): pg.Pool {
 
 type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string; generationExpression: string; collation: string | null };
 type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
-type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; onUpdate: string; onDelete: string };
+type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; validated: boolean; onUpdate: string; onDelete: string };
 
 async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
   const client = await pool.connect();
@@ -140,9 +140,9 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
          AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type WHERE row_type.reltype=t.oid AND row_type.relkind IN ('r','p','v','m','f')))
        ORDER BY t.typname
     `);
-    const constraintResult = await client.query<{ table_name: string; constraint_type: string; definition: string }>(`
+    const constraintResult = await client.query<{ table_name: string; constraint_type: string; definition: string; validated: boolean }>(`
       SELECT c.relname AS table_name, con.contype::text AS constraint_type,
-             pg_get_constraintdef(con.oid, true) AS definition
+             pg_get_constraintdef(con.oid, true) AS definition, con.convalidated AS validated
         FROM pg_constraint con
         JOIN pg_class c ON c.oid=con.conrelid
         JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -175,13 +175,13 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
       foreign_table_name: string; foreign_table_schema: string; foreign_column_name: string; ordinal: number;
-      deferrable: boolean; initially_deferred: boolean; update_rule: string; delete_rule: string;
+      deferrable: boolean; initially_deferred: boolean; validated: boolean; update_rule: string; delete_rule: string;
     }>(`
       SELECT src.relname AS table_name, con.conname AS constraint_name,
              src_col.attname AS column_name, dst.relname AS foreign_table_name,
              dst_ns.nspname AS foreign_table_schema,
              dst_col.attname AS foreign_column_name, key.ordinality::int AS ordinal,
-             con.condeferrable AS deferrable, con.condeferred AS initially_deferred,
+             con.condeferrable AS deferrable, con.condeferred AS initially_deferred, con.convalidated AS validated,
              CASE con.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
                WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule,
              CASE con.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
@@ -223,6 +223,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         referencedTable: f.foreign_table_schema === "public" ? f.foreign_table_name : `${f.foreign_table_schema}.${f.foreign_table_name}`, referencedColumns: [],
         deferrable: f.deferrable,
         initiallyDeferred: f.initially_deferred,
+        validated: f.validated,
         onUpdate: f.update_rule,
         onDelete: f.delete_rule
       };
@@ -248,11 +249,11 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const allNames = [...new Set([...legacyByName.keys(), ...targetByName.keys()])].sort();
   const fkSignature = (items: ForeignKey[], tableName: string) => items
     .filter(item => item.table === tableName)
-    .map(item => JSON.stringify([item.columns, item.referencedTable, item.referencedColumns, item.deferrable, item.initiallyDeferred, item.onUpdate, item.onDelete]))
+    .map(item => JSON.stringify([item.columns, item.referencedTable, item.referencedColumns, item.deferrable, item.initiallyDeferred, item.validated, item.onUpdate, item.onDelete]))
     .sort();
-  const constraintSignature = (items: Array<{table_name: string; constraint_type: string; definition: string}>, tableName: string) =>
+  const constraintSignature = (items: Array<{table_name: string; constraint_type: string; definition: string; validated: boolean}>, tableName: string) =>
     items.filter(item => item.table_name === tableName)
-      .map(item => JSON.stringify([item.constraint_type, item.definition])).sort();
+      .map(item => JSON.stringify([item.constraint_type, item.definition, item.validated])).sort();
   const objectSignature = (items: Array<{table_name: string; definition: string; enabled?: string}>, tableName: string) =>
     items.filter(item => item.table_name === tableName)
       .map(item => JSON.stringify([item.definition, item.enabled ?? null])).sort();
