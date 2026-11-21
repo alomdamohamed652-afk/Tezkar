@@ -26,7 +26,7 @@ function getLegacyPool(): pg.Pool {
 
 type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null };
 type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number };
-type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean };
+type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; onUpdate: string; onDelete: string };
 
 async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
   const client = await pool.connect();
@@ -91,14 +91,17 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     `);
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
-      foreign_table_name: string; foreign_column_name: string; ordinal: number; is_deferrable: string;
+      foreign_table_name: string; foreign_column_name: string; ordinal: number; is_deferrable: string; initially_deferred: string; update_rule: string; delete_rule: string;
     }>(`
       SELECT tc.table_name, tc.constraint_name, kcu.column_name,
              ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name,
-             kcu.ordinal_position AS ordinal, tc.is_deferrable
+             kcu.ordinal_position AS ordinal, tc.is_deferrable, tc.initially_deferred,
+             rc.update_rule, rc.delete_rule
         FROM information_schema.table_constraints tc
+        JOIN information_schema.referential_constraints rc
+          ON rc.constraint_name=tc.constraint_name AND rc.constraint_schema=tc.table_schema
         JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema
+          ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema AND tc.table_name=kcu.table_name
         JOIN information_schema.constraint_column_usage ccu
           ON ccu.constraint_name=tc.constraint_name AND ccu.constraint_schema=tc.constraint_schema
        WHERE tc.constraint_schema='public' AND tc.constraint_type='FOREIGN KEY'
@@ -127,7 +130,10 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       const group = fkGroups.get(key) ?? {
         table: f.table_name, name: f.constraint_name, columns: [],
         referencedTable: f.foreign_table_name, referencedColumns: [],
-        deferrable: f.is_deferrable === "YES"
+        deferrable: f.is_deferrable === "YES",
+        initiallyDeferred: f.initially_deferred === "YES",
+        onUpdate: f.update_rule,
+        onDelete: f.delete_rule
       };
       group.columns.push(f.column_name);
       group.referencedColumns.push(f.foreign_column_name);
@@ -151,7 +157,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const allNames = [...new Set([...legacyByName.keys(), ...targetByName.keys()])].sort();
   const fkSignature = (items: ForeignKey[], tableName: string) => items
     .filter(item => item.table === tableName)
-    .map(item => JSON.stringify([item.columns, item.referencedTable, item.referencedColumns, item.deferrable]))
+    .map(item => JSON.stringify([item.columns, item.referencedTable, item.referencedColumns, item.deferrable, item.initiallyDeferred, item.onUpdate, item.onDelete]))
     .sort();
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
