@@ -14,8 +14,8 @@ export type TransferOrder = {
 
 /**
  * Build a parent-before-child insertion order. This is planning-only: it never
- * executes SQL and deliberately refuses cycles unless every participating
- * cycle edge is deferrable and initially deferred.
+ * executes SQL and blocks all dependency cycles until a transactional,
+ * deferred-constraint transfer strategy is implemented and tested.
  */
 export function buildTransferOrder(
   tables: TransferTable[],
