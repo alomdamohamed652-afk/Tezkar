@@ -3,7 +3,7 @@ import { databaseIdentity } from "./data-transfer-inspection.service.js";
 
 const MAX_TABLES = 5;
 const STATEMENT_TIMEOUT_MS = 1500;
-const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*$/;
+const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 export type RequestedTable = { schema: string; table: string; key: string };
 
@@ -11,12 +11,13 @@ export function parseRequestedTables(value: unknown): RequestedTable[] {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error("حدد أسماء الجداول المطلوب فحصها.");
   }
-  const names = value.split(",").map(item => item.trim()).filter(Boolean);
+  // Preserve empty segments so malformed input such as "a,,b" or "a," is rejected.
+  const names = value.split(",").map(item => item.trim());
   if (names.length === 0 || names.length > MAX_TABLES) {
     throw new Error(`يسمح بفحص من 1 إلى ${MAX_TABLES} جداول في الطلب الواحد.`);
   }
   const unique = [...new Set(names)];
-  if (unique.length !== names.length || unique.some(name => !TABLE_NAME_PATTERN.test(name))) {
+  if (unique.some(name => !name) || unique.length !== names.length || unique.some(name => !TABLE_NAME_PATTERN.test(name))) {
     throw new Error("صيغة أسماء الجداول غير صحيحة. استخدم schema.table.");
   }
   return unique.map(key => {
