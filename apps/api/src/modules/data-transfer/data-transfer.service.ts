@@ -285,6 +285,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
       else {
         if (c.udtName !== other.udtName || c.dataType !== other.dataType || c.maxLength !== other.maxLength || c.numericPrecision !== other.numericPrecision || c.numericScale !== other.numericScale || c.datetimePrecision !== other.datetimePrecision) differences.push("اختلاف نوع أو دقة العمود: " + c.name);
         if (c.nullable && !other.nullable) differences.push("الوجهة تمنع NULL بينما المصدر يسمح به في العمود: " + c.name);
+        if (c.identity !== other.identity || c.generated !== other.generated) differences.push("اختلاف خصائص Identity/Generated للعمود: " + c.name);
       }
     }
     for (const c of to.columns) if (!sourceColumns.has(c.name) && !c.nullable && c.defaultValue === null) differences.push("عمود إلزامي إضافي بالوجهة: " + c.name);
