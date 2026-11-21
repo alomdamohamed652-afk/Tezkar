@@ -65,7 +65,7 @@ app.addHook("onResponse", async (request, reply) => {
   // Backup endpoints write their own domain-specific audit records; avoid a duplicate generic entry.
   if (route.startsWith("/api/system-backups/")) return;
   const isRead = ["GET", "HEAD", "OPTIONS"].includes(request.method);
-  const sensitiveRead = request.method === "GET" && (/^\/api\/admin\/security/.test(route) || route === "/api/account/profile" || route === "/api/auth/sessions");
+  const sensitiveRead = request.method === "GET" && (route.startsWith("/api/admin/security") || route === "/api/account/profile" || route === "/api/auth/sessions" || route === "/api/admin/data-transfer/inspection" || route === "/api/admin/data-transfer/counts");
   if (isRead && (!sensitiveRead || reply.statusCode >= 400)) return;
   const actor = (request as typeof request & { user?: SessionUser | null }).user ?? null;
   const moduleName = route.split("/").filter(Boolean)[1] ?? "api";
