@@ -20,7 +20,7 @@ export default function DataTransferPage() {
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
   async function inspect(){setLoading(true);setError("");try{setReport(await api<Inspection>("/api/admin/data-transfer/inspection"));}catch(e){setError(e instanceof Error?e.message:"تعذر فحص القاعدتين");}finally{setLoading(false);}}
-  return <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-900"><Sidebar active="/settings/data-transfer"/><main className="mx-auto max-w-7xl space-y-6 p-4 md:p-8">
+  return <div dir="rtl" className="app-shell min-h-screen bg-slate-50 text-slate-900"><Sidebar active="/settings/data-transfer"/><main className="main mx-auto max-w-7xl min-w-0 space-y-6 p-4 md:p-8">
     <header><p className="text-sm text-slate-500">إدارة النظام</p><h1 className="mt-1 text-2xl font-bold">نقل بيانات النظام القديم</h1><p className="mt-2 text-sm text-slate-600">فحص القاعدتين ومقارنة البنية قبل اعتماد أي نقل.</p></header>
     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">فحص للقراءة فقط. لن يتم تعديل القاعدة القديمة أو إدخال بيانات في القاعدة الجديدة.</div>
     <section className="rounded-xl border bg-white p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">فحص الاتصال ومقارنة المخطط</h2><p className="mt-1 text-sm text-slate-500">الجداول والأعمدة والمفاتيح والعلاقات.</p></div><button onClick={inspect} disabled={loading} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{loading?"جارٍ الفحص...":"ابدأ الفحص"}</button></div>{error&&<p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}</section>
