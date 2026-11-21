@@ -44,12 +44,17 @@ import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
 import { runMaturedWorkerPaymentDifferenceJob } from "./modules/payments/worker-payment-differences.service.js";
 import { backupRoutes } from "./modules/backup/backup.routes.js";
 import { dataTransferRoutes } from "./modules/data-transfer/data-transfer.routes.js";
+import { closeLegacyPool } from "./modules/data-transfer/data-transfer.service.js";
 
 const app = Fastify({
   logger: {
     level: "info",
     redact: { paths: ["req.headers.x-backup-password"], censor: "[REDACTED]" }
   }
+});
+
+app.addHook("onClose", async () => {
+  await closeLegacyPool();
 });
 
 await app.register(cors, {
