@@ -5,6 +5,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { inspectDatabaseTransfer } from "./data-transfer-inspection.service.js";
 import { checkDataTransferRateLimit } from "./data-transfer-rate-limit.js";
 import { inspectSelectedTableCounts, parseRequestedTables, type RequestedTable } from "./data-transfer-counts.service.js";
+import { buildTransferPlan } from "./data-transfer-plan.service.js";
 
 export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/inspection", {
@@ -71,6 +72,37 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       app.log.error({ err: error }, "Read-only selected table count inspection failed");
       return reply.code(503).header("cache-control", "no-store, private").send({
         error: { code: "DATA_TRANSFER_COUNTS_FAILED", message: "تعذر فحص أعداد الجداول المحددة." }
+      });
+    }
+  });
+
+  app.get("/api/admin/data-transfer/plan", {
+    preHandler: [authenticateRequest, requirePermission("system.backup.export")]
+  }, async (request, reply) => {
+    if (!env.TARGET_DATABASE_URL) {
+      return reply.code(503).header("cache-control", "no-store, private").send({
+        error: { code: "TARGET_DATABASE_NOT_CONFIGURED", message: "قاعدة البيانات الهدف غير مُعدة؛ لم يتم إنشاء خطة." }
+      });
+    }
+
+    const retryAfterMs = checkDataTransferRateLimit("plan:" + request.user!.userId);
+    if (retryAfterMs > 0) {
+      return reply.code(429).header("cache-control", "no-store, private")
+        .header("retry-after", String(Math.ceil(retryAfterMs / 1000)))
+        .send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
+    }
+
+    try {
+      const inspection = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL);
+      const plan = buildTransferPlan(inspection.comparison);
+      return reply.header("cache-control", "no-store, private").send({
+        ...plan,
+        note: "هذه معاينة ترتيب فقط. لا يتم نسخ أو تعديل أو حذف أي بيانات، ولا يتم تشغيل migrations."
+      });
+    } catch (error) {
+      app.log.error({ err: error }, "Read-only database transfer planning failed");
+      return reply.code(503).header("cache-control", "no-store, private").send({
+        error: { code: "DATA_TRANSFER_PLAN_FAILED", message: "تعذر إنشاء خطة النقل الآمنة." }
       });
     }
   });
