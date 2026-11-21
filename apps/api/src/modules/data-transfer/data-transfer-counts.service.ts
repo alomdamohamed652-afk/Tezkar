@@ -24,6 +24,7 @@ export function parseRequestedTables(value: unknown): RequestedTable[] {
   return unique.map(key => {
     const separator = key.indexOf(".");
     const schema = key.slice(0, separator);
+    if (schema !== "public") throw new Error("يسمح بفحص جداول مخطط public فقط.");
     const table = key.slice(separator + 1);
     return { schema, table, key };
   });
