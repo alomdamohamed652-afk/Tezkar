@@ -92,6 +92,26 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','r','m')) AS "customTypes",
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') AS routines
     `);
+    const customTypeResult = await client.query<{ type_name: string; type_kind: string; definition: string; enum_labels: string[] }>(`
+      SELECT t.typname AS type_name, t.typtype::text AS type_kind,
+             CASE
+               WHEN t.typtype = 'd' THEN format('base=%s;notnull=%s;default=%s', format_type(t.typbasetype, t.typtypmod), t.typnotnull, COALESCE(t.typdefault, ''))
+               WHEN t.typtype = 'r' THEN format('range_subtype=%s;collation=%s;canonical=%s;subtype_diff=%s',
+                 format_type(r.rngsubtype, NULL), COALESCE(coll.collname, ''), COALESCE(r.rngcanonical::regproc::text, ''), COALESCE(r.rngsubdiff::regproc::text, ''))
+               ELSE t.typtype::text
+             END AS definition,
+             COALESCE(enum_values.labels, ARRAY[]::text[]) AS enum_labels
+        FROM pg_type t
+        JOIN pg_namespace ns ON ns.oid=t.typnamespace
+        LEFT JOIN pg_range r ON r.rngtypid=t.oid
+        LEFT JOIN pg_collation coll ON coll.oid=r.rngcollation
+        LEFT JOIN LATERAL (
+          SELECT array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
+            FROM pg_enum e WHERE e.enumtypid=t.oid
+        ) enum_values ON true
+       WHERE ns.nspname='public' AND t.typtype IN ('e','d','r','m')
+       ORDER BY t.typname
+    `);
     const constraintResult = await client.query<{ table_name: string; constraint_type: string; definition: string }>(`
       SELECT c.relname AS table_name, con.contype::text AS constraint_type,
              pg_get_constraintdef(con.oid, true) AS definition
@@ -181,7 +201,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
+    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -209,6 +229,11 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const policySignature = (items: Array<{table_name: string; policy_name: string; command: string; roles: string[]; using_expression: string | null; check_expression: string | null}>, tableName: string) =>
     items.filter(item => item.table_name === tableName)
       .map(item => JSON.stringify([item.policy_name, item.command, item.roles, item.using_expression, item.check_expression])).sort();
+  const typeSignature = (items: Array<{type_name: string; type_kind: string; definition: string; enum_labels: string[]}>) =>
+    items.map(item => JSON.stringify([item.type_name, item.type_kind, item.definition, item.enum_labels])).sort();
+  const customTypeDifferences = JSON.stringify(typeSignature(legacy.customTypes)) !== JSON.stringify(typeSignature(target.customTypes))
+    ? ["اختلاف تعريفات الأنواع المخصصة (ENUM/DOMAIN/RANGE)؛ لا يمكن ضمان إدخال قيمها دون تطابق التعريفات"]
+    : [];
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
     const to = targetByName.get(name);
@@ -251,9 +276,15 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     targetPolicies: target.policies,
     sourceFeatures: legacy.features,
     targetFeatures: target.features,
+    sourceCustomTypes: legacy.customTypes,
+    targetCustomTypes: target.customTypes,
+    globalBlockers: customTypeDifferences,
     sourceSequences: legacy.sequences,
     targetSequences: target.sequences,
-    blockers: comparison.filter(x => x.status === "source_only" || x.status === "schema_mismatch").map(x => ({ table: x.table, status: x.status, differences: x.differences })),
+    blockers: [
+      ...comparison.filter(x => x.status === "source_only" || x.status === "schema_mismatch").map(x => ({ table: x.table, status: x.status, differences: x.differences })),
+      ...customTypeDifferences.map(message => ({ table: null, status: "global_schema_mismatch", differences: [message] }))
+    ],
     note: "أعداد الصفوف تقديرية من إحصاءات PostgreSQL وليست عدًّا دقيقًا. هذه المرحلة قراءة فقط ولا تنقل أو تعدّل أي بيانات."
   };
 }
