@@ -54,10 +54,12 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       is_nullable: string; column_default: string | null; ordinal_position: number;
       character_maximum_length: number | null; numeric_precision: number | null;
       numeric_scale: number | null; datetime_precision: number | null;
+      identity_generation: string | null; is_generated: string;
     }>(`
       SELECT table_name, column_name, data_type, udt_name, is_nullable,
              column_default, ordinal_position, character_maximum_length,
-             numeric_precision, numeric_scale, datetime_precision
+             numeric_precision, numeric_scale, datetime_precision,
+             identity_generation, is_generated
         FROM information_schema.columns
        WHERE table_schema='public'
        ORDER BY table_name, ordinal_position
