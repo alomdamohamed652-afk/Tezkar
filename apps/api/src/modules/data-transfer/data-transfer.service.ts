@@ -25,7 +25,7 @@ function getLegacyPool(): pg.Pool {
   return legacyPool;
 }
 
-type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string };
+type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string; generationExpression: string; collation: string | null };
 type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; onUpdate: string; onDelete: string };
 
@@ -64,12 +64,12 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       is_nullable: string; column_default: string | null; ordinal_position: number;
       character_maximum_length: number | null; numeric_precision: number | null;
       numeric_scale: number | null; datetime_precision: number | null;
-      identity_generation: string | null; is_generated: string;
+      identity_generation: string | null; is_generated: string; generation_expression: string; collation_name: string | null;
     }>(`
       SELECT table_name, column_name, data_type, udt_name, is_nullable,
              column_default, ordinal_position, character_maximum_length,
              numeric_precision, numeric_scale, datetime_precision,
-             identity_generation, is_generated
+             identity_generation, is_generated, generation_expression, collation_name
         FROM information_schema.columns
        WHERE table_schema='public'
        ORDER BY table_name, ordinal_position
@@ -114,6 +114,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
                WHEN t.typtype = 'd' THEN format('base=%s;notnull=%s;default=%s;checks=%s', format_type(t.typbasetype, t.typtypmod), t.typnotnull, COALESCE(t.typdefault, ''), COALESCE(domain_checks.definitions, ''))
                WHEN t.typtype = 'r' THEN format('range_subtype=%s;collation=%s;canonical=%s;subtype_diff=%s',
                  format_type(r.rngsubtype, NULL), COALESCE(coll.collname, ''), COALESCE(r.rngcanonical::regproc::text, ''), COALESCE(r.rngsubdiff::regproc::text, ''))
+               WHEN t.typtype = 'c' THEN COALESCE(composite_attrs.definition, '')
                ELSE t.typtype::text
              END AS definition,
              COALESCE(enum_values.labels, ARRAY[]::text[]) AS enum_labels
@@ -129,6 +130,12 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
           SELECT array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
             FROM pg_enum e WHERE e.enumtypid=t.oid
         ) enum_values ON true
+        LEFT JOIN LATERAL (
+          SELECT string_agg(format('%s:%s:%s:%s', a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), COALESCE(coll.collname, '')), ';' ORDER BY a.attnum) AS definition
+            FROM pg_attribute a
+            LEFT JOIN pg_collation coll ON coll.oid=a.attcollation
+           WHERE a.attrelid=t.typrelid AND a.attnum > 0 AND NOT a.attisdropped
+        ) composite_attrs ON true
        WHERE ns.nspname='public' AND t.typtype IN ('e','d','r','m','c')
          AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type WHERE row_type.reltype=t.oid AND row_type.relkind IN ('r','p','v','m','f')))
        ORDER BY t.typname
@@ -194,7 +201,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const columnsByTable = new Map<string, Column[]>();
     for (const c of columnsResult.rows) {
       const list = columnsByTable.get(c.table_name) ?? [];
-      list.push({ name: c.column_name, dataType: c.data_type, udtName: c.udt_name, nullable: c.is_nullable === "YES", defaultValue: c.column_default, ordinal: c.ordinal_position, maxLength: c.character_maximum_length, numericPrecision: c.numeric_precision, numericScale: c.numeric_scale, datetimePrecision: c.datetime_precision, identity: c.identity_generation ?? "", generated: c.is_generated ?? "NEVER" });
+      list.push({ name: c.column_name, dataType: c.data_type, udtName: c.udt_name, nullable: c.is_nullable === "YES", defaultValue: c.column_default, ordinal: c.ordinal_position, maxLength: c.character_maximum_length, numericPrecision: c.numeric_precision, numericScale: c.numeric_scale, datetimePrecision: c.datetime_precision, identity: c.identity_generation ?? "", generated: c.is_generated ?? "NEVER", generationExpression: c.generation_expression ?? "", collation: c.collation_name });
       columnsByTable.set(c.table_name, list);
     }
     const pkByTable = new Map<string, string[]>();
@@ -308,7 +315,8 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
         if (c.udtName !== other.udtName || c.dataType !== other.dataType || c.maxLength !== other.maxLength || c.numericPrecision !== other.numericPrecision || c.numericScale !== other.numericScale || c.datetimePrecision !== other.datetimePrecision) differences.push("اختلاف نوع أو دقة العمود: " + c.name);
         if (c.nullable && !other.nullable) differences.push("الوجهة تمنع NULL بينما المصدر يسمح به في العمود: " + c.name);
         if (c.defaultValue !== other.defaultValue) differences.push("اختلاف القيمة الافتراضية للعمود: " + c.name);
-        if (c.identity !== other.identity || c.generated !== other.generated) differences.push("اختلاف خصائص Identity/Generated للعمود: " + c.name);
+        if (c.identity !== other.identity || c.generated !== other.generated || c.generationExpression !== other.generationExpression) differences.push("اختلاف خصائص أو تعبير Identity/Generated للعمود: " + c.name);
+        if (c.collation !== other.collation) differences.push("اختلاف Collation للعمود: " + c.name);
       }
     }
     for (const c of to.columns) if (!sourceColumns.has(c.name) && !c.nullable && c.defaultValue === null) differences.push("عمود إلزامي إضافي بالوجهة: " + c.name);
