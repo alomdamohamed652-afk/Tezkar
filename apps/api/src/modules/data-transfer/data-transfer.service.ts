@@ -91,21 +91,27 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     `);
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
-      foreign_table_name: string; foreign_column_name: string; ordinal: number; is_deferrable: string; initially_deferred: string; update_rule: string; delete_rule: string;
+      foreign_table_name: string; foreign_column_name: string; ordinal: number;
+      deferrable: boolean; initially_deferred: boolean; update_rule: string; delete_rule: string;
     }>(`
-      SELECT tc.table_name, tc.constraint_name, kcu.column_name,
-             ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name,
-             kcu.ordinal_position AS ordinal, tc.is_deferrable, tc.initially_deferred,
-             rc.update_rule, rc.delete_rule
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.referential_constraints rc
-          ON rc.constraint_name=tc.constraint_name AND rc.constraint_schema=tc.table_schema
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema AND tc.table_name=kcu.table_name
-        JOIN information_schema.constraint_column_usage ccu
-          ON ccu.constraint_name=tc.constraint_name AND ccu.constraint_schema=tc.constraint_schema
-       WHERE tc.constraint_schema='public' AND tc.constraint_type='FOREIGN KEY'
-       ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position
+      SELECT src.relname AS table_name, con.conname AS constraint_name,
+             src_col.attname AS column_name, dst.relname AS foreign_table_name,
+             dst_col.attname AS foreign_column_name, key.ordinality::int AS ordinal,
+             con.condeferrable AS deferrable, con.condeferred AS initially_deferred,
+             CASE con.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+               WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule,
+             CASE con.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+               WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS delete_rule
+        FROM pg_constraint con
+        JOIN pg_class src ON src.oid=con.conrelid
+        JOIN pg_namespace ns ON ns.oid=src.relnamespace
+        JOIN pg_class dst ON dst.oid=con.confrelid
+        CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+          WITH ORDINALITY AS key(src_attnum, dst_attnum, ordinality)
+        JOIN pg_attribute src_col ON src_col.attrelid=src.oid AND src_col.attnum=key.src_attnum
+        JOIN pg_attribute dst_col ON dst_col.attrelid=dst.oid AND dst_col.attnum=key.dst_attnum
+       WHERE ns.nspname='public' AND con.contype='f'
+       ORDER BY src.relname, con.conname, key.ordinality
     `);
     const columnsByTable = new Map<string, Column[]>();
     for (const c of columnsResult.rows) {
@@ -130,8 +136,8 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       const group = fkGroups.get(key) ?? {
         table: f.table_name, name: f.constraint_name, columns: [],
         referencedTable: f.foreign_table_name, referencedColumns: [],
-        deferrable: f.is_deferrable === "YES",
-        initiallyDeferred: f.initially_deferred === "YES",
+        deferrable: f.deferrable,
+        initiallyDeferred: f.initially_deferred,
         onUpdate: f.update_rule,
         onDelete: f.delete_rule
       };
