@@ -170,6 +170,15 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
        WHERE n.nspname='public' AND con.contype IN ('u','c','x')
        ORDER BY c.relname, con.contype, pg_get_constraintdef(con.oid, true)
     `);
+    const indexResult = await client.query<{ table_name: string; definition: string; valid: boolean; ready: boolean; live: boolean }>(`
+      SELECT tbl.relname AS table_name, pg_get_indexdef(idx.indexrelid, 0, true) AS definition,
+             idx.indisvalid AS valid, idx.indisready AS ready, idx.indislive AS live
+        FROM pg_index idx
+        JOIN pg_class tbl ON tbl.oid=idx.indrelid
+        JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+       WHERE ns.nspname='public' AND NOT idx.indisprimary AND NOT idx.indisunique AND NOT idx.indisexclusion
+       ORDER BY tbl.relname, pg_get_indexdef(idx.indexrelid, 0, true)
+    `);
     const uniqueIndexResult = await client.query<{ table_name: string; definition: string }>(`
       SELECT tbl.relname AS table_name, pg_get_indexdef(idx.indexrelid, 0, true) AS definition
         FROM pg_index idx
@@ -259,7 +268,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { identity: { databaseName: safety.rows[0].databaseName, serverAddress: safety.rows[0].serverAddress, serverPort: safety.rows[0].serverPort, publicSchemaUsage: safety.rows[0].publicSchemaUsage }, tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, additionalSchemas: additionalSchemasResult.rows.map(row => row.schema_name), features: featureResult.rows[0] };
+    return { identity: { databaseName: safety.rows[0].databaseName, serverAddress: safety.rows[0].serverAddress, serverPort: safety.rows[0].serverPort, publicSchemaUsage: safety.rows[0].publicSchemaUsage }, tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, additionalSchemas: additionalSchemasResult.rows.map(row => row.schema_name), indexes: indexResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -335,6 +344,16 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   if (Number(legacy.features?.sequences ?? 0) > 0 || Number(target.features?.sequences ?? 0) > 0) {
     globalBlockers.push("توجد Sequences (بما فيها المستقلة غير المرتبطة بأعمدة)؛ مزامنة قيمها النهائية والتحقق منها لم تُنفذ بعد");
   }
+  const indexSignature = (items: Array<{table_name: string; definition: string; valid: boolean; ready: boolean; live: boolean}>, tableName: string) =>
+    items.filter(item => item.table_name === tableName)
+      .map(item => JSON.stringify([item.definition, item.valid, item.ready, item.live])).sort();
+  const indexWarnings = allNames.flatMap(name => {
+    const sourceIndexes = indexSignature(legacy.indexes, name);
+    const targetIndexes = indexSignature(target.indexes, name);
+    return JSON.stringify(sourceIndexes) !== JSON.stringify(targetIndexes)
+      ? [{ table: name, message: "اختلاف الفهارس العادية غير الفريدة؛ قد يؤثر على أداء الاستعلامات أو الإدخال، لكنه لا يمنع النقل تلقائيًا" }]
+      : [];
+  });
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
     const to = targetByName.get(name);
@@ -401,6 +420,9 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     transferPlan,
     sourceConstraints: legacy.constraints,
     targetConstraints: target.constraints,
+    sourceIndexes: legacy.indexes,
+    targetIndexes: target.indexes,
+    indexWarnings,
     sourceUniqueIndexes: legacy.uniqueIndexes,
     targetUniqueIndexes: target.uniqueIndexes,
     sourceTriggers: legacy.triggers,
