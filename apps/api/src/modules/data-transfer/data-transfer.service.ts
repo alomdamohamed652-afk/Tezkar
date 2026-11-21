@@ -203,8 +203,9 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const constraintSignature = (items: Array<{table_name: string; constraint_type: string; definition: string}>, tableName: string) =>
     items.filter(item => item.table_name === tableName)
       .map(item => JSON.stringify([item.constraint_type, item.definition])).sort();
-  const objectSignature = (items: Array<{table_name: string; definition: string}>, tableName: string) =>
-    items.filter(item => item.table_name === tableName).map(item => item.definition).sort();
+  const objectSignature = (items: Array<{table_name: string; definition: string; enabled?: string}>, tableName: string) =>
+    items.filter(item => item.table_name === tableName)
+      .map(item => JSON.stringify([item.definition, item.enabled ?? null])).sort();
   const policySignature = (items: Array<{table_name: string; policy_name: string; command: string; roles: string[]; using_expression: string | null; check_expression: string | null}>, tableName: string) =>
     items.filter(item => item.table_name === tableName)
       .map(item => JSON.stringify([item.policy_name, item.command, item.roles, item.using_expression, item.check_expression])).sort();
