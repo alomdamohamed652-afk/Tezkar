@@ -34,10 +34,11 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    const safety = await client.query<{ readOnly: boolean; superuser: boolean; bypassRls: boolean; roleName: string; databaseName: string; serverAddress: string | null; serverPort: number | null; publicSchemaUsage: boolean }>(`
+    const safety = await client.query<{ readOnly: boolean; superuser: boolean; bypassRls: boolean; roleName: string; databaseName: string; serverAddress: string | null; serverPort: number | null; serverStartTime: string; publicSchemaUsage: boolean }>(`
       SELECT current_setting('transaction_read_only') = 'on' AS "readOnly",
              r.rolsuper AS superuser, r.rolbypassrls AS "bypassRls", current_user AS "roleName",
              current_database() AS "databaseName", inet_server_addr()::text AS "serverAddress", inet_server_port() AS "serverPort",
+             pg_postmaster_start_time()::text AS "serverStartTime",
              has_schema_privilege(current_user, 'public', 'USAGE') AS "publicSchemaUsage"
         FROM pg_roles r WHERE r.rolname = current_user
     `);
@@ -270,7 +271,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { identity: { databaseName: safety.rows[0].databaseName, serverAddress: safety.rows[0].serverAddress, serverPort: safety.rows[0].serverPort, publicSchemaUsage: safety.rows[0].publicSchemaUsage }, tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, additionalSchemas: additionalSchemasResult.rows.map(row => row.schema_name), indexes: indexResult.rows, features: featureResult.rows[0] };
+    return { identity: { databaseName: safety.rows[0].databaseName, serverAddress: safety.rows[0].serverAddress, serverPort: safety.rows[0].serverPort, serverStartTime: safety.rows[0].serverStartTime, publicSchemaUsage: safety.rows[0].publicSchemaUsage }, tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, customTypes: customTypeResult.rows, extensions: extensionResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, additionalSchemas: additionalSchemasResult.rows.map(row => row.schema_name), indexes: indexResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -309,9 +310,15 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     ? ["اختلاف أسماء أو إصدارات PostgreSQL Extensions بين المصدر والوجهة؛ يلزم توحيدها قبل النقل"]
     : [];
   const sameDatabase = legacy.identity.databaseName === target.identity.databaseName
-    && legacy.identity.serverAddress !== null
-    && legacy.identity.serverAddress === target.identity.serverAddress
-    && legacy.identity.serverPort === target.identity.serverPort;
+    && (
+      (legacy.identity.serverAddress !== null
+        && target.identity.serverAddress !== null
+        && legacy.identity.serverAddress === target.identity.serverAddress
+        && legacy.identity.serverPort === target.identity.serverPort)
+      || (legacy.identity.serverAddress === null
+        && target.identity.serverAddress === null
+        && legacy.identity.serverStartTime === target.identity.serverStartTime)
+    );
   const globalBlockers = [
     ...(!legacy.identity.publicSchemaUsage ? ["حساب المصدر لا يملك USAGE على مخطط public"] : []),
     ...(!target.identity.publicSchemaUsage ? ["حساب الوجهة لا يملك USAGE على مخطط public"] : []),
