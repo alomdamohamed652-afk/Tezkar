@@ -5,6 +5,7 @@ import {
   inspectDatabaseTransfer
 } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
 import { parseRequestedTables } from "../src/modules/data-transfer/data-transfer-counts.service.js";
+import { assertDistinctConnectedDatabases } from "../src/modules/data-transfer/data-transfer-connection.service.js";
 
 test("database identity normalizes hostname case and PostgreSQL default port", () => {
   assert.equal(
@@ -73,5 +74,40 @@ test("database identity distinguishes different Supabase project refs on a share
   assert.notEqual(
     databaseIdentity("postgres://postgres.projectone:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"),
     databaseIdentity("postgres://postgres.projecttwo:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres")
+  );
+});
+
+
+test("connected database identity rejects two URLs resolving to the same PostgreSQL database", async () => {
+  const same = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.5", server_port: 5432 }]
+    })
+  };
+  await assert.rejects(
+    () => assertDistinctConnectedDatabases(same, same),
+    /نفس|تعذر إثبات اختلاف/
+  );
+});
+
+test("connected database identity accepts distinct PostgreSQL databases", async () => {
+  const source = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.5", server_port: 5432 }]
+    })
+  };
+  const target = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "32768", server_address: "10.0.0.6", server_port: 5432 }]
+    })
+  };
+  await assert.doesNotReject(() => assertDistinctConnectedDatabases(source, target));
+});
+
+test("connected database identity fails closed when server identity is unavailable", async () => {
+  const unknown = { query: async () => ({ rows: [{ database_name: "postgres", database_oid: null, server_address: null, server_port: null }] }) };
+  await assert.rejects(
+    () => assertDistinctConnectedDatabases(unknown, unknown),
+    /تعذر إثبات اختلاف/
   );
 });
