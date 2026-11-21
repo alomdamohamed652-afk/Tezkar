@@ -24,7 +24,7 @@ function getLegacyPool(): pg.Pool {
   return legacyPool;
 }
 
-type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null };
+type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null; identity: string; generated: string };
 type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; onUpdate: string; onDelete: string };
 
@@ -99,6 +99,29 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
        WHERE n.nspname='public' AND con.contype IN ('u','c','x')
        ORDER BY c.relname, con.contype, pg_get_constraintdef(con.oid, true)
     `);
+    const uniqueIndexResult = await client.query<{ table_name: string; definition: string }>(`
+      SELECT tbl.relname AS table_name, pg_get_indexdef(idx.indexrelid, 0, true) AS definition
+        FROM pg_index idx
+        JOIN pg_class tbl ON tbl.oid=idx.indrelid
+        JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+       WHERE ns.nspname='public' AND idx.indisunique AND NOT idx.indisprimary
+       ORDER BY tbl.relname, pg_get_indexdef(idx.indexrelid, 0, true)
+    `);
+    const triggerResult = await client.query<{ table_name: string; definition: string; enabled: string }>(`
+      SELECT tbl.relname AS table_name, pg_get_triggerdef(t.oid, true) AS definition,
+             t.tgenabled AS enabled
+        FROM pg_trigger t
+        JOIN pg_class tbl ON tbl.oid=t.tgrelid
+        JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+       WHERE ns.nspname='public' AND NOT t.tgisinternal
+       ORDER BY tbl.relname, t.tgname
+    `);
+    const policyResult = await client.query<{ table_name: string; policy_name: string; command: string; roles: string[]; using_expression: string | null; check_expression: string | null }>(`
+      SELECT tablename AS table_name, policyname AS policy_name, cmd AS command,
+             roles, qual AS using_expression, with_check AS check_expression
+        FROM pg_policies WHERE schemaname='public'
+       ORDER BY tablename, policyname
+    `);
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
       foreign_table_name: string; foreign_column_name: string; ordinal: number;
@@ -126,7 +149,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const columnsByTable = new Map<string, Column[]>();
     for (const c of columnsResult.rows) {
       const list = columnsByTable.get(c.table_name) ?? [];
-      list.push({ name: c.column_name, dataType: c.data_type, udtName: c.udt_name, nullable: c.is_nullable === "YES", defaultValue: c.column_default, ordinal: c.ordinal_position, maxLength: c.character_maximum_length, numericPrecision: c.numeric_precision, numericScale: c.numeric_scale, datetimePrecision: c.datetime_precision });
+      list.push({ name: c.column_name, dataType: c.data_type, udtName: c.udt_name, nullable: c.is_nullable === "YES", defaultValue: c.column_default, ordinal: c.ordinal_position, maxLength: c.character_maximum_length, numericPrecision: c.numeric_precision, numericScale: c.numeric_scale, datetimePrecision: c.datetime_precision, identity: c.identity_generation ?? "", generated: c.is_generated ?? "NEVER" });
       columnsByTable.set(c.table_name, list);
     }
     const pkByTable = new Map<string, string[]>();
@@ -156,7 +179,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
+    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, uniqueIndexes: uniqueIndexResult.rows, triggers: triggerResult.rows, policies: policyResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -178,6 +201,11 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
   const constraintSignature = (items: Array<{table_name: string; constraint_type: string; definition: string}>, tableName: string) =>
     items.filter(item => item.table_name === tableName)
       .map(item => JSON.stringify([item.constraint_type, item.definition])).sort();
+  const objectSignature = (items: Array<{table_name: string; definition: string}>, tableName: string) =>
+    items.filter(item => item.table_name === tableName).map(item => item.definition).sort();
+  const policySignature = (items: Array<{table_name: string; policy_name: string; command: string; roles: string[]; using_expression: string | null; check_expression: string | null}>, tableName: string) =>
+    items.filter(item => item.table_name === tableName)
+      .map(item => JSON.stringify([item.policy_name, item.command, item.roles, item.using_expression, item.check_expression])).sort();
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
     const to = targetByName.get(name);
@@ -197,6 +225,10 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف المفتاح الأساسي");
     if (JSON.stringify(fkSignature(legacy.foreignKeys, name)) !== JSON.stringify(fkSignature(target.foreignKeys, name))) differences.push("اختلاف علاقات المفاتيح الخارجية");
     if (JSON.stringify(constraintSignature(legacy.constraints, name)) !== JSON.stringify(constraintSignature(target.constraints, name))) differences.push("اختلاف قيود UNIQUE أو CHECK أو EXCLUDE");
+    if (JSON.stringify(objectSignature(legacy.uniqueIndexes, name)) !== JSON.stringify(objectSignature(target.uniqueIndexes, name))) differences.push("اختلاف الفهارس الفريدة UNIQUE INDEX");
+    if (JSON.stringify(objectSignature(legacy.triggers, name)) !== JSON.stringify(objectSignature(target.triggers, name))) differences.push("اختلاف Triggers؛ قد تؤثر في السجلات أثناء الإدخال");
+    if (JSON.stringify(policySignature(legacy.policies, name)) !== JSON.stringify(policySignature(target.policies, name))) differences.push("اختلاف سياسات Row Level Security");
+    if (from.columns.some(column => column.identity || column.generated !== "NEVER")) differences.push("يحتوي المصدر على أعمدة Identity أو Generated؛ يلزم مسار إدخال مخصص قبل النقل");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
     if (from.rlsEnabled !== to.rlsEnabled || from.rlsForced !== to.rlsForced) differences.push("اختلاف إعدادات Row Level Security");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
@@ -208,6 +240,12 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     foreignKeys: legacy.foreignKeys,
     sourceConstraints: legacy.constraints,
     targetConstraints: target.constraints,
+    sourceUniqueIndexes: legacy.uniqueIndexes,
+    targetUniqueIndexes: target.uniqueIndexes,
+    sourceTriggers: legacy.triggers,
+    targetTriggers: target.triggers,
+    sourcePolicies: legacy.policies,
+    targetPolicies: target.policies,
     sourceFeatures: legacy.features,
     targetFeatures: target.features,
     sourceSequences: legacy.sequences,
