@@ -347,7 +347,10 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
       deferrable: fk.deferrable,
       initiallyDeferred: fk.initiallyDeferred
     })),
-    unsafeTables
+    // A global incompatibility must stop the whole plan, not merely appear as a warning.
+    globalBlockers.length > 0
+      ? [...new Set([...unsafeTables, ...legacy.tables.map(table => table.name)])]
+      : unsafeTables
   );
   globalBlockers.push(...transferPlan.blockers.map(message => `ترتيب النقل: ${message}`));
   return {
