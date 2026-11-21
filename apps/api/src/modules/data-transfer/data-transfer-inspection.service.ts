@@ -1,5 +1,5 @@
 import pg from "pg";
-import { assertDistinctDatabaseIdentities, assertReadOnlySourceSession, createReadOnlySourcePool } from "./data-transfer-connection.service.js";
+import { assertDistinctConnectedDatabases, assertDistinctDatabaseIdentities, assertReadOnlySourceSession, createReadOnlySourcePool } from "./data-transfer-connection.service.js";
 
 type ColumnShape = {
   name: string; type: string; udtSchema: string; udtName: string;
@@ -394,6 +394,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
     }
     try {
       await assertReadOnlySourceSession(sourceClient);
+      await assertDistinctConnectedDatabases(sourceClient, targetClient);
       const [source, target] = await Promise.all([
         readSnapshot(sourceClient), readSnapshot(targetClient)
       ]);
