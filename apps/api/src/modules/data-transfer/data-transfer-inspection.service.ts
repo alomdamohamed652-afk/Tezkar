@@ -16,6 +16,9 @@ type TableShape = {
   indexes: string[];
   constraints: string[];
   triggers: string[];
+  rlsEnabled: boolean;
+  rlsForced: boolean;
+  policies: string[];
 };
 type FeatureCounts = {
   views: number;
@@ -120,6 +123,21 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            WHERE schemaname = 'public'
            ORDER BY schemaname,matviewname
     `);
+    const rowSecurity = await client.query(`
+          SELECT n.nspname AS schema_name, c.relname AS table_name,
+                 c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+           ORDER BY n.nspname, c.relname
+    `);
+    const policies = await client.query(`
+          SELECT schemaname, tablename, policyname, permissive,
+                 array_to_string(roles, ',') AS roles, cmd, qual, with_check
+            FROM pg_policies
+           WHERE schemaname = 'public'
+           ORDER BY schemaname, tablename, policyname
+    `);
     const triggers = await client.query(`
 
           SELECT n.nspname AS schema_name,c.relname AS table_name,t.tgname AS trigger_name,
@@ -148,7 +166,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const tableMap = new Map<string, TableShape>();
     for (const row of tables.rows) {
       tableMap.set(`${row.schema_name}.${row.table_name}`, {
-        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: []
+        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: [],
+        rlsEnabled: false, rlsForced: false, policies: []
       });
     }
     for (const row of columns.rows) {
@@ -176,6 +195,18 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     }
     for (const row of triggers.rows) {
       tableMap.get(`${row.schema_name}.${row.table_name}`)?.triggers.push(`${row.trigger_name}:${row.definition}`);
+    }
+    for (const row of rowSecurity.rows) {
+      const table = tableMap.get(`${row.schema_name}.${row.table_name}`);
+      if (table) {
+        table.rlsEnabled = Boolean(row.rls_enabled);
+        table.rlsForced = Boolean(row.rls_forced);
+      }
+    }
+    for (const row of policies.rows) {
+      tableMap.get(`${row.schemaname}.${row.tablename}`)?.policies.push(
+        `${row.policyname}:${row.permissive}:${row.roles}:${row.cmd}:${row.qual ?? ""}:${row.with_check ?? ""}`
+      );
     }
 
     const featureRow = features.rows[0] ?? {};
@@ -253,6 +284,10 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       }
       if (JSON.stringify([...left.triggers].sort()) !== JSON.stringify([...right.triggers].sort())) {
         differences.push("اختلاف المشغلات؛ قد تؤثر على البيانات عند الإدخال");
+      }
+      if (left.rlsEnabled !== right.rlsEnabled || left.rlsForced !== right.rlsForced ||
+          JSON.stringify([...left.policies].sort()) !== JSON.stringify([...right.policies].sort())) {
+        differences.push("اختلاف إعدادات RLS أو سياسات الوصول؛ قد يتغير سلوك القراءة والكتابة");
       }
     }
     const status = !left ? "target_only" : !right ? "source_only" :
