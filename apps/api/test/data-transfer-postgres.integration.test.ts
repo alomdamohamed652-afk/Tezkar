@@ -72,7 +72,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     CREATE PROCEDURE public.refresh_worker_totals()
       LANGUAGE sql AS $$ REFRESH MATERIALIZED VIEW public.worker_order_totals $$;
     CREATE FUNCTION public.worker_rank(bigint) RETURNS bigint
-      LANGUAGE sql IMMUTABLE WINDOW AS $ SELECT $1 $;
+      LANGUAGE sql IMMUTABLE WINDOW AS $$ SELECT $1 $$;
 
     ALTER TABLE public.workers ENABLE ROW LEVEL SECURITY;
     CREATE POLICY workers_read_policy ON public.workers
