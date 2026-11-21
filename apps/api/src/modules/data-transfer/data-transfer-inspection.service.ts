@@ -337,7 +337,7 @@ function databaseIdentity(connectionString: string): string | null {
     const parsed = new URL(connectionString);
     const host = (parsed.hostname || parsed.searchParams.get("host") || "").toLowerCase();
     const port = parsed.port || "5432";
-    const database = decodeURIComponent(parsed.pathname.replace(/^\\//, ""));
+    const database = decodeURIComponent(parsed.pathname.slice(1));
     if (!host || !database) return null;
     return `${host}:${port}/${database}`;
   } catch {
