@@ -73,7 +73,22 @@ export function buildTransferOrder(
   const cyclic = [...names].filter(name => !orderedTables.includes(name)).sort();
   if (cyclic.length) {
     for (const name of cyclic) blocked.add(name);
-    blockers.push(`Foreign-key dependency cycle detected: ${cyclic.join(", ")}; automatic transfer is blocked`);
+    blockers.push(`Foreign-key cycle or dependency on a cycle detected: ${cyclic.join(", ")}; automatic transfer is blocked`);
+  }
+
+  // A child must not be transferred if its referenced parent is blocked.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [parent, children] of outgoing) {
+      if (!blocked.has(parent)) continue;
+      for (const child of children) {
+        if (!blocked.has(child)) {
+          blocked.add(child);
+          changed = true;
+        }
+      }
+    }
   }
 
   return {
