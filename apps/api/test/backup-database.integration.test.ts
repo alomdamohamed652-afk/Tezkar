@@ -2,19 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import pg from "pg";
+import { assertDisposableDatabaseUrl } from "./helpers/disposable-database-url.js";
 import { createDatabaseBackupStream } from "../src/modules/backup/backup-database.service.js";
 import { readBackupArchive } from "../src/modules/backup/backup-archive.js";
 
 const adminUrl = process.env.TEST_DATABASE_URL;
-
-function assertDisposableDatabaseUrl(value: string): void {
-  const url = new URL(value);
-  assert.ok(url.protocol === "postgres:" || url.protocol === "postgresql:");
-  assert.ok(["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase()),
-    "backup export integration tests require a local disposable PostgreSQL server");
-  assert.equal(url.pathname.slice(1), "postgres",
-    "TEST_DATABASE_URL must connect to the postgres admin database, never an application database");
-}
 
 test("database backup streams bounded cursor batches into an authenticated v2 archive", {
   skip: !adminUrl && "TEST_DATABASE_URL not set"
