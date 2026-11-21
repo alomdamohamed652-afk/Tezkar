@@ -1,5 +1,4 @@
 import pg from "pg";
-import { databaseIdentity } from "./data-transfer-inspection.service.js";
 
 const CONNECTION_TIMEOUT_MS = 5_000;
 
@@ -27,10 +26,8 @@ export async function assertReadOnlySourceSession(client: Pick<pg.PoolClient, "q
 }
 
 /** Refuses ambiguous or identical source/target database identities before connecting. */
-export function assertDistinctDatabases(sourceUrl: string, targetUrl: string): void {
-  const sourceIdentity = databaseIdentity(sourceUrl);
-  const targetIdentity = databaseIdentity(targetUrl);
-  if (!sourceIdentity || !targetIdentity || sourceUrl === targetUrl || sourceIdentity === targetIdentity) {
+export function assertDistinctDatabaseIdentities(sourceIdentity: string | null, targetIdentity: string | null): void {
+  if (!sourceIdentity || !targetIdentity || sourceIdentity === targetIdentity) {
     throw new Error("تعذر إثبات اختلاف قاعدة المصدر عن الوجهة؛ تم إيقاف العملية لحماية البيانات.");
   }
 }
