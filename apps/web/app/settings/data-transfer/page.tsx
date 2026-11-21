@@ -98,8 +98,8 @@ export default function DataTransferPage() {
               </ul>
             </div>}
             {report.sourceFeatures && report.targetFeatures && <div className="mt-4 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
-              <p>كائنات إضافية بالمصدر: Views {report.sourceFeatures.views}، Materialized Views {report.sourceFeatures.materializedViews}، Triggers {report.sourceFeatures.triggers}، Functions {report.sourceFeatures.routines}، Large Objects {report.sourceFeatures.largeObjects}، Types {report.sourceFeatures.customTypes}</p>
-              <p>كائنات إضافية بالوجهة: Views {report.targetFeatures.views}، Materialized Views {report.targetFeatures.materializedViews}، Triggers {report.targetFeatures.triggers}، Functions {report.targetFeatures.routines}، Large Objects {report.targetFeatures.largeObjects}، Types {report.targetFeatures.customTypes}</p>
+              <p>كائنات إضافية بالمصدر: Views {report.sourceFeatures.views}، Materialized Views {report.sourceFeatures.materializedViews}، Triggers {report.sourceFeatures.triggers}، Functions {report.sourceFeatures.routines}، Sequences {report.sourceFeatures.sequences}، Large Objects {report.sourceFeatures.largeObjects}، Types {report.sourceFeatures.customTypes}</p>
+              <p>كائنات إضافية بالوجهة: Views {report.targetFeatures.views}، Materialized Views {report.targetFeatures.materializedViews}، Triggers {report.targetFeatures.triggers}، Functions {report.targetFeatures.routines}، Sequences {report.targetFeatures.sequences}، Large Objects {report.targetFeatures.largeObjects}، Types {report.targetFeatures.customTypes}</p>
             </div>}
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[680px] text-right text-sm">
