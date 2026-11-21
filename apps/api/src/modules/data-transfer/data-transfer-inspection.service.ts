@@ -28,6 +28,7 @@ type FeatureCounts = {
   largeObjects: number;
   customTypes: number;
   routines: number;
+  sequences: number;
 };
 type DatabaseSnapshot = {
   tables: Map<string, TableShape>;
@@ -41,6 +42,7 @@ type DatabaseSnapshot = {
   extensions: string[];
   customTypes: string[];
   routines: string[];
+  sequences: string[];
   features: FeatureCounts;
 };
 
@@ -167,6 +169,23 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            WHERE t.typtype IN ('e','d') AND n.nspname = 'public'
            ORDER BY n.nspname, t.typname, c.conname
     `);
+    const sequences = await client.query(`
+          SELECT n.nspname AS schema_name, c.relname AS sequence_name,
+                 format_type(s.seqtypid, NULL) AS data_type,
+                 s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle,
+                 COALESCE(refn.nspname || '.' || tbl.relname || '.' || att.attname, '') AS owned_by
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_sequence s ON s.seqrelid = c.oid
+            LEFT JOIN pg_depend d
+              ON d.classid = 'pg_class'::regclass AND d.objid = c.oid
+             AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a','i')
+            LEFT JOIN pg_class tbl ON tbl.oid = d.refobjid
+            LEFT JOIN pg_namespace refn ON refn.oid = tbl.relnamespace
+            LEFT JOIN pg_attribute att ON att.attrelid = d.refobjid AND att.attnum = d.refobjsubid
+           WHERE c.relkind = 'S' AND n.nspname = 'public'
+           ORDER BY n.nspname, c.relname
+    `);
     const routines = await client.query(`
           SELECT n.nspname AS schema_name, p.proname,
                  pg_get_function_identity_arguments(p.oid) AS identity_arguments,
@@ -188,9 +207,11 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             (SELECT count(*) FROM pg_extension)::int AS extensions,
             (SELECT count(*) FROM pg_largeobject_metadata)::int AS large_objects,
             (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public')::int AS custom_types,
+              WHERE t.typtype IN ('e','d') AND n.nspname = 'public')::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-              WHERE n.nspname = 'public')::int AS routines
+              WHERE n.nspname = 'public' AND p.prokind IN ('f','p'))::int AS routines,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE c.relkind='S' AND n.nspname='public')::int AS sequences
     `);
 
     const tableMap = new Map<string, TableShape>();
@@ -247,7 +268,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       extensions: Number(featureRow.extensions) || 0,
       largeObjects: Number(featureRow.large_objects) || 0,
       customTypes: Number(featureRow.custom_types) || 0,
-      routines: Number(featureRow.routines) || 0
+      routines: Number(featureRow.routines) || 0,
+      sequences: Number(featureRow.sequences) || 0
     };
     return {
       tables: tableMap,
@@ -267,6 +289,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}`),
       routines: routines.rows.map((row: any) =>
         `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${row.definition}`),
+      sequences: sequences.rows.map((row: any) =>
+        `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
       features: featureCounts
     };
   } finally {
@@ -401,7 +425,9 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
           customTypes: { source: source.customTypes.length, target: target.customTypes.length,
             differences: diff(source.customTypes, target.customTypes) },
           routines: { source: source.routines.length, target: target.routines.length,
-            differences: diff(source.routines, target.routines) }
+            differences: diff(source.routines, target.routines) },
+          sequences: { source: source.sequences.length, target: target.sequences.length,
+            differences: diff(source.sequences, target.sequences) }
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
