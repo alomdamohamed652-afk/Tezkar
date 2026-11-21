@@ -29,7 +29,7 @@ export async function assertReadOnlySourceSession(client: Pick<pg.PoolClient, "q
 /** Refuses ambiguous or identical source/target database identities before connecting. */
 export function assertDistinctDatabaseIdentities(sourceIdentity: string | null, targetIdentity: string | null): void {
   if (!sourceIdentity || !targetIdentity || sourceIdentity === targetIdentity) {
-    throw new Error("تعذر إثبات اختلاف قاعدة المصدر عن الوجهة؛ تم إيقاف العملية لحماية البيانات.");
+    throw new Error("تعذر إثبات اختلاف قاعدة المصدر عن الوجهة أو التأكد من أنهما لا يشيران إلى نفس قاعدة البيانات؛ تم إيقاف العملية لحماية البيانات.");
   }
 }
 
