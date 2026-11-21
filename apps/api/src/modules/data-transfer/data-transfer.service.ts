@@ -25,7 +25,7 @@ function getLegacyPool(): pg.Pool {
 }
 
 type Column = { name: string; dataType: string; udtName: string; nullable: boolean; defaultValue: string | null; ordinal: number; maxLength: number | null; numericPrecision: number | null; numericScale: number | null; datetimePrecision: number | null };
-type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number };
+type Table = { name: string; kind: string; columns: Column[]; primaryKey: string[]; rowEstimate: number; rlsEnabled: boolean; rlsForced: boolean };
 type ForeignKey = { table: string; name: string; columns: string[]; referencedTable: string; referencedColumns: string[]; deferrable: boolean; initiallyDeferred: boolean; onUpdate: string; onDelete: string };
 
 async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
@@ -41,9 +41,10 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     if (requireRestrictedRole && (safety.rows[0]?.superuser || safety.rows[0]?.bypassRls)) {
       throw new Error("Legacy source role must not be superuser or BYPASSRLS");
     }
-    const tablesResult = await client.query<{ name: string; kind: string; estimate: string }>(`
+    const tablesResult = await client.query<{ name: string; kind: string; estimate: string; rls_enabled: boolean; rls_forced: boolean }>(`
       SELECT c.relname AS name, c.relkind AS kind,
-             GREATEST(c.reltuples, 0)::bigint::text AS estimate
+             GREATEST(c.reltuples, 0)::bigint::text AS estimate,
+             c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
        WHERE n.nspname='public' AND c.relkind IN ('r','p')
        ORDER BY c.relname
@@ -137,7 +138,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
     const tables: Table[] = tablesResult.rows.map(t => ({
       name: t.name, kind: t.kind === "p" ? "partitioned" : "table",
       columns: columnsByTable.get(t.name) ?? [], primaryKey: pkByTable.get(t.name) ?? [],
-      rowEstimate: Number(t.estimate)
+      rowEstimate: Number(t.estimate), rlsEnabled: t.rls_enabled, rlsForced: t.rls_forced
     }));
     const fkGroups = new Map<string, ForeignKey>();
     for (const f of fkResult.rows) {
@@ -197,6 +198,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (JSON.stringify(fkSignature(legacy.foreignKeys, name)) !== JSON.stringify(fkSignature(target.foreignKeys, name))) differences.push("اختلاف علاقات المفاتيح الخارجية");
     if (JSON.stringify(constraintSignature(legacy.constraints, name)) !== JSON.stringify(constraintSignature(target.constraints, name))) differences.push("اختلاف قيود UNIQUE أو CHECK أو EXCLUDE");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
+    if (from.rlsEnabled !== to.rlsEnabled || from.rlsForced !== to.rlsForced) differences.push("اختلاف إعدادات Row Level Security");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
   });
   return {
