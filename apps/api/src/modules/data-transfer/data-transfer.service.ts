@@ -89,6 +89,15 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','r','m')) AS "customTypes",
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') AS routines
     `);
+    const constraintResult = await client.query<{ table_name: string; constraint_type: string; definition: string }>(`
+      SELECT c.relname AS table_name, con.contype::text AS constraint_type,
+             pg_get_constraintdef(con.oid, true) AS definition
+        FROM pg_constraint con
+        JOIN pg_class c ON c.oid=con.conrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname='public' AND con.contype IN ('u','c','x')
+       ORDER BY c.relname, con.contype, pg_get_constraintdef(con.oid, true)
+    `);
     const fkResult = await client.query<{
       table_name: string; constraint_name: string; column_name: string;
       foreign_table_name: string; foreign_column_name: string; ordinal: number;
@@ -146,7 +155,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
       fkGroups.set(key, group);
     }
     await client.query("COMMIT");
-    return { tables, foreignKeys: [...fkGroups.values()], sequences: sequenceResult.rows, features: featureResult.rows[0] };
+    return { tables, foreignKeys: [...fkGroups.values()], constraints: constraintResult.rows, sequences: sequenceResult.rows, features: featureResult.rows[0] };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -165,6 +174,9 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     .filter(item => item.table === tableName)
     .map(item => JSON.stringify([item.columns, item.referencedTable, item.referencedColumns, item.deferrable, item.initiallyDeferred, item.onUpdate, item.onDelete]))
     .sort();
+  const constraintSignature = (items: Array<{table_name: string; constraint_type: string; definition: string}>, tableName: string) =>
+    items.filter(item => item.table_name === tableName)
+      .map(item => JSON.stringify([item.constraint_type, item.definition])).sort();
   const comparison = allNames.map(name => {
     const from = legacyByName.get(name);
     const to = targetByName.get(name);
@@ -183,6 +195,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (from.kind === "partitioned") differences.push("الجدول مقسّم إلى partitions؛ النقل الآلي متوقف لحين معالجة التقسيم صراحةً");
     if (JSON.stringify(from.primaryKey) !== JSON.stringify(to.primaryKey)) differences.push("اختلاف المفتاح الأساسي");
     if (JSON.stringify(fkSignature(legacy.foreignKeys, name)) !== JSON.stringify(fkSignature(target.foreignKeys, name))) differences.push("اختلاف علاقات المفاتيح الخارجية");
+    if (JSON.stringify(constraintSignature(legacy.constraints, name)) !== JSON.stringify(constraintSignature(target.constraints, name))) differences.push("اختلاف قيود UNIQUE أو CHECK أو EXCLUDE");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
   });
@@ -191,6 +204,8 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     target: { tableCount: target.tables.length, estimatedRows: target.tables.reduce((n,t)=>n+t.rowEstimate,0), foreignKeyCount: target.foreignKeys.length },
     comparison,
     foreignKeys: legacy.foreignKeys,
+    sourceConstraints: legacy.constraints,
+    targetConstraints: target.constraints,
     sourceFeatures: legacy.features,
     targetFeatures: target.features,
     sourceSequences: legacy.sequences,
