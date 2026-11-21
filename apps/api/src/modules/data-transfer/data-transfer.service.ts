@@ -80,7 +80,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
        ORDER BY table_name, ordinal_position
     `);
     const featureResult = await client.query<{
-      views: number; materializedViews: number; triggers: number; extensions: number; largeObjects: number;
+      views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number;
       customTypes: number; routines: number;
     }>(`
       SELECT
