@@ -83,7 +83,7 @@ async function inspect(pool: pg.Pool, requireRestrictedRole = false) {
         (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal) AS triggers,
         (SELECT count(*)::int FROM pg_extension) AS extensions,
         (SELECT count(*)::int FROM pg_largeobject_metadata) AS "largeObjects",
-        (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','c') AND t.typcategory <> 'A') AS "customTypes",
+        (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype IN ('e','d','r','m')) AS "customTypes",
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') AS routines
     `);
     const fkResult = await client.query<{
