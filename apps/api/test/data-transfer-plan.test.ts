@@ -58,13 +58,14 @@ test("blocks tables without primary keys but keeps independent safe tables", () 
   assert.match(result.blockers.join(" "), /no primary key/);
 });
 
-test("ignores foreign keys outside the inspected public table set", () => {
+test("blocks foreign keys that reference tables outside the inspected set", () => {
   const result = buildTransferOrder(
     [{ name: "public_table", primaryKey: ["id"] }],
     [{ table: "public_table", referencedTable: "external_table", deferrable: false, initiallyDeferred: false }]
   );
-  assert.deepEqual(result.orderedTables, ["public_table"]);
-  assert.deepEqual(result.blockers, []);
+  assert.deepEqual(result.orderedTables, []);
+  assert.deepEqual(result.blockedTables, ["public_table"]);
+  assert.match(result.blockers.join(" "), /outside the inspected set/);
 });
 
 test("blocks child tables when a referenced parent has no primary key", () => {
@@ -78,4 +79,32 @@ test("blocks child tables when a referenced parent has no primary key", () => {
   );
   assert.deepEqual(result.orderedTables, ["independent"]);
   assert.deepEqual(result.blockedTables, ["child", "parent"]);
+});
+
+test("propagates an unsafe parent through multiple dependency levels", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "root", primaryKey: [] },
+      { name: "middle", primaryKey: ["id"] },
+      { name: "leaf", primaryKey: ["id"] }
+    ],
+    [
+      { table: "middle", referencedTable: "root", deferrable: false, initiallyDeferred: false },
+      { table: "leaf", referencedTable: "middle", deferrable: false, initiallyDeferred: false }
+    ]
+  );
+  assert.deepEqual(result.orderedTables, []);
+  assert.deepEqual(result.blockedTables, ["leaf", "middle", "root"]);
+});
+
+test("produces deterministic order for disconnected tables", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "zeta", primaryKey: ["id"] },
+      { name: "alpha", primaryKey: ["id"] },
+      { name: "middle", primaryKey: ["id"] }
+    ],
+    []
+  );
+  assert.deepEqual(result.orderedTables, ["alpha", "middle", "zeta"]);
 });
