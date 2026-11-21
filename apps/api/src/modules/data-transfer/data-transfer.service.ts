@@ -239,7 +239,8 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     ? ["اختلاف تعريفات الأنواع المخصصة (ENUM/DOMAIN/RANGE)؛ لا يمكن ضمان إدخال قيمها دون تطابق التعريفات"]
     : [];
   const globalBlockers = [...customTypeDifferences];
-  const unsupportedObjects: Array<[keyof typeof legacy.features, string]> = [
+  type UnsupportedFeatureKey = "views" | "materializedViews" | "routines" | "largeObjects" | "triggers";
+  const unsupportedObjects: Array<[UnsupportedFeatureKey, string]> = [
     ["views", "Views"],
     ["materializedViews", "Materialized Views"],
     ["routines", "Functions/Procedures"],
