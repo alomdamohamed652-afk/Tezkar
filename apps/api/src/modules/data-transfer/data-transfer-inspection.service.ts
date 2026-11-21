@@ -57,7 +57,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             JOIN information_schema.key_column_usage kcu
               ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
              AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
-           WHERE tc.constraint_type='PRIMARY KEY'
+           WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema = 'public'
            ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position
     `);
     const foreignKeys = await client.query(`
