@@ -60,3 +60,18 @@ test("selected table parser rejects duplicates, empty entries, unsupported schem
   assert.throws(() => parseRequestedTables("auth.users"));
   assert.throws(() => parseRequestedTables("public.users; DROP TABLE users"));
 });
+
+
+test("database identity detects the same Supabase project across direct and pooled endpoints", () => {
+  assert.equal(
+    databaseIdentity("postgres://postgres:secret@db.projectref123.supabase.co:5432/postgres"),
+    databaseIdentity("postgres://postgres.projectref123:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres")
+  );
+});
+
+test("database identity distinguishes different Supabase project refs on a shared pooler", () => {
+  assert.notEqual(
+    databaseIdentity("postgres://postgres.projectone:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"),
+    databaseIdentity("postgres://postgres.projecttwo:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres")
+  );
+});
