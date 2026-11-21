@@ -19,11 +19,15 @@ export type TransferOrder = {
  */
 export function buildTransferOrder(
   tables: TransferTable[],
-  foreignKeys: TransferForeignKey[]
+  foreignKeys: TransferForeignKey[],
+  initiallyBlockedTables: string[] = []
 ): TransferOrder {
   const names = new Set(tables.map(table => table.name));
   const blockers: string[] = [];
-  const blocked = new Set<string>();
+  const blocked = new Set<string>(initiallyBlockedTables.filter(name => names.has(name)));
+  for (const name of [...blocked].sort()) {
+    blockers.push(`Table ${name} has schema differences or is missing from the target; transfer is blocked`);
+  }
   for (const table of tables) {
     if (table.primaryKey.length === 0) {
       blocked.add(table.name);
