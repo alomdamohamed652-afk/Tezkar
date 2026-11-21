@@ -9,6 +9,7 @@ type Inspection = {
   target: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
   comparison: Array<{ table: string; status: string; sourceEstimate: number; targetEstimate: number; differences: string[] }>;
   blockers: Array<{ table: string | null; status: string; differences: string[] }>;
+  transferPlan?: { orderedTables: string[]; blockedTables: string[]; blockers: string[] };
   sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   globalBlockers?: string[];
@@ -96,6 +97,13 @@ export default function DataTransferPage() {
                   {blocker.differences.join("، ")}
                 </li>)}
               </ul>
+            </div>}
+            {report.transferPlan && <div className="mt-4 rounded-lg border border-slate-200 p-3 text-sm">
+              <h3 className="font-semibold">خطة ترتيب الجداول (للمراجعة فقط)</h3>
+              <p className="mt-1 text-xs text-slate-500">الترتيب المقترح يحترم علاقات الأب والابن. لا ينفّذ أي نقل.</p>
+              <p className="mt-2">الجداول القابلة للترتيب: {report.transferPlan.orderedTables.length.toLocaleString("ar-EG")}</p>
+              {report.transferPlan.orderedTables.length > 0 && <p className="mt-1 break-words text-xs text-slate-600">{report.transferPlan.orderedTables.join(" ← ")}</p>}
+              {report.transferPlan.blockedTables.length > 0 && <p className="mt-2 text-xs text-amber-800">جداول متوقفة: {report.transferPlan.blockedTables.join("، ")}</p>}
             </div>}
             {report.sourceFeatures && report.targetFeatures && <div className="mt-4 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
               <p>كائنات إضافية بالمصدر: Views {report.sourceFeatures.views}، Materialized Views {report.sourceFeatures.materializedViews}، Triggers {report.sourceFeatures.triggers}، Functions {report.sourceFeatures.routines}، Sequences {report.sourceFeatures.sequences}، Large Objects {report.sourceFeatures.largeObjects}، Types {report.sourceFeatures.customTypes}</p>
