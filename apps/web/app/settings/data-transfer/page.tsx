@@ -9,7 +9,7 @@ type TransferPlan = { readyOrder: Array<{table:string;estimatedRows:number;depen
 type Inspection = {
   source: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
   target: { tableCount: number; estimatedRows: number; foreignKeyCount: number };
-  comparison: Array<{ table: string; status: string; sourceEstimate: number; targetEstimate: number; dependencies: string[]; differences: string[] }>;
+  comparison: Array<{ table: string; status: string; sourceEstimate: number; targetEstimate: number; dependencies: string[]; hasPrimaryKey: boolean; differences: string[] }>;
   blockers: Array<{ table: string; status: string; differences: string[] }>;
   note: string;
   objectComparison?: Record<string, {
