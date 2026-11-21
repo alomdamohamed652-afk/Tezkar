@@ -1,6 +1,7 @@
 import pg from "pg";
 
 const CONNECTION_TIMEOUT_MS = 5_000;
+export const SOURCE_READ_ONLY_OPTIONS = "-c default_transaction_read_only=on";
 
 /**
  * Source connections are forced read-only by PostgreSQL at session start.
@@ -12,7 +13,7 @@ export function createReadOnlySourcePool(connectionString: string): pg.Pool {
     max: 1,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
     idleTimeoutMillis: 1_000,
-    options: "-c default_transaction_read_only=on"
+    options: SOURCE_READ_ONLY_OPTIONS
   });
 }
 
