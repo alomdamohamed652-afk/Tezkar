@@ -11,7 +11,7 @@ type Inspection = {
   blockers: Array<{ table: string | null; status: string; differences: string[] }>;
   indexWarnings?: Array<{ table: string; message: string }>;
   transferPlan?: { orderedTables: string[]; blockedTables: string[]; blockers: string[] };
-  sourceFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
+  sourceFeatures?: { views: number; materializedViews: number; foreignTables: number; rules: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   targetFeatures?: { views: number; materializedViews: number; triggers: number; extensions: number; sequences: number; largeObjects: number; customTypes: number; routines: number };
   globalBlockers?: string[];
   note: string;
@@ -114,8 +114,8 @@ export default function DataTransferPage() {
               {report.transferPlan.blockedTables.length > 0 && <p className="mt-2 text-xs text-amber-800">جداول متوقفة: {report.transferPlan.blockedTables.join("، ")}</p>}
             </div>}
             {report.sourceFeatures && report.targetFeatures && <div className="mt-4 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
-              <p>كائنات إضافية بالمصدر: Views {report.sourceFeatures.views}، Materialized Views {report.sourceFeatures.materializedViews}، Triggers {report.sourceFeatures.triggers}، Functions {report.sourceFeatures.routines}، Sequences {report.sourceFeatures.sequences}، Large Objects {report.sourceFeatures.largeObjects}، Types {report.sourceFeatures.customTypes}</p>
-              <p>كائنات إضافية بالوجهة: Views {report.targetFeatures.views}، Materialized Views {report.targetFeatures.materializedViews}، Triggers {report.targetFeatures.triggers}، Functions {report.targetFeatures.routines}، Sequences {report.targetFeatures.sequences}، Large Objects {report.targetFeatures.largeObjects}، Types {report.targetFeatures.customTypes}</p>
+              <p>كائنات إضافية بالمصدر: Views {report.sourceFeatures.views}، Materialized Views {report.sourceFeatures.materializedViews}، Foreign Tables {report.sourceFeatures.foreignTables}، Rules {report.sourceFeatures.rules}، Triggers {report.sourceFeatures.triggers}، Functions {report.sourceFeatures.routines}، Sequences {report.sourceFeatures.sequences}، Large Objects {report.sourceFeatures.largeObjects}، Types {report.sourceFeatures.customTypes}</p>
+              <p>كائنات إضافية بالوجهة: Views {report.targetFeatures.views}، Materialized Views {report.targetFeatures.materializedViews}، Foreign Tables {report.targetFeatures.foreignTables}، Rules {report.targetFeatures.rules}، Triggers {report.targetFeatures.triggers}، Functions {report.targetFeatures.routines}، Sequences {report.targetFeatures.sequences}، Large Objects {report.targetFeatures.largeObjects}، Types {report.targetFeatures.customTypes}</p>
             </div>}
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[680px] text-right text-sm">
