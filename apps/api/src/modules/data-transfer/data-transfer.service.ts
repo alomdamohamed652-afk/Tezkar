@@ -285,6 +285,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
       else {
         if (c.udtName !== other.udtName || c.dataType !== other.dataType || c.maxLength !== other.maxLength || c.numericPrecision !== other.numericPrecision || c.numericScale !== other.numericScale || c.datetimePrecision !== other.datetimePrecision) differences.push("اختلاف نوع أو دقة العمود: " + c.name);
         if (c.nullable && !other.nullable) differences.push("الوجهة تمنع NULL بينما المصدر يسمح به في العمود: " + c.name);
+        if (c.defaultValue !== other.defaultValue) differences.push("اختلاف القيمة الافتراضية للعمود: " + c.name);
         if (c.identity !== other.identity || c.generated !== other.generated) differences.push("اختلاف خصائص Identity/Generated للعمود: " + c.name);
       }
     }
@@ -299,6 +300,7 @@ export async function inspectLegacyAndTarget(targetPool: pg.Pool) {
     if (JSON.stringify(policySignature(legacy.policies, name)) !== JSON.stringify(policySignature(target.policies, name))) differences.push("اختلاف سياسات Row Level Security");
     if (from.columns.some(column => column.identity || column.generated !== "NEVER")) differences.push("يحتوي المصدر على أعمدة Identity أو Generated؛ يلزم مسار إدخال مخصص قبل النقل");
     if (from.rlsEnabled) differences.push("RLS مفعّل في المصدر؛ لا يمكن ضمان رؤية كل الصفوف بحساب القراءة الحالي دون إثبات تغطية السياسات");
+    if (to.rlsEnabled) differences.push("RLS مفعّل في الوجهة؛ لا يمكن ضمان نجاح إدخال كل السجلات بحساب النقل الحالي");
     if (from.kind !== to.kind) differences.push("اختلاف نوع الجدول");
     if (from.rlsEnabled !== to.rlsEnabled || from.rlsForced !== to.rlsForced) differences.push("اختلاف إعدادات Row Level Security");
     return { table: name, status: differences.length ? "schema_mismatch" : "compatible", sourceEstimate: from.rowEstimate, targetEstimate: to.rowEstimate, differences };
