@@ -3,12 +3,13 @@ import { env } from "../../config.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { inspectDatabaseTransfer } from "./data-transfer-inspection.service.js";
+import { checkDataTransferRateLimit } from "./data-transfer-rate-limit.js";
 import { inspectSelectedTableCounts, parseRequestedTables, type RequestedTable } from "./data-transfer-counts.service.js";
 
 export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/inspection", {
     preHandler: [authenticateRequest, requirePermission("system.backup.export")]
-  }, async (_request, reply) => {
+  }, async (request, reply) => {
     if (!env.LEGACY_DATABASE_URL) {
       return reply.code(503).header("cache-control", "no-store, private").send({
         error: {
@@ -16,6 +17,11 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
           message: "قاعدة البيانات القديمة غير مُعدة على خدمة API؛ لم يتم بدء الفحص."
         }
       });
+    }
+
+    const retryAfterMs = checkDataTransferRateLimit("inspection:" + request.user!.userId);
+    if (retryAfterMs > 0) {
+      return reply.code(429).header("cache-control", "no-store, private").header("retry-after", String(Math.ceil(retryAfterMs / 1000))).send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
     }
 
     try {
@@ -51,6 +57,11 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
           message: error instanceof Error ? error.message : "اختيار الجداول غير صالح."
         }
       });
+    }
+
+    const retryAfterMs = checkDataTransferRateLimit("counts:" + request.user!.userId);
+    if (retryAfterMs > 0) {
+      return reply.code(429).header("cache-control", "no-store, private").header("retry-after", String(Math.ceil(retryAfterMs / 1000))).send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص الأعداد مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
     }
 
     try {
