@@ -3,7 +3,7 @@ import { databaseIdentity } from "./data-transfer-inspection.service.js";
 
 const MAX_TABLES = 5;
 const STATEMENT_TIMEOUT_MS = 1500;
-const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*$/;
+const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 export type RequestedTable = { schema: string; table: string; key: string };
 
@@ -20,7 +20,9 @@ export function parseRequestedTables(value: unknown): RequestedTable[] {
     throw new Error("صيغة أسماء الجداول غير صحيحة. استخدم schema.table.");
   }
   return unique.map(key => {
-    const [schema, table] = key.split(".");
+    const separator = key.indexOf(".");
+    const schema = key.slice(0, separator);
+    const table = key.slice(separator + 1);
     return { schema, table, key };
   });
 }
