@@ -1,4 +1,5 @@
 import pg from "pg";
+import { assertDistinctDatabaseIdentities, assertReadOnlySourceSession, createReadOnlySourcePool } from "./data-transfer-connection.service.js";
 
 type ColumnShape = { name: string; type: string; nullable: boolean; defaultValue: string | null };
 type TableShape = {
@@ -235,13 +236,9 @@ export function databaseIdentity(connectionString: string): string | null {
 export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: string) {
   const sourceIdentity = databaseIdentity(sourceUrl);
   const targetIdentity = databaseIdentity(targetUrl);
-  if (sourceUrl === targetUrl || (sourceIdentity && targetIdentity && sourceIdentity === targetIdentity)) {
-    throw new Error("مصدر البيانات والوجهة يشيران إلى نفس قاعدة البيانات؛ أوقف الفحص لحماية البيانات.");
-  }
+  assertDistinctDatabaseIdentities(sourceIdentity, targetIdentity);
 
-  const sourcePool = new pg.Pool({
-    connectionString: sourceUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000
-  });
+  const sourcePool = createReadOnlySourcePool(sourceUrl);
   const targetPool = new pg.Pool({
     connectionString: targetUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000
   });
@@ -256,6 +253,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
       throw error;
     }
     try {
+      await assertReadOnlySourceSession(sourceClient);
       const [source, target] = await Promise.all([
         readSnapshot(sourceClient), readSnapshot(targetClient)
       ]);
