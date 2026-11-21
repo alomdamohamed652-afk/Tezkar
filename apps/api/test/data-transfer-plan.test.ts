@@ -66,3 +66,16 @@ test("ignores foreign keys outside the inspected public table set", () => {
   assert.deepEqual(result.orderedTables, ["public_table"]);
   assert.deepEqual(result.blockers, []);
 });
+
+test("blocks child tables when a referenced parent has no primary key", () => {
+  const result = buildTransferOrder(
+    [
+      { name: "parent", primaryKey: [] },
+      { name: "child", primaryKey: ["id"] },
+      { name: "independent", primaryKey: ["id"] }
+    ],
+    [{ table: "child", referencedTable: "parent", deferrable: false, initiallyDeferred: false }]
+  );
+  assert.deepEqual(result.orderedTables, ["independent"]);
+  assert.deepEqual(result.blockedTables, ["child", "parent"]);
+});
