@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { inspectDatabaseTransfer } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
+import { createReadOnlySourcePool } from "../src/modules/data-transfer/data-transfer-connection.service.js";
 import { assertDisposableDatabaseUrl } from "./helpers/disposable-database-url.js";
 
 const adminUrl = process.env.TEST_DATABASE_URL;
@@ -121,6 +122,26 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(result.objectComparison.triggers.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.routines.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.sequences.differences.missingInTarget.length === 0);
+
+    const sourceReadOnlyPool = createReadOnlySourcePool(databaseUrl(sourceName));
+    try {
+      await assert.rejects(
+        () => sourceReadOnlyPool.query("INSERT INTO public.workers(name) VALUES ($must-not-write$)"),
+        (error: unknown) => Boolean(error && typeof error === "object" && "code" in error &&
+          (error as { code?: string }).code === "25006")
+      );
+    } finally {
+      await sourceReadOnlyPool.end();
+    }
+
+    const targetPool = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
+    try {
+      await targetPool.query("CREATE TABLE public.target_only_fixture (id integer PRIMARY KEY)");
+    } finally {
+      await targetPool.end();
+    }
+    const mismatch = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
+    assert.ok(mismatch.blockers.some(item => item.table === "public.target_only_fixture" && item.status === "target_only"));
   } finally {
     await admin.end();
     const cleanup = new pg.Pool({ connectionString: adminUrl, max: 1 });
