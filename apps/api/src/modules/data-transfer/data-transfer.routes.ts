@@ -107,6 +107,9 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
           ? [objectLabels[key] ?? key]
           : [];
       });
+      if (inspection.unsupportedRelations.source.length || inspection.unsupportedRelations.target.length) {
+        globalBlockers.push("FOREIGN TABLES غير المدعومة");
+      }
       const plan = buildTransferPlan(inspection.comparison, globalBlockers);
       return reply.header("cache-control", "no-store, private").send({
         ...plan,
