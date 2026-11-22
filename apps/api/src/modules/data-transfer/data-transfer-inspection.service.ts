@@ -414,7 +414,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
     try {
       await assertReadOnlySession(sourceClient);
       await assertReadOnlySession(targetClient);
-      await assertDistinctConnectedDatabases(sourceClient, targetClient);
+      await assertDistinctConnectedDatabases(sourceClient, targetClient, sourceIdentity, targetIdentity);
       const [source, target] = await Promise.all([
         readSnapshot(sourceClient), readSnapshot(targetClient)
       ]);
