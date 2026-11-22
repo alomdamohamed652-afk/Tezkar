@@ -31,7 +31,7 @@ test("source session guard accepts only a server-confirmed read-only session", a
 
 test("source session guard fails closed when PostgreSQL does not confirm read-only", async () => {
   await assert.rejects(
-    () => assertReadOnlySourceSession({
+    () => assertReadOnlySession({
       async query() { return { rows: [{ transaction_read_only: "off" }] }; }
     } as never),
     /ليس للقراءة فقط/
