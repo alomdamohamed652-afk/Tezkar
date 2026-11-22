@@ -37,7 +37,7 @@ function AttendancePill({children,tone="NEUTRAL"}:{children:ReactNode;tone?:stri
 function punchTone(status:string){return status==="IN"?"IN":status==="OUT"?"OUT":status==="OVERTIME_IN"?"OVERTIME_IN":status==="OVERTIME_OUT"?"OVERTIME_OUT":"NEUTRAL"}
 function reportTone(status:string){return status==="PRESENT"?"SUCCESS":status==="ABSENT"?"DANGER":status==="MISSING_PUNCH"?"WARNING":status==="DAY_OFF"?"NEUTRAL":status==="DAY_OFF_WITH_PUNCH"?"OVERTIME_IN":status==="NOT_STARTED"?"NEUTRAL":"WARNING"}
 
-const eventClass:Record<string,string>={IN:"event-in",OUT:"event-out",OVERTIME_IN:"event-overtime",OVERTIME_OUT:"event-overtime",UNKNOWN:"event-unknown"};
+const _eventClass:Record<string,string>={IN:"event-in",OUT:"event-out",OVERTIME_IN:"event-overtime",OVERTIME_OUT:"event-overtime",UNKNOWN:"event-unknown"};
 export default function AttendancePage(){
  const {has}=usePermissions();const [employees,setEmployees]=useState<Employee[]>([]);const [schedules,setSchedules]=useState<Schedule[]>([]);const [punches,setPunches]=useState<Punch[]>([]);
  const [summary,setSummary]=useState({total:0,pending:0,suspicious:0,unknown:0});const [reportFrom,setReportFrom]=useState(localMonthStart());const [reportTo,setReportTo]=useState(localMonthEnd());const [reportStatusFilter,setReportStatusFilter]=useState("ALL");const [reportRows,setReportRows]=useState<ReportRow[]>([]);const [reportSummary,setReportSummary]=useState<Record<string,number>>({});const [reportBusy,setReportBusy]=useState(false);const [reportEmployee,setReportEmployee]=useState("ALL");const [selected,setSelected]=useState("");const [scheduleEffectiveFrom,setScheduleEffectiveFrom]=useState(localDate());const [days,setDays]=useState<Day[]>(defaultDays());
