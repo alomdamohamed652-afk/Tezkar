@@ -25,6 +25,9 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
   };
   let sourceCreated = false;
   let targetCreated = false;
+  const restrictedRole = `transfer_reader_${suffix}`;
+  const restrictedPassword = randomUUID().replaceAll("-", "");
+  let restrictedRoleCreated = false;
 
   const fixtureSql = `
     CREATE TYPE public.worker_state AS ENUM ('active', 'paused');
@@ -123,6 +126,34 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(result.objectComparison.routines.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.sequences.differences.missingInTarget.length === 0);
 
+    // Verify catalog inspection works for a login with no table-level SELECT grants.
+    await admin.query(`CREATE ROLE ${quoteDb(restrictedRole)} LOGIN PASSWORD '${restrictedPassword}'`);
+    restrictedRoleCreated = true;
+    await admin.query(`GRANT CONNECT ON DATABASE ${quoteDb(sourceName)} TO ${quoteDb(restrictedRole)}`);
+    await admin.query(`GRANT CONNECT ON DATABASE ${quoteDb(targetName)} TO ${quoteDb(restrictedRole)}`);
+    const restrictedUrl = (name: string) => {
+      const url = new URL(databaseUrl(name));
+      url.username = restrictedRole;
+      url.password = restrictedPassword;
+      return url.toString();
+    };
+    const restrictedSource = new pg.Pool({ connectionString: restrictedUrl(sourceName), max: 1 });
+    const restrictedTarget = new pg.Pool({ connectionString: restrictedUrl(targetName), max: 1 });
+    try {
+      const privileges = await restrictedSource.query(
+        "SELECT has_table_privilege(current_user, 'public.workers', 'SELECT') AS can_select"
+      );
+      assert.equal(privileges.rows[0]?.can_select, false);
+      const restrictedInspection = await inspectDatabaseTransfer(
+        restrictedUrl(sourceName), restrictedUrl(targetName)
+      );
+      assert.equal(restrictedInspection.source.tableCount, 3);
+      assert.equal(restrictedInspection.target.tableCount, 3);
+      assert.deepEqual(restrictedInspection.blockers, []);
+    } finally {
+      await Promise.all([restrictedSource.end(), restrictedTarget.end()]);
+    }
+
     const sourceReadOnlyPool = createReadOnlySourcePool(databaseUrl(sourceName));
     try {
       await assert.rejects(
@@ -157,6 +188,11 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     await admin.end();
     const cleanup = new pg.Pool({ connectionString: adminUrl, max: 1 });
     try {
+      if (restrictedRoleCreated) {
+        await cleanup.query(`REVOKE CONNECT ON DATABASE ${quoteDb(sourceName)} FROM ${quoteDb(restrictedRole)}`).catch(() => undefined);
+        await cleanup.query(`REVOKE CONNECT ON DATABASE ${quoteDb(targetName)} FROM ${quoteDb(restrictedRole)}`).catch(() => undefined);
+        await cleanup.query(`DROP ROLE IF EXISTS ${quoteDb(restrictedRole)}`);
+      }
       if (targetCreated) {
         await cleanup.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", [targetName]);
         await cleanup.query(`DROP DATABASE IF EXISTS ${quoteDb(targetName)}`);
