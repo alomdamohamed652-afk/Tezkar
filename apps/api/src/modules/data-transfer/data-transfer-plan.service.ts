@@ -32,7 +32,9 @@ export function buildTransferPlan(tables: TransferPlanTable[], globalBlockers: s
           ? "الجدول غير موجود في الوجهة؛ لا يمكن إدراج بياناته قبل تجهيز المخطط ومراجعته."
           : table.status === "target_only"
             ? "الجدول موجود في الوجهة فقط ولا يقابله جدول مصدر."
-            : "اختلاف بنيوي بين المصدر والوجهة؛ يلزم حلّه قبل التخطيط للنقل.",
+            : table.status === "unsupported_relation"
+              ? "علاقة FOREIGN TABLE غير مدعومة في فحص النقل؛ يلزم مراجعتها يدويًا قبل اعتماد أي خطة."
+              : "اختلاف بنيوي بين المصدر والوجهة؛ يلزم حلّه قبل التخطيط للنقل.",
         dependencies: [...new Set(table.dependencies)]
       });
     } else if (globalBlockers.length > 0) {
