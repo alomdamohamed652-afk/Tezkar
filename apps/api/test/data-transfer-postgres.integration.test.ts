@@ -153,11 +153,11 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
 
     // A same-named ENUM with different labels and a same-named sequence with
     // different settings must not be treated as globally compatible.
-    const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
+    const renamedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
-      await changedTarget.query("ALTER INDEX public.workers_name_partial_idx RENAME TO workers_name_partial_renamed");
+      await renamedTarget.query("ALTER INDEX public.workers_name_partial_idx RENAME TO workers_name_partial_renamed");
     } finally {
-      await changedTarget.end();
+      await renamedTarget.end();
     }
     const renamedIndexOnly = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
     assert.deepEqual(
