@@ -262,6 +262,40 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w')
            ORDER BY n.nspname, p.proname, identity_arguments
     `);
+    // Compare every returned object list with catalog-derived totals. Some
+    // convenience views can filter metadata by privileges; a mismatch must fail closed.
+    const expectedObjectCounts = await client.query(`
+          SELECT
+            (SELECT count(*) FROM pg_index i
+               JOIN pg_class t ON t.oid = i.indrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public' AND t.relkind IN ('r','p'))::int AS indexes,
+            (SELECT count(*) FROM pg_constraint con
+               JOIN pg_class t ON t.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public' AND con.contype IN ('u','c','x'))::int AS constraints,
+            (SELECT count(*) FROM pg_constraint con
+               JOIN pg_class t ON t.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public' AND con.contype = 'f')::int AS foreign_keys,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'v')::int AS views,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'm')::int AS materialized_views,
+            (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+               JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE NOT t.tgisinternal AND n.nspname = 'public')::int AS triggers,
+            (SELECT count(*) FROM pg_extension)::int AS extensions,
+            (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
+              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
+                AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type
+                  WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
+            (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w'))::int AS routines,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE c.relkind='S' AND n.nspname='public')::int AS sequences
+    `);
+
     const features = await client.query(`
 
           SELECT
@@ -350,6 +384,26 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       const actual = actualPolicyCounts.get(tableName) ?? 0;
       if (actual !== expected) {
         throw new Error(`Incomplete row-security policy metadata for ${tableName}; expected ${expected} policies but read ${actual}`);
+      }
+    }
+
+    const expectedObjects = expectedObjectCounts.rows[0] ?? {};
+    const observedObjectCounts: Record<string, number> = {
+      indexes: indexes.rows.length,
+      constraints: constraints.rows.length,
+      foreign_keys: foreignKeys.rows.length,
+      views: views.rows.length,
+      materialized_views: materializedViews.rows.length,
+      triggers: triggers.rows.length,
+      extensions: extensions.rows.length,
+      custom_types: customTypes.rows.length,
+      routines: routines.rows.length,
+      sequences: sequences.rows.length
+    };
+    for (const [objectName, observed] of Object.entries(observedObjectCounts)) {
+      const expected = Number(expectedObjects[objectName]);
+      if (!Number.isFinite(expected) || observed !== expected) {
+        throw new Error(`Incomplete ${objectName} metadata; expected ${expectedObjects[objectName] ?? "unknown"} objects but read ${observed}`);
       }
     }
 
