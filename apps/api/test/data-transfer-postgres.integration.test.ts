@@ -50,6 +50,9 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       CONSTRAINT orders_worker_amount_unique UNIQUE (worker_id, amount)
     );
 
+    CREATE INDEX workers_name_partial_idx
+      ON public.workers (lower(name)) INCLUDE (state) WHERE state = 'active';
+
     CREATE SEQUENCE public.audit_sequence START WITH 7 INCREMENT BY 2;
     CREATE TABLE public.audit_log (
       id bigint PRIMARY KEY DEFAULT nextval('public.audit_sequence'),
@@ -144,6 +147,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
       await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
+      await changedTarget.query("DROP INDEX public.workers_name_partial_idx");
+      await changedTarget.query("CREATE INDEX workers_name_partial_idx ON public.workers (lower(name)) INCLUDE (state) WHERE state = 'paused'");
       await changedTarget.query("ALTER DOMAIN public.positive_amount ADD CONSTRAINT positive_amount_not_special CHECK (VALUE <> 12345)");
       await changedTarget.query("ALTER SEQUENCE public.audit_sequence INCREMENT BY 3");
     } finally {
@@ -153,7 +158,14 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInTarget.length > 0);
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInSource.length > 0);
     assert.ok(changedObjects.objectComparison.sequences.differences.missingInTarget.length > 0);
-    const globalBlockers = ["customTypes", "extensions", "sequences"].flatMap(key => {
+    assert.ok(changedObjects.objectComparison.indexes.differences.missingInTarget.length > 0);
+    assert.ok(changedObjects.comparison.some(item =>
+      item.table === "public.workers" && item.status === "schema_mismatch"
+    ));
+    const globalBlockers = [
+      "indexes", "constraints", "views", "materializedViews", "triggers",
+      "extensions", "customTypes", "routines", "sequences"
+    ].flatMap(key => {
       const item = changedObjects.objectComparison[key as keyof typeof changedObjects.objectComparison];
       return item && (item.differences.missingInTarget.length > 0 || item.differences.missingInSource.length > 0)
         ? [key]
