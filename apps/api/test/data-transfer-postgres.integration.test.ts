@@ -96,7 +96,10 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     CREATE PROCEDURE public.refresh_worker_totals()
       LANGUAGE sql AS $$ REFRESH MATERIALIZED VIEW public.worker_order_totals $$;
     CREATE FUNCTION public.worker_rank(bigint) RETURNS bigint
-      LANGUAGE sql IMMUTABLE WINDOW AS $$ SELECT $1 $$;
+      LANGUAGE sql IMMUTABLE WINDOW AS $ SELECT $1 $;
+    CREATE AGGREGATE public.worker_sum(bigint) (
+      SFUNC = int8pl, STYPE = bigint, INITCOND = '0'
+    );
 
     ALTER TABLE public.workers ENABLE ROW LEVEL SECURITY;
     CREATE POLICY workers_read_policy ON public.workers
@@ -145,13 +148,13 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.equal(result.sourceFeatures.materializedViews, 1);
     assert.equal(result.sourceFeatures.triggers, 1);
     assert.equal(result.sourceFeatures.customTypes, 3);
-    assert.equal(result.sourceFeatures.routines, 9);
+    assert.equal(result.sourceFeatures.routines, 10);
     assert.equal(result.sourceFeatures.sequences, 3);
     assert.equal(result.targetFeatures.views, 1);
     assert.equal(result.targetFeatures.materializedViews, 1);
     assert.equal(result.targetFeatures.triggers, 1);
     assert.equal(result.targetFeatures.customTypes, 3);
-    assert.equal(result.targetFeatures.routines, 9);
+    assert.equal(result.targetFeatures.routines, 10);
     assert.equal(result.targetFeatures.sequences, 3);
     assert.ok(result.objectComparison.views.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.triggers.differences.missingInTarget.length === 0);
@@ -269,7 +272,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
         "restricted catalog access should preserve schema blockers"
       );
       assert.equal(restrictedInspection.sourceFeatures.triggers, 1);
-      assert.equal(restrictedInspection.sourceFeatures.routines, 9);
+      assert.equal(restrictedInspection.sourceFeatures.routines, 10);
       assert.equal(restrictedInspection.sourceFeatures.sequences, 3);
     } finally {
       await Promise.all([restrictedSource.end(), restrictedTarget.end()]);
