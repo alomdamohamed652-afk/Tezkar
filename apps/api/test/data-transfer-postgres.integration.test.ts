@@ -143,13 +143,13 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.equal(result.sourceFeatures.materializedViews, 1);
     assert.equal(result.sourceFeatures.triggers, 1);
     assert.equal(result.sourceFeatures.customTypes, 3);
-    assert.equal(result.sourceFeatures.routines, 4);
+    assert.equal(result.sourceFeatures.routines, 9);
     assert.equal(result.sourceFeatures.sequences, 3);
     assert.equal(result.targetFeatures.views, 1);
     assert.equal(result.targetFeatures.materializedViews, 1);
     assert.equal(result.targetFeatures.triggers, 1);
     assert.equal(result.targetFeatures.customTypes, 3);
-    assert.equal(result.targetFeatures.routines, 4);
+    assert.equal(result.targetFeatures.routines, 9);
     assert.equal(result.targetFeatures.sequences, 3);
     assert.ok(result.objectComparison.views.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.triggers.differences.missingInTarget.length === 0);
@@ -260,7 +260,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
         "restricted catalog access should preserve schema blockers"
       );
       assert.equal(restrictedInspection.sourceFeatures.triggers, 1);
-      assert.equal(restrictedInspection.sourceFeatures.routines, 4);
+      assert.equal(restrictedInspection.sourceFeatures.routines, 9);
       assert.equal(restrictedInspection.sourceFeatures.sequences, 3);
     } finally {
       await Promise.all([restrictedSource.end(), restrictedTarget.end()]);
