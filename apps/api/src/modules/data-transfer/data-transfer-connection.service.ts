@@ -67,9 +67,20 @@ export async function assertDistinctConnectedDatabases(
     if (!database || !oid || !address || !port) return null;
     return `${address}:${port}/${oid}/${database}`;
   };
-  const sourceIdentity = identity(sourceResult.rows[0] ?? {});
-  const targetIdentity = identity(targetResult.rows[0] ?? {});
-  if (!sourceIdentity || !targetIdentity || sourceIdentity === targetIdentity) {
+  const sourceRow = sourceResult.rows[0] ?? {};
+  const targetRow = targetResult.rows[0] ?? {};
+  const sourceIdentity = identity(sourceRow);
+  const targetIdentity = identity(targetRow);
+  // Database OIDs are cluster-local, but matching database name + OID is a
+  // conservative collision check across aliases/pooler backends. A collision
+  // may reject two unrelated clusters, which is safer than inspecting one DB
+  // through two endpoints and mistakenly treating it as source and target.
+  const sameDatabaseOid = Boolean(
+    sourceRow.database_name && sourceRow.database_oid &&
+    sourceRow.database_name === targetRow.database_name &&
+    sourceRow.database_oid === targetRow.database_oid
+  );
+  if (!sourceIdentity || !targetIdentity || sourceIdentity === targetIdentity || sameDatabaseOid) {
     throw new Error("تعذر إثبات اختلاف قاعدتي البيانات من خادم PostgreSQL نفسه؛ تم إيقاف الفحص لحماية المصدر.");
   }
 }
