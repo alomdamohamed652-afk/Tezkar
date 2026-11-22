@@ -1,6 +1,6 @@
 import pg from "pg";
 import { createHash } from "node:crypto";
-import { assertDistinctConnectedDatabases, assertDistinctDatabaseIdentities, assertReadOnlySourceSession, createReadOnlySourcePool } from "./data-transfer-connection.service.js";
+import { assertDistinctConnectedDatabases, assertDistinctDatabaseIdentities, assertReadOnlySession, createReadOnlySourcePool, createTargetPool } from "./data-transfer-connection.service.js";
 
 type ColumnShape = {
   name: string; type: string; udtSchema: string; udtName: string;
@@ -400,9 +400,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
   assertDistinctDatabaseIdentities(sourceIdentity, targetIdentity);
 
   const sourcePool = createReadOnlySourcePool(sourceUrl);
-  const targetPool = new pg.Pool({
-    connectionString: targetUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000
-  });
+  const targetPool = createTargetPool(targetUrl);
 
   try {
     const sourceClient = await sourcePool.connect();
@@ -414,7 +412,8 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
       throw error;
     }
     try {
-      await assertReadOnlySourceSession(sourceClient);
+      await assertReadOnlySession(sourceClient);
+      await assertReadOnlySession(targetClient);
       await assertDistinctConnectedDatabases(sourceClient, targetClient);
       const [source, target] = await Promise.all([
         readSnapshot(sourceClient), readSnapshot(targetClient)
