@@ -125,6 +125,16 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(result.objectComparison.triggers.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.routines.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.sequences.differences.missingInTarget.length === 0);
+    for (const objectName of [
+      "indexes", "constraints", "views", "materializedViews", "triggers",
+      "extensions", "customTypes", "routines", "sequences"
+    ] as const) {
+      assert.equal(
+        result.objectComparison[objectName].source,
+        result.objectComparison[objectName].target,
+        `expected matching ${objectName} metadata`
+      );
+    }
 
     // Verify catalog inspection works for a login with no table-level SELECT grants.
     await admin.query(`CREATE ROLE ${quoteDb(restrictedRole)} LOGIN PASSWORD '${restrictedPassword}'`);
@@ -150,6 +160,9 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       assert.equal(restrictedInspection.source.tableCount, 3);
       assert.equal(restrictedInspection.target.tableCount, 3);
       assert.deepEqual(restrictedInspection.blockers, []);
+      assert.equal(restrictedInspection.sourceFeatures.triggers, 1);
+      assert.equal(restrictedInspection.sourceFeatures.routines, 4);
+      assert.equal(restrictedInspection.sourceFeatures.sequences, 3);
     } finally {
       await Promise.all([restrictedSource.end(), restrictedTarget.end()]);
     }
