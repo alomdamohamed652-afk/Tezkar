@@ -27,6 +27,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const report = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL!);
+      request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.inspection", requestId: request.id }, "Read-only data transfer inspection completed");
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
       app.log.error({ err: error }, "Read-only database transfer inspection failed");
@@ -67,6 +68,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const report = await inspectSelectedTableCounts(env.DATABASE_URL, env.TARGET_DATABASE_URL!, tables);
+      request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.counts", tableCount: tables.length, requestId: request.id }, "Read-only selected table counts completed");
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
       app.log.error({ err: error }, "Read-only selected table count inspection failed");
@@ -111,6 +113,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
         globalBlockers.push("FOREIGN TABLES غير المدعومة");
       }
       const plan = buildTransferPlan(inspection.comparison, globalBlockers);
+      request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.plan", readyTables: plan.totals.readyTables, blockedTables: plan.totals.blockedTables, requestId: request.id }, "Read-only data transfer plan preview completed");
       return reply.header("cache-control", "no-store, private").send({
         ...plan,
         note: "هذه معاينة ترتيب فقط. لا يتم نسخ أو تعديل أو حذف أي بيانات، ولا يتم تشغيل migrations."
