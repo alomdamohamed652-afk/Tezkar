@@ -302,7 +302,16 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
           SELECT n.nspname AS schema_name, p.proname,
                  pg_get_function_identity_arguments(p.oid) AS identity_arguments,
                  pg_get_function_result(p.oid) AS result_type,
-                 p.prokind, pg_get_functiondef(p.oid) AS definition,
+                 p.prokind,
+                 CASE WHEN p.prokind = 'a' THEN
+                   format('AGGREGATE kind=%s args=%s result=%s transition=%s state=%s final=%s combine=%s init=%s direct_args=%s final_extra=%s final_modify=%s',
+                     aggregate.aggkind, pg_get_function_identity_arguments(p.oid),
+                     pg_get_function_result(p.oid), aggregate.aggtransfn::regprocedure::text,
+                     aggregate.aggtranstype::regtype::text, aggregate.aggfinalfn::regprocedure::text,
+                     aggregate.aggcombinefn::regprocedure::text, COALESCE(aggregate.agginitval, ''),
+                     aggregate.aggnumdirectargs, aggregate.aggfinalextra, aggregate.aggfinalmodify)
+                   ELSE pg_get_functiondef(p.oid)
+                 END AS definition,
                  owner_role.rolname AS owner_name, p.prosecdef AS security_definer,
                  p.proleakproof AS leakproof, p.proisstrict AS strict,
                  p.provolatile AS volatility, p.proparallel AS parallel_safety,
@@ -310,7 +319,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
             JOIN pg_roles owner_role ON owner_role.oid = p.proowner
-           WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w')
+            LEFT JOIN pg_aggregate aggregate ON aggregate.aggfnoid = p.oid
+           WHERE n.nspname = 'public' AND p.prokind IN ('f','p','a','w')
            ORDER BY n.nspname, p.proname, identity_arguments
     `);
     // Compare every returned object list with catalog-derived totals. Some
@@ -342,7 +352,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                 AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type
                   WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w'))::int AS routines,
+              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','a','w'))::int AS routines,
             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
               WHERE c.relkind='S' AND n.nspname='public')::int AS sequences,
              (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
