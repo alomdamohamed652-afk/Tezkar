@@ -31,6 +31,12 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
   let restrictedRoleCreated = false;
 
   const fixtureSql = `
+    CREATE EXTENSION IF NOT EXISTS postgres_fdw;
+    CREATE SERVER worker_events_server FOREIGN DATA WRAPPER postgres_fdw
+      OPTIONS (host '127.0.0.1', dbname 'unused');
+    CREATE FOREIGN TABLE public.remote_workers (id bigint)
+      SERVER worker_events_server OPTIONS (schema_name 'public', table_name 'workers');
+
     CREATE TYPE public.worker_state AS ENUM ('active', 'paused');
     CREATE DOMAIN public.positive_amount AS numeric(12,2)
       CHECK (VALUE >= 0)
@@ -121,7 +127,16 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.equal(result.target.tableCount, 5);
     assert.equal(result.source.foreignKeyCount, 1);
     assert.equal(result.target.foreignKeyCount, 1);
-    assert.deepEqual(result.blockers, []);
+    assert.ok(result.blockers.some(item =>
+      item.table === "public.remote_workers" && item.status === "unsupported_relation"
+    ), "foreign tables must be surfaced as explicit blockers even when present on both sides");
+    assert.deepEqual(result.unsupportedRelations, {
+      source: ["public.remote_workers"],
+      target: ["public.remote_workers"]
+    });
+    const unsupportedPlan = buildTransferPlan(result.comparison, ["FOREIGN TABLES غير المدعومة"]);
+    assert.equal(unsupportedPlan.readyOrder.length, 0,
+      "unsupported foreign tables must prevent the entire plan from claiming readiness");
     assert.equal(result.comparison.find(item => item.table === "public.worker_events")?.status, "compatible");
     assert.equal(result.comparison.find(item => item.table === "public.worker_events_2026")?.status, "compatible");
     assert.equal(result.sourceFeatures.views, 1);
