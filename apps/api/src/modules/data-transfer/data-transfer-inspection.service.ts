@@ -21,6 +21,7 @@ type TableShape = {
   rlsForced: boolean;
   policies: string[];
   partitioning: string;
+  ownership: string;
 };
 type FeatureCounts = {
   views: number;
@@ -363,7 +364,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: [],
         rlsEnabled: false, rlsForced: false, policies: [],
         partitioning: JSON.stringify({ kind: row.relation_kind, isPartition: row.is_partition,
-          key: row.partition_key, bound: row.partition_bound, parents: row.parents ?? [], children: row.children ?? [] })
+          key: row.partition_key, bound: row.partition_bound, parents: row.parents ?? [], children: row.children ?? [] }),
+        ownership: JSON.stringify({ owner: row.owner_name, acl: row.acl, options: row.relation_options ?? [] })
       });
     }
     for (const row of columns.rows) {
@@ -469,15 +471,15 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       indexes: indexes.rows.map((row: any) => `${row.schemaname}.${row.tablename}:${row.definition}`),
       constraints: constraints.rows.map((row: any) =>
         `${row.table_schema}.${row.table_name}:${row.constraint_type}:${row.definition ?? ""}`),
-      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${fingerprint(JSON.stringify({ definition: row.definition, reloptions: row.reloptions ?? [] }))}`),
+      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${fingerprint(JSON.stringify({ definition: row.definition, owner: row.owner_name, acl: row.acl, reloptions: row.reloptions ?? [] }))}`),
       materializedViews: materializedViews.rows.map((row: any) =>
-        `${row.schemaname}.${row.matviewname}:${fingerprint(row.definition)}`),
+        `${row.schemaname}.${row.matviewname}:${fingerprint(JSON.stringify({ definition: row.definition, owner: row.owner_name, acl: row.acl, reloptions: row.reloptions ?? [] }))}`),
       triggers: triggers.rows.map((row: any) =>
         `${row.schema_name}.${row.table_name}.${row.trigger_name}:${fingerprint(JSON.stringify({ definition: row.definition, enabled: row.enabled_state }))}`),
       extensions: extensions.rows.map((row: any) =>
-        `${row.extname}:${row.extversion}:${row.schema_name}`),
+        `${row.extname}:${row.extversion}:${row.schema_name}:${row.owner_name}`),
       customTypes: customTypes.rows.map((row: any) =>
-        `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}:${row.composite_attributes ?? ""}`),
+        `${row.schema_name}.${row.typname}:${row.typtype}:${row.owner_name}:${row.acl ?? ""}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}:${row.composite_attributes ?? ""}`),
       routines: routines.rows.map((row: any) =>
         `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${fingerprint(JSON.stringify({
           definition: row.definition, owner: row.owner_name, securityDefiner: row.security_definer,
@@ -485,7 +487,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
           parallelSafety: row.parallel_safety, configuration: row.configuration ?? [], acl: row.acl
         }))}`),
       sequences: sequences.rows.map((row: any) =>
-        `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
+        `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.owner_name}:${row.acl ?? ""}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
       unsupportedRelations: unsupportedRelations.rows.map((row: any) => row.relation_name),
       features: featureCounts
     };
@@ -541,6 +543,9 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       }
       if (left.partitioning !== right.partitioning) {
         differences.push("اختلاف تقسيم الجدول أو حدود الأقسام أو علاقات الوراثة");
+      }
+      if (left.ownership !== right.ownership) {
+        differences.push("اختلاف ملكية الجدول أو صلاحياته أو إعدادات التخزين");
       }
       if (left.rlsEnabled !== right.rlsEnabled || left.rlsForced !== right.rlsForced ||
           JSON.stringify([...left.policies].sort()) !== JSON.stringify([...right.policies].sort())) {
