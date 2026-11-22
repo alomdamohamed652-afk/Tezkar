@@ -50,7 +50,9 @@ export function createTargetPool(connectionString: string): pg.Pool {
  */
 export async function assertDistinctConnectedDatabases(
   source: Pick<pg.PoolClient, "query">,
-  target: Pick<pg.PoolClient, "query">
+  target: Pick<pg.PoolClient, "query">,
+  sourceExpectedIdentity?: string | null,
+  targetExpectedIdentity?: string | null
 ): Promise<void> {
   const sql = `
     SELECT current_database() AS database_name,
@@ -75,7 +77,12 @@ export async function assertDistinctConnectedDatabases(
   // conservative collision check across aliases/pooler backends. A collision
   // may reject two unrelated clusters, which is safer than inspecting one DB
   // through two endpoints and mistakenly treating it as source and target.
-  const sameDatabaseOid = Boolean(
+  const knownDistinctSupabaseProjects = Boolean(
+    sourceExpectedIdentity?.startsWith("supabase:") &&
+    targetExpectedIdentity?.startsWith("supabase:") &&
+    sourceExpectedIdentity.split("/")[0] !== targetExpectedIdentity.split("/")[0]
+  );
+  const sameDatabaseOid = !knownDistinctSupabaseProjects && Boolean(
     sourceRow.database_name && sourceRow.database_oid &&
     sourceRow.database_name === targetRow.database_name &&
     sourceRow.database_oid === targetRow.database_oid
