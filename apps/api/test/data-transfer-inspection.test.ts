@@ -90,6 +90,23 @@ test("connected database identity rejects two URLs resolving to the same Postgre
   );
 });
 
+test("connected database identity rejects matching database OIDs even across different backend addresses", async () => {
+  const source = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.5", server_port: 5432 }]
+    })
+  };
+  const target = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.9", server_port: 6543 }]
+    })
+  };
+  await assert.rejects(
+    () => assertDistinctConnectedDatabases(source, target),
+    /تعذر إثبات اختلاف/
+  );
+});
+
 test("connected database identity accepts distinct PostgreSQL databases", async () => {
   const source = {
     query: async () => ({
