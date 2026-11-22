@@ -94,15 +94,18 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            GROUP BY n.nspname,c.relname
            ORDER BY n.nspname,c.relname
     `);
+    // information_schema.table_constraints/key_column_usage are privilege-filtered.
+    // Use pg_catalog so restricted inspection roles still see the full primary-key shape.
     const primaryKeys = await client.query(`
-
-          SELECT tc.table_schema,tc.table_name,kcu.column_name,kcu.ordinal_position
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
-             AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
-           WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema = 'public'
-           ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position
+          SELECT n.nspname AS table_schema, t.relname AS table_name,
+                 a.attname AS column_name, key_column.ordinality AS ordinal_position
+            FROM pg_constraint con
+            JOIN pg_class t ON t.oid = con.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS key_column(attnum, ordinality)
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_column.attnum
+           WHERE con.contype = 'p' AND n.nspname = 'public'
+           ORDER BY n.nspname, t.relname, key_column.ordinality
     `);
     const foreignKeys = await client.query(`
 
