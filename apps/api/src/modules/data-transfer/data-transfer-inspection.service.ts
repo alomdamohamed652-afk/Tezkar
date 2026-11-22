@@ -121,13 +121,15 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid,true)
     `);
     const indexes = await client.query(`
-
-          SELECT schemaname,tablename,
-                 (CASE WHEN indexdef LIKE 'CREATE UNIQUE INDEX %' THEN 'UNIQUE' ELSE 'NONUNIQUE' END)
-                 || substring(indexdef FROM ' USING .*$') AS definition
-            FROM pg_indexes
-           WHERE schemaname = 'public'
-           ORDER BY schemaname,tablename,definition
+          SELECT n.nspname AS schemaname, t.relname AS tablename,
+                 pg_get_indexdef(i.indexrelid) ||
+                 format(' [valid=%s,ready=%s,live=%s,unique=%s,primary=%s]',
+                   i.indisvalid, i.indisready, i.indislive, i.indisunique, i.indisprimary) AS definition
+            FROM pg_index i
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+           WHERE n.nspname = 'public' AND t.relkind IN ('r','p')
+           ORDER BY n.nspname, t.relname, pg_get_indexdef(i.indexrelid)
     `);
     const constraints = await client.query(`
 
