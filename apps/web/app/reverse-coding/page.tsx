@@ -32,7 +32,7 @@ function SearchableEmployeeSelect({employees,value,onChange,placeholder,disabled
 export default function ReverseCodingPage(){
  const {has}=usePermissions();
  const [groups,setGroups]=useState<Group[]>([]),[products,setProducts]=useState<Item[]>([]),[employees,setEmployees]=useState<Item[]>([]),[accounts,setAccounts]=useState<Account[]>([]),[currentUserId,setCurrentUserId]=useState("");
- const [company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
+ const [_company,setCompany]=useState<Company>({}),[search,setSearch]=useState(""),[selected,setSelected]=useState<Group|null>(null);
  const [packaging,setPackaging]=useState("كرتونة"),[productId,setProductId]=useState(""),[perCode,setPerCode]=useState("600"),[codeCount,setCodeCount]=useState("1"),[weightMinKg,setWeightMinKg]=useState(""),[weightMaxKg,setWeightMaxKg]=useState(""),[displayProductName,setDisplayProductName]=useState("");
  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[selectedCodes,setSelectedCodes]=useState<string[]>([]);
  const [editingCode,setEditingCode]=useState<Code|null>(null),[editNotes,setEditNotes]=useState(""),[editWeight,setEditWeight]=useState(""),[editEmployees,setEditEmployees]=useState<string[]>([]);
