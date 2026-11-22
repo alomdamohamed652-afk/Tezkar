@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { inspectDatabaseTransfer } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
+import { buildTransferPlan } from "../src/modules/data-transfer/data-transfer-plan.service.js";
 import { createReadOnlySourcePool, createTargetPool } from "../src/modules/data-transfer/data-transfer-connection.service.js";
 import { assertDisposableDatabaseUrl } from "./helpers/disposable-database-url.js";
 
@@ -135,6 +136,28 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
         `expected matching ${objectName} metadata`
       );
     }
+
+    // A same-named ENUM with different labels and a same-named sequence with
+    // different settings must not be treated as globally compatible.
+    const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
+    try {
+      await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
+      await changedTarget.query("ALTER SEQUENCE public.audit_sequence INCREMENT BY 3");
+    } finally {
+      await changedTarget.end();
+    }
+    const changedObjects = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
+    assert.ok(changedObjects.objectComparison.customTypes.differences.missingInTarget.length > 0);
+    assert.ok(changedObjects.objectComparison.sequences.differences.missingInTarget.length > 0);
+    const globalBlockers = ["customTypes", "extensions", "sequences"].flatMap(key => {
+      const item = changedObjects.objectComparison[key as keyof typeof changedObjects.objectComparison];
+      return item && (item.differences.missingInTarget.length > 0 || item.differences.missingInSource.length > 0)
+        ? [key]
+        : [];
+    });
+    const blockedPlan = buildTransferPlan(changedObjects.comparison, globalBlockers);
+    assert.equal(blockedPlan.readyOrder.length, 0);
+    assert.equal(blockedPlan.blocked.length, changedObjects.comparison.length);
 
     // Verify catalog inspection works for a login with no table-level SELECT grants.
     await admin.query(`CREATE ROLE ${quoteDb(restrictedRole)} LOGIN PASSWORD '${restrictedPassword}'`);
