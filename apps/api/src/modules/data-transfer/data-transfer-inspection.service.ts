@@ -235,7 +235,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                SELECT 1 FROM pg_class row_type
                 WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c'
              ))
-           ORDER BY n.nspname, t.typname, c.conname
+           ORDER BY n.nspname, t.typname
     `);
     const sequences = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS sequence_name,
