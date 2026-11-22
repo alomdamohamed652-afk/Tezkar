@@ -20,7 +20,7 @@ export type TransferPlan = {
  * Produces a read-only preview only. It never connects to PostgreSQL or writes data.
  * Only schema-compatible tables can enter the order; dependencies must also be eligible.
  */
-export function buildTransferPlan(tables: TransferPlanTable[]): TransferPlan {
+export function buildTransferPlan(tables: TransferPlanTable[], globalBlockers: string[] = []): TransferPlan {
   const byName = new Map(tables.map(table => [table.table, table]));
   const blocked = new Map<string, { table: string; reason: string; dependencies: string[] }>();
   const candidates = new Map<string, TransferPlanTable>();
@@ -34,6 +34,12 @@ export function buildTransferPlan(tables: TransferPlanTable[]): TransferPlan {
           : table.status === "target_only"
             ? "الجدول موجود في الوجهة فقط ولا يقابله جدول مصدر."
             : "اختلاف بنيوي بين المصدر والوجهة؛ يلزم حلّه قبل التخطيط للنقل.",
+        dependencies: [...new Set(table.dependencies)]
+      });
+    } else if (globalBlockers.length > 0) {
+      blocked.set(table.table, {
+        table: table.table,
+        reason: `اختلاف في كائنات قاعدة البيانات العامة يمنع اعتماد جاهزية الجدول: ${globalBlockers.join("، ")}.`,
         dependencies: [...new Set(table.dependencies)]
       });
     } else if (!table.hasPrimaryKey) {
