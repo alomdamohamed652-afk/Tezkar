@@ -555,17 +555,7 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       hasPrimaryKey: Boolean(left?.primaryKey.length && right?.primaryKey.length), differences
     };
   });
-  const unsupportedRelations = [...new Set([...source.unsupportedRelations, ...target.unsupportedRelations])].sort();
-  const unsupportedComparisons = unsupportedRelations.map(name => ({
-    table: name,
-    status: "unsupported_relation",
-    sourceEstimate: 0,
-    targetEstimate: 0,
-    dependencies: [],
-    hasPrimaryKey: false,
-    differences: ["علاقة خارجية (FOREIGN TABLE) خارج نطاق فحص وترحيل الجداول المدعومة؛ يجب مراجعتها يدويًا قبل أي نقل"]
-  }));
-  return [...tableComparisons, ...unsupportedComparisons];
+  return tableComparisons;
 }
 
 export function databaseIdentity(connectionString: string): string | null {
@@ -612,6 +602,18 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         readSnapshot(sourceClient), readSnapshot(targetClient)
       ]);
       const comparison = compareSnapshots(source, target);
+      const unsupportedRelationBlockers = [...new Set([
+        ...source.unsupportedRelations,
+        ...target.unsupportedRelations
+      ])].sort().map(name => ({
+        table: name,
+        status: "unsupported_relation",
+        sourceEstimate: 0,
+        targetEstimate: 0,
+        dependencies: [] as string[],
+        hasPrimaryKey: false,
+        differences: ["علاقة خارجية (FOREIGN TABLE) خارج نطاق فحص وترحيل الجداول المدعومة؛ يجب مراجعتها يدويًا قبل أي نقل"]
+      }));
       return {
         source: {
           tableCount: source.tables.size, estimatedRows: source.estimatedRows,
@@ -622,7 +624,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
           foreignKeyCount: target.foreignKeyCount
         },
         comparison,
-        blockers: comparison.filter(row => row.status !== "compatible"),
+        blockers: [...comparison.filter(row => row.status !== "compatible"), ...unsupportedRelationBlockers],
         unsupportedRelations: {
           source: source.unsupportedRelations,
           target: target.unsupportedRelations
