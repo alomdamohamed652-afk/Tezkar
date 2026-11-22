@@ -159,12 +159,38 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
            ORDER BY n.nspname, c.relname
     `);
+    // pg_policies is privilege-filtered for non-owners. Read pg_policy directly
+    // so restricted inspection roles cannot silently report an empty policy set.
     const policies = await client.query(`
-          SELECT schemaname, tablename, policyname, permissive,
-                 array_to_string(roles, ',') AS roles, cmd, qual, with_check
-            FROM pg_policies
-           WHERE schemaname = 'public'
-           ORDER BY schemaname, tablename, policyname
+          SELECT n.nspname AS schemaname, c.relname AS tablename,
+                 p.polname AS policyname,
+                 CASE WHEN p.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END AS permissive,
+                 ARRAY(
+                   SELECT CASE WHEN role_oid = 0 THEN 'PUBLIC' ELSE r.rolname END
+                     FROM unnest(p.polroles) AS role_oid
+                     LEFT JOIN pg_roles r ON r.oid = role_oid
+                    ORDER BY 1
+                 )::text[] AS roles,
+                 CASE p.polcmd WHEN '*' THEN 'ALL' WHEN 'r' THEN 'SELECT'
+                   WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE'
+                   ELSE p.polcmd::text END AS cmd,
+                 pg_get_expr(p.polqual, p.polrelid) AS qual,
+                 pg_get_expr(p.polwithcheck, p.polrelid) AS with_check
+            FROM pg_policy p
+            JOIN pg_class c ON c.oid = p.polrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public'
+           ORDER BY n.nspname, c.relname, p.polname
+    `);
+    const expectedPolicyCounts = await client.query(`
+          SELECT n.nspname AS schema_name, c.relname AS table_name,
+                 count(p.oid)::int AS policy_count
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_policy p ON p.polrelid = c.oid
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+           GROUP BY n.nspname, c.relname
+           ORDER BY n.nspname, c.relname
     `);
     const triggers = await client.query(`
 
@@ -307,10 +333,24 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         table.rlsForced = Boolean(row.rls_forced);
       }
     }
+    const expectedPolicyCountMap = new Map<string, number>(
+      expectedPolicyCounts.rows.map((row: any) => [
+        `${row.schema_name}.${row.table_name}`, Number(row.policy_count)
+      ])
+    );
+    const actualPolicyCounts = new Map<string, number>();
     for (const row of policies.rows) {
-      tableMap.get(`${row.schemaname}.${row.tablename}`)?.policies.push(
-        `${row.policyname}:${row.permissive}:${row.roles}:${row.cmd}:${row.qual ?? ""}:${row.with_check ?? ""}`
+      const tableName = `${row.schemaname}.${row.tablename}`;
+      actualPolicyCounts.set(tableName, (actualPolicyCounts.get(tableName) ?? 0) + 1);
+      tableMap.get(tableName)?.policies.push(
+        `${row.policyname}:${row.permissive}:${(row.roles ?? []).join(",")}:${row.cmd}:${row.qual ?? ""}:${row.with_check ?? ""}`
       );
+    }
+    for (const [tableName, expected] of expectedPolicyCountMap) {
+      const actual = actualPolicyCounts.get(tableName) ?? 0;
+      if (actual !== expected) {
+        throw new Error(`Incomplete row-security policy metadata for ${tableName}; expected ${expected} policies but read ${actual}`);
+      }
     }
 
     const featureRow = features.rows[0] ?? {};
