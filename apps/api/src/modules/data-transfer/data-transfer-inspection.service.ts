@@ -64,6 +64,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const tables = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS table_name,
                  GREATEST(c.reltuples, 0)::bigint AS estimated_rows,
+                 pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                 COALESCE(c.reloptions, ARRAY[]::text[]) AS relation_options,
                  c.relkind AS relation_kind, c.relispartition AS is_partition,
                  CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) ELSE '' END AS partition_key,
                  CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid, true) ELSE '' END AS partition_bound,
@@ -171,6 +173,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const views = await client.query(`
 
           SELECT v.schemaname, v.viewname, v.definition,
+                 pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
                  COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
             FROM pg_views v
             JOIN pg_class c ON c.relname = v.viewname
@@ -180,9 +183,14 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     `);
     const materializedViews = await client.query(`
 
-          SELECT schemaname,matviewname,definition FROM pg_matviews
-           WHERE schemaname = 'public'
-           ORDER BY schemaname,matviewname
+          SELECT v.schemaname, v.matviewname, v.definition,
+                 pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                 COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
+            FROM pg_matviews v
+            JOIN pg_class c ON c.relname = v.matviewname
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = v.schemaname
+           WHERE v.schemaname = 'public'
+           ORDER BY v.schemaname, v.matviewname
     `);
     const rowSecurity = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS table_name,
@@ -235,14 +243,16 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
            ORDER BY n.nspname,c.relname,t.tgname
     `);
     const extensions = await client.query(`
-          SELECT e.extname, e.extversion, n.nspname AS schema_name
-            FROM pg_extension e
+          SELECT e.extname, e.extversion, n.nspname AS schema_name,
+                  pg_get_userbyid(e.extowner) AS owner_name
+             FROM pg_extension e
             JOIN pg_namespace n ON n.oid = e.extnamespace
            ORDER BY e.extname, n.nspname
     `);
     const customTypes = await client.query(`
           SELECT n.nspname AS schema_name, t.typname, t.typtype,
-                 CASE WHEN t.typtype = 'e' THEN (
+                  pg_get_userbyid(t.typowner) AS owner_name, t.typacl::text AS acl,
+                  CASE WHEN t.typtype = 'e' THEN (
                    SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
                      FROM pg_enum e WHERE e.enumtypid = t.oid
                  ) ELSE NULL END AS enum_values,
@@ -273,7 +283,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const sequences = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS sequence_name,
                  format_type(s.seqtypid, NULL) AS data_type,
-                 s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle,
+                  pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                  s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle,
                  COALESCE(refn.nspname || '.' || tbl.relname || '.' || att.attname, '') AS owned_by
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
