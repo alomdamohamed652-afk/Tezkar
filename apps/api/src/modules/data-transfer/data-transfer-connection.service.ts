@@ -18,11 +18,11 @@ export function createReadOnlySourcePool(connectionString: string): pg.Pool {
 }
 
 /** Verifies the server-enforced session setting before any source query is run. */
-export async function assertReadOnlySourceSession(client: Pick<pg.PoolClient, "query">): Promise<void> {
+export async function assertReadOnlySession(client: Pick<pg.PoolClient, "query">): Promise<void> {
   const result = await client.query("SHOW transaction_read_only");
   const value = String(result.rows[0]?.transaction_read_only ?? "").toLowerCase();
   if (value !== "on") {
-    throw new Error("اتصال المصدر ليس للقراءة فقط؛ تم إيقاف العملية لحماية قاعدة البيانات القديمة.");
+    throw new Error("اتصال قاعدة البيانات ليس للقراءة فقط؛ تم إيقاف الفحص لحماية البيانات.");
   }
 }
 
@@ -39,7 +39,8 @@ export function createTargetPool(connectionString: string): pg.Pool {
     connectionString,
     max: 1,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
-    idleTimeoutMillis: 1_000
+    idleTimeoutMillis: 1_000,
+    options: SOURCE_READ_ONLY_OPTIONS
   });
 }
 
