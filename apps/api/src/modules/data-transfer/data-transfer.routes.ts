@@ -94,7 +94,13 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const inspection = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL);
-      const plan = buildTransferPlan(inspection.comparison);
+      const globalBlockers = ["customTypes", "extensions", "sequences"].flatMap(key => {
+        const item = inspection.objectComparison[key as keyof typeof inspection.objectComparison];
+        return item && (item.differences.missingInTarget.length > 0 || item.differences.missingInSource.length > 0)
+          ? [key === "customTypes" ? "الأنواع المخصصة" : key === "extensions" ? "الإضافات" : "التسلسلات"]
+          : [];
+      });
+      const plan = buildTransferPlan(inspection.comparison, globalBlockers);
       return reply.header("cache-control", "no-store, private").send({
         ...plan,
         note: "هذه معاينة ترتيب فقط. لا يتم نسخ أو تعديل أو حذف أي بيانات، ولا يتم تشغيل migrations."
