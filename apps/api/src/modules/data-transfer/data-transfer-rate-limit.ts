@@ -1,3 +1,9 @@
+/**
+ * Process-local cooldown for read-only inspection endpoints.
+ * This limiter is safe across requests only while the API runs as one replica.
+ * The connected Railway production service was verified at one replica on 2026-11-22.
+ * Do not scale the API horizontally until this is replaced with a shared limiter.
+ */
 const WINDOW_MS = 10_000;
 const MAX_TRACKED_USERS = 2_000;
 const lastAcceptedAt = new Map<string, number>();
