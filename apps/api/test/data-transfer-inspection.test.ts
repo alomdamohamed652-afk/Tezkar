@@ -164,3 +164,18 @@ test("connected database identity fails closed when server identity is unavailab
     /تعذر إثبات اختلاف/
   );
 });
+
+
+test("connected database identity accepts distinct Supabase projects sharing the same pooler backend identity", async () => {
+  const sharedPoolerBackend = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.5", server_port: 5432 }]
+    })
+  };
+  await assert.doesNotReject(() => assertDistinctConnectedDatabases(
+    sharedPoolerBackend,
+    sharedPoolerBackend,
+    "supabase:sourceproject/postgres",
+    "supabase:targetproject/postgres"
+  ));
+});
