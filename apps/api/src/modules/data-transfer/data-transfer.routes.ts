@@ -20,7 +20,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const retryAfterMs = checkDataTransferRateLimit("inspection:" + request.user!.userId);
+    const retryAfterMs = checkDataTransferRateLimit("all:" + request.user!.userId);
     if (retryAfterMs > 0) {
       return reply.code(429).header("cache-control", "no-store, private").header("retry-after", String(Math.ceil(retryAfterMs / 1000))).send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
     }
@@ -60,7 +60,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const retryAfterMs = checkDataTransferRateLimit("counts:" + request.user!.userId);
+    const retryAfterMs = checkDataTransferRateLimit("all:" + request.user!.userId);
     if (retryAfterMs > 0) {
       return reply.code(429).header("cache-control", "no-store, private").header("retry-after", String(Math.ceil(retryAfterMs / 1000))).send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص الأعداد مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
     }
@@ -85,7 +85,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const retryAfterMs = checkDataTransferRateLimit("plan:" + request.user!.userId);
+    const retryAfterMs = checkDataTransferRateLimit("all:" + request.user!.userId);
     if (retryAfterMs > 0) {
       return reply.code(429).header("cache-control", "no-store, private")
         .header("retry-after", String(Math.ceil(retryAfterMs / 1000)))
