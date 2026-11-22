@@ -108,7 +108,7 @@ export async function inspectSelectedTableCounts(
       assertReadOnlySession(targetClient)
     ]);
     // Apply the same connected-database identity guard used by full inspection.
-    await assertDistinctConnectedDatabases(sourceClient, targetClient);
+    await assertDistinctConnectedDatabases(sourceClient, targetClient, sourceIdentity, targetIdentity);
     const [source, target] = await Promise.all([
       countOnClient(sourceClient, tables),
       countOnClient(targetClient, tables)
