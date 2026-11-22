@@ -62,3 +62,18 @@ test("transfer plan blocks otherwise-compatible tables when global custom types,
   assert.ok(plan.blocked.every(item => item.reason.includes("الأنواع المخصصة")));
   assert.equal(plan.writeEnabled, false);
 });
+
+
+test("transfer plan blocks unsupported foreign relations and their dependent tables", () => {
+  const plan = buildTransferPlan([
+    table("public.workers"),
+    table("public.remote_workers", [], "unsupported_relation"),
+    table("public.orders", ["public.remote_workers"])
+  ]);
+  assert.deepEqual(plan.readyOrder.map(item => item.table), ["public.workers"]);
+  assert.ok(plan.blocked.some(item =>
+    item.table === "public.remote_workers" && item.reason.includes("FOREIGN TABLE")
+  ));
+  assert.ok(plan.blocked.some(item => item.table === "public.orders"));
+  assert.equal(plan.writeEnabled, false);
+});
