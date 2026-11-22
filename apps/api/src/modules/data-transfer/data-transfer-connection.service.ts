@@ -33,7 +33,7 @@ export function assertDistinctDatabaseIdentities(sourceIdentity: string | null, 
   }
 }
 
-/** Target writes must use a separately-created pool after explicit authorization only. */
+/** Target inspection connections are also forced read-only; a future writer must be a separate, explicitly authorized path. */
 export function createTargetPool(connectionString: string): pg.Pool {
   return new pg.Pool({
     connectionString,
