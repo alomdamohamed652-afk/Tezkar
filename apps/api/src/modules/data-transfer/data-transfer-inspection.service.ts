@@ -20,6 +20,7 @@ type TableShape = {
   rlsEnabled: boolean;
   rlsForced: boolean;
   policies: string[];
+  partitioning: string;
 };
 type FeatureCounts = {
   views: number;
@@ -52,12 +53,27 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   try {
     await client.query("SET LOCAL statement_timeout = '15000'");
     const tables = await client.query(`
-
           SELECT n.nspname AS schema_name, c.relname AS table_name,
-                 GREATEST(c.reltuples, 0)::bigint AS estimated_rows
+                 GREATEST(c.reltuples, 0)::bigint AS estimated_rows,
+                 c.relkind AS relation_kind, c.relispartition AS is_partition,
+                 CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) ELSE '' END AS partition_key,
+                 CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid, true) ELSE '' END AS partition_bound,
+                 ARRAY(
+                   SELECT pn.nspname || '.' || parent.relname
+                     FROM pg_inherits inh
+                     JOIN pg_class parent ON parent.oid = inh.inhparent
+                     JOIN pg_namespace pn ON pn.oid = parent.relnamespace
+                    WHERE inh.inhrelid = c.oid ORDER BY pn.nspname, parent.relname
+                 )::text[] AS parents,
+                 ARRAY(
+                   SELECT cn.nspname || '.' || child.relname
+                     FROM pg_inherits inh
+                     JOIN pg_class child ON child.oid = inh.inhrelid
+                     JOIN pg_namespace cn ON cn.oid = child.relnamespace
+                    WHERE inh.inhparent = c.oid ORDER BY cn.nspname, child.relname
+                 )::text[] AS children
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
            WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
-             AND n.nspname NOT LIKE 'pg_toast%'
            ORDER BY n.nspname,c.relname
     `);
     // information_schema.columns is privilege-filtered and may silently omit
@@ -122,14 +138,16 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     `);
     const indexes = await client.query(`
           SELECT n.nspname AS schemaname, t.relname AS tablename,
-                 pg_get_indexdef(i.indexrelid) ||
+                 replace(pg_get_indexdef(i.indexrelid),
+                   format('INDEX %I ON', index_relation.relname), 'INDEX ON') ||
                  format(' [valid=%s,ready=%s,live=%s,unique=%s,primary=%s]',
                    i.indisvalid, i.indisready, i.indislive, i.indisunique, i.indisprimary) AS definition
             FROM pg_index i
             JOIN pg_class t ON t.oid = i.indrelid
             JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class index_relation ON index_relation.oid = i.indexrelid
            WHERE n.nspname = 'public' AND t.relkind IN ('r','p')
-           ORDER BY n.nspname, t.relname, pg_get_indexdef(i.indexrelid)
+           ORDER BY n.nspname, t.relname, definition
     `);
     const constraints = await client.query(`
 
@@ -143,9 +161,13 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     `);
     const views = await client.query(`
 
-          SELECT schemaname,viewname,definition FROM pg_views
-           WHERE schemaname = 'public'
-           ORDER BY schemaname,viewname
+          SELECT v.schemaname, v.viewname, v.definition,
+                 COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
+            FROM pg_views v
+            JOIN pg_class c ON c.relname = v.viewname
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = v.schemaname
+           WHERE v.schemaname = 'public'
+           ORDER BY v.schemaname,v.viewname
     `);
     const materializedViews = await client.query(`
 
@@ -197,7 +219,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const triggers = await client.query(`
 
           SELECT n.nspname AS schema_name,c.relname AS table_name,t.tgname AS trigger_name,
-                 pg_get_triggerdef(t.oid,true) AS definition
+                 pg_get_triggerdef(t.oid,true) AS definition, t.tgenabled AS enabled_state
             FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
             JOIN pg_namespace n ON n.oid=c.relnamespace
            WHERE NOT t.tgisinternal AND n.nspname = 'public'
@@ -260,9 +282,14 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
           SELECT n.nspname AS schema_name, p.proname,
                  pg_get_function_identity_arguments(p.oid) AS identity_arguments,
                  pg_get_function_result(p.oid) AS result_type,
-                 p.prokind, pg_get_functiondef(p.oid) AS definition
+                 p.prokind, pg_get_functiondef(p.oid) AS definition,
+                 owner_role.rolname AS owner_name, p.prosecdef AS security_definer,
+                 p.proleakproof AS leakproof, p.proisstrict AS strict,
+                 p.provolatile AS volatility, p.proparallel AS parallel_safety,
+                 p.proconfig AS configuration, p.proacl::text AS acl
             FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
+            JOIN pg_roles owner_role ON owner_role.oid = p.proowner
            WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w')
            ORDER BY n.nspname, p.proname, identity_arguments
     `);
@@ -324,7 +351,9 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     for (const row of tables.rows) {
       tableMap.set(`${row.schema_name}.${row.table_name}`, {
         estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: [],
-        rlsEnabled: false, rlsForced: false, policies: []
+        rlsEnabled: false, rlsForced: false, policies: [],
+        partitioning: JSON.stringify({ kind: row.relation_kind, isPartition: row.is_partition,
+          key: row.partition_key, bound: row.partition_bound, parents: row.parents ?? [], children: row.children ?? [] })
       });
     }
     for (const row of columns.rows) {
@@ -429,17 +458,21 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       indexes: indexes.rows.map((row: any) => `${row.schemaname}.${row.tablename}:${row.definition}`),
       constraints: constraints.rows.map((row: any) =>
         `${row.table_schema}.${row.table_name}:${row.constraint_type}:${row.definition ?? ""}`),
-      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${fingerprint(row.definition)}`),
+      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${fingerprint(JSON.stringify({ definition: row.definition, reloptions: row.reloptions ?? [] }))}`),
       materializedViews: materializedViews.rows.map((row: any) =>
         `${row.schemaname}.${row.matviewname}:${fingerprint(row.definition)}`),
       triggers: triggers.rows.map((row: any) =>
-        `${row.schema_name}.${row.table_name}.${row.trigger_name}:${fingerprint(row.definition)}`),
+        `${row.schema_name}.${row.table_name}.${row.trigger_name}:${fingerprint(JSON.stringify({ definition: row.definition, enabled: row.enabled_state }))}`),
       extensions: extensions.rows.map((row: any) =>
         `${row.extname}:${row.extversion}:${row.schema_name}`),
       customTypes: customTypes.rows.map((row: any) =>
         `${row.schema_name}.${row.typname}:${row.typtype}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}:${row.composite_attributes ?? ""}`),
       routines: routines.rows.map((row: any) =>
-        `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${fingerprint(row.definition)}`),
+        `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${fingerprint(JSON.stringify({
+          definition: row.definition, owner: row.owner_name, securityDefiner: row.security_definer,
+          leakproof: row.leakproof, strict: row.strict, volatility: row.volatility,
+          parallelSafety: row.parallel_safety, configuration: row.configuration ?? [], acl: row.acl
+        }))}`),
       sequences: sequences.rows.map((row: any) =>
         `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
       features: featureCounts
@@ -492,7 +525,10 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
         differences.push("اختلاف قيود UNIQUE أو CHECK");
       }
       if (JSON.stringify([...left.triggers].sort()) !== JSON.stringify([...right.triggers].sort())) {
-        differences.push("اختلاف المشغلات؛ قد تؤثر على البيانات عند الإدخال");
+        differences.push("اختلاف تعريف المشغلات أو حالة تفعيلها؛ قد تؤثر على البيانات عند الإدخال");
+      }
+      if (left.partitioning !== right.partitioning) {
+        differences.push("اختلاف تقسيم الجدول أو حدود الأقسام أو علاقات الوراثة");
       }
       if (left.rlsEnabled !== right.rlsEnabled || left.rlsForced !== right.rlsForced ||
           JSON.stringify([...left.policies].sort()) !== JSON.stringify([...right.policies].sort())) {
