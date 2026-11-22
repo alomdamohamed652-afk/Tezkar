@@ -60,17 +60,39 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
              AND n.nspname NOT LIKE 'pg_toast%'
            ORDER BY n.nspname,c.relname
     `);
+    // information_schema.columns is privilege-filtered and may silently omit
+    // columns for restricted roles. Read the PostgreSQL catalogs directly instead.
     const columns = await client.query(`
-
-          SELECT table_schema,table_name,column_name,
-                 COALESCE(NULLIF(data_type,''),udt_name) AS type,
-                 udt_schema, udt_name, domain_schema, domain_name,
-                 is_nullable='YES' AS nullable, column_default,
-                 CASE WHEN is_identity='YES' THEN identity_generation ELSE '' END AS identity_generation,
-                 is_generated, collation_schema || '.' || collation_name AS collation
-            FROM information_schema.columns
-           WHERE table_schema = 'public'
-           ORDER BY table_schema,table_name,ordinal_position
+          SELECT n.nspname AS table_schema, c.relname AS table_name,
+                 a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS type,
+                 tn.nspname AS udt_schema, t.typname AS udt_name,
+                 CASE WHEN t.typtype = 'd' THEN tn.nspname ELSE NULL END AS domain_schema,
+                 CASE WHEN t.typtype = 'd' THEN t.typname ELSE NULL END AS domain_name,
+                 NOT a.attnotnull AS nullable,
+                 pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                 CASE a.attidentity WHEN 'a' THEN 'ALWAYS' WHEN 'd' THEN 'BY DEFAULT' ELSE '' END AS identity_generation,
+                 CASE a.attgenerated WHEN 's' THEN 'STORED' WHEN 'v' THEN 'VIRTUAL' ELSE '' END AS is_generated,
+                 CASE WHEN a.attcollation <> 0 THEN cn.nspname || '.' || coll.collname ELSE NULL END AS collation
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_type t ON t.oid = a.atttypid
+            JOIN pg_namespace tn ON tn.oid = t.typnamespace
+            LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+            LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+            LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
+           WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+             AND a.attnum > 0 AND NOT a.attisdropped
+           ORDER BY n.nspname,c.relname,a.attnum
+    `);
+    const expectedColumnCounts = await client.query(`
+          SELECT n.nspname AS table_schema, c.relname AS table_name, count(a.attnum)::int AS column_count
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+           GROUP BY n.nspname,c.relname
+           ORDER BY n.nspname,c.relname
     `);
     const primaryKeys = await client.query(`
 
@@ -237,6 +259,17 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: [],
         rlsEnabled: false, rlsForced: false, policies: []
       });
+    }
+    const expectedCounts = new Map<string, number>(
+      expectedColumnCounts.rows.map((row: any) => [
+        `${row.table_schema}.${row.table_name}`, Number(row.column_count)
+      ])
+    );
+    for (const [tableName, table] of tableMap) {
+      const expected = expectedCounts.get(tableName);
+      if (expected === undefined || table.columns.length !== expected) {
+        throw new Error(`Incomplete column metadata for ${tableName}; expected ${expected ?? "unknown"} columns but read ${table.columns.length}`);
+      }
     }
     for (const row of columns.rows) {
       tableMap.get(`${row.table_schema}.${row.table_name}`)?.columns.push({
