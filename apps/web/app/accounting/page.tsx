@@ -382,7 +382,7 @@ export default function AccountingPage() {
     for(const tx of cashTransactions){const key=tx.employee_id||tx.employee_name;if(!latest.has(key))latest.set(key,Number(tx.balance||0));}
     return {incoming,outgoing,available:[...latest.values()].reduce((sum,balance)=>sum+balance,0)};
   },[cashTransactions]);
-  const latestCashBalances=useMemo(()=>{
+  const _latestCashBalances=useMemo(()=>{
     const latest=new Map<string,number>();
     for(const tx of cashTransactions){
       const key=tx.employee_id||tx.employee_name;
