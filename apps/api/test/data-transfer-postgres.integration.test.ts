@@ -29,6 +29,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
   const restrictedRole = `transfer_reader_${suffix}`;
   const restrictedPassword = randomUUID().replaceAll("-", "");
   let restrictedRoleCreated = false;
+  const ownerRole = `transfer_owner_${suffix}`;
+  let ownerRoleCreated = false;
 
   const fixtureSql = `
     CREATE EXTENSION IF NOT EXISTS postgres_fdw;
@@ -181,9 +183,13 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       "an index name-only change must not be treated as a structural difference"
     );
 
+    await admin.query(`CREATE ROLE ${quoteDb(ownerRole)}`);
+    ownerRoleCreated = true;
     const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
       await changedTarget.query("ALTER INDEX public.workers_name_partial_renamed RENAME TO workers_name_partial_idx");
+      await changedTarget.query(`ALTER TABLE public.workers OWNER TO ${quoteDb(ownerRole)}`);
+      await changedTarget.query(`GRANT SELECT ON public.workers TO ${quoteDb(ownerRole)}`);
       await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
       await changedTarget.query("ALTER TABLE public.workers DISABLE TRIGGER workers_audit_trigger");
       await changedTarget.query("ALTER VIEW public.worker_balances SET (security_barrier = true)");
@@ -213,6 +219,9 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(changedObjects.comparison.some(item =>
       item.table === "public.workers" && item.status === "schema_mismatch"
     ));
+    assert.ok(changedObjects.comparison.find(item => item.table === "public.workers")?.differences.some(
+      difference => difference.includes("ملكية الجدول")
+    ), "table ownership and grants must be compared");
     const globalBlockers = [
       "indexes", "constraints", "views", "materializedViews", "triggers",
       "extensions", "customTypes", "routines", "sequences"
@@ -313,6 +322,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
         await cleanup.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", [sourceName]);
         await cleanup.query(`DROP DATABASE IF EXISTS ${quoteDb(sourceName)}`);
       }
+      if (ownerRoleCreated) await cleanup.query(`DROP ROLE IF EXISTS ${quoteDb(ownerRole)}`);
     } finally {
       await cleanup.end();
     }
