@@ -73,10 +73,9 @@ export async function assertDistinctConnectedDatabases(
   const targetRow = targetResult.rows[0] ?? {};
   const sourceIdentity = identity(sourceRow);
   const targetIdentity = identity(targetRow);
-  // Database OIDs are cluster-local, but matching database name + OID is a
-  // conservative collision check across aliases/pooler backends. A collision
-  // may reject two unrelated clusters, which is safer than inspecting one DB
-  // through two endpoints and mistakenly treating it as source and target.
+  // Supabase project refs are authoritative across shared pooler endpoints:
+  // distinct projects can expose the same backend address, port, database name,
+  // and cluster-local OID. Same-project URLs are rejected before connecting.
   const knownDistinctSupabaseProjects = Boolean(
     sourceExpectedIdentity?.startsWith("supabase:") &&
     targetExpectedIdentity?.startsWith("supabase:") &&
@@ -87,7 +86,8 @@ export async function assertDistinctConnectedDatabases(
     sourceRow.database_name === targetRow.database_name &&
     sourceRow.database_oid === targetRow.database_oid
   );
-  if (!sourceIdentity || !targetIdentity || sourceIdentity === targetIdentity || sameDatabaseOid) {
+  const sameConnectedIdentity = sourceIdentity === targetIdentity && !knownDistinctSupabaseProjects;
+  if (!sourceIdentity || !targetIdentity || sameConnectedIdentity || sameDatabaseOid) {
     throw new Error("تعذر إثبات اختلاف قاعدتي البيانات من خادم PostgreSQL نفسه؛ تم إيقاف الفحص لحماية المصدر.");
   }
 }
