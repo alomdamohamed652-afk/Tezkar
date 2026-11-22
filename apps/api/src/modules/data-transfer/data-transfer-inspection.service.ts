@@ -213,7 +213,10 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                    SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
                      FROM pg_enum e WHERE e.enumtypid = t.oid
                  ) ELSE NULL END AS enum_values,
-                 CASE WHEN t.typtype = 'd' THEN pg_get_constraintdef(c.oid, true) ELSE NULL END AS domain_constraints,
+                 CASE WHEN t.typtype = 'd' THEN (
+                   SELECT string_agg(pg_get_constraintdef(dc.oid, true), ',' ORDER BY dc.conname)
+                     FROM pg_constraint dc WHERE dc.contypid = t.oid
+                 ) ELSE NULL END AS domain_constraints,
                  CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE NULL END AS domain_base,
                  CASE WHEN t.typtype = 'c' THEN (
                    SELECT string_agg(
@@ -227,7 +230,6 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                  ) ELSE NULL END AS composite_attributes
             FROM pg_type t
             JOIN pg_namespace n ON n.oid = t.typnamespace
-            LEFT JOIN pg_constraint c ON c.contypid = t.oid
            WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
              AND (t.typtype <> 'c' OR NOT EXISTS (
                SELECT 1 FROM pg_class row_type
