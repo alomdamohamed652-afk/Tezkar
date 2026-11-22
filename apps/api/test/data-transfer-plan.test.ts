@@ -51,3 +51,14 @@ test("transfer plan blocks tables without primary keys", () => {
   assert.equal(plan.blocked.length, 1);
   assert.match(plan.blocked[0].reason, /مفتاح أساسي/);
 });
+
+test("transfer plan blocks otherwise-compatible tables when global custom types, extensions, or sequences differ", () => {
+  const plan = buildTransferPlan(
+    [table("public.workers"), table("public.orders", ["public.workers"])],
+    ["الأنواع المخصصة"]
+  );
+  assert.equal(plan.readyOrder.length, 0);
+  assert.equal(plan.blocked.length, 2);
+  assert.ok(plan.blocked.every(item => item.reason.includes("الأنواع المخصصة")));
+  assert.equal(plan.writeEnabled, false);
+});
