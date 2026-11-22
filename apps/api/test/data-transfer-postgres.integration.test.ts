@@ -144,12 +144,14 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
       await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
+      await changedTarget.query("ALTER DOMAIN public.positive_amount ADD CONSTRAINT positive_amount_not_special CHECK (VALUE <> 12345)");
       await changedTarget.query("ALTER SEQUENCE public.audit_sequence INCREMENT BY 3");
     } finally {
       await changedTarget.end();
     }
     const changedObjects = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInTarget.length > 0);
+    assert.ok(changedObjects.objectComparison.customTypes.differences.missingInSource.length > 0);
     assert.ok(changedObjects.objectComparison.sequences.differences.missingInTarget.length > 0);
     const globalBlockers = ["customTypes", "extensions", "sequences"].flatMap(key => {
       const item = changedObjects.objectComparison[key as keyof typeof changedObjects.objectComparison];
