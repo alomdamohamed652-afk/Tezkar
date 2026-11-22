@@ -332,7 +332,9 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
               WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w'))::int AS routines,
             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-              WHERE c.relkind='S' AND n.nspname='public')::int AS sequences
+              WHERE c.relkind='S' AND n.nspname='public')::int AS sequences,
+             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE c.relkind='f' AND n.nspname='public')::int AS foreign_tables
     `);
 
     const features = await client.query(`
@@ -439,7 +441,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       extensions: extensions.rows.length,
       custom_types: customTypes.rows.length,
       routines: routines.rows.length,
-      sequences: sequences.rows.length
+      sequences: sequences.rows.length,
+      foreign_tables: unsupportedRelations.rows.length
     };
     for (const [objectName, observed] of Object.entries(observedObjectCounts)) {
       const expected = Number(expectedObjects[objectName]);
