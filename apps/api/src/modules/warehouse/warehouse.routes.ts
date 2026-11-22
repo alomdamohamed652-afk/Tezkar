@@ -222,7 +222,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const hasMore=result.rows.length>parsed.data.limit;
     const rows=hasMore?result.rows.slice(0,parsed.data.limit):result.rows;
     const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
-    const data=canViewCosts?rows:rows.map(({unit_cost:_unitCost,total_cost:_totalCost,order_id:_orderId,order_stage_id:_orderStageId,order_code:_orderCode,order_name:_orderName,stage_name:_stageName,scrap_origin_reference:_scrapOriginReference,...row})=>({
+    const data=canViewCosts?rows:rows.map(({unit_cost:_unitCost,total_cost:_totalCost,order_id:_orderId,order_stage_id:_orderStageId,order_code:_orderCode,order_name:_orderName,stage_name:_stageName,scrap_origin_reference,...row})=>({
       ...row,
       ...(row.scrap_origin_type==="ORDER"?{scrap_origin_reference:undefined}:{scrap_origin_reference})
     }));
