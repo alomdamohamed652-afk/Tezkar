@@ -94,10 +94,17 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const inspection = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL);
-      const globalBlockers = ["customTypes", "extensions", "sequences"].flatMap(key => {
+      // Conservative gate: all public database-object differences must be resolved before transfer readiness.
+      const objectLabels: { [key: string]: string } = {
+        indexes: "الفهارس", constraints: "القيود", views: "Views",
+        materializedViews: "Materialized Views", triggers: "Triggers",
+        extensions: "Extensions", customTypes: "الأنواع المخصصة",
+        routines: "Functions / Procedures", sequences: "Sequences"
+      };
+      const globalBlockers = Object.keys(objectLabels).flatMap(key => {
         const item = inspection.objectComparison[key as keyof typeof inspection.objectComparison];
         return item && (item.differences.missingInTarget.length > 0 || item.differences.missingInSource.length > 0)
-          ? [key === "customTypes" ? "الأنواع المخصصة" : key === "extensions" ? "الإضافات" : "التسلسلات"]
+          ? [objectLabels[key] ?? key]
           : [];
       });
       const plan = buildTransferPlan(inspection.comparison, globalBlockers);
