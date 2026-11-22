@@ -21,7 +21,6 @@ export type TransferPlan = {
  * Only schema-compatible tables can enter the order; dependencies must also be eligible.
  */
 export function buildTransferPlan(tables: TransferPlanTable[], globalBlockers: string[] = []): TransferPlan {
-  const byName = new Map(tables.map(table => [table.table, table]));
   const blocked = new Map<string, { table: string; reason: string; dependencies: string[] }>();
   const candidates = new Map<string, TransferPlanTable>();
 
