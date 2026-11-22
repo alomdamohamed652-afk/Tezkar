@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assertDistinctDatabaseIdentities,
-  assertReadOnlySourceSession,
+  assertReadOnlySession,
   createReadOnlySourcePool,
+  createTargetPool,
   SOURCE_READ_ONLY_OPTIONS
 } from "../src/modules/data-transfer/data-transfer-connection.service.js";
 
@@ -13,8 +14,14 @@ test("source pool enforces default_transaction_read_only at PostgreSQL session s
   return pool.end();
 });
 
+test("target inspection pool enforces the same PostgreSQL read-only startup setting", () => {
+  const pool = createTargetPool("postgres://readonly:secret@target.example/tezkar");
+  assert.equal(SOURCE_READ_ONLY_OPTIONS, "-c default_transaction_read_only=on");
+  return pool.end();
+});
+
 test("source session guard accepts only a server-confirmed read-only session", async () => {
-  await assertReadOnlySourceSession({
+  await assertReadOnlySession({
     async query(sql: string) {
       assert.equal(sql, "SHOW transaction_read_only");
       return { rows: [{ transaction_read_only: "on" }] };
