@@ -45,6 +45,7 @@ type DatabaseSnapshot = {
   customTypes: string[];
   routines: string[];
   sequences: string[];
+  unsupportedRelations: string[];
   features: FeatureCounts;
 };
 
@@ -52,6 +53,13 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   await client.query("BEGIN READ ONLY");
   try {
     await client.query("SET LOCAL statement_timeout = '15000'");
+    const unsupportedRelations = await client.query(`
+          SELECT n.nspname || '.' || c.relname AS relation_name
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public' AND c.relkind = 'f'
+           ORDER BY n.nspname, c.relname
+    `);
     const tables = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS table_name,
                  GREATEST(c.reltuples, 0)::bigint AS estimated_rows,
@@ -475,6 +483,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         }))}`),
       sequences: sequences.rows.map((row: any) =>
         `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
+      unsupportedRelations: unsupportedRelations.rows.map((row: any) => row.relation_name),
       features: featureCounts
     };
   } finally {
@@ -497,7 +506,7 @@ function diff(source: string[], target: string[]) {
 
 function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
   const names = [...new Set([...source.tables.keys(), ...target.tables.keys()])].sort();
-  return names.map(name => {
+  const tableComparisons = names.map(name => {
     const left = source.tables.get(name);
     const right = target.tables.get(name);
     const differences: string[] = [];
@@ -543,6 +552,17 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       hasPrimaryKey: Boolean(left?.primaryKey.length && right?.primaryKey.length), differences
     };
   });
+  const unsupportedRelations = [...new Set([...source.unsupportedRelations, ...target.unsupportedRelations])].sort();
+  const unsupportedComparisons = unsupportedRelations.map(name => ({
+    table: name,
+    status: "unsupported_relation",
+    sourceEstimate: 0,
+    targetEstimate: 0,
+    dependencies: [],
+    hasPrimaryKey: false,
+    differences: ["علاقة خارجية (FOREIGN TABLE) خارج نطاق فحص وترحيل الجداول المدعومة؛ يجب مراجعتها يدويًا قبل أي نقل"]
+  }));
+  return [...tableComparisons, ...unsupportedComparisons];
 }
 
 export function databaseIdentity(connectionString: string): string | null {
@@ -600,6 +620,10 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         },
         comparison,
         blockers: comparison.filter(row => row.status !== "compatible"),
+        unsupportedRelations: {
+          source: source.unsupportedRelations,
+          target: target.unsupportedRelations
+        },
         objectComparison: {
           indexes: { source: source.indexes.length, target: target.indexes.length,
             differences: diff(source.indexes, target.indexes) },
