@@ -452,7 +452,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
-        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. لا ينفذ نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
+        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. مقارنة الجداول والكائنات التفصيلية محصورة في public؛ الإضافات وLarge Objects عناصر على مستوى قاعدة البيانات، ويُعرض Large Objects كعدد فقط دون مقارنة المحتوى أو الملكية. لا ينفذ الفحص نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
       };
     } finally {
       sourceClient.release();
