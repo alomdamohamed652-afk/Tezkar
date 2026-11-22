@@ -374,7 +374,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                 AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type
                   WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','w'))::int AS routines,
+              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','a','w'))::int AS routines,
             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
               WHERE c.relkind='S' AND n.nspname='public')::int AS sequences
     `);
