@@ -314,7 +314,7 @@ payment_totals.paid_amount,
       ? {quantity:Number(rawSummary.quantity??0),earned:Number(rawSummary.earned??0),paid:Number(rawSummary.paid??0),remaining:Number(rawSummary.remaining??0)}
       : {quantity:Number(rawSummary.quantity??0)};
     if(!canViewFinancials){
-      const data=result.rows.map(({base_amount,rate_snapshot,earning_amount,bonus_amount,deduction_amount,bonus_reason,deduction_reason,total_earning_amount,paid_amount,remaining_amount,payment_status,...safe}:Record<string,unknown>)=>safe);
+      const data=result.rows.map(({base_amount:_baseAmount,rate_snapshot:_rateSnapshot,earning_amount:_earningAmount,bonus_amount:_bonusAmount,deduction_amount:_deductionAmount,bonus_reason:_bonusReason,deduction_reason:_deductionReason,total_earning_amount:_totalEarningAmount,paid_amount:_paidAmount,remaining_amount:_remainingAmount,payment_status:_paymentStatus,...safe}:Record<string,unknown>)=>safe);
       return {data, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
     }
     return { data: result.rows, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
