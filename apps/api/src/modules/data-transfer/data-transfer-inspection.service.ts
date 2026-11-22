@@ -260,6 +260,15 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
         rlsEnabled: false, rlsForced: false, policies: []
       });
     }
+    for (const row of columns.rows) {
+      tableMap.get(`${row.table_schema}.${row.table_name}`)?.columns.push({
+        name: row.column_name, type: row.type, udtSchema: row.udt_schema, udtName: row.udt_name,
+        domainSchema: row.domain_schema, domainName: row.domain_name,
+        nullable: row.nullable, defaultValue: row.column_default,
+        identity: row.identity_generation ?? "", generated: row.is_generated ?? "",
+        collation: row.collation ?? null
+      });
+    }
     const expectedCounts = new Map<string, number>(
       expectedColumnCounts.rows.map((row: any) => [
         `${row.table_schema}.${row.table_name}`, Number(row.column_count)
@@ -270,15 +279,6 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       if (expected === undefined || table.columns.length !== expected) {
         throw new Error(`Incomplete column metadata for ${tableName}; expected ${expected ?? "unknown"} columns but read ${table.columns.length}`);
       }
-    }
-    for (const row of columns.rows) {
-      tableMap.get(`${row.table_schema}.${row.table_name}`)?.columns.push({
-        name: row.column_name, type: row.type, udtSchema: row.udt_schema, udtName: row.udt_name,
-        domainSchema: row.domain_schema, domainName: row.domain_name,
-        nullable: row.nullable, defaultValue: row.column_default,
-        identity: row.identity_generation ?? "", generated: row.is_generated ?? "",
-        collation: row.collation ?? null
-      });
     }
     for (const row of primaryKeys.rows) {
       tableMap.get(`${row.table_schema}.${row.table_name}`)?.primaryKey.push(row.column_name);
