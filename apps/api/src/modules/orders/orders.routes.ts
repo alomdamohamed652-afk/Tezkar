@@ -230,7 +230,7 @@ export async function orderRoutes(app: FastifyInstance) {
         ORDER BY o.created_at DESC
         LIMIT 300`, params);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    const data=canViewFinancials?r.rows:r.rows.map(({contract_value,...row})=>row);
+    const data=canViewFinancials?r.rows:r.rows.map(({contract_value:_contractValue,...row})=>row);
     return { data };
   });
 
@@ -241,7 +241,7 @@ export async function orderRoutes(app: FastifyInstance) {
     if(q.data.orderId){params.push(q.data.orderId);where.push("os.order_id=$"+params.length);}
     const r=await pool.query("SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate,os.stage_rate_method,os.stage_rate_unit_id,os.production_type_id,os.is_final_product FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id WHERE "+where.join(" AND ")+" ORDER BY o.created_at DESC,os.sequence_no",params);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    const data=canViewFinancials?r.rows:r.rows.map(({stage_rate,stage_rate_method,stage_rate_unit_id,...safe})=>safe);
+    const data=canViewFinancials?r.rows:r.rows.map(({stage_rate:_stageRate,stage_rate_method:_stageRateMethod,stage_rate_unit_id:_stageRateUnitId,...safe})=>safe);
     return {data};
   });
 
@@ -260,8 +260,8 @@ export async function orderRoutes(app: FastifyInstance) {
     if (!order.rowCount) throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
     if(!canViewFinancials){
-      const {contract_value,...safeOrder}=order.rows[0];
-      safeOrder.stages=(safeOrder.stages??[]).map(({stage_rate,stage_rate_method,stage_rate_unit_id,...stage}:Record<string,unknown>)=>stage);
+      const {contract_value:_contractValue,...safeOrder}=order.rows[0];
+      safeOrder.stages=(safeOrder.stages??[]).map(({stage_rate:_stageRate,stage_rate_method:_stageRateMethod,stage_rate_unit_id:_stageRateUnitId,...stage}:Record<string,unknown>)=>stage);
       return {data:safeOrder};
     }
     return { data: order.rows[0] };
@@ -536,7 +536,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
       let outputProductId=p.outputProductId;
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
-      const x=await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_product=COALESCE($10,is_final_product),order_item_id=CASE WHEN $10=FALSE OR $5='CANCELLED' THEN NULL ELSE order_item_id END WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalProduct??null,id]);
+      await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_product=COALESCE($10,is_final_product),order_item_id=CASE WHEN $10=FALSE OR $5='CANCELLED' THEN NULL ELSE order_item_id END WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalProduct??null,id]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
       if((p.isFinalProduct!==undefined && p.isFinalProduct!==current.rows[0].is_final_product) || (current.rows[0].is_final_product && (p.outputProductName!==undefined || p.outputProductId!==undefined || p.plannedQuantity!==undefined || p.status==="CANCELLED"))) await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
       if(current.rows[0].order_item_id && (p.isFinalProduct===false || p.status==="CANCELLED")) {
@@ -721,9 +721,9 @@ export async function orderRoutes(app: FastifyInstance) {
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
     if(!canViewFinancials){
       const {contract_value:_contractValue,...safeOrder}=dashboardData.order;
-      const safeStages=dashboardData.stages.map(({stage_rate,stage_rate_method,stage_expense_cost,...stage}:Record<string,unknown>)=>stage);
-      const safeProduction=dashboardData.production.map(({earning_amount,bonus_amount,deduction_amount,total_earning_amount,price_adjustment_amount,paid_amount,remaining_amount,...entry}:Record<string,unknown>)=>entry);
-      const safeMovements=dashboardData.movements.map(({unit_cost,total_cost,...movement}:Record<string,unknown>)=>movement);
+      const safeStages=dashboardData.stages.map(({stage_rate:_stageRate,stage_rate_method:_stageRateMethod,stage_expense_cost:_stageExpenseCost,...stage}:Record<string,unknown>)=>stage);
+      const safeProduction=dashboardData.production.map(({earning_amount:_earningAmount,bonus_amount:_bonusAmount,deduction_amount:_deductionAmount,total_earning_amount:_totalEarningAmount,price_adjustment_amount:_priceAdjustmentAmount,paid_amount:_paidAmount,remaining_amount:_remainingAmount,...entry}:Record<string,unknown>)=>entry);
+      const safeMovements=dashboardData.movements.map(({unit_cost:_unitCost,total_cost:_totalCost,...movement}:Record<string,unknown>)=>movement);
       return {data:{...dashboardData,order:safeOrder,stages:safeStages,production:safeProduction,movements:safeMovements,totals:null}};
     }
     return {data:dashboardData};
@@ -992,7 +992,7 @@ export async function orderRoutes(app: FastifyInstance) {
     return reply.code(idempotentReplay?200:201).send({data:row,idempotentReplay});
   });
 
-  app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async (request) => {
+  app.get("/api/machine-production", { preHandler: [authenticateRequest, requirePermission("machine_production.view")] }, async () => {
     const r=await pool.query(
       `SELECT mp.id,mp.code,mp.machine_id,mp.employee_id,mp.order_stage_id,mp.production_type_id,
               mp.laser_design_version_id,mp.cycles_count,mp.expected_quantity,
