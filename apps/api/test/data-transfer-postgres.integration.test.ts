@@ -115,8 +115,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.equal(result.source.foreignKeyCount, 1);
     assert.equal(result.target.foreignKeyCount, 1);
     assert.deepEqual(result.blockers, [], JSON.stringify({
-      sourceIndexes: result.source,
-      targetIndexes: result.target
+      indexComparison: result.objectComparison.indexes,
+      workerComparison: result.comparison.find(item => item.table === "public.workers")
     }));
     assert.equal(result.sourceFeatures.views, 1);
     assert.equal(result.sourceFeatures.materializedViews, 1);
