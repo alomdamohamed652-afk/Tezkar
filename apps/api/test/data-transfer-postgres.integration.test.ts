@@ -114,10 +114,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.equal(result.target.tableCount, 3);
     assert.equal(result.source.foreignKeyCount, 1);
     assert.equal(result.target.foreignKeyCount, 1);
-    assert.deepEqual(result.blockers, [], JSON.stringify({
-      indexComparison: result.objectComparison.indexes,
-      workerComparison: result.comparison.find(item => item.table === "public.workers")
-    }));
+    assert.deepEqual(result.blockers, []);
     assert.equal(result.sourceFeatures.views, 1);
     assert.equal(result.sourceFeatures.materializedViews, 1);
     assert.equal(result.sourceFeatures.triggers, 1);
@@ -201,10 +198,16 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       );
       assert.equal(restrictedInspection.source.tableCount, 3);
       assert.equal(restrictedInspection.target.tableCount, 3);
-      assert.deepEqual(restrictedInspection.blockers, [], JSON.stringify({
-        indexComparison: restrictedInspection.objectComparison.indexes,
-        workerComparison: restrictedInspection.comparison.find(item => item.table === "public.workers")
-      }));
+      assert.deepEqual(
+        restrictedInspection.objectComparison.indexes,
+        changedObjects.objectComparison.indexes,
+        "restricted catalog access should report the same index differences"
+      );
+      assert.deepEqual(
+        restrictedInspection.blockers,
+        changedObjects.blockers,
+        "restricted catalog access should preserve schema blockers"
+      );
       assert.equal(restrictedInspection.sourceFeatures.triggers, 1);
       assert.equal(restrictedInspection.sourceFeatures.routines, 4);
       assert.equal(restrictedInspection.sourceFeatures.sequences, 3);
