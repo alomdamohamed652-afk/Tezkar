@@ -96,7 +96,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     CREATE PROCEDURE public.refresh_worker_totals()
       LANGUAGE sql AS $$ REFRESH MATERIALIZED VIEW public.worker_order_totals $$;
     CREATE FUNCTION public.worker_rank(bigint) RETURNS bigint
-      LANGUAGE sql IMMUTABLE WINDOW AS $ SELECT $1 $;
+      LANGUAGE sql IMMUTABLE WINDOW AS $window$ SELECT $1 $window$;
     CREATE AGGREGATE public.worker_sum(bigint) (
       SFUNC = int8pl, STYPE = bigint, INITCOND = '0'
     );
