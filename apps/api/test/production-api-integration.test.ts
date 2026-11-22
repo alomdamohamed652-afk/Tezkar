@@ -148,7 +148,7 @@ test("worker production API preserves paid, remaining, reversal and adjustment t
     await apiPool.query(
       "INSERT INTO employee_earnings_settlement_allocations(settlement_id,production_entry_id,amount) VALUES($1,$2,30) RETURNING id",
       [settlement.id, production.id]
-    )).rows[0];
+    );
 
     const canonicalOrderAllocation = (await apiPool.query(
       "INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,15) RETURNING id",
