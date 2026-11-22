@@ -49,6 +49,13 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       amount numeric(12,2) NOT NULL CHECK (amount >= 0),
       CONSTRAINT orders_worker_amount_unique UNIQUE (worker_id, amount)
     );
+    CREATE TABLE public.worker_events (
+      id bigint NOT NULL,
+      event_date date NOT NULL,
+      PRIMARY KEY (id, event_date)
+    ) PARTITION BY RANGE (event_date);
+    CREATE TABLE public.worker_events_2026 PARTITION OF public.worker_events
+      FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
 
     CREATE INDEX workers_name_partial_idx
       ON public.workers (lower(name)) INCLUDE (state) WHERE state = 'active';
@@ -110,11 +117,13 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
 
     const result = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
 
-    assert.equal(result.source.tableCount, 3);
-    assert.equal(result.target.tableCount, 3);
+    assert.equal(result.source.tableCount, 5);
+    assert.equal(result.target.tableCount, 5);
     assert.equal(result.source.foreignKeyCount, 1);
     assert.equal(result.target.foreignKeyCount, 1);
     assert.deepEqual(result.blockers, []);
+    assert.equal(result.comparison.find(item => item.table === "public.worker_events")?.status, "compatible");
+    assert.equal(result.comparison.find(item => item.table === "public.worker_events_2026")?.status, "compatible");
     assert.equal(result.sourceFeatures.views, 1);
     assert.equal(result.sourceFeatures.materializedViews, 1);
     assert.equal(result.sourceFeatures.triggers, 1);
@@ -146,7 +155,25 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     // different settings must not be treated as globally compatible.
     const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
+      await changedTarget.query("ALTER INDEX public.workers_name_partial_idx RENAME TO workers_name_partial_renamed");
+    } finally {
+      await changedTarget.end();
+    }
+    const renamedIndexOnly = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
+    assert.deepEqual(
+      renamedIndexOnly.objectComparison.indexes.differences,
+      { missingInTarget: [], missingInSource: [] },
+      "an index name-only change must not be treated as a structural difference"
+    );
+
+    const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
+    try {
+      await changedTarget.query("ALTER INDEX public.workers_name_partial_renamed RENAME TO workers_name_partial_idx");
       await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
+      await changedTarget.query("ALTER TABLE public.workers DISABLE TRIGGER workers_audit_trigger");
+      await changedTarget.query("ALTER VIEW public.worker_balances SET (security_barrier = true)");
+      await changedTarget.query("ALTER FUNCTION public.worker_label(bigint) SECURITY DEFINER");
+      await changedTarget.query("ALTER TABLE public.worker_events DETACH PARTITION public.worker_events_2026");
       await changedTarget.query("DROP INDEX public.workers_name_partial_idx");
       await changedTarget.query("CREATE INDEX workers_name_partial_idx ON public.workers (lower(name)) INCLUDE (state) WHERE state = 'paused'");
       await changedTarget.query("ALTER DOMAIN public.positive_amount ADD CONSTRAINT positive_amount_not_special CHECK (VALUE <> 12345)");
@@ -159,6 +186,15 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInSource.length > 0);
     assert.ok(changedObjects.objectComparison.sequences.differences.missingInTarget.length > 0);
     assert.ok(changedObjects.objectComparison.indexes.differences.missingInTarget.length > 0);
+    assert.ok(changedObjects.objectComparison.triggers.differences.missingInTarget.length > 0,
+      "trigger enabled/disabled state must be compared");
+    assert.ok(changedObjects.objectComparison.views.differences.missingInTarget.length > 0,
+      "view security options must be compared");
+    assert.ok(changedObjects.objectComparison.routines.differences.missingInTarget.length > 0,
+      "routine security properties must be compared");
+    assert.ok(changedObjects.comparison.some(item =>
+      item.table === "public.worker_events" && item.status === "schema_mismatch"
+    ), "partition detach must be detected");
     assert.ok(changedObjects.comparison.some(item =>
       item.table === "public.workers" && item.status === "schema_mismatch"
     ));
@@ -196,8 +232,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       const restrictedInspection = await inspectDatabaseTransfer(
         restrictedUrl(sourceName), restrictedUrl(targetName)
       );
-      assert.equal(restrictedInspection.source.tableCount, 3);
-      assert.equal(restrictedInspection.target.tableCount, 3);
+      assert.equal(restrictedInspection.source.tableCount, 5);
+      assert.equal(restrictedInspection.target.tableCount, 5);
       assert.deepEqual(
         restrictedInspection.objectComparison.indexes,
         changedObjects.objectComparison.indexes,
