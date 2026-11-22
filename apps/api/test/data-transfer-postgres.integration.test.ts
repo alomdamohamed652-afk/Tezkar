@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { inspectDatabaseTransfer } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
-import { createReadOnlySourcePool } from "../src/modules/data-transfer/data-transfer-connection.service.js";
+import { createReadOnlySourcePool, createTargetPool } from "../src/modules/data-transfer/data-transfer-connection.service.js";
 import { assertDisposableDatabaseUrl } from "./helpers/disposable-database-url.js";
 
 const adminUrl = process.env.TEST_DATABASE_URL;
@@ -132,6 +132,17 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       );
     } finally {
       await sourceReadOnlyPool.end();
+    }
+
+    const targetReadOnlyPool = createTargetPool(databaseUrl(targetName));
+    try {
+      await assert.rejects(
+        () => targetReadOnlyPool.query("INSERT INTO public.workers(name) VALUES ($tag$must-not-write$tag$)"),
+        (error: unknown) => Boolean(error && typeof error === "object" && "code" in error &&
+          (error as { code?: string }).code === "25006")
+      );
+    } finally {
+      await targetReadOnlyPool.end();
     }
 
     const targetPool = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
