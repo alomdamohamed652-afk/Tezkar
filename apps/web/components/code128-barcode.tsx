@@ -1,5 +1,4 @@
 "use client";
-/* eslint-disable no-control-regex -- Code 128 input sanitization intentionally strips ASCII control bytes. */
 
 import { useMemo } from "react";
 
