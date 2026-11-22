@@ -107,6 +107,25 @@ test("connected database identity rejects matching database OIDs even across dif
   );
 });
 
+test("connected database identity accepts different Supabase projects with matching database OIDs", async () => {
+  const source = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.5", server_port: 5432 }]
+    })
+  };
+  const target = {
+    query: async () => ({
+      rows: [{ database_name: "postgres", database_oid: "16384", server_address: "10.0.0.9", server_port: 6543 }]
+    })
+  };
+  await assert.doesNotReject(() => assertDistinctConnectedDatabases(
+    source,
+    target,
+    "supabase:sourceproject/postgres",
+    "supabase:targetproject/postgres"
+  ));
+});
+
 test("connected database identity accepts distinct PostgreSQL databases", async () => {
   const source = {
     query: async () => ({
