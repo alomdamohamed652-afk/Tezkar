@@ -32,7 +32,9 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
 
   const fixtureSql = `
     CREATE TYPE public.worker_state AS ENUM ('active', 'paused');
-    CREATE DOMAIN public.positive_amount AS numeric(12,2) CHECK (VALUE >= 0);
+    CREATE DOMAIN public.positive_amount AS numeric(12,2)
+      CHECK (VALUE >= 0)
+      CHECK (VALUE <= 9999999999);
     CREATE TYPE public.worker_summary AS (worker_id bigint, label text);
 
     CREATE TABLE public.workers (
