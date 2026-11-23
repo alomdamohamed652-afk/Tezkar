@@ -26,7 +26,7 @@ test("session guard explicitly sets read-only mode before verifying PostgreSQL",
   await assertReadOnlySession({
     async query(sql: string) {
       statements.push(sql);
-      if (sql === "SHOW transaction_read_only") {
+      if (sql === "SHOW default_transaction_read_only") {
         return { rows: [{ transaction_read_only: "on" }] };
       }
       return { rows: [] };
@@ -34,7 +34,7 @@ test("session guard explicitly sets read-only mode before verifying PostgreSQL",
   } as never);
   assert.deepEqual(statements, [
     "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
-    "SHOW transaction_read_only"
+    "SHOW default_transaction_read_only"
   ]);
 });
 
@@ -42,7 +42,7 @@ test("session guard fails closed when PostgreSQL does not confirm read-only", as
   await assert.rejects(
     () => assertReadOnlySession({
       async query(sql: string) {
-        if (sql === "SHOW transaction_read_only") {
+        if (sql === "SHOW default_transaction_read_only") {
           return { rows: [{ transaction_read_only: "off" }] };
         }
         return { rows: [] };
