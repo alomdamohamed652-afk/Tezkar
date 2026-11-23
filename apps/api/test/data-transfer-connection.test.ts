@@ -27,7 +27,7 @@ test("session guard explicitly sets read-only mode before verifying PostgreSQL",
     async query(sql: string) {
       statements.push(sql);
       if (sql === "SHOW default_transaction_read_only") {
-        return { rows: [{ transaction_read_only: "on" }] };
+        return { rows: [{ default_transaction_read_only: "on" }] };
       }
       return { rows: [] };
     }
@@ -43,7 +43,7 @@ test("session guard fails closed when PostgreSQL does not confirm read-only", as
     () => assertReadOnlySession({
       async query(sql: string) {
         if (sql === "SHOW default_transaction_read_only") {
-          return { rows: [{ transaction_read_only: "off" }] };
+          return { rows: [{ default_transaction_read_only: "off" }] };
         }
         return { rows: [] };
       }
@@ -57,7 +57,7 @@ test("session guard fails closed if the pooler refuses the read-only session set
     () => assertReadOnlySession({
       async query(sql: string) {
         if (sql.startsWith("SET SESSION")) throw new Error("read-only setting rejected");
-        return { rows: [{ transaction_read_only: "off" }] };
+        return { rows: [{ default_transaction_read_only: "off" }] };
       }
     } as never),
     /read-only setting rejected/
