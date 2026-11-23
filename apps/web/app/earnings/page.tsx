@@ -11,7 +11,7 @@ type Summary={total_earned:string;total_paid:string;remaining:string};
 type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null};
 type Employee={id:string;code:string;name?:string;full_name?:string};
 type Shift={id:string;code:string;name:string};
-type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null};
+type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;employee_code:string;shift_name:string|null;auto_generated?:boolean};
 
 export default function EarningsPage(){
  const {has,session}=usePermissions();
@@ -41,6 +41,17 @@ export default function EarningsPage(){
  }
  useEffect(()=>{if(session)void load()},[session,has]);
 
+ async function editAuto(x:Adjustment){
+  const a=prompt("المبلغ الجديد",String(x.amount));if(a===null)return;
+  const r=prompt("البيان",x.reason);if(r===null)return;
+  try{await api(`/api/production/adjustments/${x.id}`,{method:"PATCH",body:JSON.stringify({amount:Number(a),reason:r})});await load()}
+  catch(err){setError(err instanceof Error?err.message:"تعذر التعديل")}
+ }
+ async function deleteAuto(x:Adjustment){
+  const r=prompt("سبب حذف البونص التلقائي (يرجع السجل بدون بونص)");if(!r)return;
+  try{await api(`/api/production/adjustments/${x.id}`,{method:"DELETE",body:JSON.stringify({reason:r})});await load()}
+  catch(err){setError(err instanceof Error?err.message:"تعذر الحذف")}
+ }
  async function addAdjustment(e:FormEvent){
   e.preventDefault();setError("");setMessage("");
   try{
@@ -71,8 +82,8 @@ export default function EarningsPage(){
       <article className="card stat accent"><div className="stat-label">إجمالي البونص</div><div className="stat-value">{money(totals.bonus)}</div></article>
       <article className="card stat warning"><div className="stat-label">إجمالي الخصومات</div><div className="stat-value">{money(totals.deduction)}</div></article>
     </div>
-    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>الوردية</th><th>النوع</th><th>المبلغ</th><th>البيان</th><th>التاريخ</th></tr></thead><tbody>
-     {adjustments.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_code} — {x.employee_name}</td><td>{x.shift_name||"عام"}</td><td>{x.adjustment_type==="BONUS"?"بونص":"خصم"}</td><td className="money">{money(x.amount)}</td><td>{x.reason}</td><td>{x.adjustment_date}</td></tr>)}{!adjustments.length&&<tr><td colSpan={7}>لا توجد بونصات أو خصومات مسجلة.</td></tr>}
+    <div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>الوردية</th><th>النوع</th><th>المبلغ</th><th>البيان</th><th>التاريخ</th>{has("production.adjustments.manage")&&<th></th>}</tr></thead><tbody>
+     {adjustments.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_code} — {x.employee_name}</td><td>{x.shift_name||"عام"}</td><td>{x.adjustment_type==="BONUS"?"بونص":"خصم"}</td><td className="money">{money(x.amount)}</td><td>{x.reason}{x.auto_generated&&<span className="badge" style={{marginInlineStart:6}}>تلقائي</span>}</td><td>{x.adjustment_date}</td>{has("production.adjustments.manage")&&<td>{x.auto_generated&&<><button type="button" className="secondary-button" onClick={()=>editAuto(x)}>تعديل</button> <button type="button" className="secondary-button" onClick={()=>deleteAuto(x)}>حذف</button></>}</td>}</tr>)}{!adjustments.length&&<tr><td colSpan={8}>لا توجد بونصات أو خصومات مسجلة.</td></tr>}
     </tbody></table></div>
    </section>}
 
