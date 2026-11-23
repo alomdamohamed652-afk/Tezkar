@@ -17,8 +17,13 @@ export function createReadOnlySourcePool(connectionString: string): pg.Pool {
   });
 }
 
-/** Verifies the server-enforced session setting before any source query is run. */
+/**
+ * Explicitly configures the connected PostgreSQL session as read-only, then
+ * verifies the effective setting. This is intentionally done after connect as
+ * some poolers may not preserve startup options consistently.
+ */
 export async function assertReadOnlySession(client: Pick<pg.PoolClient, "query">): Promise<void> {
+  await client.query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
   const result = await client.query("SHOW transaction_read_only");
   const value = String(result.rows[0]?.transaction_read_only ?? "").toLowerCase();
   if (value !== "on") {
