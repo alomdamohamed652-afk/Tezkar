@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { AppError } from "../../http/errors.js";
 
 export async function hasPermission(
   client: pg.PoolClient,
@@ -21,4 +22,24 @@ export async function hasPermission(
     [userId, permissionCode, requestedScope]
   );
   return Boolean(result.rows[0]?.allowed);
+}
+
+// When at least one account is listed for a permission, only those accounts may use it.
+// An empty list keeps plain role-based behavior. Role permission is required either way.
+export async function assertPermissionAccountAllowed(
+  client: pg.PoolClient,
+  permissionCode: string,
+  userId: string
+): Promise<void> {
+  const result = await client.query(
+    `SELECT COUNT(*)::int AS total,
+            BOOL_OR(user_id = $2) AS listed
+       FROM permission_account_restrictions
+      WHERE permission_code = $1`,
+    [permissionCode, userId]
+  );
+  const total = Number(result.rows[0]?.total ?? 0);
+  if (total > 0 && !result.rows[0]?.listed) {
+    throw new AppError("PERMISSION_ACCOUNT_RESTRICTED", "هذه الصلاحية مقيدة لحسابات محددة من الإدارة؛ حسابك غير مخول لها", 403);
+  }
 }
