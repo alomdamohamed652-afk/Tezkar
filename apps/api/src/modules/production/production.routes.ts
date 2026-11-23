@@ -1,3 +1,4 @@
+import { findAutoBonusRule } from "./bonus-rules.routes.js";
 import { productionPaidSql, paymentAllocatedSql } from "../payments/settlement-calculation.js";
 import type { FastifyInstance } from "fastify";
 
@@ -636,6 +637,17 @@ payment_totals.paid_amount,
       if (!Number.isFinite(earning) || earning < 0) {
         throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج بشكل صحيح", 422);
       }
+      // Automatic count-based bonus: only when nobody typed a manual bonus. The result is written into the normal bonus fields,
+      // so it is an ordinary editable/deletable adjustment; deleting it later simply leaves the record without a bonus.
+      let autoBonusRuleId: string | null = null;
+      if (!(Number(parsed.data.bonusAmount ?? 0) > 0) && !parsed.data.bonusReason?.trim()) {
+        const rule = await findAutoBonusRule(client, { stageId: parsed.data.stageId, productId: parsed.data.productId, quantity: parsed.data.quantity });
+        if (rule) {
+          parsed.data.bonusAmount = rule.bonus_amount;
+          parsed.data.bonusReason = rule.description;
+          autoBonusRuleId = rule.id;
+        }
+      }
       if (earning + Number(parsed.data.bonusAmount ?? 0) < Number(parsed.data.deductionAmount ?? 0)) {
         throw new AppError("DEDUCTION_EXCEEDS_EARNING", "الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب", 422);
       }
@@ -721,6 +733,9 @@ payment_totals.paid_amount,
         );
       }
 
+      if (autoBonusRuleId) {
+        await client.query("UPDATE employee_earnings_adjustments SET bonus_rule_id=$1 WHERE production_entry_id=$2 AND adjustment_type='BONUS' AND ledger_id IS NULL",[autoBonusRuleId,created.id]);
+      }
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
@@ -729,6 +744,7 @@ payment_totals.paid_amount,
         entityType: "production_entry",
         entityId: created.id,
         afterData: created,
+        metadata: autoBonusRuleId ? { autoBonusRuleId, autoBonusAmount: parsed.data.bonusAmount } : {},
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
