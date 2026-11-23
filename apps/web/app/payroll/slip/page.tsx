@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "../../../lib/api";
+import { usePermissions } from "../../../components/session-provider";
 import { formatMoney } from "../../../lib/format";
 
 type PayrollItem = {
@@ -12,12 +13,14 @@ type PayrollItem = {
   status: string; notes: string | null;
 };
 type PayrollData = { period: { id: string; period_month: string; status: string } | null; items: PayrollItem[] };
-type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null };
+type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null; status?:"ACTIVE"|"VOIDED" };
+type OwnSlip = PayrollItem & { period_month:string; period_status:string; lines:AdjustmentLine[] };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
 const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل", REVERSED: "تم عكس التسوية" };
 
 export default function PayrollSlipPage() {
+  const { permissions, has } = usePermissions();
   const [item, setItem] = useState<PayrollItem | null>(null);
   const [periodStatus, setPeriodStatus] = useState("");
   const [adjustments, setAdjustments] = useState<AdjustmentLine[]>([]);
@@ -26,12 +29,29 @@ export default function PayrollSlipPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (permissions === null) return;
     const params = new URLSearchParams(window.location.search);
     const itemId = params.get("item");
     const selectedMonth = params.get("month") || new Date().toISOString().slice(0, 7);
     setMonth(selectedMonth);
     if (!itemId) { setError("رابط مفردات المرتب غير مكتمل."); setLoading(false); return; }
     let active = true;
+    if (!has("payroll.view")) {
+      // Employees open only their own approved slip, through the own-scoped endpoint.
+      api<{ data: OwnSlip[] }>("/api/me/payslips")
+        .then(result => {
+          if (!active) return;
+          const found = result.data.find(row => row.id === itemId);
+          if (!found) { setError("لم يتم العثور على مفردات المرتب. تأكد من الرابط."); return; }
+          setItem(found);
+          setMonth(found.period_month.slice(0, 7));
+          setPeriodStatus(found.period_status);
+          setAdjustments(found.lines);
+        })
+        .catch(e => { if (active) setError(e instanceof Error ? e.message : "تعذر تحميل مفردات المرتب."); })
+        .finally(() => { if (active) setLoading(false); });
+      return () => { active = false; };
+    }
     api<{ data: PayrollData }>("/api/payroll?month=" + encodeURIComponent(selectedMonth))
       .then(async result => {
         if (!active) return;
@@ -41,7 +61,8 @@ export default function PayrollSlipPage() {
         setPeriodStatus(result.data.period?.status || "");
         try {
           const lines = await api<{data:AdjustmentLine[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/adjustments");
-          if (active) setAdjustments(lines.data);
+          // Cancelled (VOIDED) lines stay in the audit trail but never print on the slip.
+          if (active) setAdjustments(lines.data.filter(line => line.status !== "VOIDED"));
         } catch {
           if (active) setError("تعذر تحميل تفاصيل المكافآت والخصومات. أعد تحميل الصفحة.");
         }
@@ -49,7 +70,7 @@ export default function PayrollSlipPage() {
       .catch(e => { if (active) setError(e instanceof Error ? e.message : "تعذر تحميل مفردات المرتب."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [permissions]);
 
   if (loading) return <main className="slip-state" dir="rtl">جارٍ تحميل مفردات المرتب…</main>;
   if (error || !item) return <main className="slip-state" dir="rtl"><p>{error || "تعذر تحميل المستند."}</p><button onClick={() => window.close()}>إغلاق</button></main>;
@@ -70,7 +91,7 @@ export default function PayrollSlipPage() {
       {!approved && <div className="slip-warning no-print">هذا المسير غير معتمد. الطباعة الرسمية متاحة بعد الاعتماد فقط.</div>}
       <article className="salary-slip">
         <header className="slip-header">
-          <div className="brand-mark">T</div>
+          <img className="slip-logo" src="/tezkar-logo.png" alt="شعار تذكار" />
           <div className="brand-copy"><h1>تذكار <span>TEZKAR</span></h1><p>الإدارة المالية والشؤون الإدارية</p></div>
           <div className="slip-title"><h2>مفردات مرتب شهرية</h2><p>شهر {month}</p></div>
         </header>
@@ -141,7 +162,7 @@ export default function PayrollSlipPage() {
         .slip-warning { max-width: 900px; margin: 0 auto 12px; background: #fff4d7; border: 1px solid #e9c96d; padding: 12px; border-radius: 8px; }
         .salary-slip { max-width: 900px; margin: 0 auto; background: white; padding: 34px 38px; border: 1px solid #dce3eb; box-shadow: 0 8px 28px #193b5b12; }
         .slip-header { display: flex; align-items: center; gap: 14px; }
-        .brand-mark { width: 54px; height: 54px; border-radius: 10px; display: grid; place-items: center; color: white; background: #174a7e; font-size: 31px; font-weight: 800; }
+        .slip-logo { width: 72px; height: 72px; object-fit: contain; flex: 0 0 72px; }
         .brand-copy { flex: 1; }
         .brand-copy h1 { margin: 0; font-size: 25px; color: #123f6b; }
         .brand-copy h1 span { font-size: 13px; letter-spacing: 2px; margin-right: 7px; color: #27866c; }
