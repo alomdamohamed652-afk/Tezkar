@@ -7,6 +7,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
+import { decimalEquals, decimalIsZero } from "./exact-decimal.js";
 
 const PERMISSION = "earnings.administrative_settlement.create";
 
@@ -16,7 +17,7 @@ const BALANCE_SQL = "SELECT COALESCE(SUM(credit_amount-debit_amount),0)::numeric
 function describe(balance: string) {
   const negative = balance.startsWith("-");
   const abs = negative ? balance.slice(1) : balance;
-  const isZero = Number(abs) === 0;
+  const isZero = decimalIsZero(abs);
   return {
     balance,
     isZero,
@@ -81,7 +82,7 @@ export async function administrativeSettlementRoutes(app: FastifyInstance) {
       const balance = (await client.query(BALANCE_SQL, [input.employeeId])).rows[0].balance as string;
       const plan = describe(balance);
       if (plan.isZero) throw new AppError("NOTHING_TO_SETTLE", "رصيد العامل صفر بالفعل", 409);
-      if (Number(balance) !== Number(input.expectedBalance)) throw new AppError("BALANCE_CHANGED", `رصيد العامل تغيّر (الآن ${balance}). راجع المعاينة ثم أعد المحاولة.`, 409);
+      if (!decimalEquals(balance, input.expectedBalance)) throw new AppError("BALANCE_CHANGED", `رصيد العامل تغيّر (الآن ${balance}). راجع المعاينة ثم أعد المحاولة.`, 409);
       const credit = plan.direction === "CREDIT" ? plan.amount : "0";
       const debit = plan.direction === "DEBIT" ? plan.amount : "0";
       const ledger = await client.query(
@@ -89,7 +90,7 @@ export async function administrativeSettlementRoutes(app: FastifyInstance) {
         [input.employeeId, credit, debit, `تسوية إدارية غير نقدية: ${input.reason}`, request.user!.userId]
       );
       const after = (await client.query(BALANCE_SQL, [input.employeeId])).rows[0].balance as string;
-      if (Number(after) !== 0) throw new AppError("SETTLEMENT_NOT_ZERO", "فشل تصفير الرصيد؛ تم التراجع عن العملية", 500);
+      if (!decimalIsZero(after)) throw new AppError("SETTLEMENT_NOT_ZERO", "فشل تصفير الرصيد؛ تم التراجع عن العملية", 500);
       const settlement = (await client.query(
         `INSERT INTO employee_administrative_settlements(employee_id,ledger_id,direction,amount,balance_before,balance_after,reason,employee_was_active,idempotency_key,request_fingerprint,created_by)
          VALUES($1,$2,$3,$4::numeric,$5::numeric,0,$6,$7,$8,$9,$10) RETURNING *`,
