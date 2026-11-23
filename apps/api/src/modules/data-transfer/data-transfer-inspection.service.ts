@@ -56,6 +56,21 @@ type DatabaseSnapshot = {
   features: FeatureCounts;
 };
 
+export function roleMembershipQueryForVersion(serverVersionNum: number): string {
+  const membershipOptions = serverVersionNum >= 160000
+    ? "m.inherit_option, m.set_option"
+    : "member.rolinherit AS inherit_option, TRUE AS set_option";
+  return `
+          SELECT granted.rolname AS granted_role, member.rolname AS member_role,
+                 grantor.rolname AS grantor_role, m.admin_option, ${membershipOptions}
+            FROM pg_auth_members m
+            JOIN pg_roles granted ON granted.oid = m.roleid
+            JOIN pg_roles member ON member.oid = m.member
+            JOIN pg_roles grantor ON grantor.oid = m.grantor
+           ORDER BY granted_role, member_role, grantor_role
+  `;
+}
+
 async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
@@ -106,15 +121,16 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             FROM pg_roles
            ORDER BY rolname
     `);
-    const roleMemberships = await client.query(`
-          SELECT granted.rolname AS granted_role, member.rolname AS member_role,
-                 grantor.rolname AS grantor_role, m.admin_option, m.inherit_option, m.set_option
-            FROM pg_auth_members m
-            JOIN pg_roles granted ON granted.oid = m.roleid
-            JOIN pg_roles member ON member.oid = m.member
-            JOIN pg_roles grantor ON grantor.oid = m.grantor
-           ORDER BY granted_role, member_role, grantor_role
-    `);
+    const serverVersionResult = await client.query<{ server_version_num: string }>(
+      "SHOW server_version_num"
+    );
+    const serverVersionNum = Number(serverVersionResult.rows[0]?.server_version_num);
+    if (!Number.isInteger(serverVersionNum) || serverVersionNum < 90000) {
+      throw new Error("Unable to determine a supported PostgreSQL server version for role inspection");
+    }
+    const roleMemberships = await client.query(
+      roleMembershipQueryForVersion(serverVersionNum)
+    );
     const unsupportedRelations = await client.query(`
           SELECT n.nspname || '.' || c.relname AS relation_name
             FROM pg_class c
