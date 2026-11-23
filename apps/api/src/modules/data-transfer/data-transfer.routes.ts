@@ -112,6 +112,18 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       if (inspection.unsupportedRelations.source.length || inspection.unsupportedRelations.target.length) {
         globalBlockers.push("FOREIGN TABLES غير المدعومة");
       }
+      if (inspection.unsupportedSchemas.source.length || inspection.unsupportedSchemas.target.length) {
+        globalBlockers.push("Schemas خارج نطاق النقل المدعوم");
+      }
+      for (const [key, label] of [
+        ["schemas", "ملكية وصلاحيات الـSchemas"],
+        ["defaultPrivileges", "Default Privileges"]
+      ] as const) {
+        const item = inspection.globalObjectDifferences[key];
+        if (item.differences.missingInTarget.length || item.differences.missingInSource.length) {
+          globalBlockers.push(label);
+        }
+      }
       // Large-object metadata is counted but content and ownership are not compared.
       // Never label ordinary table rows as globally ready while opaque DB objects remain unverified.
       if ((inspection.sourceFeatures?.largeObjects ?? 0) > 0 ||
