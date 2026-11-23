@@ -51,9 +51,6 @@ const groups:NavGroup[]=[
   {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
   {icon:"⇄",label:"فحص وترحيل قاعدة البيانات",href:"/settings/data-transfer",permissions:["system.backup.export"]},
   {icon:"◉",label:"أمان الحسابات وسجل النشاط",href:"/admin/security",permissions:["users.view"]}
- ]},
- {label:"حسابي",items:[
-  {icon:"☺",label:"أنا",href:"/me",permissions:["attendance.view_own","payroll.view_own"]}
  ]}
 ];
 
