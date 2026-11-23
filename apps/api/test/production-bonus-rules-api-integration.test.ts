@@ -127,7 +127,7 @@ test("production bonus rules: CRUD, audit and best-threshold selection", {
     const del = await server.inject({ method: "DELETE", url: "/api/production/bonus-rules/" + rule1.id, headers });
     assert.equal(del.statusCode, 200, del.body);
     const audits = (await apiPool.query(
-      "SELECT action FROM audit_log WHERE entity_type='production_bonus_rule' AND entity_id=$1 ORDER BY created_at", [rule1.id])).rows.map((r: any) => r.action);
+      "SELECT action FROM audit_log WHERE entity_type='production_bonus_rule' AND entity_id=$1 ORDER BY occurred_at", [rule1.id])).rows.map((r: any) => r.action);
     assert.deepEqual(audits, ["create", "edit", "delete"]);
 
     // Auto adjustments are ordinary: editable and deletable by admin with a correcting ledger entry and an audit trail.
@@ -140,7 +140,7 @@ test("production bonus rules: CRUD, audit and best-threshold selection", {
     assert.equal(removed.statusCode, 200, removed.body);
     const net = (await apiPool.query("SELECT SUM(credit_amount-debit_amount)::float8 AS n FROM employee_earnings_ledger WHERE employee_id=$1", [managerEmployee.id])).rows[0].n;
     assert.equal(net, 0, "edit then delete must net the ledger back to zero");
-    const adjAudits = (await apiPool.query("SELECT action FROM audit_log WHERE entity_type='employee_adjustment' AND entity_id=$1 ORDER BY created_at", [adj.id])).rows.map((r: any) => r.action);
+    const adjAudits = (await apiPool.query("SELECT action FROM audit_log WHERE entity_type='employee_adjustment' AND entity_id=$1 ORDER BY occurred_at", [adj.id])).rows.map((r: any) => r.action);
     assert.deepEqual(adjAudits, ["edit", "delete"]);
     const manual = await server.inject({ method: "PATCH", url: "/api/production/adjustments/" + randomBytes(0).length, headers, payload: { amount: 1, reason: "xx" } });
     assert.equal(manual.statusCode, 422);
