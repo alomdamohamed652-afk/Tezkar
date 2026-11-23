@@ -230,8 +230,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       "unsupported non-public schemas must create explicit blockers");
     assert.ok(changedObjects.globalObjectDifferences.schemas.differences.missingInTarget.length > 0,
       "schema ownership/ACL differences must be compared");
-    assert.ok(changedObjects.globalObjectDifferences.defaultPrivileges.differences.missingInTarget.length > 0,
-      "default privilege differences must be compared");
+    assert.ok(changedObjects.globalObjectDifferences.defaultPrivileges.differences.missingInSource.length > 0,
+      "target-only default privilege entries must be compared");
     assert.ok(changedObjects.globalObjectDifferences.databaseAccess.differences.missingInTarget.length > 0,
       "database ACL differences must be compared");
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInTarget.length > 0);
