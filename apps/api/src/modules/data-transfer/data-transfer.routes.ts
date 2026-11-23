@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { env } from "../../config.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
-import { inspectDatabaseTransfer } from "./data-transfer-inspection.service.js";
+import { DatabaseTransferConnectionError, inspectDatabaseTransfer } from "./data-transfer-inspection.service.js";
 import { checkDataTransferRateLimit } from "./data-transfer-rate-limit.js";
 import { inspectSelectedTableCounts, parseRequestedTables, type RequestedTable } from "./data-transfer-counts.service.js";
 import { buildTransferPlan } from "./data-transfer-plan.service.js";
@@ -30,7 +30,14 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.inspection", requestId: request.id }, "Read-only data transfer inspection completed");
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
-      app.log.error({ err: error }, "Read-only database transfer inspection failed");
+      if (error instanceof DatabaseTransferConnectionError) {
+        app.log.error({
+          stage: error.stage,
+          postgresCode: error.postgresCode
+        }, "Read-only database transfer connection failed");
+      } else {
+        app.log.error({ err: error }, "Read-only database transfer inspection failed");
+      }
       return reply.code(503).header("cache-control", "no-store, private").send({
         error: {
           code: "DATA_TRANSFER_INSPECTION_FAILED",
