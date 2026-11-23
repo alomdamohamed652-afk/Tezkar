@@ -1,11 +1,19 @@
 "use client";
 
-import { formatMoney } from "../../lib/format";
 import type { SettlementReceipt } from "./settlement-receipt";
 
 export type ReceiptVariant = "a4" | "thermal";
 
-const fmtDate = (value: string) => new Date(value).toLocaleDateString("ar-EG");
+// The receipt uses one digit style everywhere: Western digits, like the payment/production codes it prints.
+// Numbers and dates are wrapped in <bdi> so the RTL layout can never flip their order.
+const numberFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+const dateFmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Cairo", day: "2-digit", month: "2-digit", year: "numeric" });
+const fmtNum = (value: number) => numberFmt.format(value);
+const fmtDate = (value: string) => dateFmt.format(new Date(value));
+const fmtWorkDate = (value: string) => {
+  const parts = value.split("-");
+  return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : value;
+};
 
 /** Printable settlement invoice. "a4" is the formal full-page invoice, "thermal" is the narrow 80mm printer receipt. */
 export function ReceiptDocument({ receipt, variant, methodLabel }: { receipt: SettlementReceipt; variant: ReceiptVariant; methodLabel?: string }) {
@@ -15,26 +23,26 @@ export function ReceiptDocument({ receipt, variant, methodLabel }: { receipt: Se
         <div className="rt-center rt-title">تذكار</div>
         <div className="rt-center">إيصال تسوية مستحقات</div>
         <div className="rt-line" />
-        <div>رقم: {receipt.payment.code}</div>
-        <div>التاريخ: {fmtDate(receipt.payment.paidAt)}</div>
-        <div>العامل: {receipt.employee.name} ({receipt.employee.code})</div>
+        <div>رقم: <bdi>{receipt.payment.code}</bdi></div>
+        <div>التاريخ: <bdi>{fmtDate(receipt.payment.paidAt)}</bdi></div>
+        <div>العامل: {receipt.employee.name} (<bdi>{receipt.employee.code}</bdi>)</div>
         <div>الدفع: {methodLabel || receipt.payment.method}</div>
         <div className="rt-line" />
         {receipt.orders.map((order) => (
           <div key={order.orderId ?? "none"} className="rt-block">
-            <div className="rt-bold">{order.orderCode ? `${order.orderCode} - ${order.orderName ?? ""}` : "إنتاج غير مرتبط بطلبية"}</div>
+            <div className="rt-bold">{order.orderCode ? <><bdi>{order.orderCode}</bdi> - {order.orderName ?? ""}</> : "إنتاج غير مرتبط بطلبية"}</div>
             {order.lines.map((line) => (
               <div key={line.productionId} className="rt-row">
-                <span>{line.productionCode}{line.stageName ? ` / ${line.stageName}` : ""}</span>
-                <span>{formatMoney(line.amount)}</span>
+                <span><bdi>{line.productionCode}</bdi>{line.stageName ? ` / ${line.stageName}` : ""}</span>
+                <span><bdi>{fmtNum(line.amount)}</bdi></span>
               </div>
             ))}
-            <div className="rt-row rt-bold"><span>إجمالي الطلبية</span><span>{formatMoney(order.total)}</span></div>
+            <div className="rt-row rt-bold"><span>إجمالي الطلبية</span><span><bdi>{fmtNum(order.total)}</bdi></span></div>
           </div>
         ))}
-        {receipt.unallocatedAmount > 0.009 && <div className="rt-row"><span>حساب عام / فروق</span><span>{formatMoney(receipt.unallocatedAmount)}</span></div>}
+        {receipt.unallocatedAmount > 0.009 && <div className="rt-row"><span>حساب عام / فروق</span><span><bdi>{fmtNum(receipt.unallocatedAmount)}</bdi></span></div>}
         <div className="rt-line" />
-        <div className="rt-row rt-bold rt-total"><span>الإجمالي</span><span>{formatMoney(receipt.payment.amount)} ج.م</span></div>
+        <div className="rt-row rt-bold rt-total"><span>الإجمالي</span><span><bdi>{fmtNum(receipt.payment.amount)}</bdi> ج.م</span></div>
         <div className="rt-line" />
         <div className="rt-center">توقيع المستلم: ____________</div>
       </div>
@@ -49,38 +57,38 @@ export function ReceiptDocument({ receipt, variant, methodLabel }: { receipt: Se
         </div>
         <table className="ra-meta">
           <tbody>
-            <tr><th>رقم الفاتورة</th><td>{receipt.payment.code}</td></tr>
-            <tr><th>تاريخ التسوية</th><td>{fmtDate(receipt.payment.paidAt)}</td></tr>
+            <tr><th>رقم الفاتورة</th><td><bdi>{receipt.payment.code}</bdi></td></tr>
+            <tr><th>تاريخ التسوية</th><td><bdi>{fmtDate(receipt.payment.paidAt)}</bdi></td></tr>
             <tr><th>طريقة الصرف</th><td>{methodLabel || receipt.payment.method}</td></tr>
           </tbody>
         </table>
       </header>
       <section className="ra-party">
-        <strong>العامل:</strong> {receipt.employee.name} <span>({receipt.employee.code})</span>
+        <strong>العامل:</strong> {receipt.employee.name} <span>(<bdi>{receipt.employee.code}</bdi>)</span>
       </section>
       {receipt.orders.length === 0 && <p>لم تُوزّع هذه التسوية على سجلات إنتاج؛ المبلغ مسجل على حساب العامل العام.</p>}
       {receipt.orders.map((order) => (
         <section key={order.orderId ?? "none"} className="ra-order">
-          <h2>{order.orderCode ? `${order.orderCode} — ${order.orderName ?? ""}` : "إنتاج غير مرتبط بطلبية"}</h2>
+          <h2>{order.orderCode ? <><bdi>{order.orderCode}</bdi> — {order.orderName ?? ""}</> : "إنتاج غير مرتبط بطلبية"}</h2>
           <table className="ra-table">
             <thead><tr><th>كود الإنتاج</th><th>التاريخ</th><th>المرحلة</th><th>الكمية</th><th>المبلغ (ج.م)</th></tr></thead>
             <tbody>
               {order.lines.map((line) => (
                 <tr key={line.productionId}>
-                  <td>{line.productionCode}</td>
-                  <td>{line.workDate}</td>
+                  <td><bdi>{line.productionCode}</bdi></td>
+                  <td><bdi>{fmtWorkDate(line.workDate)}</bdi></td>
                   <td>{line.stageName ? `${line.stageSequence ? line.stageSequence + ". " : ""}${line.stageName}` : "—"}</td>
-                  <td>{line.quantity ?? "—"}</td>
-                  <td>{formatMoney(line.amount)}</td>
+                  <td>{line.quantity == null ? "—" : <bdi>{fmtNum(line.quantity)}</bdi>}</td>
+                  <td><bdi>{fmtNum(line.amount)}</bdi></td>
                 </tr>
               ))}
             </tbody>
-            <tfoot><tr><th colSpan={4}>إجمالي الطلبية</th><th>{formatMoney(order.total)}</th></tr></tfoot>
+            <tfoot><tr><th colSpan={4}>إجمالي الطلبية</th><th><bdi>{fmtNum(order.total)}</bdi></th></tr></tfoot>
           </table>
         </section>
       ))}
-      {receipt.unallocatedAmount > 0.009 && <p>مبلغ غير موزع على إنتاج (حساب عام / فروق): {formatMoney(receipt.unallocatedAmount)} ج.م</p>}
-      <div className="ra-total">إجمالي التسوية: {formatMoney(receipt.payment.amount)} ج.م</div>
+      {receipt.unallocatedAmount > 0.009 && <p>مبلغ غير موزع على إنتاج (حساب عام / فروق): <bdi>{fmtNum(receipt.unallocatedAmount)}</bdi> ج.م</p>}
+      <div className="ra-total">إجمالي التسوية: <bdi>{fmtNum(receipt.payment.amount)}</bdi> ج.م</div>
       <footer className="ra-sign"><div>توقيع المستلم: ______________________</div><div>توقيع المحاسب: ______________________</div></footer>
     </div>
   );
