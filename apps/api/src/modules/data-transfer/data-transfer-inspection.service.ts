@@ -714,6 +714,17 @@ export function databaseIdentity(connectionString: string): string | null {
   }
 }
 
+export class DatabaseTransferConnectionError extends Error {
+  constructor(
+    readonly stage: "source" | "target",
+    readonly postgresCode: string | undefined,
+    options?: ErrorOptions
+  ) {
+    super(`Database transfer ${stage} connection failed`, options);
+    this.name = "DatabaseTransferConnectionError";
+  }
+}
+
 export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: string) {
   const sourceIdentity = databaseIdentity(sourceUrl);
   const targetIdentity = databaseIdentity(targetUrl);
@@ -723,13 +734,23 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
   const targetPool = createTargetPool(targetUrl);
 
   try {
-    const sourceClient = await sourcePool.connect();
+    let sourceClient: pg.PoolClient;
+    try {
+      sourceClient = await sourcePool.connect();
+    } catch (error) {
+      const postgresCode = typeof error === "object" && error !== null && "code" in error
+        ? String(error.code) : undefined;
+      throw new DatabaseTransferConnectionError("source", postgresCode, { cause: error });
+    }
+
     let targetClient: pg.PoolClient;
     try {
       targetClient = await targetPool.connect();
     } catch (error) {
       sourceClient.release();
-      throw error;
+      const postgresCode = typeof error === "object" && error !== null && "code" in error
+        ? String(error.code) : undefined;
+      throw new DatabaseTransferConnectionError("target", postgresCode, { cause: error });
     }
     try {
       await assertReadOnlySession(sourceClient);
