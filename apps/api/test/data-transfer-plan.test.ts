@@ -36,6 +36,20 @@ test("transfer plan defers cyclic foreign-key dependencies", () => {
   assert.equal(plan.deferred.length, 2);
 });
 
+test("transfer plan blocks tables downstream of a cycle instead of mislabeling them cyclic", () => {
+  const plan = buildTransferPlan([
+    table("public.a", ["public.b"]),
+    table("public.b", ["public.a"]),
+    table("public.c", ["public.a"]),
+    table("public.d", ["public.c"])
+  ]);
+  assert.deepEqual(plan.deferred.map(item => item.table), ["public.a", "public.b"]);
+  assert.deepEqual(plan.blocked.map(item => item.table), ["public.c", "public.d"]);
+  assert.ok(plan.blocked.every(item => item.reason.includes("دورة علاقات مؤجلة")));
+  assert.equal(plan.totals.deferredTables, 2);
+  assert.equal(plan.totals.blockedTables, 2);
+});
+
 test("transfer plan blocks references outside the eligible public table set", () => {
   const plan = buildTransferPlan([table("public.profiles", ["auth.users"])]);
   assert.equal(plan.blocked.length, 1);
