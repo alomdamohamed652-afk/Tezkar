@@ -606,13 +606,25 @@ function fingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function diff(source: string[], target: string[]) {
-  const targetSet = new Set(target);
-  const sourceSet = new Set(source);
-  return {
-    missingInTarget: source.filter(value => !targetSet.has(value)),
-    missingInSource: target.filter(value => !sourceSet.has(value))
-  };
+export function diffObjectSignatures(source: string[], target: string[]) {
+  // Compare as multisets, not Sets: repeated identical definitions still
+  // represent distinct database objects and must not disappear silently.
+  const targetCounts = new Map<string, number>();
+  const sourceCounts = new Map<string, number>();
+  for (const value of target) targetCounts.set(value, (targetCounts.get(value) ?? 0) + 1);
+  for (const value of source) sourceCounts.set(value, (sourceCounts.get(value) ?? 0) + 1);
+
+  const missingInTarget: string[] = [];
+  const missingInSource: string[] = [];
+  for (const [value, count] of sourceCounts) {
+    const difference = count - (targetCounts.get(value) ?? 0);
+    for (let index = 0; index < difference; index += 1) missingInTarget.push(value);
+  }
+  for (const [value, count] of targetCounts) {
+    const difference = count - (sourceCounts.get(value) ?? 0);
+    for (let index = 0; index < difference; index += 1) missingInSource.push(value);
+  }
+  return { missingInTarget, missingInSource };
 }
 
 function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
@@ -740,11 +752,11 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         hasPrimaryKey: false,
         differences: ["Schema خارج نطاق فحص وترحيل الجداول المدعومة حاليًا؛ يجب فحص محتوياته وصلاحياته يدويًا قبل أي نقل"]
       }));
-      const schemaDifferences = diff(source.schemas, target.schemas);
-      const defaultPrivilegeDifferences = diff(source.defaultPrivileges, target.defaultPrivileges);
-      const databaseAccessDifferences = diff(source.databaseAccess, target.databaseAccess);
-      const roleDifferences = diff(source.roles, target.roles);
-      const roleMembershipDifferences = diff(source.roleMemberships, target.roleMemberships);
+      const schemaDifferences = diffObjectSignatures(source.schemas, target.schemas);
+      const defaultPrivilegeDifferences = diffObjectSignatures(source.defaultPrivileges, target.defaultPrivileges);
+      const databaseAccessDifferences = diffObjectSignatures(source.databaseAccess, target.databaseAccess);
+      const roleDifferences = diffObjectSignatures(source.roles, target.roles);
+      const roleMembershipDifferences = diffObjectSignatures(source.roleMemberships, target.roleMemberships);
       const unsupportedRelationBlockers = [...new Set([
         ...source.unsupportedRelations,
         ...target.unsupportedRelations
@@ -782,23 +794,23 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         },
         objectComparison: {
           indexes: { source: source.indexes.length, target: target.indexes.length,
-            differences: diff(source.indexes, target.indexes) },
+            differences: diffObjectSignatures(source.indexes, target.indexes) },
           constraints: { source: source.constraints.length, target: target.constraints.length,
-            differences: diff(source.constraints, target.constraints) },
+            differences: diffObjectSignatures(source.constraints, target.constraints) },
           views: { source: source.views.length, target: target.views.length,
-            differences: diff(source.views, target.views) },
+            differences: diffObjectSignatures(source.views, target.views) },
           materializedViews: { source: source.materializedViews.length, target: target.materializedViews.length,
-            differences: diff(source.materializedViews, target.materializedViews) },
+            differences: diffObjectSignatures(source.materializedViews, target.materializedViews) },
           triggers: { source: source.triggers.length, target: target.triggers.length,
-            differences: diff(source.triggers, target.triggers) },
+            differences: diffObjectSignatures(source.triggers, target.triggers) },
           extensions: { source: source.extensions.length, target: target.extensions.length,
-            differences: diff(source.extensions, target.extensions) },
+            differences: diffObjectSignatures(source.extensions, target.extensions) },
           customTypes: { source: source.customTypes.length, target: target.customTypes.length,
-            differences: diff(source.customTypes, target.customTypes) },
+            differences: diffObjectSignatures(source.customTypes, target.customTypes) },
           routines: { source: source.routines.length, target: target.routines.length,
-            differences: diff(source.routines, target.routines) },
+            differences: diffObjectSignatures(source.routines, target.routines) },
           sequences: { source: source.sequences.length, target: target.sequences.length,
-            differences: diff(source.sequences, target.sequences) }
+            differences: diffObjectSignatures(source.sequences, target.sequences) }
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
