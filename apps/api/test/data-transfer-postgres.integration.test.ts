@@ -229,11 +229,24 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     } finally {
       await sourceCustomSchema.end();
     }
+    const targetManagedSchema = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
+    try {
+      // Supabase-managed schema names are not exempt until an explicit
+      // Railway-to-Supabase compatibility policy is approved and implemented.
+      await targetManagedSchema.query("CREATE SCHEMA auth");
+      await targetManagedSchema.query("CREATE TABLE auth.users (id uuid PRIMARY KEY)");
+    } finally {
+      await targetManagedSchema.end();
+    }
     const changedObjects = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
     assert.ok(changedObjects.unsupportedSchemas.source.includes("transfer_custom"),
       "non-public schemas containing user objects must be explicitly surfaced");
     assert.ok(changedObjects.blockers.some(item => item.table === "schema:transfer_custom"),
       "unsupported non-public schemas must create explicit blockers");
+    assert.ok(changedObjects.unsupportedSchemas.target.includes("auth"),
+      "a Supabase-managed schema candidate must remain visible as unsupported until policy approval");
+    assert.ok(changedObjects.blockers.some(item => item.table === "schema:auth"),
+      "known platform schema names must not be silently excluded from transfer blockers");
     assert.ok(changedObjects.globalObjectDifferences.schemas.differences.missingInTarget.length > 0,
       "source schema ownership/ACL entries missing in target must be reported");
     assert.ok(changedObjects.globalObjectDifferences.schemas.differences.missingInSource.length > 0,
