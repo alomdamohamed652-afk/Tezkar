@@ -22,6 +22,24 @@ function statusFrom(raw:string):string{const s=raw.toLowerCase().replace(/[_-]+/
 function addDateKey(key:string,days:number):string{const d=new Date(key+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);}
 function minutesOfTime(value:string|null|undefined):number|null{if(!value)return null;const parts=value.slice(0,5).split(":");const h=Number(parts[0]??0),m=Number(parts[1]??0);return h*60+m;}
 
+// Compares permission windows on the requested date's minute axis: a cross-midnight row
+// (end before start) extends past 1440, and a row dated the previous day shifts back by 1440
+// so its after-midnight spill is still caught. Checks the requested date and the day before.
+async function permissionWindowOverlaps(client:{query:(sql:string,args?:unknown[])=>Promise<{rows:Array<{permission_date:string;starts_at:string;ends_at:string}>}>},employeeId:string,date:string,start:number,end:number):Promise<boolean>{
+ const rows=(await client.query(`SELECT permission_date::text,starts_at::text,ends_at::text FROM attendance_permission_requests
+  WHERE employee_id=$1 AND permission_date IN ($2::date,$2::date-1) AND status IN ('PENDING','APPROVED')`,[employeeId,date])).rows;
+ const newEnd=end>start?end:end+1440;
+ for(const row of rows){
+  const s=minutesOfTime(String(row.starts_at)),e=minutesOfTime(String(row.ends_at));
+  if(s===null||e===null)continue;
+  const rowEnd=e>s?e:e+1440;
+  const dayOffset=Math.round((new Date(String(row.permission_date).slice(0,10)+"T00:00:00Z").getTime()-new Date(date+"T00:00:00Z").getTime())/86400000);
+  const shift=dayOffset*1440;
+  if(start<rowEnd+shift&&s+shift<newEnd)return true;
+ }
+ return false;
+}
+
 export async function attendanceRoutes(app:FastifyInstance){
  app.get("/api/attendance",{preHandler:[authenticateRequest,requirePermission("attendance.view")]},async request=>{
   const q=request.query as {from?:string;to?:string;review?:string};const args:unknown[]=[];const where:string[]=[];
@@ -231,14 +249,12 @@ export async function attendanceRoutes(app:FastifyInstance){
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات طلب الإذن غير صحيحة؛ يجب تحديد التاريخ والوقت والسبب",422);
   const employeeId=request.user!.employeeId;if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بملف موظف",403);
   const d=parsed.data;const start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
-  if(start===null||end===null||end<=start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يكون بعد بدايته في نفس اليوم",422);
-  const duration=end-start;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
+  // End before start means the permission crosses midnight into the next day (23:30 -> 00:30).
+  if(start===null||end===null||end===start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يختلف عن وقت بدايتها؛ لو الإذن يمتد بعد منتصف الليل حدد وقت النهاية في اليوم التالي",422);
+  const duration=end>start?end-start:1440-start+end;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
   const saved=await withTransaction(async client=>{
    await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[employeeId,d.date]);
-   const overlap=await client.query(`SELECT id FROM attendance_permission_requests
-    WHERE employee_id=$1 AND permission_date=$2::date AND status IN ('PENDING','APPROVED')
-      AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[employeeId,d.date,d.startsAt,d.endsAt]);
-   if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد طلب إذن آخر متداخل في نفس اليوم",409);
+   if(await permissionWindowOverlaps(client,employeeId,d.date,start,end))throw new AppError("PERMISSION_OVERLAP","يوجد طلب إذن آخر متداخل في نفس اليوم",409);
    const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,requested_by)
     VALUES($1,$2::date,$3::time,$4::time,$5,NULL,$6,$7) RETURNING *`,[employeeId,d.date,d.startsAt,d.endsAt,duration,d.reason,request.user!.userId]);
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:employeeId,action:"create_attendance_permission",module:"attendance",entityType:"attendance_permission_request",entityId:result.rows[0].id,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
@@ -250,14 +266,12 @@ export async function attendanceRoutes(app:FastifyInstance){
   const parsed=z.object({employeeId:z.string().uuid(),date:z.string().date(),startsAt:z.string().regex(timePattern),endsAt:z.string().regex(timePattern),type:z.enum(["PAID","UNPAID"]),reason:z.string().trim().min(2).max(500)}).safeParse(request.body);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات الإذن الإداري غير صحيحة",422);
   const d=parsed.data,start=minutesOfTime(d.startsAt),end=minutesOfTime(d.endsAt);
-  if(start===null||end===null||end<=start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يكون بعد بدايته في نفس اليوم",422);
-  const duration=end-start;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
+  if(start===null||end===null||end===start)throw new AppError("INVALID_PERMISSION_TIME","وقت نهاية الإذن يجب أن يختلف عن وقت بدايتها؛ لو الإذن يمتد بعد منتصف الليل حدد وقت النهاية في اليوم التالي",422);
+  const duration=end>start?end-start:1440-start+end;if(duration>720)throw new AppError("PERMISSION_TOO_LONG","مدة الإذن لا يمكن أن تتجاوز 12 ساعة",422);
   const saved=await withTransaction(async client=>{
    await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[d.employeeId,d.date]);
    if(!(await client.query("SELECT id FROM employees WHERE id=$1",[d.employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
-   const overlap=await client.query(`SELECT id FROM attendance_permission_requests WHERE employee_id=$1 AND permission_date=$2::date
-    AND status IN ('PENDING','APPROVED') AND starts_at < $4::time AND ends_at > $3::time LIMIT 1`,[d.employeeId,d.date,d.startsAt,d.endsAt]);
-   if(overlap.rowCount)throw new AppError("PERMISSION_OVERLAP","يوجد إذن آخر متداخل مع الفترة المحددة",409);
+   if(await permissionWindowOverlaps(client,d.employeeId,d.date,start,end))throw new AppError("PERMISSION_OVERLAP","يوجد إذن آخر متداخل مع الفترة المحددة",409);
    const result=await client.query(`INSERT INTO attendance_permission_requests(employee_id,permission_date,starts_at,ends_at,duration_minutes,permission_type,reason,status,requested_by,reviewed_by,reviewed_at,review_note)
     VALUES($1,$2::date,$3::time,$4::time,$5,$6,$7,'APPROVED',$8,$8,now(),'تم الإنشاء والاعتماد مباشرة بواسطة مسؤول الحضور') RETURNING *`,
     [d.employeeId,d.date,d.startsAt,d.endsAt,duration,d.type,d.reason,request.user!.userId]);

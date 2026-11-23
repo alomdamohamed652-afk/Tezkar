@@ -148,16 +148,18 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
     }
    }
    const overrides=(await db.query(`SELECT employee_id,attendance_date::text,status,first_in::text,last_out::text,worked_minutes,late_minutes,early_minutes,note,updated_at,updated_by FROM attendance_day_overrides WHERE attendance_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR employee_id=$3::uuid)`,[from,to,onlyEmployeeId])).rows;
+   // Permissions are fetched one day past the report end: an early-morning permission dated the
+   // day after a workday can still belong to an overnight workday that started on the last report day.
    const approvedPermissions=(await db.query(`SELECT employee_id,permission_date::text,permission_type,duration_minutes,starts_at::text,ends_at::text
-     FROM attendance_permission_requests WHERE status='APPROVED' AND permission_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR employee_id=$3::uuid)`,[from,to,onlyEmployeeId])).rows;
-   const permissionMap=new Map<string,{paid:number;unpaid:number;items:Array<{type:string;minutes:number;startsAt:string;endsAt:string}>}>();
+     FROM attendance_permission_requests WHERE status='APPROVED' AND permission_date BETWEEN $1::date AND ($2::date+1) AND ($3::uuid IS NULL OR employee_id=$3::uuid)`,[from,to,onlyEmployeeId])).rows;
+   // Keyed per employee (not per calendar date): each workday picks the permission windows that
+   // overlap its normalized schedule axis, including cross-midnight and next-day windows.
+   const permissionsByEmployee=new Map<string,Array<{date:string;type:string;minutes:number;startsAt:string;endsAt:string}>>();
    for(const permission of approvedPermissions){
-     const key=permission.employee_id+"|"+String(permission.permission_date).slice(0,10);
-     const current=permissionMap.get(key)??{paid:0,unpaid:0,items:[]};
-     const minutes=Number(permission.duration_minutes);
-     if(permission.permission_type==="PAID")current.paid+=minutes;else current.unpaid+=minutes;
-     current.items.push({type:permission.permission_type,minutes,startsAt:String(permission.starts_at).slice(0,5),endsAt:String(permission.ends_at).slice(0,5)});
-     permissionMap.set(key,current);
+     const key=String(permission.employee_id);
+     const current=permissionsByEmployee.get(key)??[];
+     current.push({date:String(permission.permission_date).slice(0,10),type:permission.permission_type,minutes:Number(permission.duration_minutes),startsAt:String(permission.starts_at).slice(0,5),endsAt:String(permission.ends_at).slice(0,5)});
+     permissionsByEmployee.set(key,current);
    }
    const overrideMap=new Map(overrides.map(o=>[o.employee_id+"|"+String(o.attendance_date).slice(0,10),o]));
    for(let index=0;index<report.length;index++){
@@ -170,7 +172,7 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
    }
    for(let index=0;index<report.length;index++){
      const row=report[index] as Record<string,unknown>;
-     const permissions=permissionMap.get(String(row.employeeId)+"|"+String(row.date))??{paid:0,unpaid:0,items:[]};
+     const candidatePermissions=permissionsByEmployee.get(String(row.employeeId))??[];
      const worked=Number(row.workedMinutes??0);
      const overlap=(a:number,b:number,c:number,d:number)=>Math.max(0,Math.min(b,d)-Math.max(a,c));
      let latePermissionOverlapMinutes=0,earlyPermissionOverlapMinutes=0,paidMinutes=0,unpaidMinutes=0;
@@ -181,15 +183,21 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      const lateStart=scheduledStartMinute===null?null:scheduledStartMinute+Number(row.lateGraceMinutes??0);
      const earlyEnd=scheduledEndMinute===null?null:scheduledEndMinute-Number(row.earlyGraceMinutes??0);
      const effectivePermissionItems:Array<{type:string;minutes:number;startsAt:string;endsAt:string}>=[];
-     for(const permission of permissions.items){
-       const permissionStart=minutesOfTime(permission.startsAt),permissionEnd=minutesOfTime(permission.endsAt);
-       if(permissionStart===null||permissionEnd===null||scheduledStartMinute===null||scheduledEndMinute===null||Boolean(row.isDayOff))continue;
-       const coveredMinutes=overlap(scheduledStartMinute,scheduledEndMinute,permissionStart,permissionEnd);
+     for(const permission of candidatePermissions){
+       const permissionStart=minutesOfTime(permission.startsAt),permissionEndRaw=minutesOfTime(permission.endsAt);
+       if(permissionStart===null||permissionEndRaw===null||scheduledStartMinute===null||scheduledEndMinute===null||Boolean(row.isDayOff))continue;
+       // Normalize the window onto the same axis as the schedule: a cross-midnight permission
+       // (23:30 -> 00:30) extends past 1440, and a permission dated the next day shifts by 1440.
+       const permissionEnd=permissionEndRaw<=permissionStart?permissionEndRaw+1440:permissionEndRaw;
+       const dayOffset=Math.round((new Date(permission.date+"T00:00:00Z").getTime()-new Date(String(row.date)+"T00:00:00Z").getTime())/86400000);
+       if(dayOffset<0||dayOffset>1)continue;
+       const windowStart=permissionStart+dayOffset*1440,windowEnd=permissionEnd+dayOffset*1440;
+       const coveredMinutes=overlap(scheduledStartMinute,scheduledEndMinute,windowStart,windowEnd);
        if(coveredMinutes<=0)continue;
        if(permission.type==="PAID")paidMinutes+=coveredMinutes;else unpaidMinutes+=coveredMinutes;
        effectivePermissionItems.push({...permission,minutes:coveredMinutes});
-       if(lateStart!==null&&firstInMinute!==null)latePermissionOverlapMinutes+=overlap(lateStart,firstInMinute,permissionStart,permissionEnd);
-       if(lastOutMinute!==null&&earlyEnd!==null)earlyPermissionOverlapMinutes+=overlap(lastOutMinute,earlyEnd,permissionStart,permissionEnd);
+       if(lateStart!==null&&firstInMinute!==null)latePermissionOverlapMinutes+=overlap(lateStart,firstInMinute,windowStart,windowEnd);
+       if(lastOutMinute!==null&&earlyEnd!==null)earlyPermissionOverlapMinutes+=overlap(lastOutMinute,earlyEnd,windowStart,windowEnd);
      }
      const adjustedLate=Math.max(0,Number(row.lateMinutes??0)-latePermissionOverlapMinutes);
      const adjustedEarly=Math.max(0,Number(row.earlyMinutes??0)-earlyPermissionOverlapMinutes);

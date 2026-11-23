@@ -60,7 +60,7 @@ function schedule(weekday: number, startsAt: string | null, endsAt: string | nul
   };
 }
 
-function mockDb(input: { schedules: unknown[]; punches: MockPunch[]; exceptions?: unknown[] }) {
+function mockDb(input: { schedules: unknown[]; punches: MockPunch[]; exceptions?: unknown[]; permissions?: unknown[] }) {
   return {
     async query(sql: string) {
       if (sql.includes("FROM employees e")) return { rows: [employee] };
@@ -68,7 +68,7 @@ function mockDb(input: { schedules: unknown[]; punches: MockPunch[]; exceptions?
       if (sql.includes("FROM attendance_schedule_exceptions")) return { rows: input.exceptions ?? [] };
       if (sql.includes("FROM attendance_punches")) return { rows: input.punches };
       if (sql.includes("FROM attendance_day_overrides")) return { rows: [] };
-      if (sql.includes("FROM attendance_permission_requests")) return { rows: [] };
+      if (sql.includes("FROM attendance_permission_requests")) return { rows: input.permissions ?? [] };
       throw new Error("Unexpected attendance report query: " + sql);
     },
   };
@@ -226,4 +226,62 @@ test("a dated exception turns a usual rest day into a working day with its own h
   assert.equal(row.workedMinutes, 480);
   assert.equal(row.lateMinutes, 0);
   assert.equal(row.earlyMinutes, 0);
+});
+
+function permission(date: string, startsAt: string, endsAt: string, type: string, minutes: number) {
+  return {
+    employee_id: employee.id,
+    permission_date: date,
+    permission_type: type,
+    duration_minutes: minutes,
+    starts_at: startsAt,
+    ends_at: endsAt,
+  };
+}
+
+test("a cross-midnight permission counts toward the overnight workday it starts on", async () => {
+  const db = mockDb({
+    schedules: [schedule(1, "22:00", "06:00")],
+    permissions: [permission("2026-11-16", "23:30", "00:30", "PAID", 60)],
+    punches: [
+      punch("in", "IN", "2026-11-16T20:00:00.000Z"), // 22:00 Cairo Monday
+      punch("out", "OUT", "2026-11-17T04:00:00.000Z"), // 06:00 Cairo Tuesday
+    ],
+  });
+  const result = await buildAttendanceReport(db, "2026-11-16", "2026-11-16");
+  const row = result.data[0];
+  assert.equal(row.status, "PRESENT");
+  assert.equal(row.permissionMinutes, 60);
+  assert.equal(row.paidPermissionMinutes, 60);
+  assert.equal(row.payableWorkedMinutes, 480 + 60);
+});
+
+test("an early-morning permission dated the next day counts toward the overnight workday it belongs to", async () => {
+  const db = mockDb({
+    schedules: [schedule(1, "22:00", "06:00")],
+    permissions: [permission("2026-11-17", "00:30", "01:30", "UNPAID", 60)],
+    punches: [
+      punch("in", "IN", "2026-11-16T20:00:00.000Z"), // 22:00 Cairo Monday
+      punch("out", "OUT", "2026-11-17T04:00:00.000Z"), // 06:00 Cairo Tuesday
+    ],
+  });
+  const result = await buildAttendanceReport(db, "2026-11-16", "2026-11-16");
+  const row = result.data[0];
+  assert.equal(row.permissionMinutes, 60);
+  assert.equal(row.unpaidPermissionMinutes, 60);
+});
+
+test("a permission covering the late window cancels late minutes on an overnight workday", async () => {
+  const db = mockDb({
+    schedules: [schedule(1, "22:00", "06:00")],
+    permissions: [permission("2026-11-16", "22:00", "23:00", "PAID", 60)],
+    punches: [
+      punch("in", "IN", "2026-11-16T21:00:00.000Z"), // 23:00 Cairo, 50 minutes late after the 10-minute grace
+      punch("out", "OUT", "2026-11-17T04:00:00.000Z"), // 06:00 Cairo Tuesday
+    ],
+  });
+  const result = await buildAttendanceReport(db, "2026-11-16", "2026-11-16");
+  const row = result.data[0];
+  assert.equal(row.latePermissionOverlapMinutes, 50);
+  assert.equal(row.lateMinutes, 0);
 });
