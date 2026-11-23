@@ -562,8 +562,22 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
       if (JSON.stringify([...left.triggers].sort()) !== JSON.stringify([...right.triggers].sort())) {
         differences.push("اختلاف تعريف المشغلات أو حالة تفعيلها؛ قد تؤثر على البيانات عند الإدخال");
       }
+      const hasUnsupportedPartitioning = (table: TableShape): boolean => {
+        try {
+          const shape = JSON.parse(table.partitioning) as {
+            kind?: string; isPartition?: boolean; parents?: string[]; children?: string[];
+          };
+          return shape.kind === "p" || Boolean(shape.isPartition) ||
+            Boolean(shape.parents?.length) || Boolean(shape.children?.length);
+        } catch {
+          return true;
+        }
+      };
       if (left.partitioning !== right.partitioning) {
         differences.push("اختلاف تقسيم الجدول أو حدود الأقسام أو علاقات الوراثة");
+      }
+      if (hasUnsupportedPartitioning(left) || hasUnsupportedPartitioning(right)) {
+        differences.push("الجداول المقسمة أو الموروثة خارج نطاق النقل الآمن حاليًا؛ يلزم دعم طوبولوجيا الأقسام قبل إدراجها في الخطة");
       }
       if (left.ownership !== right.ownership) {
         differences.push("اختلاف ملكية الجدول أو صلاحياته أو إعدادات التخزين");
