@@ -734,7 +734,7 @@ payment_totals.paid_amount,
       }
 
       if (autoBonusRuleId) {
-        await client.query("UPDATE employee_earnings_adjustments SET bonus_rule_id=$1 WHERE production_entry_id=$2 AND adjustment_type='BONUS' AND ledger_id IS NULL",[autoBonusRuleId,created.id]);
+        await client.query("UPDATE employee_earnings_adjustments SET bonus_rule_id=$1,auto_generated=TRUE WHERE production_entry_id=$2 AND adjustment_type='BONUS' AND ledger_id IS NULL",[autoBonusRuleId,created.id]);
       }
       await writeAudit(client, {
         actorUserId: request.user!.userId,
@@ -942,8 +942,8 @@ payment_totals.paid_amount,
       await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
       // An automatic bonus is kept as an ordinary adjustment on edit (not silently recalculated); its rule link is preserved while the bonus is unchanged.
       if(bonusAmount>0)await client.query(
-        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by,bonus_rule_id)
-         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7,$8)`,
+        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by,bonus_rule_id,auto_generated)
+         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7,$8,$8 IS NOT NULL)`,
         [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId,data.bonusAmount===undefined?keptRuleId:null]
       );
       if(deductionAmount>0)await client.query(

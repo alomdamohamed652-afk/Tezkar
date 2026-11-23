@@ -18,16 +18,18 @@ CREATE INDEX IF NOT EXISTS idx_production_bonus_rules_stage ON production_bonus_
 
 -- Marks an adjustment that was created by a rule. It stays an ordinary adjustment: editable and deletable.
 ALTER TABLE employee_earnings_adjustments
-  ADD COLUMN IF NOT EXISTS bonus_rule_id UUID REFERENCES production_bonus_rules(id) ON DELETE SET NULL;
+  ADD COLUMN IF NOT EXISTS bonus_rule_id UUID REFERENCES production_bonus_rules(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS auto_generated BOOLEAN NOT NULL DEFAULT FALSE;
 
 INSERT INTO permissions(code,module,entity,action,scope) VALUES
  ('production.bonus_rules.view','production','bonus_rule','view','all'),
- ('production.bonus_rules.manage','production','bonus_rule','manage','all')
+ ('production.bonus_rules.manage','production','bonus_rule','manage','all'),
+ ('production.adjustments.manage','production','adjustment','manage','all')
 ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
 SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
-WHERE r.code IN ('admin','manager') AND p.code IN ('production.bonus_rules.view','production.bonus_rules.manage')
+WHERE r.code IN ('admin','manager') AND p.code IN ('production.bonus_rules.view','production.bonus_rules.manage','production.adjustments.manage')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version) VALUES ('2026112302_production_bonus_rules') ON CONFLICT(version) DO NOTHING;

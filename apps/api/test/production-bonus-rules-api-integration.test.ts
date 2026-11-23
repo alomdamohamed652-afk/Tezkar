@@ -130,6 +130,21 @@ test("production bonus rules: CRUD, audit and best-threshold selection", {
       "SELECT action FROM audit_log WHERE entity_type='production_bonus_rule' AND entity_id=$1 ORDER BY created_at", [rule1.id])).rows.map((r: any) => r.action);
     assert.deepEqual(audits, ["create", "edit", "delete"]);
 
+    // Auto adjustments are ordinary: editable and deletable by admin with a correcting ledger entry and an audit trail.
+    const led = (await apiPool.query("INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,notes,created_by) VALUES($1,'ADJUSTMENT',50,0,'auto',$2) RETURNING id", [managerEmployee.id, manager.id])).rows[0];
+    const adj = (await apiPool.query(
+      "INSERT INTO employee_earnings_adjustments(employee_id,adjustment_type,amount,reason,adjustment_date,ledger_id,created_by,auto_generated) VALUES($1,'BONUS',50,'auto bonus',CURRENT_DATE,$2,$3,TRUE) RETURNING id", [managerEmployee.id, led.id, manager.id])).rows[0];
+    const edited = await server.inject({ method: "PATCH", url: "/api/production/adjustments/" + adj.id, headers, payload: { amount: 80, reason: "تعديل" } });
+    assert.equal(edited.statusCode, 200, edited.body);
+    const removed = await server.inject({ method: "DELETE", url: "/api/production/adjustments/" + adj.id, headers, payload: { reason: "حذف" } });
+    assert.equal(removed.statusCode, 200, removed.body);
+    const net = (await apiPool.query("SELECT SUM(credit_amount-debit_amount)::float8 AS n FROM employee_earnings_ledger WHERE employee_id=$1", [managerEmployee.id])).rows[0].n;
+    assert.equal(net, 0, "edit then delete must net the ledger back to zero");
+    const adjAudits = (await apiPool.query("SELECT action FROM audit_log WHERE entity_type='employee_adjustment' AND entity_id=$1 ORDER BY created_at", [adj.id])).rows.map((r: any) => r.action);
+    assert.deepEqual(adjAudits, ["edit", "delete"]);
+    const manual = await server.inject({ method: "PATCH", url: "/api/production/adjustments/" + randomBytes(0).length, headers, payload: { amount: 1, reason: "xx" } });
+    assert.equal(manual.statusCode, 422);
+
     await server.close();
     app = undefined;
   } finally {
