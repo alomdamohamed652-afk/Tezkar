@@ -18,12 +18,12 @@ pnpm migrate:target
 
 The command refuses to continue unless it can verify that:
 
-1. Both connection strings are present and point to different database identities.
+1. Both connection strings are present; the target URL must expose a Supabase project reference, and the source and target must not resolve to the same Supabase project. Direct and Pooler URLs for the same project are treated as identical. A PostgreSQL server/database identity comparison is also performed.
 2. The target has Supabase markers (`auth`, `storage`, and `supabase_admin`).
 3. The target role is not default-read-only.
 4. The target `public` schema contains no tables, views, materialized views, sequences, or foreign tables.
 
-Preview mode performs read-only identity/schema checks only. It does not run migrations.
+Preview mode performs read-only identity/schema checks only. It does not run migrations. The project reference is extracted from the standard Supabase Direct hostname (`db.<project-ref>.supabase.co`) or Pooler username (`<role>.<project-ref>`); unsupported target URL formats fail closed.
 
 ## Explicit schema creation
 
