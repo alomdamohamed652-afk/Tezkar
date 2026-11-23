@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { databaseIdentity } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
 import {
   assertDistinctDatabaseIdentities,
   assertReadOnlySession,
@@ -42,4 +43,35 @@ test("database guard rejects missing or identical endpoint identities", () => {
   assert.throws(() => assertDistinctDatabaseIdentities(null, "target:5432/postgres"));
   assert.throws(() => assertDistinctDatabaseIdentities("same:5432/postgres", "same:5432/postgres"));
   assert.doesNotThrow(() => assertDistinctDatabaseIdentities("source:5432/postgres", "target:5432/postgres"));
+});
+
+
+test("Supabase direct and pooler URLs normalize to the same project identity", () => {
+  const direct = databaseIdentity("postgresql://postgres:secret@db.abcdefghijklmnop.supabase.co:5432/postgres");
+  const sessionPooler = databaseIdentity("postgresql://postgres.abcdefghijklmnop:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres");
+  const transactionPooler = databaseIdentity("postgresql://postgres.abcdefghijklmnop:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres");
+  assert.equal(direct, "supabase:abcdefghijklmnop/postgres");
+  assert.equal(sessionPooler, direct);
+  assert.equal(transactionPooler, direct);
+});
+
+test("different Supabase project refs remain distinct across direct and pooler URLs", () => {
+  const source = databaseIdentity("postgresql://postgres:secret@db.abcdefghijklmnop.supabase.co:5432/postgres");
+  const target = databaseIdentity("postgresql://postgres.qrstuvwxyzabcdef:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres");
+  assert.equal(source, "supabase:abcdefghijklmnop/postgres");
+  assert.equal(target, "supabase:qrstuvwxyzabcdef/postgres");
+  assert.notEqual(source, target);
+  assert.doesNotThrow(() => assertDistinctDatabaseIdentities(source, target));
+});
+
+test("same Supabase project is rejected when one URL is direct and the other pooled", () => {
+  const direct = databaseIdentity("postgresql://postgres:secret@db.abcdefghijklmnop.supabase.co:5432/postgres");
+  const pooled = databaseIdentity("postgresql://postgres.abcdefghijklmnop:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres");
+  assert.equal(direct, pooled);
+  assert.throws(() => assertDistinctDatabaseIdentities(direct, pooled));
+});
+
+test("Supabase URLs with unrecognized pooler usernames fail closed as non-Supabase identities", () => {
+  const unknown = databaseIdentity("postgresql://postgres:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres");
+  assert.equal(unknown, "aws-0-us-east-1.pooler.supabase.com:6543/postgres");
 });
