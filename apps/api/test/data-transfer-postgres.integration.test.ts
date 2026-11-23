@@ -196,6 +196,7 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
 
     await admin.query(`CREATE ROLE ${quoteDb(ownerRole)}`);
     ownerRoleCreated = true;
+    await admin.query(`GRANT CONNECT ON DATABASE ${quoteDb(targetName)} TO ${quoteDb(ownerRole)}`);
     const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
       await changedTarget.query("ALTER INDEX public.workers_name_partial_renamed RENAME TO workers_name_partial_idx");
@@ -231,6 +232,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       "schema ownership/ACL differences must be compared");
     assert.ok(changedObjects.globalObjectDifferences.defaultPrivileges.differences.missingInTarget.length > 0,
       "default privilege differences must be compared");
+    assert.ok(changedObjects.globalObjectDifferences.databaseAccess.differences.missingInTarget.length > 0,
+      "database ACL differences must be compared");
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInTarget.length > 0);
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInSource.length > 0);
     assert.ok(changedObjects.objectComparison.sequences.differences.missingInTarget.length > 0);
