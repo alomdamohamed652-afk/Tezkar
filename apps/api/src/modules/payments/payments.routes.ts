@@ -970,9 +970,9 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   // Custody sources for paying workers: only active employees who hold a positive cash-custody balance.
-  // Users with the all-scope payout permission see every holder; own-scope users see only their own custody.
+  // Access follows the custody payout permissions that recordCashCustodyOut enforces. Users with the all-scope payout permission see every holder; own-scope users see only their own custody.
   app.get("/api/worker-payments/custody-sources", {
-    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+    preHandler: [authenticateRequest]
   }, async (request) => {
     const client = await pool.connect();
     try {
