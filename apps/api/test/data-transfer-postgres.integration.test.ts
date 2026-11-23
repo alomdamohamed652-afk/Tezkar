@@ -212,10 +212,28 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       await targetSchemaPolicy.query("CREATE SCHEMA acl_probe");
       await targetSchemaPolicy.query(`ALTER SCHEMA ownership_probe OWNER TO ${quoteDb(ownerRole)}`);
       await targetSchemaPolicy.query("GRANT USAGE ON SCHEMA acl_probe TO PUBLIC");
+
+      // Grant equivalent ACL entries in opposite orders. ACL array ordering
+      // alone must not make otherwise identical schema permissions look different.
+      await sourceSchemaPolicy.query("CREATE SCHEMA acl_order_probe");
+      await targetSchemaPolicy.query("CREATE SCHEMA acl_order_probe");
+      await sourceSchemaPolicy.query("GRANT USAGE ON SCHEMA acl_order_probe TO PUBLIC");
+      await sourceSchemaPolicy.query(`GRANT CREATE ON SCHEMA acl_order_probe TO ${quoteDb(ownerRole)}`);
+      await targetSchemaPolicy.query(`GRANT CREATE ON SCHEMA acl_order_probe TO ${quoteDb(ownerRole)}`);
+      await targetSchemaPolicy.query("GRANT USAGE ON SCHEMA acl_order_probe TO PUBLIC");
     } finally {
       await Promise.all([sourceSchemaPolicy.end(), targetSchemaPolicy.end()]);
     }
     const isolatedSchemaPolicy = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
+    assert.ok(
+      !isolatedSchemaPolicy.globalObjectDifferences.schemas.differences.missingInSource.some(value =>
+        value.startsWith("acl_order_probe:")
+      ) &&
+      !isolatedSchemaPolicy.globalObjectDifferences.schemas.differences.missingInTarget.some(value =>
+        value.startsWith("acl_order_probe:")
+      ),
+      "equivalent schema ACLs granted in a different order must compare as identical"
+    );
     assert.ok(
       isolatedSchemaPolicy.globalObjectDifferences.schemas.differences.missingInSource.some(value =>
         value.startsWith("ownership_probe:")
