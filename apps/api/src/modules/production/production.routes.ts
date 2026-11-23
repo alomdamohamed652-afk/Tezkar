@@ -18,6 +18,7 @@ import { requireAnyPermission, requirePermission } from "../rbac/permission.guar
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
+import { settlePaidShareOnCancellation } from "./cancellation-payment-reversal.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { allocatePendingWorkerPaymentDifferencesForProduction } from "../payments/worker-payment-differences.service.js";
 
@@ -1344,10 +1345,33 @@ payment_totals.paid_amount,
         }
       }
       const updated=await client.query("UPDATE production_entries SET status='CANCELLED',cancelled_by=$1,cancelled_at=now(),updated_at=now() WHERE id=$2 RETURNING id,code,status,employee_id,quantity,work_date",[request.user!.userId,id]);
+      // Paid share: reverse the whole payment only if every production record it covers is now cancelled; otherwise queue a review (never guessed).
+      const paymentOutcomes=await settlePaidShareOnCancellation(client,{productionEntryId:id,employeeId:current.employee_id as string,reason:parsed.data.reason,
+        actor:{userId:request.user!.userId,employeeId:request.user!.employeeId??null,ip:request.ip,userAgent:(request.headers["user-agent"] as string|undefined)??null}});
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"reverse",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated.rows[0],metadata:{reason:parsed.data.reason,stockMovementId:movement.rows[0].id,inventoryLotId:sourceLot.id},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
-      return updated.rows[0];
+      return {...updated.rows[0],payment_outcomes:paymentOutcomes};
     });
     return {data:result};
+  });
+
+  app.get("/api/production/cancellation-reviews",{preHandler:[authenticateRequest,requirePermission("production.cancellation_reviews.view")]},async()=>{
+    const r=await pool.query(`SELECT v.id,v.status,v.reason_code,v.detail,v.allocated_amount::text AS allocated_amount,v.payment_gross_amount::text AS payment_gross_amount,v.created_at,v.worker_payment_id,v.financial_reversal_id,
+        e.code AS employee_code,e.full_name AS employee_name,pe.code AS production_code
+      FROM production_cancellation_payment_reviews v JOIN employees e ON e.id=v.employee_id JOIN production_entries pe ON pe.id=v.production_entry_id
+      ORDER BY (v.status='OPEN') DESC,v.created_at DESC LIMIT 500`);
+    return {data:r.rows};
+  });
+
+  app.post("/api/production/cancellation-reviews/:id/resolve",{preHandler:[authenticateRequest,requirePermission("production.cancellation_reviews.resolve")]},async(request)=>{
+    const id=z.string().uuid().safeParse((request.params as {id:string}).id);
+    const body=z.object({note:z.string().trim().min(3).max(500)}).safeParse(request.body);
+    if(!id.success||!body.success)throw new AppError("VALIDATION_ERROR","اكتب ملاحظة الحل (٣ أحرف على الأقل)",422);
+    return withTransaction(async client=>{
+      const r=await client.query("UPDATE production_cancellation_payment_reviews SET status='RESOLVED',resolved_by=$2,resolved_at=now(),resolution_note=$3 WHERE id=$1 AND status='OPEN' RETURNING *",[id.data,request.user!.userId,body.data.note]);
+      if(!r.rowCount)throw new AppError("REVIEW_NOT_FOUND","البند غير موجود أو تم حله",404);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"resolve",module:"production",entityType:"production_cancellation_review",entityId:id.data,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {data:r.rows[0]};
+    });
   });
 
   app.post("/api/production/:id/cancel", {
