@@ -430,9 +430,31 @@ async function executeWorkerPayment(
   return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,carryForwardAmount,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
 }
 
+// In-memory limiter for the public receipt route (no new dependency). Keyed by the proxy-appended client IP, plus a global ceiling.
+const publicReceiptHits = new Map<string, number[]>();
+const PUBLIC_RECEIPT_WINDOW_MS = 60_000;
+const PUBLIC_RECEIPT_PER_IP = 20;
+const PUBLIC_RECEIPT_GLOBAL = 600;
+function publicReceiptRateLimit(request: { ip: string; headers: Record<string, unknown> }) {
+  const now = Date.now();
+  const forwarded = String(request.headers["x-forwarded-for"] ?? "").split(",").map(x => x.trim()).filter(Boolean);
+  const key = forwarded[forwarded.length - 1] ?? request.ip;
+  const recent = (publicReceiptHits.get(key) ?? []).filter(t => now - t < PUBLIC_RECEIPT_WINDOW_MS);
+  const globalRecent = (publicReceiptHits.get("*") ?? []).filter(t => now - t < PUBLIC_RECEIPT_WINDOW_MS);
+  if (recent.length >= PUBLIC_RECEIPT_PER_IP || globalRecent.length >= PUBLIC_RECEIPT_GLOBAL) throw new AppError("RATE_LIMITED", "محاولات كثيرة، حاول بعد دقيقة", 429);
+  recent.push(now); globalRecent.push(now);
+  publicReceiptHits.set(key, recent); publicReceiptHits.set("*", globalRecent);
+  if (publicReceiptHits.size > 5000) for (const [k, v] of publicReceiptHits) if (k !== "*" && v.every(t => now - t >= PUBLIC_RECEIPT_WINDOW_MS)) publicReceiptHits.delete(k);
+}
 const RECEIPT_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+// Fail closed: without a real signing secret no link may be signed or accepted (no empty-key fallback).
+function receiptSecret(): string {
+  const secret = process.env.SESSION_SECRET;
+  if (!secret || secret.length < 32) throw new AppError("RECEIPT_SIGNING_UNAVAILABLE", "تعذر إنشاء رابط الفاتورة: مفتاح التوقيع غير مهيأ على الخادم", 503);
+  return secret;
+}
 function receiptSignature(body: Buffer): Buffer {
-  return createHmac("sha256", process.env.SESSION_SECRET ?? "").update("settlement-receipt:").update(body).digest().subarray(0, 16);
+  return createHmac("sha256", receiptSecret()).update("settlement-receipt:").update(body).digest().subarray(0, 16);
 }
 // Compact token (uuid 16 bytes + expiry seconds 4 bytes + 16-byte signature, ~54 chars) so it fits the router's default 100-char param limit.
 function signReceiptToken(paymentId: string, expiresAt: number): string {
@@ -444,6 +466,7 @@ function verifyReceiptToken(token: string): string | null {
   let raw: Buffer;
   try { raw = Buffer.from(token, "base64url"); } catch { return null; }
   if (raw.length !== 36) return null;
+  receiptSecret();
   const body = raw.subarray(0, 20);
   const supplied = raw.subarray(20);
   const expected = receiptSignature(body);
@@ -1108,7 +1131,9 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   // Public (no login) read of a shared receipt. Only the signed token grants access; it exposes no phone number or notes.
-  app.get("/api/public/settlement-receipts/:token", async (request) => {
+  app.get("/api/public/settlement-receipts/:token", async (request, reply) => {
+    publicReceiptRateLimit(request as never);
+    reply.header("Cache-Control", "no-store, private").header("Pragma", "no-cache").header("Referrer-Policy", "no-referrer").header("X-Robots-Tag", "noindex, nofollow");
     const parsed = z.object({ token: z.string().min(20).max(300) }).safeParse(request.params);
     const paymentId = parsed.success ? verifyReceiptToken(parsed.data.token) : null;
     if (!paymentId) throw new AppError("RECEIPT_LINK_INVALID", "رابط الفاتورة غير صالح أو منتهي", 404);

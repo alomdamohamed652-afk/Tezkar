@@ -1437,6 +1437,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const tamperedToken=shareLink.json().data.token.slice(0,-3)+"abc";
       const rejectedReceipt=await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`});
       assert.equal(rejectedReceipt.statusCode,404,"a tampered receipt link must be rejected");
+      assert.match(String(publicReceipt.headers["cache-control"]),/no-store/,"public invoice must not be cached");
+      assert.equal(publicReceipt.headers["referrer-policy"],"no-referrer");
+      for(let i=0;i<25;i++)await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`,headers:{"x-forwarded-for":"203.0.113.9"}});
+      assert.equal((await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`,headers:{"x-forwarded-for":"203.0.113.9"}})).statusCode,429,"public receipt route must be rate limited");
 
       const unpaidProductionAfterPayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
