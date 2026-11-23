@@ -117,7 +117,10 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       }
       for (const [key, label] of [
         ["schemas", "ملكية وصلاحيات الـSchemas"],
-        ["defaultPrivileges", "Default Privileges"]
+        ["defaultPrivileges", "Default Privileges"],
+        ["databaseAccess", "Database ACL وملكية قاعدة البيانات"],
+        ["roles", "خصائص الأدوار"],
+        ["roleMemberships", "عضويات الأدوار"]
       ] as const) {
         const item = inspection.globalObjectDifferences[key];
         if (item.differences.missingInTarget.length || item.differences.missingInSource.length) {
