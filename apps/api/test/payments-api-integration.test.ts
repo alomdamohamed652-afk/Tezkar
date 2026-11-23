@@ -1403,6 +1403,30 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.ok(payoutEmployeeOptions.json().data.some((row:any)=>row.id===bonusWorkerEmployee.id),
         "payout screen should load worker options from a payout-scoped endpoint");
 
+      const custodySources=await app.inject({
+        method:"GET",url:"/api/worker-payments/custody-sources",headers:{cookie:managerCookie}
+      });
+      assert.equal(custodySources.statusCode,200,custodySources.body);
+      assert.ok(custodySources.json().data.every((row:any)=>Number(row.balance)>0),
+        "custody sources must only list holders with a positive custody balance");
+      assert.equal(custodySources.json().data.some((row:any)=>row.id===bonusWorkerEmployee.id),false,
+        "an employee with no custody ledger must not be offered as a payout custody");
+
+      const settlementReceipt=await app.inject({
+        method:"GET",url:`/api/worker-payments/${bonusAwarePayout.json().data.payment.id}/settlement-receipt`,headers:{cookie:managerCookie}
+      });
+      assert.equal(settlementReceipt.statusCode,200,settlementReceipt.body);
+      const receiptData=settlementReceipt.json().data;
+      const receiptLines=receiptData.orders.flatMap((group:any)=>group.lines);
+      assert.ok(receiptLines.some((line:any)=>line.productionId===bonusProduction.id&&Number(line.amount)>0),
+        "receipt must list the production record that received money in this settlement");
+      for(const group of receiptData.orders){
+        assert.equal(Math.round(group.lines.reduce((sum:number,line:any)=>sum+Number(line.amount),0)*100)/100,Number(group.total),
+          "each order total must equal the sum of its listed stage lines");
+      }
+      assert.equal(Math.round((Number(receiptData.allocatedTotal)+Number(receiptData.unallocatedAmount))*100)/100,Number(receiptData.payment.amount),
+        "receipt allocated plus unallocated must equal the settlement amount");
+
       const unpaidProductionAfterPayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
       });
