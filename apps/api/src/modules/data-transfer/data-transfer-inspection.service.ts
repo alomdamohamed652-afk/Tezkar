@@ -78,7 +78,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const schemaInventory = await client.query(`
           SELECT n.nspname AS schema_name,
                  pg_get_userbyid(n.nspowner) AS owner_name,
-                 n.nspacl::text AS acl
+                 CASE WHEN n.nspacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(n.nspacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl
             FROM pg_namespace n
            WHERE n.nspname <> 'information_schema'
              AND n.nspname !~ '^pg_'
@@ -101,7 +101,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
           SELECT COALESCE(n.nspname, '<global>') AS schema_name,
                  role_name.rolname AS owner_name,
                  d.defaclobjtype AS object_type,
-                 d.defaclacl::text AS privileges
+                 CASE WHEN d.defaclacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(d.defaclacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS privileges
             FROM pg_default_acl d
             JOIN pg_roles role_name ON role_name.oid = d.defaclrole
             LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
@@ -109,7 +109,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     `);
     const databaseAccess = await client.query(`
           SELECT d.datname, pg_get_userbyid(d.datdba) AS owner_name,
-                 d.datacl::text AS acl, d.datallowconn, d.datconnlimit
+                 CASE WHEN d.datacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(d.datacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl, d.datallowconn, d.datconnlimit
             FROM pg_database d
            WHERE d.datname = current_database()
     `);
@@ -141,7 +141,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const tables = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS table_name,
                  GREATEST(c.reltuples, 0)::bigint AS estimated_rows,
-                 pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                 pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
                  COALESCE(c.reloptions, ARRAY[]::text[]) AS relation_options,
                  c.relkind AS relation_kind, c.relispartition AS is_partition,
                  CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) ELSE '' END AS partition_key,
@@ -250,7 +250,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const views = await client.query(`
 
           SELECT v.schemaname, v.viewname, v.definition,
-                 pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                 pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
                  COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
             FROM pg_views v
             JOIN pg_class c ON c.relname = v.viewname
@@ -261,7 +261,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const materializedViews = await client.query(`
 
           SELECT v.schemaname, v.matviewname, v.definition,
-                 pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                 pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
                  COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
             FROM pg_matviews v
             JOIN pg_class c ON c.relname = v.matviewname
@@ -328,7 +328,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     `);
     const customTypes = await client.query(`
           SELECT n.nspname AS schema_name, t.typname, t.typtype,
-                  pg_get_userbyid(t.typowner) AS owner_name, t.typacl::text AS acl,
+                  pg_get_userbyid(t.typowner) AS owner_name, CASE WHEN t.typacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(t.typacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
                   CASE WHEN t.typtype = 'e' THEN (
                    SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
                      FROM pg_enum e WHERE e.enumtypid = t.oid
@@ -360,7 +360,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
     const sequences = await client.query(`
           SELECT n.nspname AS schema_name, c.relname AS sequence_name,
                  format_type(s.seqtypid, NULL) AS data_type,
-                  pg_get_userbyid(c.relowner) AS owner_name, c.relacl::text AS acl,
+                  pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
                   s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle,
                  COALESCE(refn.nspname || '.' || tbl.relname || '.' || att.attname, '') AS owned_by
             FROM pg_class c
@@ -392,7 +392,7 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
                  owner_role.rolname AS owner_name, p.prosecdef AS security_definer,
                  p.proleakproof AS leakproof, p.proisstrict AS strict,
                  p.provolatile AS volatility, p.proparallel AS parallel_safety,
-                 p.proconfig AS configuration, p.proacl::text AS acl
+                 p.proconfig AS configuration, CASE WHEN p.proacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(p.proacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl
             FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
             JOIN pg_roles owner_role ON owner_role.oid = p.proowner
