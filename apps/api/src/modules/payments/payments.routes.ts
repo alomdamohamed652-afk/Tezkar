@@ -969,6 +969,98 @@ export async function paymentsRoutes(app:FastifyInstance){
     return {data:result.rows};
   });
 
+  // Custody sources for paying workers: only active employees who hold a positive cash-custody balance.
+  // Access follows the custody payout permissions that recordCashCustodyOut enforces. Users with the all-scope payout permission see every holder; own-scope users see only their own custody.
+  app.get("/api/worker-payments/custody-sources", {
+    preHandler: [authenticateRequest]
+  }, async (request) => {
+    const client = await pool.connect();
+    try {
+      const userId = request.user!.userId;
+      const canAll = await hasPermission(client, userId, "cash_custody.worker_payment_out", "all");
+      const canOwn = await hasPermission(client, userId, "cash_custody.worker_payment_out_own", "own");
+      if (!canAll && !canOwn) return { data: [] };
+      const result = await client.query(
+        `SELECT e.id,e.code,e.full_name,
+                ROUND(SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END),2)::float8 AS balance
+           FROM employees e
+           JOIN cash_custody_transactions c ON c.employee_id=e.id AND c.transaction_date<=CURRENT_DATE
+          WHERE e.is_active=TRUE
+            AND ($1::boolean OR e.id=(SELECT employee_id FROM users WHERE id=$2))
+          GROUP BY e.id,e.code,e.full_name
+         HAVING SUM(CASE WHEN c.direction='IN' THEN c.amount ELSE -c.amount END)>0.009
+          ORDER BY e.full_name,e.code`,
+        [canAll, userId]
+      );
+      return { data: result.rows };
+    } finally {
+      client.release();
+    }
+  });
+
+  // Invoice-style receipt of one settlement: every production record and stage that received money in it,
+  // grouped per order with each order's total. Orders that received nothing are not listed.
+  app.get("/api/worker-payments/:paymentId/settlement-receipt", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed = z.object({ paymentId: z.string().uuid() }).safeParse(request.params);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "رقم الدفعة غير صحيح", 422);
+    const payment = await pool.query(
+      `SELECT wp.id,wp.code,wp.employee_id,wp.amount::float8 AS amount,wp.method,wp.paid_at,wp.notes,
+              e.full_name AS employee_name,e.code AS employee_code
+         FROM worker_payments wp JOIN employees e ON e.id=wp.employee_id WHERE wp.id=$1`,
+      [parsed.data.paymentId]
+    );
+    if (!payment.rowCount) throw new AppError("PAYMENT_NOT_FOUND", "الدفعة غير موجودة", 404);
+    const detail = (allocationFrom: string, allocationWhere: string) => `
+      SELECT a.amount::float8 AS amount,p.id AS production_id,p.code AS production_code,
+             to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity::float8 AS quantity,
+             o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,os.sequence_no,s.name AS stage_name
+        FROM ${allocationFrom}
+        JOIN production_entries p ON p.id=a.production_entry_id
+        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+        LEFT JOIN production_orders o ON o.id=os.order_id
+        LEFT JOIN stages s ON s.id=os.stage_id
+       WHERE ${allocationWhere}
+       ORDER BY p.work_date,p.created_at,p.id`;
+    // Same source precedence used elsewhere: settlement allocations, then order allocations, then legacy ones.
+    const sources = [
+      detail("employee_earnings_settlement_allocations a JOIN employee_earnings_settlements es ON es.id=a.settlement_id", "es.worker_payment_id=$1"),
+      detail("worker_payment_order_allocations a", "a.worker_payment_id=$1"),
+      detail("worker_payment_allocations a", "a.worker_payment_id=$1")
+    ];
+    let rows: Array<Record<string, unknown>> = [];
+    for (const sql of sources) {
+      const found = await pool.query(sql, [parsed.data.paymentId]);
+      if (found.rowCount) { rows = found.rows; break; }
+    }
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const orders = new Map<string, { orderId: string | null; orderCode: string | null; orderName: string | null; total: number; lines: Array<Record<string, unknown>> }>();
+    for (const r of rows) {
+      const key = String(r.order_id ?? "none");
+      let group = orders.get(key);
+      if (!group) {
+        group = { orderId: (r.order_id as string | null) ?? null, orderCode: (r.order_code as string | null) ?? null, orderName: (r.order_name as string | null) ?? null, total: 0, lines: [] };
+        orders.set(key, group);
+      }
+      const amount = Number(r.amount);
+      group.total = round(group.total + amount);
+      group.lines.push({
+        productionId: r.production_id, productionCode: r.production_code, workDate: r.work_date, quantity: r.quantity,
+        orderStageId: r.order_stage_id ?? null, stageSequence: r.sequence_no ?? null, stageName: r.stage_name ?? null, amount: round(amount)
+      });
+    }
+    const allocated = round([...orders.values()].reduce((sum, g) => sum + g.total, 0));
+    const pay = payment.rows[0];
+    return { data: {
+      payment: { id: pay.id, code: pay.code, method: pay.method, paidAt: pay.paid_at, notes: pay.notes, amount: round(Number(pay.amount)) },
+      employee: { id: pay.employee_id, code: pay.employee_code, name: pay.employee_name },
+      orders: [...orders.values()],
+      allocatedTotal: allocated,
+      unallocatedAmount: round(Math.max(0, Number(pay.amount) - allocated))
+    }};
+  });
+
   // Return every approved production record with its reconciled paid amount and derived payment status.
   // Selection is restricted in the UI to records with a positive remaining balance.
   app.get("/api/worker-payments/unpaid-production", {
