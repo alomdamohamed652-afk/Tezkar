@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -56,9 +56,9 @@ test("production bonus rules: CRUD, audit and best-threshold selection", {
         import("../src/modules/auth/auth.routes.js"),
         import("../src/modules/production/production.routes.js"),
         import("../src/modules/production/bonus-rules.routes.js"),
+        import("../src/modules/auth/auth.service.js"),
         import("../src/db/pool.js")
       ]);
-        import("../src/db/pool.js")
     apiPool = poolModule.pool;
     const server = Fastify();
     app = server;
