@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { Client } from "pg";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getSupabaseProjectRef } from "./supabase-project-ref.js";
 
 type DatabaseIdentity = {
   database_name: string;
@@ -10,28 +11,6 @@ type DatabaseIdentity = {
   server_started_at: string;
 };
 
-
-function getSupabaseProjectRef(connectionString: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(connectionString);
-  } catch {
-    throw new Error("صيغة رابط قاعدة البيانات غير صالحة؛ تعذر التحقق من هوية المشروع.");
-  }
-
-  const host = parsed.hostname.toLowerCase();
-  const directMatch = host.match(/^db\.([a-z0-9]{20})\.supabase\.co$/);
-  if (directMatch?.[1]) return directMatch[1];
-
-  if (host.endsWith(".pooler.supabase.com")) {
-    // Supavisor pooler usernames use <database-user>.<project-ref>.
-    const username = decodeURIComponent(parsed.username);
-    const poolerMatch = username.match(/\.([a-z0-9]{20})$/i);
-    if (poolerMatch?.[1]) return poolerMatch[1].toLowerCase();
-  }
-
-  return null;
-}
 
 async function inspectIdentity(connectionString: string): Promise<DatabaseIdentity> {
   const client = new Client({ connectionString, connectionTimeoutMillis: 5_000 });
