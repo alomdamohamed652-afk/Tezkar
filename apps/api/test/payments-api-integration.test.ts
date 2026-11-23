@@ -1438,6 +1438,11 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const rejectedReceipt=await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`});
       assert.equal(rejectedReceipt.statusCode,404,"a tampered receipt link must be rejected");
       assert.match(String(publicReceipt.headers["cache-control"]),/no-store/,"public invoice must not be cached");
+      const publicPdf=await app.inject({method:"GET",url:`/api/public/settlement-receipts/${shareLink.json().data.token}/pdf`});
+      assert.equal(publicPdf.statusCode,200,publicPdf.body.slice(0,200));
+      assert.match(String(publicPdf.headers["content-type"]),/application\/pdf/);
+      assert.equal(publicPdf.rawPayload.subarray(0,5).toString(),"%PDF-");
+      assert.match(decodeURIComponent(String(publicPdf.headers["content-disposition"])),/فاتورة-.*\d{4}-\d{2}-\d{2}\.pdf/,"pdf is named after worker, code and date");
       assert.equal(publicReceipt.headers["referrer-policy"],"no-referrer");
       for(let i=0;i<25;i++)await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`,headers:{"x-forwarded-for":"203.0.113.9"}});
       assert.equal((await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`,headers:{"x-forwarded-for":"203.0.113.9"}})).statusCode,429,"public receipt route must be rate limited");
