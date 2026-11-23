@@ -117,6 +117,11 @@ export async function receiptRoutes(app:FastifyInstance){
    const today=(await client.query("SELECT current_date::text AS d")).rows[0].d as string;
    if(receiptDate>today)throw new AppError("RECEIPT_DATE_IN_FUTURE","تاريخ الاستلام لا يمكن أن يكون في المستقبل",422);
    if(idempotencyKey){
+    // Two concurrent submissions with the same new key would both pass the
+    // existence check below (FOR UPDATE cannot lock a row that does not exist
+    // yet) and one would crash on the unique index instead of replaying.
+    // Serialize same-key submissions for the rest of this transaction.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",[idempotencyKey]);
     const existing=await client.query("SELECT * FROM warehouse_receipts WHERE idempotency_key=$1 FOR UPDATE",[idempotencyKey]);
     if(existing.rowCount){
      if(existing.rows[0].idempotency_payload_hash!==idempotencyFingerprint)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة المحاولة مستخدم مع بيانات استلام مختلفة",409);
