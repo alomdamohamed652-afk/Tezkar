@@ -142,8 +142,16 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     const unsupportedPlan = buildTransferPlan(result.comparison, ["FOREIGN TABLES غير المدعومة"]);
     assert.equal(unsupportedPlan.readyOrder.length, 0,
       "unsupported foreign tables must prevent the entire plan from claiming readiness");
-    assert.equal(result.comparison.find(item => item.table === "public.worker_events")?.status, "compatible");
-    assert.equal(result.comparison.find(item => item.table === "public.worker_events_2026")?.status, "compatible");
+    assert.equal(result.comparison.find(item => item.table === "public.worker_events")?.status, "schema_mismatch",
+      "partitioned parent tables must not be marked ready for a row-copy transfer");
+    assert.equal(result.comparison.find(item => item.table === "public.worker_events_2026")?.status, "schema_mismatch",
+      "partition children must not be copied independently until partition topology is supported");
+    const partitionPlan = buildTransferPlan(result.comparison);
+    assert.ok(!partitionPlan.readyOrder.some(item =>
+      item.table === "public.worker_events" || item.table === "public.worker_events_2026"
+    ), "partitioned relations must be excluded from the automatic transfer order");
+    assert.ok(partitionPlan.blocked.some(item => item.table === "public.worker_events"));
+    assert.ok(partitionPlan.blocked.some(item => item.table === "public.worker_events_2026"));
     assert.equal(result.sourceFeatures.views, 1);
     assert.equal(result.sourceFeatures.materializedViews, 1);
     assert.equal(result.sourceFeatures.triggers, 1);
