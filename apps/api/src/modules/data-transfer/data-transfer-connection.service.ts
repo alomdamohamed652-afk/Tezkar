@@ -25,7 +25,7 @@ export function createReadOnlySourcePool(connectionString: string): pg.Pool {
 export async function assertReadOnlySession(client: Pick<pg.PoolClient, "query">): Promise<void> {
   await client.query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
   const result = await client.query("SHOW default_transaction_read_only");
-  const value = String(result.rows[0]?.transaction_read_only ?? "").toLowerCase();
+  const value = String(result.rows[0]?.default_transaction_read_only ?? "").toLowerCase();
   if (value !== "on") {
     throw new Error("اتصال قاعدة البيانات ليس للقراءة فقط؛ تم إيقاف الفحص لحماية البيانات.");
   }
