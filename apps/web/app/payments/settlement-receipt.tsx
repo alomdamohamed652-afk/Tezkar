@@ -1,10 +1,21 @@
 "use client";
 
+import { useState } from "react";
+import { createPortal } from "react-dom";
+import { api } from "../../lib/api";
 import { formatMoney } from "../../lib/format";
+import { ReceiptDocument, printReceipt, type ReceiptVariant } from "./receipt-document";
+
+export function whatsappNumber(raw: string | null | undefined): string | null {
+  let digits = String(raw ?? "").replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  else if (digits.startsWith("0") && digits.length === 11) digits = "20" + digits.slice(1);
+  return digits.length >= 10 && digits.length <= 15 ? digits : null;
+}
 
 export type SettlementReceipt = {
   payment: { id: string; code: string; method: string; paidAt: string; notes: string | null; amount: number };
-  employee: { id: string; code: string; name: string };
+  employee: { id: string; code: string; name: string; phone?: string | null };
   orders: Array<{
     orderId: string | null;
     orderCode: string | null;
@@ -25,7 +36,35 @@ export type SettlementReceipt = {
 };
 
 export function SettlementReceiptDialog({ receipt, methodLabel, onClose }: { receipt: SettlementReceipt; methodLabel?: string; onClose: () => void }) {
-  return (
+  const [variant, setVariant] = useState<ReceiptVariant>("a4");
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const phone = whatsappNumber(receipt.employee.phone);
+  function print(next: ReceiptVariant) {
+    setVariant(next);
+    // Let React render the chosen layout into the print root before the browser print dialog opens.
+    setTimeout(() => printReceipt(next), 50);
+  }
+  async function sendWhatsapp() {
+    if (!phone) return;
+    setSharing(true);
+    setShareError("");
+    const tab = window.open("", "_blank");
+    try {
+      const r = await api<{ data: { token: string } }>("/api/worker-payments/" + encodeURIComponent(receipt.payment.id) + "/settlement-receipt/share", { method: "POST" });
+      const link = window.location.origin + "/r/" + r.data.token;
+      const text = `فاتورة تسوية ${receipt.payment.code} للعامل ${receipt.employee.name}\nإجمالي: ${formatMoney(receipt.payment.amount)} ج.م\nرابط الفاتورة: ${link}`;
+      const url = "https://wa.me/" + phone + "?text=" + encodeURIComponent(text);
+      if (tab) tab.location.href = url; else window.location.href = url;
+    } catch (e) {
+      tab?.close();
+      setShareError(e instanceof Error ? e.message : "تعذر إنشاء رابط الفاتورة");
+    } finally {
+      setSharing(false);
+    }
+  }
+  return (<>
+    {typeof document !== "undefined" && createPortal(<div className="receipt-print-root"><ReceiptDocument receipt={receipt} variant={variant} methodLabel={methodLabel} /></div>, document.body)}
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="فاتورة التسوية" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ padding: 18 }}>
         <h2 style={{ marginTop: 0 }}>فاتورة تسوية {receipt.payment.code}</h2>
@@ -66,10 +105,16 @@ export function SettlementReceiptDialog({ receipt, methodLabel, onClose }: { rec
           <p className="form-hint">مبلغ غير موزع على إنتاج (حساب عام / فروق): {formatMoney(receipt.unallocatedAmount)} ج.م</p>
         )}
         <p><strong>إجمالي ما وُزّع على الإنتاج: {formatMoney(receipt.allocatedTotal)} ج.م</strong></p>
-        <div className="modal-actions" style={{ padding: 0 }}>
-          <button type="button" className="primary-button" onClick={onClose}>إغلاق</button>
+        {shareError && <div className="alert error">{shareError}</div>}
+        <div className="modal-actions" style={{ padding: 0, gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="primary-button" onClick={() => print("a4")}>فاتورة رسمية (طباعة / PDF)</button>
+          <button type="button" className="secondary-btn" onClick={() => print("thermal")}>إيصال طابعة صغيرة</button>
+          {phone
+            ? <button type="button" className="secondary-btn" disabled={sharing} onClick={() => void sendWhatsapp()}>{sharing ? "جارٍ التجهيز..." : "إرسال الرابط على واتساب"}</button>
+            : <span className="form-hint">لا يوجد رقم هاتف مسجل للعامل لإرسال الفاتورة على واتساب.</span>}
+          <button type="button" className="secondary-btn" onClick={onClose}>إغلاق</button>
         </div>
       </div>
     </div>
-  );
+  </>);
 }
