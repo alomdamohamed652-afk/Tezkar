@@ -19,7 +19,7 @@ Create or use three services in the same Railway project and production environm
 
 - Root directory: repository root (the monorepo uses the root pnpm workspace)
 - Node.js: 24.x
-- Install command: `corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --no-frozen-lockfile`
+- Install command: `corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --frozen-lockfile`
 - Build command: `pnpm --filter @tezkar/web build`
 - Start command: `pnpm --filter @tezkar/web start`
 - Set `API_PROXY_TARGET` at build time to the API service's private Railway address, for example `http://<api-private-domain>:4000`.
@@ -29,7 +29,7 @@ Create or use three services in the same Railway project and production environm
 
 - Root directory: repository root
 - Node.js: 24.x
-- Install command: `corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --no-frozen-lockfile`
+- Install command: `corepack enable && corepack prepare pnpm@10.12.4 --activate && pnpm install --frozen-lockfile`
 - Build command: `pnpm --filter @tezkar/api build`
 - Start command: `pnpm --filter @tezkar/api start`
 - Health check path: `/api/health`
