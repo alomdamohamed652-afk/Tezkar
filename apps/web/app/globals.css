@@ -564,6 +564,13 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   gap:15px;
 }
 
+/* Payments page on narrow screens: stack the header links under the title instead of squeezing them beside it. */
+@media(max-width:720px){
+  .payments-topbar{flex-direction:column;align-items:stretch;gap:10px}
+  .payments-topbar .form-actions{flex-wrap:wrap;padding:0}
+  .payments-topbar .form-actions .secondary-btn{flex:1 1 45%;text-align:center}
+}
+
 .search-select{position:relative;width:100%;min-width:0}
 .search-select-trigger{
   width:100%;
