@@ -4036,7 +4036,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(priceBridgeSummary.statusCode,200,priceBridgeSummary.body);
       assert.equal(priceBridgeSummary.json().data.availableForSettlement,530,"current entitlement already includes price delta, anonymous credit must not count twice");
 
-    }finally{await app.close()}
+    }catch(error){console.error("Payments integration assertion failed before cleanup:",error);throw error}finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
     const cleanup=new pg.Client({connectionString:adminUrl});
