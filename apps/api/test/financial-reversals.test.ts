@@ -40,6 +40,16 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
   const check=await db.query("SELECT (SELECT COUNT(*) FROM advance_repayments WHERE id=$1) AS source_count,(SELECT SUM(amount) FROM financial_reversal_lines WHERE source_id=$1) AS reversed,(SELECT SUM(debit_amount) FROM employee_earnings_ledger WHERE employee_id=$2 AND notes LIKE '%عكس سداد سلفة%') AS debit,(SELECT SUM(amount) FROM cash_custody_transactions WHERE source_type='FINANCIAL_REVERSAL' AND source_id=$3 AND direction='OUT') AS custody,(SELECT repayment_status FROM advance_requests WHERE id=$4) AS status",[rep,emp,response.json().data.reversal.id,adv]);
   assert.equal(Number(check.rows[0].source_count),1);assert.equal(Number(check.rows[0].reversed),20);assert.equal(Number(check.rows[0].debit),20);assert.equal(Number(check.rows[0].custody),20);assert.equal(check.rows[0].status,"OPEN");
   assert.equal((await server.inject({method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload})).statusCode,200);
+  const concurrentKey=randomUUID();
+  const concurrentPayload={sourceType:"ADVANCE_REPAYMENT",sourceId:rep,amount:20,reason:"تصحيح السداد المتزامن",idempotencyKey:concurrentKey};
+  const concurrentReversals=await Promise.all([1,2].map(()=>server.inject({method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:concurrentPayload})));
+  assert.deepEqual(concurrentReversals.map(r=>r.statusCode).sort(),[200,201],
+    "concurrent same-key reversals must return one create and one replay, not a database error: "+
+    concurrentReversals.map(r=>r.statusCode+": "+r.body).join("\n"));
+  assert.equal(new Set(concurrentReversals.map(r=>r.json().data.reversal.id)).size,1,
+    "both concurrent same-key responses must reference the same reversal");
+  const concurrentCount=await db.query("SELECT COUNT(*)::int AS count FROM financial_reversals WHERE idempotency_key=$1",[concurrentKey]);
+  assert.equal(concurrentCount.rows[0].count,1,"concurrent same-key reversals must create exactly one reversal");
 
   // Payroll reversal must validate every linked advance ledger posting before
   // writing any reversal rows, then reverse the complete payroll/advance bundle.
