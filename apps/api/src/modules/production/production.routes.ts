@@ -938,11 +938,13 @@ payment_totals.paid_amount,
          data.shiftLeaderEmployeeId===undefined?current.shift_leader_employee_id:data.shiftLeaderEmployeeId,
          rate.id??null,effectiveRate,rate.wage_type_id,rate.wage_type_code,method,rate.percentage_base??null,baseAmount,earning,bonusAmount,deductionAmount,id]
       );
+      const keptRuleId=(await client.query("SELECT bonus_rule_id FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL AND adjustment_type='BONUS' AND bonus_rule_id IS NOT NULL LIMIT 1",[id])).rows[0]?.bonus_rule_id??null;
       await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
+      // An automatic bonus is kept as an ordinary adjustment on edit (not silently recalculated); its rule link is preserved while the bonus is unchanged.
       if(bonusAmount>0)await client.query(
-        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
-         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
-        [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId]
+        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by,bonus_rule_id)
+         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7,$8)`,
+        [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId,data.bonusAmount===undefined?keptRuleId:null]
       );
       if(deductionAmount>0)await client.query(
         `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
