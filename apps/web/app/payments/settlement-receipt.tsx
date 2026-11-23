@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../../lib/api";
+import { API_BASE } from "../../lib/api-base";
 import { formatMoney } from "../../lib/format";
 import { ReceiptDocument, printReceipt, type ReceiptVariant } from "./receipt-document";
 
@@ -45,6 +46,22 @@ export function SettlementReceiptDialog({ receipt, methodLabel, onClose }: { rec
     // Let React render the chosen layout into the print root before the browser print dialog opens.
     setTimeout(() => printReceipt(next), 50);
   }
+  async function downloadPdf() {
+    setShareError("");
+    try {
+      const res = await fetch(API_BASE + "/api/worker-payments/" + encodeURIComponent(receipt.payment.id) + "/settlement-receipt/pdf", { credentials: "include", cache: "no-store" });
+      if (!res.ok) throw new Error("تعذر إنشاء ملف PDF");
+      const disposition = res.headers.get("content-disposition") ?? "";
+      const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+      const fileName = encoded ? decodeURIComponent(encoded) : "invoice.pdf";
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : "تعذر تحميل ملف PDF");
+    }
+  }
   async function sendWhatsapp() {
     if (!phone) return;
     setSharing(true);
@@ -53,7 +70,8 @@ export function SettlementReceiptDialog({ receipt, methodLabel, onClose }: { rec
     try {
       const r = await api<{ data: { token: string } }>("/api/worker-payments/" + encodeURIComponent(receipt.payment.id) + "/settlement-receipt/share", { method: "POST" });
       const link = window.location.origin + "/r/" + r.data.token;
-      const text = `فاتورة تسوية ${receipt.payment.code} للعامل ${receipt.employee.name}\nإجمالي: ${formatMoney(receipt.payment.amount)} ج.م\nرابط الفاتورة: ${link}`;
+      const pdfLink = window.location.origin + "/api/public/settlement-receipts/" + r.data.token + "/pdf";
+      const text = `فاتورة تسوية ${receipt.payment.code} للعامل ${receipt.employee.name}\nإجمالي: ${formatMoney(receipt.payment.amount)} ج.م\nملف الفاتورة PDF: ${pdfLink}\nعرض الفاتورة: ${link}`;
       const url = "https://wa.me/" + phone + "?text=" + encodeURIComponent(text);
       if (tab) tab.location.href = url; else window.location.href = url;
     } catch (e) {
@@ -107,7 +125,8 @@ export function SettlementReceiptDialog({ receipt, methodLabel, onClose }: { rec
         <p><strong>إجمالي ما وُزّع على الإنتاج: {formatMoney(receipt.allocatedTotal)} ج.م</strong></p>
         {shareError && <div className="alert error">{shareError}</div>}
         <div className="modal-actions" style={{ padding: 0, gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="primary-button" onClick={() => print("a4")}>فاتورة رسمية (طباعة / PDF)</button>
+          <button type="button" className="primary-button" onClick={() => void downloadPdf()}>تحميل فاتورة PDF</button>
+          <button type="button" className="secondary-btn" onClick={() => print("a4")}>طباعة فاتورة رسمية A4</button>
           <button type="button" className="secondary-btn" onClick={() => print("thermal")}>إيصال طابعة صغيرة</button>
           {phone
             ? <button type="button" className="secondary-btn" disabled={sharing} onClick={() => void sendWhatsapp()}>{sharing ? "جارٍ التجهيز..." : "إرسال الرابط على واتساب"}</button>
