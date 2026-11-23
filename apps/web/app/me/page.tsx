@@ -193,14 +193,14 @@ function PermissionsTab({ onError }: { onError: (m: string) => void }) {
         <label>إلى<input type="time" required value={endsAt} onChange={e => setEndsAt(e.target.value)} /></label>
         <label>السبب<input required minLength={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)} /></label>
       </div>
-      <p className="me-hint">الإدارة تحدد بعد المراجعة هل الإذن بمرتب أو بدون.</p>
+      <p className="me-hint">الإدارة تحدد بعد المراجعة هل الإذن بمرتب أو بدون. لو الإذن يمتد بعد منتصف الليل حدد وقت النهاية في اليوم التالي (مثال: من 23:30 إلى 00:30).</p>
       {done && <p className="status-ok">{done}</p>}
       <div className="form-actions"><button className="primary-button" disabled={saving}>{saving ? "جارٍ الإرسال..." : "إرسال الطلب"}</button></div>
     </form>}
     <section className="card"><div className="card-header"><h2 className="card-title">أذوناتي</h2></div><div className="table-wrap"><table>
       <thead><tr><th>التاريخ</th><th>من</th><th>إلى</th><th>السبب</th><th>الحالة</th><th>النوع</th><th /></tr></thead>
       <tbody>{(rows ?? []).map(r => <tr key={r.id}>
-        <td>{r.permission_date.slice(0, 10)}</td><td dir="ltr" style={{textAlign:"right"}}>{t5(r.starts_at)}</td><td dir="ltr" style={{textAlign:"right"}}>{t5(r.ends_at)}</td><td>{r.reason}</td>
+        <td>{r.permission_date.slice(0, 10)}</td><td dir="ltr" style={{textAlign:"right"}}>{t5(r.starts_at)}</td><td dir="ltr" style={{textAlign:"right"}}>{t5(r.ends_at)}{t5(r.ends_at)<=t5(r.starts_at)?" +١":""}</td><td>{r.reason}</td>
         <td>{requestStatus[r.status] ?? r.status}{r.review_note ? <small className="me-hint"> · {r.review_note}</small> : null}</td>
         <td>{r.permission_type === "PAID" ? "بمرتب" : r.permission_type === "UNPAID" ? "بدون مرتب" : "—"}</td>
         <td>{r.status === "PENDING" && canRequest && <button className="secondary-btn" onClick={() => cancel(r.id)}>إلغاء</button>}</td>
