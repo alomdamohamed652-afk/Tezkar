@@ -15,14 +15,14 @@ async function inspectIdentity(connectionString: string): Promise<DatabaseIdenti
   await client.connect();
   try {
     await client.query("BEGIN READ ONLY");
-    const result = await client.query<DatabaseIdentity>(
+    const result = await client.query(
       `SELECT current_database() AS database_name,
               COALESCE(inet_server_addr()::text, 'local') AS server_address,
               inet_server_port() AS server_port,
               pg_postmaster_start_time()::text AS server_started_at`
     );
     await client.query("ROLLBACK");
-    return result.rows[0]!;
+    return result.rows[0] as DatabaseIdentity;
   } finally {
     await client.end();
   }
@@ -33,30 +33,28 @@ async function inspectTarget(connectionString: string) {
   await client.connect();
   try {
     await client.query("BEGIN READ ONLY");
-    const settings = await client.query<{ read_only: string }>(
-      "SHOW default_transaction_read_only"
-    );
-    const markers = await client.query<{ auth_schema: boolean; storage_schema: boolean; supabase_admin: boolean }>(
+    const settings = await client.query("SHOW default_transaction_read_only");
+    const markers = await client.query(
       `SELECT
          EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'auth') AS auth_schema,
          EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') AS storage_schema,
          EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_admin') AS supabase_admin`
     );
-    const objects = await client.query<{ count: string }>(
+    const objects = await client.query(
       `SELECT count(*)::text AS count
          FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r','p','v','m','S','f')`
     );
-    const database = await client.query<{ database_name: string; current_user: string }>(
+    const database = await client.query(
       "SELECT current_database() AS database_name, current_user"
     );
     await client.query("ROLLBACK");
 
     const marker = markers.rows[0]!;
     const publicObjectCount = Number(objects.rows[0]?.count ?? 0);
-    const defaultReadOnly = String(settings.rows[0]?.read_only ?? "").toLowerCase() === "on";
+    const defaultReadOnly = String(settings.rows[0]?.default_transaction_read_only ?? "").toLowerCase() === "on";
     if (!marker.auth_schema || !marker.storage_schema || !marker.supabase_admin) {
       throw new Error("TARGET_DATABASE_URL لا يبدو أنه يشير إلى مشروع Supabase المتوقع؛ تم إيقاف التجهيز.");
     }
@@ -116,7 +114,7 @@ async function main() {
     process.execPath,
     ["--import", "tsx", migrationScript],
     {
-      cwd: path.resolve(scriptDirectory, "../../.."),
+      cwd: path.resolve(scriptDirectory, "../.."),
       env: { ...process.env, DATABASE_URL: targetUrl },
       stdio: "inherit"
     }
