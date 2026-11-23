@@ -122,7 +122,7 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.plan", readyTables: plan.totals.readyTables, blockedTables: plan.totals.blockedTables, requestId: request.id }, "Read-only data transfer plan preview completed");
       return reply.header("cache-control", "no-store, private").send({
         ...plan,
-        note: "هذه معاينة ترتيب فقط. لا يتم نسخ أو تعديل أو حذف أي بيانات، ولا يتم تشغيل migrations."
+        note: "هذه معاينة توافق بنيوي وترتيب فقط، وليست اعتمادًا لجاهزية نقل البيانات. تعريفات Sequences تُقارن دون قراءة last_value/is_called؛ يجب تسويتها بعد النقل قبل السماح بأي كتابة لاحقة. لا يتم هنا نسخ أو تعديل أو حذف بيانات، ولا تشغيل migrations."
       });
     } catch (error) {
       app.log.error({ err: error }, "Read-only database transfer planning failed");
