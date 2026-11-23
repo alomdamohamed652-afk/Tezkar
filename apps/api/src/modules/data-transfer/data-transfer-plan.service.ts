@@ -153,8 +153,9 @@ export function buildTransferPlan(tables: TransferPlanTable[], globalBlockers: s
       component.push(member);
     } while (member !== name);
 
-    const selfReferential = component.length === 1 &&
-      (candidates.get(component[0])?.dependencies ?? []).includes(component[0]);
+    const onlyMember = component[0];
+    const selfReferential = component.length === 1 && onlyMember !== undefined &&
+      (candidates.get(onlyMember)?.dependencies ?? []).includes(onlyMember);
     if (component.length > 1 || selfReferential) {
       for (const item of component) cycleMembers.add(item);
     }
