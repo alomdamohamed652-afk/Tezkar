@@ -201,6 +201,33 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     await admin.query(`CREATE ROLE ${quoteDb(ownerRole)}`);
     ownerRoleCreated = true;
     await admin.query(`GRANT CONNECT ON DATABASE ${quoteDb(targetName)} TO ${quoteDb(ownerRole)}`);
+
+    // Isolate schema ownership and ACL drift so one difference cannot mask the other.
+    const sourceSchemaPolicy = new pg.Pool({ connectionString: databaseUrl(sourceName), max: 1 });
+    const targetSchemaPolicy = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
+    try {
+      await sourceSchemaPolicy.query("CREATE SCHEMA ownership_probe");
+      await targetSchemaPolicy.query("CREATE SCHEMA ownership_probe");
+      await sourceSchemaPolicy.query("CREATE SCHEMA acl_probe");
+      await targetSchemaPolicy.query("CREATE SCHEMA acl_probe");
+      await targetSchemaPolicy.query(`ALTER SCHEMA ownership_probe OWNER TO ${quoteDb(ownerRole)}`);
+      await targetSchemaPolicy.query("GRANT USAGE ON SCHEMA acl_probe TO PUBLIC");
+    } finally {
+      await Promise.all([sourceSchemaPolicy.end(), targetSchemaPolicy.end()]);
+    }
+    const isolatedSchemaPolicy = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
+    assert.ok(
+      isolatedSchemaPolicy.globalObjectDifferences.schemas.differences.missingInSource.some(value =>
+        value.startsWith("ownership_probe:")
+      ),
+      "schema ownership drift alone must be visible in the target-only schema metadata"
+    );
+    assert.ok(
+      isolatedSchemaPolicy.globalObjectDifferences.schemas.differences.missingInSource.some(value =>
+        value.startsWith("acl_probe:") && value.includes("=U/")
+      ),
+      "schema ACL drift alone must be visible even when schema ownership matches"
+    );
     const changedTarget = new pg.Pool({ connectionString: databaseUrl(targetName), max: 1 });
     try {
       await changedTarget.query("ALTER INDEX public.workers_name_partial_renamed RENAME TO workers_name_partial_idx");
