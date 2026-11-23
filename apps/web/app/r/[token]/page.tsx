@@ -37,7 +37,8 @@ export default function SharedReceiptPage({ params }: { params: Promise<{ token:
   return (
     <main dir="rtl" className="shared-receipt-page">
       <div className="shared-receipt-toolbar">
-        <button type="button" className="primary-button" onClick={() => print("a4")}>تحميل PDF / طباعة</button>
+        <a className="primary-button" href={`${API_BASE}/api/public/settlement-receipts/${encodeURIComponent(token)}/pdf`} download>تحميل الفاتورة PDF</a>
+        <button type="button" className="secondary-btn" onClick={() => print("a4")}>طباعة A4</button>
         <button type="button" className="secondary-btn" onClick={() => print("thermal")}>إيصال طابعة صغيرة</button>
       </div>
       <div className="receipt-preview">
