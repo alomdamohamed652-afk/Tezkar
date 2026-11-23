@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -189,6 +189,25 @@ test("warehouse movement HTTP route serializes concurrent receipts and opposing 
     assert.equal(receiptRaceBalance.rowCount,1,"concurrent receipt APIs must initialize one stock balance");
     assert.equal(Number(receiptRaceBalance.rows[0].quantity),12);
     assert.equal(Number(receiptRaceBalance.rows[0].inventory_value),31);
+    const idempotencyKey=randomUUID();
+    const keyedReceipt=()=>app!.inject({
+      method:"POST",url:"/api/warehouse/receipts",headers:{cookie:cookieHeader},
+      payload:{source:"Idempotent concurrent receipt",idempotencyKey,lines:[{
+        productId:receiptRaceProduct.rows[0].id,warehouseId:receiptRaceWarehouse.rows[0].id,
+        locationId:receiptRaceLocation.rows[0].id,quantity:2,unitCost:4
+      }]}
+    });
+    const keyedCreates=await Promise.all([keyedReceipt(),keyedReceipt()]);
+    assert.deepEqual(keyedCreates.map(response=>response.statusCode).sort(),[200,201],
+      "concurrent same-key submissions must return one create and one replay, not a database error: "+
+      keyedCreates.map(response=>`${response.statusCode}: ${response.body}`).join("\n"));
+    const keyedReplay=keyedCreates.find(response=>response.statusCode===200)!;
+    const keyedCreate=keyedCreates.find(response=>response.statusCode===201)!;
+    assert.equal(keyedCreate.json().replayed,false);
+    assert.equal(keyedReplay.json().replayed,true,"the second same-key response must be marked as a replay");
+    assert.equal(keyedReplay.json().data.id,keyedCreate.json().data.id,"both responses must reference the same receipt");
+    const keyedRows=await apiPool.query("SELECT COUNT(*)::int AS count FROM warehouse_receipts WHERE idempotency_key=$1",[idempotencyKey]);
+    assert.equal(keyedRows.rows[0].count,1,"concurrent same-key submissions must create exactly one receipt");
     const shiftLeaderStock=await app.inject({method:"GET",url:"/api/warehouse/stock",headers:{cookie:shiftLeaderCookie}});
     assert.equal(shiftLeaderStock.statusCode,200,shiftLeaderStock.body);
     const shiftLeaderStockRow=shiftLeaderStock.json().data.find((row:{product_id:string;warehouse_id:string;location_id:string})=>
