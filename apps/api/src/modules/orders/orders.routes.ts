@@ -557,12 +557,18 @@ export async function orderRoutes(app: FastifyInstance) {
       orderStageId:z.string().uuid(),
       newRate:z.number().nonnegative(),
       newRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).optional(),
-      scope:z.enum(["NEW_ONLY","UNPAID_ONLY","ALL"]),
+      scope:z.enum(["NEW_ONLY","UNPAID_ONLY","ALL","NEW_AND_PAID","PAST_UNPAID_ONLY","PAST_PAID_ONLY","PAST_ALL"]),
       reason:z.string().trim().min(2).max(500)
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تغيير سعر الطلبية غير صحيحة",422);
     if(!await canViewOrderFinancials(request.user!.userId))
       throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تغيير أسعار المراحل وإعادة احتساب المستحقات متاح للمخولين ماليًا فقط",403);
+    // Scope groups are independent: "new production" moves the going-forward
+    // stage rate, the other two recalculate already-recorded production.
+    const scope=parsed.data.scope;
+    const includeNew=["NEW_ONLY","UNPAID_ONLY","ALL","NEW_AND_PAID"].includes(scope);
+    const includeUnpaid=["UNPAID_ONLY","ALL","PAST_UNPAID_ONLY","PAST_ALL"].includes(scope);
+    const includePaid=["ALL","NEW_AND_PAID","PAST_PAID_ONLY","PAST_ALL"].includes(scope);
     const result=await withTransaction(async client=>{
       const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -573,13 +579,16 @@ export async function orderRoutes(app: FastifyInstance) {
       if(!stage.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","المرحلة لا تتبع هذه الطلبية",404);
       const oldRate=stage.rows[0].stage_rate==null?null:Number(stage.rows[0].stage_rate);
       const newRate=parsed.data.newRate;
-      await client.query("UPDATE order_stages SET stage_rate=$1,stage_rate_method=COALESCE($2,stage_rate_method) WHERE id=$3",[newRate,parsed.data.newRateMethod??null,parsed.data.orderStageId]);
+      // Past-only scopes reprice recorded production while the going-forward
+      // stage price stays fixed.
+      if(includeNew)
+        await client.query("UPDATE order_stages SET stage_rate=$1,stage_rate_method=COALESCE($2,stage_rate_method) WHERE id=$3",[newRate,parsed.data.newRateMethod??null,parsed.data.orderStageId]);
       const created=await client.query(
         "INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,new_rate_method,scope,reason,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
         [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.newRateMethod??stage.rows[0].stage_rate_method??null,parsed.data.scope,parsed.data.reason,request.user!.userId]
       );
       let affected=0,totalDelta=0;
-      if(parsed.data.scope!=="NEW_ONLY"){
+      if(includeUnpaid||includePaid){
         // Serialize price recalculation against payouts by locking affected employees first,
         // using the same employee-before-production lock order as settlement operations.
         await client.query("SELECT e.id FROM employees e WHERE e.id IN (SELECT DISTINCT pe.employee_id FROM production_entries pe WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')) ORDER BY e.id FOR UPDATE",[parsed.data.orderStageId]);
@@ -600,7 +609,7 @@ export async function orderRoutes(app: FastifyInstance) {
                   COALESCE((SELECT pci.revised_earning FROM order_price_change_items pci WHERE pci.production_entry_id=pe.id ORDER BY pci.created_at DESC,pci.id DESC LIMIT 1),pe.earning_amount) AS effective_earning
              FROM production_entries pe
             WHERE pe.order_stage_id=$1 AND pe.status IN ('PENDING','APPROVED')
-            ${parsed.data.scope==="UNPAID_ONLY"?`AND (${paidAmountSql})=0`:""}
+            ${includeUnpaid&&!includePaid?`AND (${paidAmountSql})=0`:includePaid&&!includeUnpaid?`AND (${paidAmountSql})>0`:""}
             ORDER BY pe.created_at,pe.id
             FOR UPDATE OF pe`,
           [parsed.data.orderStageId]
