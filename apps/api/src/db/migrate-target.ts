@@ -10,6 +10,29 @@ type DatabaseIdentity = {
   server_started_at: string;
 };
 
+
+function getSupabaseProjectRef(connectionString: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(connectionString);
+  } catch {
+    throw new Error("صيغة رابط قاعدة البيانات غير صالحة؛ تعذر التحقق من هوية المشروع.");
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const directMatch = host.match(/^db\\.([a-z0-9]{20})\\.supabase\\.co$/);
+  if (directMatch?.[1]) return directMatch[1];
+
+  if (host.endsWith(".pooler.supabase.com")) {
+    // Supavisor pooler usernames use <database-user>.<project-ref>.
+    const username = decodeURIComponent(parsed.username);
+    const poolerMatch = username.match(/\\.([a-z0-9]{20})$/i);
+    if (poolerMatch?.[1]) return poolerMatch[1].toLowerCase();
+  }
+
+  return null;
+}
+
 async function inspectIdentity(connectionString: string): Promise<DatabaseIdentity> {
   const client = new Client({ connectionString, connectionTimeoutMillis: 5_000 });
   await client.connect();
@@ -81,6 +104,15 @@ async function main() {
     throw new Error("يلزم ضبط DATABASE_URL للمصدر وTARGET_DATABASE_URL لوجهة Supabase. لا يوجد fallback بينهما.");
   }
 
+  const sourceProjectRef = getSupabaseProjectRef(sourceUrl);
+  const targetProjectRef = getSupabaseProjectRef(targetUrl);
+  if (!targetProjectRef) {
+    throw new Error("تعذر استخراج معرّف مشروع Supabase من TARGET_DATABASE_URL؛ استخدم رابط Direct أو Pooler الرسمي للمشروع.");
+  }
+  if (sourceProjectRef && sourceProjectRef === targetProjectRef) {
+    throw new Error("المصدر والوجهة ينتميان إلى مشروع Supabase نفسه (حتى لو اختلف Direct وPooler)؛ تم الإيقاف دون كتابة.");
+  }
+
   const source = await inspectIdentity(sourceUrl);
   const targetIdentity = await inspectIdentity(targetUrl);
   if (
@@ -94,7 +126,7 @@ async function main() {
 
   const target = await inspectTarget(targetUrl);
   console.log("Supabase target preflight passed.");
-  console.log(`Target database: ${target.databaseName}; user: ${target.databaseUser}; public objects: ${target.publicObjectCount}.`);
+  console.log(`Target Supabase project: ${targetProjectRef}; database: ${target.databaseName}; user: ${target.databaseUser}; public objects: ${target.publicObjectCount}.`);
   console.log("Source was inspected using a read-only transaction. No schema or data was changed.");
 
   const apply = process.argv.includes("--apply");
