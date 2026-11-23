@@ -1,6 +1,6 @@
 import { amountUnits, roundedAmount } from "./settlement-money.js";
 import type { FastifyInstance } from "fastify";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -428,6 +428,83 @@ async function executeWorkerPayment(
   }
 
   return {payment:payment.rows[0],grossAmount:input.grossAmount,advanceRepaymentAmount:planned.total,cashPaid:planned.cashPaid,carryForwardAmount,repayments:planned.plan.map(x=>({advanceCode:x.advance.code,amount:x.amount,remaining:Math.max(0,Number(x.advance.outstanding)-x.amount)}))};
+}
+
+const RECEIPT_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+function signReceiptToken(paymentId: string, expiresAt: number): string {
+  const payload = `${paymentId}.${expiresAt}`;
+  const sig = createHmac("sha256", process.env.SESSION_SECRET ?? "").update(`settlement-receipt:${payload}`).digest("base64url");
+  return `${Buffer.from(payload).toString("base64url")}.${sig}`;
+}
+function verifyReceiptToken(token: string): string | null {
+  const [encoded, sig] = token.split(".");
+  if (!encoded || !sig) return null;
+  let payload: string;
+  try { payload = Buffer.from(encoded, "base64url").toString("utf8"); } catch { return null; }
+  const [paymentId, expiresRaw] = payload.split(".");
+  const expiresAt = Number(expiresRaw);
+  if (!paymentId || !Number.isSafeInteger(expiresAt) || expiresAt < Date.now() || !z.string().uuid().safeParse(paymentId).success) return null;
+  const expected = createHmac("sha256", process.env.SESSION_SECRET ?? "").update(`settlement-receipt:${payload}`).digest();
+  let supplied: Buffer;
+  try { supplied = Buffer.from(sig, "base64url"); } catch { return null; }
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected) ? paymentId : null;
+}
+
+async function buildSettlementReceipt(paymentId: string) {
+    const payment = await pool.query(
+      `SELECT wp.id,wp.code,wp.employee_id,wp.amount::float8 AS amount,wp.method,wp.paid_at,wp.notes,
+              e.full_name AS employee_name,e.code AS employee_code,e.phone AS employee_phone
+         FROM worker_payments wp JOIN employees e ON e.id=wp.employee_id WHERE wp.id=$1`,
+      [paymentId]
+    );
+    if (!payment.rowCount) throw new AppError("PAYMENT_NOT_FOUND", "الدفعة غير موجودة", 404);
+    const detail = (allocationFrom: string, allocationWhere: string) => `
+      SELECT a.amount::float8 AS amount,p.id AS production_id,p.code AS production_code,
+             to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity::float8 AS quantity,
+             o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,os.sequence_no,s.name AS stage_name
+        FROM ${allocationFrom}
+        JOIN production_entries p ON p.id=a.production_entry_id
+        LEFT JOIN order_stages os ON os.id=p.order_stage_id
+        LEFT JOIN production_orders o ON o.id=os.order_id
+        LEFT JOIN stages s ON s.id=os.stage_id
+       WHERE ${allocationWhere}
+       ORDER BY p.work_date,p.created_at,p.id`;
+    // Same source precedence used elsewhere: settlement allocations, then order allocations, then legacy ones.
+    const sources = [
+      detail("employee_earnings_settlement_allocations a JOIN employee_earnings_settlements es ON es.id=a.settlement_id", "es.worker_payment_id=$1"),
+      detail("worker_payment_order_allocations a", "a.worker_payment_id=$1"),
+      detail("worker_payment_allocations a", "a.worker_payment_id=$1")
+    ];
+    let rows: Array<Record<string, unknown>> = [];
+    for (const sql of sources) {
+      const found = await pool.query(sql, [paymentId]);
+      if (found.rowCount) { rows = found.rows; break; }
+    }
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const orders = new Map<string, { orderId: string | null; orderCode: string | null; orderName: string | null; total: number; lines: Array<Record<string, unknown>> }>();
+    for (const r of rows) {
+      const key = String(r.order_id ?? "none");
+      let group = orders.get(key);
+      if (!group) {
+        group = { orderId: (r.order_id as string | null) ?? null, orderCode: (r.order_code as string | null) ?? null, orderName: (r.order_name as string | null) ?? null, total: 0, lines: [] };
+        orders.set(key, group);
+      }
+      const amount = Number(r.amount);
+      group.total = round(group.total + amount);
+      group.lines.push({
+        productionId: r.production_id, productionCode: r.production_code, workDate: r.work_date, quantity: r.quantity,
+        orderStageId: r.order_stage_id ?? null, stageSequence: r.sequence_no ?? null, stageName: r.stage_name ?? null, amount: round(amount)
+      });
+    }
+    const allocated = round([...orders.values()].reduce((sum, g) => sum + g.total, 0));
+    const pay = payment.rows[0];
+    return { data: {
+      payment: { id: pay.id, code: pay.code, method: pay.method, paidAt: pay.paid_at, notes: pay.notes, amount: round(Number(pay.amount)) },
+      employee: { id: pay.employee_id, code: pay.employee_code, name: pay.employee_name, phone: pay.employee_phone ?? null },
+      orders: [...orders.values()],
+      allocatedTotal: allocated,
+      unallocatedAmount: round(Math.max(0, Number(pay.amount) - allocated))
+    }};
 }
 
 export async function paymentsRoutes(app:FastifyInstance){
@@ -1005,60 +1082,36 @@ export async function paymentsRoutes(app:FastifyInstance){
   }, async (request) => {
     const parsed = z.object({ paymentId: z.string().uuid() }).safeParse(request.params);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "رقم الدفعة غير صحيح", 422);
-    const payment = await pool.query(
-      `SELECT wp.id,wp.code,wp.employee_id,wp.amount::float8 AS amount,wp.method,wp.paid_at,wp.notes,
-              e.full_name AS employee_name,e.code AS employee_code
-         FROM worker_payments wp JOIN employees e ON e.id=wp.employee_id WHERE wp.id=$1`,
-      [parsed.data.paymentId]
-    );
-    if (!payment.rowCount) throw new AppError("PAYMENT_NOT_FOUND", "الدفعة غير موجودة", 404);
-    const detail = (allocationFrom: string, allocationWhere: string) => `
-      SELECT a.amount::float8 AS amount,p.id AS production_id,p.code AS production_code,
-             to_char(p.work_date,'YYYY-MM-DD') AS work_date,p.quantity::float8 AS quantity,
-             o.id AS order_id,o.code AS order_code,o.order_name,os.id AS order_stage_id,os.sequence_no,s.name AS stage_name
-        FROM ${allocationFrom}
-        JOIN production_entries p ON p.id=a.production_entry_id
-        LEFT JOIN order_stages os ON os.id=p.order_stage_id
-        LEFT JOIN production_orders o ON o.id=os.order_id
-        LEFT JOIN stages s ON s.id=os.stage_id
-       WHERE ${allocationWhere}
-       ORDER BY p.work_date,p.created_at,p.id`;
-    // Same source precedence used elsewhere: settlement allocations, then order allocations, then legacy ones.
-    const sources = [
-      detail("employee_earnings_settlement_allocations a JOIN employee_earnings_settlements es ON es.id=a.settlement_id", "es.worker_payment_id=$1"),
-      detail("worker_payment_order_allocations a", "a.worker_payment_id=$1"),
-      detail("worker_payment_allocations a", "a.worker_payment_id=$1")
-    ];
-    let rows: Array<Record<string, unknown>> = [];
-    for (const sql of sources) {
-      const found = await pool.query(sql, [parsed.data.paymentId]);
-      if (found.rowCount) { rows = found.rows; break; }
-    }
-    const round = (n: number) => Math.round(n * 100) / 100;
-    const orders = new Map<string, { orderId: string | null; orderCode: string | null; orderName: string | null; total: number; lines: Array<Record<string, unknown>> }>();
-    for (const r of rows) {
-      const key = String(r.order_id ?? "none");
-      let group = orders.get(key);
-      if (!group) {
-        group = { orderId: (r.order_id as string | null) ?? null, orderCode: (r.order_code as string | null) ?? null, orderName: (r.order_name as string | null) ?? null, total: 0, lines: [] };
-        orders.set(key, group);
-      }
-      const amount = Number(r.amount);
-      group.total = round(group.total + amount);
-      group.lines.push({
-        productionId: r.production_id, productionCode: r.production_code, workDate: r.work_date, quantity: r.quantity,
-        orderStageId: r.order_stage_id ?? null, stageSequence: r.sequence_no ?? null, stageName: r.stage_name ?? null, amount: round(amount)
+    return buildSettlementReceipt(parsed.data.paymentId);
+  });
+
+  // Creates a signed, expiring view link for one settlement receipt (the worker opens it without logging in).
+  app.post("/api/worker-payments/:paymentId/settlement-receipt/share", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request) => {
+    const parsed = z.object({ paymentId: z.string().uuid() }).safeParse(request.params);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "رقم الدفعة غير صحيح", 422);
+    const exists = await pool.query("SELECT 1 FROM worker_payments WHERE id=$1", [parsed.data.paymentId]);
+    if (!exists.rowCount) throw new AppError("PAYMENT_NOT_FOUND", "الدفعة غير موجودة", 404);
+    const expiresAt = Date.now() + RECEIPT_LINK_TTL_MS;
+    const auditClient = await pool.connect();
+    try {
+      await writeAudit(auditClient, {
+        actorUserId: request.user!.userId, actorEmployeeId: request.user!.employeeId, action: "share_settlement_receipt", module: "payments",
+        entityType: "worker_payment", entityId: parsed.data.paymentId, metadata: { expiresAt }, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null
       });
-    }
-    const allocated = round([...orders.values()].reduce((sum, g) => sum + g.total, 0));
-    const pay = payment.rows[0];
-    return { data: {
-      payment: { id: pay.id, code: pay.code, method: pay.method, paidAt: pay.paid_at, notes: pay.notes, amount: round(Number(pay.amount)) },
-      employee: { id: pay.employee_id, code: pay.employee_code, name: pay.employee_name },
-      orders: [...orders.values()],
-      allocatedTotal: allocated,
-      unallocatedAmount: round(Math.max(0, Number(pay.amount) - allocated))
-    }};
+    } finally { auditClient.release(); }
+    return { data: { token: signReceiptToken(parsed.data.paymentId, expiresAt), expiresAt: new Date(expiresAt).toISOString() } };
+  });
+
+  // Public (no login) read of a shared receipt. Only the signed token grants access; it exposes no phone number or notes.
+  app.get("/api/public/settlement-receipts/:token", async (request) => {
+    const parsed = z.object({ token: z.string().min(20).max(300) }).safeParse(request.params);
+    const paymentId = parsed.success ? verifyReceiptToken(parsed.data.token) : null;
+    if (!paymentId) throw new AppError("RECEIPT_LINK_INVALID", "رابط الفاتورة غير صالح أو منتهي", 404);
+    const receipt = await buildSettlementReceipt(paymentId);
+    const employee = { id: receipt.data.employee.id, code: receipt.data.employee.code, name: receipt.data.employee.name };
+    return { data: { ...receipt.data, employee, payment: { ...receipt.data.payment, notes: null } } };
   });
 
   // Return every approved production record with its reconciled paid amount and derived payment status.

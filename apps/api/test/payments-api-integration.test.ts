@@ -1426,6 +1426,17 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       }
       assert.equal(Math.round((Number(receiptData.allocatedTotal)+Number(receiptData.unallocatedAmount))*100)/100,Number(receiptData.payment.amount),
         "receipt allocated plus unallocated must equal the settlement amount");
+      const shareLink=await app.inject({
+        method:"POST",url:`/api/worker-payments/${bonusAwarePayout.json().data.payment.id}/settlement-receipt/share`,headers:{cookie:managerCookie}
+      });
+      assert.equal(shareLink.statusCode,200,shareLink.body);
+      const publicReceipt=await app.inject({method:"GET",url:`/api/public/settlement-receipts/${shareLink.json().data.token}`});
+      assert.equal(publicReceipt.statusCode,200,publicReceipt.body);
+      assert.equal(publicReceipt.json().data.payment.id,bonusAwarePayout.json().data.payment.id);
+      assert.equal("phone" in publicReceipt.json().data.employee,false,"public receipt must not expose the worker phone number");
+      const tamperedToken=shareLink.json().data.token.slice(0,-3)+"abc";
+      const rejectedReceipt=await app.inject({method:"GET",url:`/api/public/settlement-receipts/${tamperedToken}`});
+      assert.equal(rejectedReceipt.statusCode,404,"a tampered receipt link must be rejected");
 
       const unpaidProductionAfterPayout=await app.inject({
         method:"GET",url:`/api/worker-payments/unpaid-production?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
