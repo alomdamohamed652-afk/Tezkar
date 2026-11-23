@@ -47,13 +47,48 @@ type DatabaseSnapshot = {
   routines: string[];
   sequences: string[];
   unsupportedRelations: string[];
+  unsupportedSchemas: string[];
+  schemas: string[];
+  defaultPrivileges: string[];
   features: FeatureCounts;
 };
 
 async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
-  await client.query("BEGIN READ ONLY");
+  await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await client.query("SET LOCAL statement_timeout = '15000'");
+    const schemaInventory = await client.query(`
+          SELECT n.nspname AS schema_name,
+                 pg_get_userbyid(n.nspowner) AS owner_name,
+                 n.nspacl::text AS acl
+            FROM pg_namespace n
+           WHERE n.nspname <> 'information_schema'
+             AND n.nspname !~ '^pg_'
+           ORDER BY n.nspname
+    `);
+    const unsupportedSchemas = await client.query(`
+          SELECT DISTINCT n.nspname AS schema_name
+            FROM pg_namespace n
+           WHERE n.nspname <> 'public'
+             AND n.nspname <> 'information_schema'
+             AND n.nspname !~ '^pg_'
+             AND (
+               EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r','p','v','m','S','f'))
+               OR EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = n.oid)
+               OR EXISTS (SELECT 1 FROM pg_type t WHERE t.typnamespace = n.oid AND t.typtype IN ('e','d','c'))
+             )
+           ORDER BY n.nspname
+    `);
+    const defaultPrivileges = await client.query(`
+          SELECT COALESCE(n.nspname, '<global>') AS schema_name,
+                 role_name.rolname AS owner_name,
+                 d.defaclobjtype AS object_type,
+                 d.defaclacl::text AS privileges
+            FROM pg_default_acl d
+            JOIN pg_roles role_name ON role_name.oid = d.defaclrole
+            LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+           ORDER BY schema_name, owner_name, object_type, privileges
+    `);
     const unsupportedRelations = await client.query(`
           SELECT n.nspname || '.' || c.relname AS relation_name
             FROM pg_class c
@@ -510,6 +545,10 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       sequences: sequences.rows.map((row: any) =>
         `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.owner_name}:${row.acl ?? ""}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
       unsupportedRelations: unsupportedRelations.rows.map((row: any) => row.relation_name),
+      unsupportedSchemas: unsupportedSchemas.rows.map((row: any) => row.schema_name),
+      schemas: schemaInventory.rows.map((row: any) => `${row.schema_name}:${row.owner_name}:${row.acl ?? ""}`),
+      defaultPrivileges: defaultPrivileges.rows.map((row: any) =>
+        `${row.schema_name}:${row.owner_name}:${row.object_type}:${row.privileges ?? ""}`),
       features: featureCounts
     };
   } finally {
@@ -642,6 +681,21 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         readSnapshot(sourceClient), readSnapshot(targetClient)
       ]);
       const comparison = compareSnapshots(source, target);
+      const unsupportedSchemaNames = [...new Set([
+        ...source.unsupportedSchemas,
+        ...target.unsupportedSchemas
+      ])].sort();
+      const unsupportedSchemaBlockers = unsupportedSchemaNames.map(name => ({
+        table: `schema:${name}`,
+        status: "unsupported_schema",
+        sourceEstimate: 0,
+        targetEstimate: 0,
+        dependencies: [] as string[],
+        hasPrimaryKey: false,
+        differences: ["Schema خارج نطاق فحص وترحيل الجداول المدعومة حاليًا؛ يجب فحص محتوياته وصلاحياته يدويًا قبل أي نقل"]
+      }));
+      const schemaDifferences = diff(source.schemas, target.schemas);
+      const defaultPrivilegeDifferences = diff(source.defaultPrivileges, target.defaultPrivileges);
       const unsupportedRelationBlockers = [...new Set([
         ...source.unsupportedRelations,
         ...target.unsupportedRelations
@@ -664,7 +718,12 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
           foreignKeyCount: target.foreignKeyCount
         },
         comparison,
-        blockers: [...comparison.filter(row => row.status !== "compatible"), ...unsupportedRelationBlockers],
+        blockers: [...comparison.filter(row => row.status !== "compatible"), ...unsupportedSchemaBlockers, ...unsupportedRelationBlockers],
+        unsupportedSchemas: { source: source.unsupportedSchemas, target: target.unsupportedSchemas },
+        globalObjectDifferences: {
+          schemas: { source: source.schemas.length, target: target.schemas.length, differences: schemaDifferences },
+          defaultPrivileges: { source: source.defaultPrivileges.length, target: target.defaultPrivileges.length, differences: defaultPrivilegeDifferences }
+        },
         unsupportedRelations: {
           source: source.unsupportedRelations,
           target: target.unsupportedRelations
@@ -691,7 +750,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
-        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. مقارنة الجداول والكائنات التفصيلية محصورة في public؛ الإضافات وLarge Objects عناصر على مستوى قاعدة البيانات، ويُعرض Large Objects كعدد فقط دون مقارنة المحتوى أو الملكية. لا ينفذ الفحص نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
+        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. مقارنة الجداول والكائنات التفصيلية محصورة في public؛ أي Schema مستخدم خارج public يظهر كمانع مستقل. تتم مقارنة ملكية وصلاحيات الـSchemas، بما فيها public، والصلاحيات الافتراضية المسجلة في pg_default_acl. الأدوار وعضوياتها وDatabase ACL ليست ضمن المقارنة الكاملة بعد. Large Objects يُعرض عددها فقط دون مقارنة المحتوى أو الملكية. لا ينفذ الفحص نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
       };
     } finally {
       sourceClient.release();
