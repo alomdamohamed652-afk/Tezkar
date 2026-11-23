@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   databaseIdentity,
-  inspectDatabaseTransfer
+  inspectDatabaseTransfer,
+  roleMembershipQueryForVersion
 } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
 import { parseRequestedTables } from "../src/modules/data-transfer/data-transfer-counts.service.js";
 import { assertDistinctConnectedDatabases } from "../src/modules/data-transfer/data-transfer-connection.service.js";
@@ -16,6 +17,21 @@ test("database identity normalizes hostname case and PostgreSQL default port", (
     databaseIdentity("postgres://other:password@db.example:5432/tezkar"),
     "db.example:5432/tezkar"
   );
+});
+
+test("role membership inspection uses PostgreSQL 16 membership options when available", () => {
+  const query = roleMembershipQueryForVersion(160000);
+  assert.match(query, /m\\.inherit_option/);
+  assert.match(query, /m\\.set_option/);
+  assert.doesNotMatch(query, /member\\.rolinherit AS inherit_option/);
+});
+
+test("role membership inspection remains compatible with PostgreSQL 15 and older", () => {
+  const query = roleMembershipQueryForVersion(150000);
+  assert.match(query, /member\\.rolinherit AS inherit_option/);
+  assert.match(query, /TRUE AS set_option/);
+  assert.doesNotMatch(query, /m\\.inherit_option/);
+  assert.doesNotMatch(query, /m\\.set_option/);
 });
 
 test("database identity returns null for malformed connection strings", () => {
