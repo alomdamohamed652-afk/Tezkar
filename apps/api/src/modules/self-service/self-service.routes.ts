@@ -79,4 +79,17 @@ export async function selfServiceRoutes(app: FastifyInstance) {
     const data = items.rows.map(r => ({ ...r, remaining_amount: Math.max(Number(r.net_amount) - Number(r.paid_amount), 0) }));
     return { data };
   });
+
+  // Own-scoped salary explanation: the frozen attendance calculation behind the employee's own
+  // approved slip (same data the printed slip summarizes). Never exposes other employees.
+  app.get("/api/me/payslips/:id/calculation", { preHandler: [authenticateRequest, requirePermission("payroll.view_own", "own")] }, async request => {
+    const employeeId = ownEmployeeId(request);
+    const id = (request.params as { id: string }).id;
+    const item = await pool.query(
+      `SELECT i.id FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id
+        WHERE i.id=$1 AND i.employee_id=$2 AND p.status IN ('APPROVED','CLOSED')`, [id, employeeId]);
+    if (!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند المرتب غير موجود أو لم يُعتمد بعد", 404);
+    const calculation = await pool.query("SELECT calculation_data,captured_at FROM payroll_attendance_calculations WHERE payroll_item_id=$1", [id]);
+    return { data: { calculation: calculation.rows[0]?.calculation_data ?? null, capturedAt: calculation.rows[0]?.captured_at ?? null } };
+  });
 }

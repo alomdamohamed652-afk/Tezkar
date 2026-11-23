@@ -16,7 +16,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { verifyPassword } from "../auth/auth.service.js";
-import { hasPermission } from "../rbac/rbac.service.js";
+import { hasPermission, assertPermissionAccountAllowed } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { allocatePendingWorkerPaymentDifferencesForProduction } from "../payments/worker-payment-differences.service.js";
@@ -775,7 +775,8 @@ payment_totals.paid_amount,
       bonusAmount:z.number().nonnegative().optional(),
       bonusReason:z.string().trim().max(500).nullable().optional(),
       deductionAmount:z.number().nonnegative().optional(),
-      deductionReason:z.string().trim().max(500).nullable().optional()
+      deductionReason:z.string().trim().max(500).nullable().optional(),
+      editReason:z.string().trim().min(2).max(500).optional()
     }).refine(v=>Object.keys(v).length>0).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تعديل الإنتاج غير صحيحة",422);
     const row=await withTransaction(async client=>{
@@ -783,7 +784,18 @@ payment_totals.paid_amount,
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
       const originalWorkDate=current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10);
       await assertAccountingPeriodOpen(client,originalWorkDate);
-      if(current.status!=="PENDING")throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه. استخدم إجراء العكس المعتمد بدل تعديل سجل مرحّل.",409);
+      // APPROVED entries are editable only through the correcting-entry path: a dedicated
+      // permission, an optional account restriction, a mandatory reason, an immutable
+      // before/after record, and a ledger adjustment for the net earnings delta.
+      const isApprovedCorrection=current.status==="APPROVED";
+      if(current.status!=="PENDING"&&!isApprovedCorrection)throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه. استخدم إجراء العكس المعتمد بدل تعديل سجل مرحّل.",409);
+      let correctionReason="";
+      if(isApprovedCorrection){
+        if(!(await hasPermission(client,request.user!.userId,"production.edit_approved")))throw new AppError("PRODUCTION_EDIT_LOCKED","تعديل إنتاج معتمد يحتاج صلاحية خاصة؛ استخدم إجراء العكس المعتمد أو اطلب الصلاحية من الإدارة.",403);
+        await assertPermissionAccountAllowed(client,"production.edit_approved",request.user!.userId);
+        correctionReason=(parsed.data.editReason??"").trim();
+        if(correctionReason.length<2)throw new AppError("CORRECTION_REASON_REQUIRED","اكتب سبب تعديل سجل الإنتاج المعتمد",422);
+      }
       const data=parsed.data;
       const employeeId=data.employeeId??current.employee_id;
       const shiftId=data.shiftId??current.shift_id;
@@ -922,19 +934,38 @@ payment_totals.paid_amount,
          data.shiftLeaderEmployeeId===undefined?current.shift_leader_employee_id:data.shiftLeaderEmployeeId,
          rate.id??null,effectiveRate,rate.wage_type_id,rate.wage_type_code,method,rate.percentage_base??null,baseAmount,earning,bonusAmount,deductionAmount,id]
       );
-      await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
-      if(bonusAmount>0)await client.query(
+      // On an approved correction the posted (ledger-linked) adjustment rows stay untouched;
+      // the net earnings delta is posted as a single ledger adjustment below instead.
+      if(!isApprovedCorrection)await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
+      if(!isApprovedCorrection&&bonusAmount>0)await client.query(
         `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
          VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
         [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId]
       );
-      if(deductionAmount>0)await client.query(
+      if(!isApprovedCorrection&&deductionAmount>0)await client.query(
         `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
          VALUES($1,$2,$3,'DEDUCTION',$4,$5,$6,$7)`,
         [employeeId,shiftId,id,deductionAmount,finalDeductionReason!,workDate,request.user!.userId]
       );
       const updated=await getEntry(client,id);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated,metadata:{editedFields:Object.keys(data)},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      if(isApprovedCorrection){
+        const oldNet=Number(current.earning_amount??0)+Number(current.bonus_amount??0)-Number(current.deduction_amount??0);
+        const newNet=Number(updated.earning_amount??0)+Number(updated.bonus_amount??0)-Number(updated.deduction_amount??0);
+        const netDelta=Math.round((newNet-oldNet+Number.EPSILON)*100)/100;
+        await client.query(
+          "INSERT INTO production_entry_corrections(production_entry_id,before_data,after_data,earning_delta,reason,created_by) VALUES($1,$2::jsonb,$3::jsonb,$4,$5,$6)",
+          [id,JSON.stringify(current),JSON.stringify(updated),netDelta,correctionReason,request.user!.userId]
+        );
+        if(Math.abs(netDelta)>=0.005){
+          const credit=netDelta>0?netDelta:0;
+          const debit=netDelta<0?Math.abs(netDelta):0;
+          await client.query(
+            "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)",
+            [current.employee_id,credit,debit,request.user!.userId,(netDelta<0?"خصم فرق تعديل إنتاج معتمد ":"تسوية فرق تعديل إنتاج معتمد ")+(current.code??id)+" — "+correctionReason]
+          );
+        }
+      }
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:isApprovedCorrection?"correct_approved_production":"edit",module:"production",entityType:"production_entry",entityId:id,beforeData:current,afterData:updated,metadata:{editedFields:Object.keys(data),...(isApprovedCorrection?{correctionReason}:{})},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated;
     });
     return {data:row};
@@ -946,6 +977,8 @@ payment_totals.paid_amount,
     const id = (request.params as { id: string }).id;
 
     const row = await withTransaction(async (client) => {
+      // Approval can be restricted to specific accounts (permission_account_restrictions).
+      await assertPermissionAccountAllowed(client, "production.approve", request.user!.userId);
       // Use the same employee -> production-entry lock order as employee-level
       // production closures. This serializes approval with closure snapshots and
       // prevents an approval started earlier from receiving a pre-closure
