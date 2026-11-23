@@ -2087,15 +2087,19 @@ textarea:hover:not(:disabled) {
 .shared-receipt-page{padding:16px;background:#f3f4f6;min-height:100vh}
 .shared-receipt-toolbar{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 .receipt-a4{color:#111;font-size:13px;line-height:1.7}
+/* The app-wide table rule (width:100%;min-width:760px;nowrap) must not stretch or clip the invoice tables. */
+.receipt-doc table{min-width:0}
+.receipt-doc th,.receipt-doc td{white-space:normal}
+.receipt-doc tbody td{background:#fff!important;box-shadow:none!important}
 .receipt-a4 .ra-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:14px}
 .receipt-a4 h1{margin:0;font-size:26px}.receipt-a4 .ra-sub{color:#444}
-.receipt-a4 .ra-head>div{flex:1;white-space:nowrap}.receipt-a4 .ra-meta{width:auto!important;flex:none;border-collapse:collapse}.receipt-a4 .ra-meta th,.receipt-a4 .ra-meta td{background:none!important;border:0!important;box-shadow:none!important;white-space:nowrap;text-align:right;padding:2px 10px;font-size:13px}.receipt-a4 .ra-meta th{color:#555;font-weight:600}.receipt-a4 .ra-meta td{font-weight:700}.receipt-a4 .ra-meta tr:hover td,.receipt-a4 .ra-table tr:hover td{background:none!important}
+.receipt-a4 .ra-head>div{flex:1;white-space:nowrap}.receipt-a4 .ra-meta{width:auto!important;min-width:0;flex:none;border-collapse:collapse}.receipt-a4 .ra-meta th,.receipt-a4 .ra-meta td{background:none!important;border:0!important;box-shadow:none!important;white-space:nowrap;text-align:right;padding:2px 10px;font-size:13px}.receipt-a4 .ra-meta th{color:#555;font-weight:600}.receipt-a4 .ra-meta td{font-weight:700}.receipt-a4 .ra-meta tr:hover td,.receipt-a4 .ra-table tr:hover td{background:none!important}
 .receipt-a4 .ra-party{margin:10px 0 14px;font-size:14px}
 .receipt-a4 h2{font-size:15px;margin:14px 0 6px}
 .receipt-a4 .ra-table{width:100%;border-collapse:collapse}
 .receipt-a4 .ra-table th,.receipt-a4 .ra-table td{border:1px solid #bbb;padding:6px 8px;text-align:right}
 .receipt-a4 .ra-table thead th{background:#f0f0f0}.receipt-a4 .ra-table tfoot th{background:#fafafa}
-.receipt-a4 .ra-total{margin-top:16px;padding:10px 14px;border:2px solid #111;font-size:17px;font-weight:800;text-align:left}
+.receipt-a4 .ra-total{margin-top:16px;padding:10px 14px;border:2px solid #111;font-size:17px;font-weight:800;text-align:start}
 .receipt-a4 .ra-sign{display:flex;justify-content:space-between;margin-top:48px}
 .receipt-thermal{width:72mm;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;color:#000}
 .receipt-thermal .rt-center{text-align:center}.receipt-thermal .rt-title{font-size:16px;font-weight:800}
