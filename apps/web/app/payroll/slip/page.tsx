@@ -202,7 +202,8 @@ export default function PayrollSlipPage() {
         .slip-section td, .slip-section th { padding: 10px 12px; border: 1px solid #dce5ee; }
         .slip-section td:last-child, .slip-section th:last-child { text-align: left; width: 34%; font-variant-numeric: tabular-nums; }
         .subtotal td { font-weight: 800; background: #f7fafc; }
-        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }\n        .line-note { display:block; color:#718096; margin-top:4px; font-size:10px; }
+        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }
+        .line-note { display:block; color:#718096; margin-top:4px; font-size:10px; }
         .settlement-box { border: 1px solid #dce5ee; border-radius: 7px; padding: 13px; background: #fbfcfd; }
         .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
         .settlement-box p { margin: 10px 0 0; color: #65758a; font-size: 11px; line-height: 1.7; }
