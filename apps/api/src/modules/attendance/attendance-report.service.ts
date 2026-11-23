@@ -79,9 +79,27 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
        ...(employeePunchDates?.get(date)??[]),
        ...(overnight?employeePunchDates?.get(addDateKey(date,1))??[]:[])
      ];
+     // An overnight checkout punched after the grace window (e.g. 09:00 on a
+     // 22:00-06:00 shift) is still this workday's checkout when it is orphaned
+     // on its own calendar day: no unused IN precedes it there. Without this,
+     // one late checkout produced a MISSING_PUNCH on both days. The day is
+     // flagged for review so a manager confirms the late checkout. When the
+     // next day has its own IN before the OUT, the pair stays on that day.
+     let overnightOrphanOutId:string|null=null;
+     if(overnight&&end!==null){
+      const nextDate=addDateKey(date,1);
+      const nextDayPunches=[...(employeePunchDates?.get(nextDate)??[])].filter(p=>p.employee_id===employee.id&&!used.has(p.id)).sort((a,b)=>new Date(a.effectivePunchAt).getTime()-new Date(b.effectivePunchAt).getTime());
+      let seenIn=false;
+      for(const q of nextDayPunches){
+       const qStatus=q.corrected_status??q.status;
+       if(qStatus==="IN"||qStatus==="OVERTIME_IN")seenIn=true;
+       else if((qStatus==="OUT"||qStatus==="OVERTIME_OUT")&&!seenIn&&q.minute>end+Math.max(0,employee.overnight_checkout_grace_minutes)){overnightOrphanOutId=q.id;break;}
+      }
+     }
      const assigned=employeePunches.filter(p=>{
       if(p.employee_id!==employee.id||used.has(p.id))return false;
       if(belongsToAttendanceShift({punchLocalDate:p.localDate,punchMinute:p.minute,punchStatus:p.corrected_status??p.status,shiftDate:date,overnight,scheduledEndMinute:end,checkoutGraceMinutes:employee.overnight_checkout_grace_minutes}))return true;
+      if(p.id===overnightOrphanOutId)return true;
      });
      assigned.forEach(p=>used.add(p.id));
      // The preceding day is processed only to reserve its punches; it is not part of this report.
@@ -91,11 +109,27 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      const selectedEvents=selectAttendanceDayEvents(ordered);
      const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
      const inMinute=inPunch?.minute??null;let outMinute=outPunch?.minute??null;if(overnight&&outMinute!==null&&outPunch?.localDate===addDateKey(date,1))outMinute+=1440;
-     const lateMinutes=inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
      const expectedEnd=end===null?null:(overnight?end+1440:end);
-     const earlyMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
      const workedMinutes=calculateWorkedMinutes(selectedEvents.countedEvents.map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})));
-     const earlyArrivalMinutes=inMinute!==null&&start!==null?Math.max(0,start-inMinute):0;const lateDepartureMinutes=outMinute!==null&&expectedEnd!==null?Math.max(0,outMinute-expectedEnd):0;
+     // A full-duration day worked at shifted hours (e.g. 10:00-18:00 instead of
+     // 08:00-16:00, or 06:00-14:00) is an "outside schedule" day per the owner's
+     // rule: the hours count as a normal day, with no late, no early-leave and
+     // no early-arrival/late-departure credit. Only a window shifted in one
+     // direction qualifies; a longer day (early in AND late out) keeps the
+     // existing boundary handling, and explicit overtime punches always count.
+     const FULL_DURATION_TOLERANCE_MINUTES=15;
+     let outsideSchedule=false;
+     if(!noSchedule&&!dayOff&&start!==null&&expectedEnd!==null&&inMinute!==null&&outMinute!==null&&workedMinutes>0){
+      const scheduledDuration=expectedEnd-start;
+      const startDeviation=inMinute-start;
+      const endDeviation=outMinute-expectedEnd;
+      const shiftedLater=startDeviation>employee.late_grace_minutes&&endDeviation>employee.early_grace_minutes;
+      const shiftedEarlier=startDeviation<-employee.late_grace_minutes&&endDeviation<-employee.early_grace_minutes;
+      if((shiftedLater||shiftedEarlier)&&workedMinutes>=scheduledDuration-FULL_DURATION_TOLERANCE_MINUTES)outsideSchedule=true;
+     }
+     const lateMinutes=!outsideSchedule&&inMinute!==null&&start!==null?Math.max(0,inMinute-start-employee.late_grace_minutes):0;
+     const earlyMinutes=!outsideSchedule&&outMinute!==null&&expectedEnd!==null?Math.max(0,expectedEnd-outMinute-employee.early_grace_minutes):0;
+     const earlyArrivalMinutes=!outsideSchedule&&inMinute!==null&&start!==null?Math.max(0,start-inMinute):0;const lateDepartureMinutes=!outsideSchedule&&outMinute!==null&&expectedEnd!==null?Math.max(0,outMinute-expectedEnd):0;
      const overtimeBoundaryIntervals:Array<{start:string;end:string}>=[];
      if(earlyArrivalMinutes>0&&inPunch){
        const punchAt=new Date(inPunch.punch_at);
@@ -106,10 +140,11 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
        overtimeBoundaryIntervals.push({start:new Date(punchAt.getTime()-lateDepartureMinutes*60000).toISOString(),end:punchAt.toISOString()});
      }
      const overtimeMinutes=calculateOvertimeMinutes(selectedEvents.countedEvents.map(p=>({status:p.status,punch_at:new Date(p.punch_at).toISOString()})),overtimeBoundaryIntervals);
-     const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0;
+     const overnightCheckoutBeyondGrace=overnightOrphanOutId!==null;
+     const needsReview=selectedEvents.needsReview||correctionSuggestions.length>0||overnightCheckoutBeyondGrace;
      let status:string;if(noSchedule)status=ordered.length?"NO_SCHEDULE_WITH_PUNCH":"NO_SCHEDULE";else if(dayOff)status=ordered.length?"DAY_OFF_WITH_PUNCH":"DAY_OFF";else if(!ordered.length)status=date<today?"ABSENT":"NOT_STARTED";else if(!inPunch||!outPunch)status="MISSING_PUNCH";else status="PRESENT";
      const correctionHistory=assigned.filter(p=>p.correction_decision).map(p=>({id:p.id,punchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,decision:p.correction_decision}));
-     report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,scheduledStartMinute:start,scheduledEndMinute:expectedEnd,firstInMinute:inMinute,lastOutMinute:outMinute,lateGraceMinutes:employee.late_grace_minutes,earlyGraceMinutes:employee.early_grace_minutes,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,correctionHistory,lateMinutes,earlyMinutes,earlyArrivalMinutes,lateDepartureMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length,punchTimeline:assigned.map(p=>({id:p.id,punchAt:p.effectivePunchAt,originalPunchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,verifyMethod:p.verify_method,suspicious:p.suspicious,reviewStatus:p.review_status,correctionDecision:p.correction_decision??null,correctionNote:p.correction_note??null,isNearDuplicate:selectedEvents.duplicateIds.includes(p.id)})).sort((a,b)=>new Date(a.punchAt).getTime()-new Date(b.punchAt).getTime())});
+     report.push({date,employeeId:employee.id,employeeCode:employee.code,employeeName:employee.full_name,deviceCode:employee.device_code,scheduledStart:schedule?.starts_at??null,scheduledEnd:schedule?.ends_at??null,scheduledStartMinute:start,scheduledEndMinute:expectedEnd,firstInMinute:inMinute,lastOutMinute:outMinute,lateGraceMinutes:employee.late_grace_minutes,earlyGraceMinutes:employee.early_grace_minutes,isDayOff:dayOff,firstIn:inPunch?.punch_at??null,lastOut:outPunch?.punch_at??null,workedMinutes,workedHours:Math.round((workedMinutes/60)*100)/100,correctionSuggestions,correctionHistory,lateMinutes,earlyMinutes,earlyArrivalMinutes,lateDepartureMinutes,overtimeMinutes,overtimePending:overtimeMinutes>0,outsideSchedule,overnightCheckoutBeyondGrace,status,needsReview,reviewPunchIds:selectedEvents.reviewPunchIds,reviewPunches:selectedEvents.reviewPunches,suspiciousCount:ordered.filter(p=>p.suspicious).length,duplicatePunchCount:selectedEvents.duplicatePunchCount,punchCount:ordered.length,punchTimeline:assigned.map(p=>({id:p.id,punchAt:p.effectivePunchAt,originalPunchAt:p.punch_at,originalStatus:p.status,effectiveStatus:p.corrected_status??p.status,verifyMethod:p.verify_method,suspicious:p.suspicious,reviewStatus:p.review_status,correctionDecision:p.correction_decision??null,correctionNote:p.correction_note??null,isNearDuplicate:selectedEvents.duplicateIds.includes(p.id)})).sort((a,b)=>new Date(a.punchAt).getTime()-new Date(b.punchAt).getTime())});
     }
    }
    const overrides=(await db.query(`SELECT employee_id,attendance_date::text,status,first_in::text,last_out::text,worked_minutes,late_minutes,early_minutes,note,updated_at,updated_by FROM attendance_day_overrides WHERE attendance_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR employee_id=$3::uuid)`,[from,to,onlyEmployeeId])).rows;
@@ -160,6 +195,6 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      const adjustedEarly=Math.max(0,Number(row.earlyMinutes??0)-earlyPermissionOverlapMinutes);
      report[index]={...row,lateMinutes:adjustedLate,earlyMinutes:adjustedEarly,latePermissionOverlapMinutes,earlyPermissionOverlapMinutes,permissionMinutes:paidMinutes+unpaidMinutes,paidPermissionMinutes:paidMinutes,unpaidPermissionMinutes:unpaidMinutes,permissionDetails:effectivePermissionItems,payableWorkedMinutes:worked+paidMinutes};
    }
-   const totals={rows:report.length,totalPaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.paidPermissionMinutes??0),0),totalUnpaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.unpaidPermissionMinutes??0),0),totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length};
+   const totals={rows:report.length,totalPaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.paidPermissionMinutes??0),0),totalUnpaidPermissionMinutes:report.reduce((n,r)=>n+Number(r.unpaidPermissionMinutes??0),0),totalWorkedMinutes:report.reduce((n,r)=>n+Number(r.workedMinutes??0),0),totalWorkedHours:Math.round(report.reduce((n,r)=>n+Number(r.workedMinutes??0),0)/60*100)/100,correctionsPending:report.reduce((n,r)=>n+(Array.isArray(r.correctionSuggestions)?r.correctionSuggestions.length:0),0),absent:report.filter(r=>r.status==="ABSENT").length,late:report.filter(r=>Number(r.lateMinutes)>0).length,early:report.filter(r=>Number(r.earlyMinutes)>0).length,missingPunch:report.filter(r=>r.status==="MISSING_PUNCH").length,needsReview:report.filter(r=>r.needsReview===true).length,overtimePending:report.filter(r=>r.overtimePending===true).length,outsideSchedule:report.filter(r=>r.outsideSchedule===true).length};
    return {data:report,summary:totals};
 }

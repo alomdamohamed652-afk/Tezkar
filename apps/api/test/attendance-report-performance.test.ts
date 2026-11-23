@@ -307,13 +307,21 @@ test("attendance report applies each employee's configured overnight checkout gr
   const daytime = result.data.find(row => row.date === "2026-11-06");
   assert.ok(overnight);
   assert.ok(daytime);
+  // One-workday model: the 05:30 checkout is orphaned on Friday (no IN precedes
+  // it there), so it belongs to the overnight shift even past the zero-minute
+  // grace, and the day is flagged for review instead of producing a
+  // MISSING_PUNCH on both days. Grace still decides the review flag.
   assert.deepEqual(
     (overnight.punchTimeline as Array<{ id: string }>).map(item => item.id),
-    ["grace-night-in"],
+    ["grace-night-in", "grace-night-out"],
   );
+  assert.equal(overnight.status, "PRESENT");
+  assert.equal(overnight.overnightCheckoutBeyondGrace, true);
+  assert.equal(overnight.needsReview, true);
   assert.deepEqual(
     (daytime.punchTimeline as Array<{ id: string }>).map(item => item.id),
-    ["grace-night-out", "grace-day-in", "grace-day-out"],
+    ["grace-day-in", "grace-day-out"],
   );
-  assert.equal(daytime.needsReview, true);
+  assert.equal(daytime.status, "PRESENT");
+  assert.equal(daytime.needsReview, false);
 });
