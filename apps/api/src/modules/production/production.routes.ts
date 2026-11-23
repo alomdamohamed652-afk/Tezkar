@@ -1455,7 +1455,7 @@ payment_totals.paid_amount,
     if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}
     const r=await pool.query(`
-      SELECT a.id,a.code,a.adjustment_date,a.adjustment_type,a.amount,a.reason,
+      SELECT a.id,a.code,a.adjustment_date,a.adjustment_type,a.amount,a.reason,a.auto_generated,
              e.code AS employee_code,e.full_name AS employee_name,
              s.code AS shift_code,s.name AS shift_name,
              p.code AS production_code
