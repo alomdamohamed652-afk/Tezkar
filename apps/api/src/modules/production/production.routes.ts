@@ -1,3 +1,4 @@
+import { productionPaidSql, paymentAllocatedSql } from "../payments/settlement-calculation.js";
 import type { FastifyInstance } from "fastify";
 
 const differenceAllocatedSql = `COALESCE((SELECT SUM(ev.amount)
@@ -1514,53 +1515,24 @@ payment_totals.paid_amount,
         SELECT e.id AS employee_id,e.code AS employee_code,e.full_name AS employee_name,
                o.id AS order_id,o.code AS order_code,o.order_name,
                p.id AS production_entry_id,p.code AS production_code,p.work_date,
-               GREATEST(COALESCE(p.total_earning_amount,p.earning_amount),0)::numeric(14,2) AS earned,
-               COALESCE(a.paid_amount,0)::numeric(14,2) AS allocated_paid
+               COALESCE(p.total_earning_amount,p.earning_amount,0) AS earned,
+               COALESCE(a.paid_amount,0) AS allocated_paid
           FROM production_entries p
           JOIN employees e ON e.id=p.employee_id
           JOIN order_stages os ON os.id=p.order_stage_id
           JOIN production_orders o ON o.id=os.order_id
-          LEFT JOIN LATERAL (
-            SELECT
-              COALESCE((SELECT SUM(sa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=sa.id),0)) FROM employee_earnings_settlement_allocations sa
-                         WHERE sa.production_entry_id=p.id),0)
-              + COALESCE((SELECT SUM(wpa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_ORDER' AND r.source_allocation_id=wpa.id),0)) FROM worker_payment_order_allocations wpa
-                           WHERE wpa.production_entry_id=p.id
-                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
-                               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-                              WHERE es.worker_payment_id=wpa.worker_payment_id)),0)
-              + COALESCE((SELECT SUM(legacy.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='WORKER_PAYMENT_LEGACY' AND r.source_allocation_id=legacy.id),0)) FROM worker_payment_allocations legacy
-                           WHERE legacy.production_entry_id=p.id
-                             AND NOT EXISTS(SELECT 1 FROM employee_earnings_settlements es
-                               JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-                              WHERE es.worker_payment_id=legacy.worker_payment_id)
-                             AND NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
-                              WHERE order_alloc.worker_payment_id=legacy.worker_payment_id)),0)
-              + ${differenceAllocatedSql} AS paid_amount
-          ) a ON TRUE
+          LEFT JOIN LATERAL (SELECT ${productionPaidSql("p.id")} AS paid_amount) a ON TRUE
          WHERE p.status='APPROVED'
       ),
       unallocated_order_payments AS (
         SELECT wp.employee_id,ae.order_id,
                SUM(GREATEST(wp.gross_amount
                  -COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='WORKER_PAYMENT' AND rl.source_id=wp.id),0)
-                 -COALESCE((
-                   SELECT SUM(esa.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='EMPLOYEE_EARNINGS_SETTLEMENT' AND r.source_allocation_id=esa.id),0))
-                     FROM employee_earnings_settlements es
-                     JOIN employee_earnings_settlement_allocations esa ON esa.settlement_id=es.id
-                    WHERE es.worker_payment_id=wp.id
-                 ),0),0))::numeric(14,2) AS amount
+                 -(${paymentAllocatedSql("wp.id")}),0)) AS amount
           FROM worker_payments wp
-          JOIN accounting_expenses ae ON ae.idempotency_key=wp.idempotency_key AND ae.source_worker_payment_id IS NULL
-         WHERE (EXISTS(SELECT 1 FROM employee_earnings_settlements es
-                       WHERE es.worker_payment_id=wp.id)
-            OR (
-              NOT EXISTS(SELECT 1 FROM worker_payment_order_allocations order_alloc
-                          WHERE order_alloc.worker_payment_id=wp.id)
-              AND NOT EXISTS(SELECT 1 FROM worker_payment_allocations legacy
-                              WHERE legacy.worker_payment_id=wp.id)
-            ))
-           AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_differences d
+          JOIN (SELECT DISTINCT idempotency_key,order_id FROM accounting_expenses
+            WHERE source_worker_payment_id IS NULL) ae ON ae.idempotency_key=wp.idempotency_key
+         WHERE NOT EXISTS(SELECT 1 FROM worker_payment_settlement_differences d
                            WHERE d.worker_payment_id=wp.id)
          GROUP BY wp.employee_id,ae.order_id
       )
@@ -1569,7 +1541,7 @@ payment_totals.paid_amount,
              COUNT(*)::int AS production_records,
              SUM(earned)::numeric(14,2) AS total_earned,
              (SUM(allocated_paid)+COALESCE(MAX(uop.amount),0))::numeric(14,2) AS paid_amount,
-             GREATEST(SUM(earned)-SUM(allocated_paid)-COALESCE(MAX(uop.amount),0),0)::numeric(14,2) AS remaining_amount,
+             ROUND(SUM(earned)-SUM(allocated_paid)-COALESCE(MAX(uop.amount),0),2) AS remaining_amount,
              CASE WHEN SUM(earned)-SUM(allocated_paid)-COALESCE(MAX(uop.amount),0)<=0.009 THEN 'PAID'
                   WHEN SUM(allocated_paid)+COALESCE(MAX(uop.amount),0)>0.009 THEN 'PARTIAL'
                   ELSE 'UNPAID' END AS payment_status

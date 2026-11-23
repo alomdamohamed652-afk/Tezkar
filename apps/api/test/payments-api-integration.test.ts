@@ -3960,7 +3960,83 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(afterReallocationSummary.json().data.availableForSettlement),0,
         "reallocation must consume only the restored production due exactly once");
 
-    }finally{await app.close()}
+      // Anonymous legacy reversal regression: source approval and reversal must cancel,
+      // without recognizing a worker, record identifier, or free-text notes.
+      const bridgeWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Synthetic Settlement Bridge Worker') RETURNING id")).rows[0].id;
+      async function bridgeProduction(earning:number,status:string,employeeId=bridgeWorker){
+        return (await apiPool!.query(`INSERT INTO production_entries(
+          employee_id,order_stage_id,product_id,stage_id,shift_id,work_date,quantity,unit_id,rate_id,rate_snapshot,
+          wage_type_id,wage_type_code_snapshot,wage_type_method_snapshot,earning_amount,bonus_amount,deduction_amount,
+          status,submitted_by,approved_by,approved_at,cancelled_at)
+          VALUES($1,$2,$3,$4,$5,CURRENT_DATE,1,$6,$7,10,$8,'PER_PIECE','PER_PIECE',$9,0,0,$10,$11,$11,now(),CASE WHEN $10='CANCELLED' THEN now() ELSE NULL END) RETURNING id`,
+          [employeeId,reconcileOrderStage.id,reconcileProduct.id,reconcileOrderStage.stage_id,reconcileShift.id,
+           reconcileProduct.unit_id,reconcileRate.id,perPieceWageType.id,earning,status,manager.id])).rows[0].id;
+      }
+      await bridgeProduction(330,"APPROVED");
+      const cancelledBridgeProduction=await bridgeProduction(300,"CANCELLED");
+      await apiPool.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,production_entry_id,created_by)
+        VALUES($1,'PRODUCTION_APPROVAL',300,$2,$3)`,[bridgeWorker,cancelledBridgeProduction,manager.id]);
+      await apiPool.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by,notes)
+        VALUES($1,'ADJUSTMENT',300,$2,'deliberately unstructured historical note')`,[bridgeWorker,manager.id]);
+      const bridgeSummary=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bridgeWorker}`,headers:{cookie:managerCookie}});
+      assert.equal(bridgeSummary.statusCode,200,bridgeSummary.body);
+      assert.equal(bridgeSummary.json().data.availableForSettlement,330,"cancelled approval and reversal must offset, not reduce330 to30");
+      assert.equal(bridgeSummary.json().data.availableBreakdown.calculatedAvailable,330);
+      assert.equal(bridgeSummary.json().data.reconciliation.total,330);
+      assert.equal(bridgeSummary.json().data.reconciliation.orderTotal+bridgeSummary.json().data.reconciliation.generalAccount,330);
+      const allocationBridgeId=await bridgeProduction(4928.04,"APPROVED");
+      const allocationBridgeKey=randomUUID();
+      const allocationBridgePayment=(await apiPool.query(`INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by,idempotency_key)
+        VALUES($1,4928.04,4928.04,0,'CASH',$2,$3) RETURNING id`,[bridgeWorker,manager.id,allocationBridgeKey])).rows[0].id;
+      await apiPool.query(`INSERT INTO employee_earnings_settlements(employee_id,gross_amount,cash_paid_amount,advance_repayment_amount,settlement_date,created_by,worker_payment_id)
+        VALUES($1,4928.04,4928.04,0,CURRENT_DATE,$2,$3)`,[bridgeWorker,manager.id,allocationBridgePayment]);
+      await apiPool.query(`INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount)
+        VALUES($1,$2,4928.04)`,[allocationBridgePayment,allocationBridgeId]);
+      await apiPool.query(`INSERT INTO accounting_expenses(description,amount,expense_date,expense_type,category,order_id,created_by,idempotency_key)
+        VALUES('Synthetic linked legacy payment',4928.04,CURRENT_DATE,'DIRECT','WORKER_PAYMENT',$1,$2,$3)`,[multiOrderId,manager.id,allocationBridgeKey]);
+      const duplicateBridgeSummary=await app.inject({method:"GET",url:`/api/production/earnings/order-summary?employeeId=${bridgeWorker}`,headers:{cookie:managerCookie}});
+      assert.equal(duplicateBridgeSummary.statusCode,200,duplicateBridgeSummary.body);
+      const duplicateBridgeOrder=duplicateBridgeSummary.json().data.find((row:any)=>row.order_id===multiOrderId);
+      assert.equal(Number(duplicateBridgeOrder.paid_amount),4928.04,"ORDER allocations with settlement parent are counted once, not twice");
+      assert.equal(Number(duplicateBridgeOrder.remaining_amount),330);
+      const duplicateBridgeScoped=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bridgeWorker}&orderId=${multiOrderId}`,headers:{cookie:managerCookie}});
+      assert.equal(duplicateBridgeScoped.statusCode,200,duplicateBridgeScoped.body);
+      assert.equal(duplicateBridgeScoped.json().data.orderAccount.remaining,330);
+      // A real advance-principal ledger debit must remain separate from wage dues.
+      const bridgeAdvanceLedger=(await apiPool.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,debit_amount,created_by)
+        VALUES($1,'ADJUSTMENT',500,$2) RETURNING id`,[bridgeWorker,manager.id])).rows[0].id;
+      await apiPool.query(`INSERT INTO advance_requests(employee_id,amount,reason,status,requested_by,paid_by,paid_at,repayment_method,repayment_status,ledger_entry_id)
+        VALUES($1,500,'Synthetic advance bridge','PAID',$2,$2,now(),'CUSTOM','OPEN',$3)`,[bridgeWorker,manager.id,bridgeAdvanceLedger]);
+      const bridgeAdvanceSummary=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bridgeWorker}`,headers:{cookie:managerCookie}});
+      assert.equal(bridgeAdvanceSummary.statusCode,200,bridgeAdvanceSummary.body);
+      assert.equal(bridgeAdvanceSummary.json().data.availableForSettlement,330,"advance principal does not reduce wage gross a second time");
+      assert.equal(bridgeAdvanceSummary.json().data.outstandingAdvances,500);
+      const fractionalWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Synthetic Fractional Entitlement Worker') RETURNING id")).rows[0].id;
+      for(const [earned,paid] of [[70,69.99],[330,0],[196.875,196.88],[153.675,153.68]]){
+        const productionId=await bridgeProduction(earned!,"APPROVED",fractionalWorker);
+        if(paid){
+          const paymentId=(await apiPool.query(`INSERT INTO worker_payments(employee_id,amount,gross_amount,advance_repayment_amount,method,paid_by)
+            VALUES($1,$2,$2,0,'CASH',$3) RETURNING id`,[fractionalWorker,paid,manager.id])).rows[0].id;
+          await apiPool.query("INSERT INTO worker_payment_order_allocations(worker_payment_id,production_entry_id,amount) VALUES($1,$2,$3)",[paymentId,productionId,paid]);
+        }
+      }
+      const fractionalSummary=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${fractionalWorker}`,headers:{cookie:managerCookie}});
+      assert.equal(fractionalSummary.statusCode,200,fractionalSummary.body);
+      assert.equal(fractionalSummary.json().data.availableForSettlement,330);
+      assert.equal(fractionalSummary.json().data.reconciliation.orderTotal,330,"signed half-cent offsets round once, not to330.01");
+      assert.equal(fractionalSummary.json().data.reconciliation.generalAccount,0);
+      const priceBridgeProduction=await bridgeProduction(200,"APPROVED");
+      const priceBridgeChange=(await apiPool.query(`INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,scope,reason,created_by)
+        VALUES($1,$2,10,20,'ALL','Synthetic projection bridge',$3) RETURNING id`,[multiOrderId,reconcileOrderStage.id,manager.id])).rows[0].id;
+      await apiPool.query(`INSERT INTO order_price_change_items(price_change_id,production_entry_id,employee_id,previous_earning,revised_earning,delta_amount,ledger_adjustment,applied_rate)
+        VALUES($1,$2,$3,100,200,100,TRUE,20)`,[priceBridgeChange,priceBridgeProduction,bridgeWorker]);
+      await apiPool.query(`INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,created_by)
+        VALUES($1,'ADJUSTMENT',100,$2)`,[bridgeWorker,manager.id]);
+      const priceBridgeSummary=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bridgeWorker}`,headers:{cookie:managerCookie}});
+      assert.equal(priceBridgeSummary.statusCode,200,priceBridgeSummary.body);
+      assert.equal(priceBridgeSummary.json().data.availableForSettlement,530,"current entitlement already includes price delta, anonymous credit must not count twice");
+
+    }catch(error){console.error("Payments integration assertion failed before cleanup:",error);throw error}finally{await app.close()}
   }finally{
     if(apiPool)await apiPool.end();
     const cleanup=new pg.Client({connectionString:adminUrl});
