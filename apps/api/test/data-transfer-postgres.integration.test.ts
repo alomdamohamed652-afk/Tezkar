@@ -207,6 +207,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       await changedTarget.query(`ALTER TABLE public.workers OWNER TO ${quoteDb(ownerRole)}`);
       await changedTarget.query(`GRANT SELECT ON public.workers TO ${quoteDb(ownerRole)}`);
       await changedTarget.query(`GRANT CREATE ON SCHEMA public TO ${quoteDb(ownerRole)}`);
+      await changedTarget.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
+      await changedTarget.query(`ALTER SCHEMA public OWNER TO ${quoteDb(ownerRole)}`);
       await changedTarget.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ${quoteDb(ownerRole)}`);
       await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
       await changedTarget.query("ALTER TABLE public.workers DISABLE TRIGGER workers_audit_trigger");
@@ -233,7 +235,9 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(changedObjects.blockers.some(item => item.table === "schema:transfer_custom"),
       "unsupported non-public schemas must create explicit blockers");
     assert.ok(changedObjects.globalObjectDifferences.schemas.differences.missingInTarget.length > 0,
-      "schema ownership/ACL differences must be compared");
+      "source schema ownership/ACL entries missing in target must be reported");
+    assert.ok(changedObjects.globalObjectDifferences.schemas.differences.missingInSource.length > 0,
+      "target schema ownership/ACL entries missing in source must be reported");
     assert.ok(changedObjects.globalObjectDifferences.defaultPrivileges.differences.missingInSource.length > 0,
       "target-only default privilege entries must be compared");
     assert.ok(changedObjects.globalObjectDifferences.databaseAccess.differences.missingInTarget.length > 0,
