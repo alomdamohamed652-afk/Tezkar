@@ -17,7 +17,16 @@ function resolveProxyTarget(): string {
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   async headers() {
-    return [{ source: "/(.*)", headers: securityHeaders }];
+    return [
+      { source: "/(.*)", headers: securityHeaders },
+      // Shared invoices are private: never cached by browsers or proxies, never indexed, and the token never leaks through the Referer header.
+      { source: "/r/:token*", headers: [
+        { key: "Cache-Control", value: "no-store, private, max-age=0" },
+        { key: "Pragma", value: "no-cache" },
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" }
+      ] }
+    ];
   },
   async rewrites() {
     const target = resolveProxyTarget();

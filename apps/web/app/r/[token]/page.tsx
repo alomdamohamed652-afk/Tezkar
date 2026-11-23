@@ -17,7 +17,7 @@ export default function SharedReceiptPage({ params }: { params: Promise<{ token:
 
   useEffect(() => {
     let active = true;
-    fetch(`${API_BASE}/api/public/settlement-receipts/${encodeURIComponent(token)}`)
+    fetch(`${API_BASE}/api/public/settlement-receipts/${encodeURIComponent(token)}`, { cache: "no-store", referrerPolicy: "no-referrer" })
       .then(async (res) => {
         const body = await res.json().catch(() => null);
         if (!res.ok) throw new Error(body?.error?.message ?? "رابط الفاتورة غير صالح أو منتهي");
