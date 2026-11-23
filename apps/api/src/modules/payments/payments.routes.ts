@@ -1774,9 +1774,7 @@ export async function paymentsRoutes(app:FastifyInstance){
           approvedProductionCount: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0),
           ledgerBalance: Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0),
           outstandingAdvances: Number(advances.rows[0]?.amount ?? 0),
-          calculatedAvailable: Number(availabilityBreakdown.rows[0]?.approved_count ?? 0) > 0
-            ? Math.round((Number(availabilityBreakdown.rows[0]?.production_net ?? 0) + Number(availabilityBreakdown.rows[0]?.standalone_adjustments_net ?? 0) + Number(availabilityBreakdown.rows[0]?.ledger_only_adjustments_net ?? 0) - Number(availabilityBreakdown.rows[0]?.settled ?? 0) - Number(availabilityBreakdown.rows[0]?.legacy_paid ?? 0) - Number(availabilityBreakdown.rows[0]?.historical_paid ?? 0))*100)/100
-            : Math.round((Number(ledger.rows[0]?.credits ?? 0) - Number(ledger.rows[0]?.debits ?? 0) + Number(advances.rows[0]?.amount ?? 0))*100)/100
+          calculatedAvailable: globalAvailable
         },
         orderAccount: parsed.data.orderId ? {
           orderId: parsed.data.orderId,
