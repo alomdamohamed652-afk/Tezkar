@@ -12,7 +12,7 @@ type Slip = {
 type Day = {
   date: string; status: string; isDayOff: boolean; scheduledStart: string | null; scheduledEnd: string | null;
   firstIn: string | null; lastOut: string | null; workedMinutes: number; lateMinutes: number; earlyMinutes: number;
-  overtimeMinutes: number; permissionMinutes: number;
+  overtimeMinutes: number; permissionMinutes: number; outsideSchedule?: boolean;
 };
 type Punch = { punch_at: string; status: string; verify_method: string };
 type Weekly = { weekday: number; starts_at: string | null; ends_at: string | null; is_day_off: boolean };
@@ -155,7 +155,7 @@ function AttendanceTab({ onError }: { onError: (m: string) => void }) {
       <section className="card"><div className="card-header"><h2 className="card-title">أيامي</h2></div><div className="table-wrap"><table>
         <thead><tr><th>التاريخ</th><th>اليوم</th><th>الحالة</th><th>دخول</th><th>خروج</th><th>ساعات الشغل</th><th>تأخير (د)</th></tr></thead>
         <tbody>{days.map(d => <tr key={d.date}>
-          <td>{d.date}</td><td>{dayOf(d.date)}</td><td className={statusClass(d.status)}>{statusName[d.status] ?? d.status}</td>
+          <td>{d.date}</td><td>{dayOf(d.date)}</td><td className={statusClass(d.status)}>{statusName[d.status] ?? d.status}{d.outsideSchedule ? <small className="me-hint"> · خارج الميعاد</small> : null}</td>
           <td dir="ltr" style={{textAlign:"right"}}>{timeOf(d.firstIn)}</td><td dir="ltr" style={{textAlign:"right"}}>{timeOf(d.lastOut)}</td><td dir="ltr" style={{textAlign:"right"}}>{hm(d.workedMinutes)}</td><td>{d.lateMinutes || "—"}</td>
         </tr>)}</tbody></table></div></section>
       <section className="card"><div className="card-header"><h2 className="card-title">بصماتي</h2></div><div className="table-wrap"><table>
