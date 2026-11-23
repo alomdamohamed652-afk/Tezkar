@@ -431,23 +431,26 @@ async function executeWorkerPayment(
 }
 
 const RECEIPT_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+function receiptSignature(body: Buffer): Buffer {
+  return createHmac("sha256", process.env.SESSION_SECRET ?? "").update("settlement-receipt:").update(body).digest().subarray(0, 16);
+}
+// Compact token (uuid 16 bytes + expiry seconds 4 bytes + 16-byte signature, ~54 chars) so it fits the router's default 100-char param limit.
 function signReceiptToken(paymentId: string, expiresAt: number): string {
-  const payload = `${paymentId}.${expiresAt}`;
-  const sig = createHmac("sha256", process.env.SESSION_SECRET ?? "").update(`settlement-receipt:${payload}`).digest("base64url");
-  return `${Buffer.from(payload).toString("base64url")}.${sig}`;
+  const body = Buffer.concat([Buffer.from(paymentId.replace(/-/g, ""), "hex"), Buffer.alloc(4)]);
+  body.writeUInt32BE(Math.floor(expiresAt / 1000), 16);
+  return Buffer.concat([body, receiptSignature(body)]).toString("base64url");
 }
 function verifyReceiptToken(token: string): string | null {
-  const [encoded, sig] = token.split(".");
-  if (!encoded || !sig) return null;
-  let payload: string;
-  try { payload = Buffer.from(encoded, "base64url").toString("utf8"); } catch { return null; }
-  const [paymentId, expiresRaw] = payload.split(".");
-  const expiresAt = Number(expiresRaw);
-  if (!paymentId || !Number.isSafeInteger(expiresAt) || expiresAt < Date.now() || !z.string().uuid().safeParse(paymentId).success) return null;
-  const expected = createHmac("sha256", process.env.SESSION_SECRET ?? "").update(`settlement-receipt:${payload}`).digest();
-  let supplied: Buffer;
-  try { supplied = Buffer.from(sig, "base64url"); } catch { return null; }
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected) ? paymentId : null;
+  let raw: Buffer;
+  try { raw = Buffer.from(token, "base64url"); } catch { return null; }
+  if (raw.length !== 36) return null;
+  const body = raw.subarray(0, 20);
+  const supplied = raw.subarray(20);
+  const expected = receiptSignature(body);
+  if (!timingSafeEqual(supplied, expected)) return null;
+  if (body.readUInt32BE(16) * 1000 < Date.now()) return null;
+  const h = body.subarray(0, 16).toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 async function buildSettlementReceipt(paymentId: string) {
