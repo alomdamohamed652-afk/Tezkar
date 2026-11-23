@@ -112,6 +112,12 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       if (inspection.unsupportedRelations.source.length || inspection.unsupportedRelations.target.length) {
         globalBlockers.push("FOREIGN TABLES غير المدعومة");
       }
+      // Large-object metadata is counted but content and ownership are not compared.
+      // Never label ordinary table rows as globally ready while opaque DB objects remain unverified.
+      if ((inspection.sourceFeatures?.largeObjects ?? 0) > 0 ||
+          (inspection.targetFeatures?.largeObjects ?? 0) > 0) {
+        globalBlockers.push("Large Objects غير المفحوصة المحتوى");
+      }
       const plan = buildTransferPlan(inspection.comparison, globalBlockers);
       request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.plan", readyTables: plan.totals.readyTables, blockedTables: plan.totals.blockedTables, requestId: request.id }, "Read-only data transfer plan preview completed");
       return reply.header("cache-control", "no-store, private").send({
