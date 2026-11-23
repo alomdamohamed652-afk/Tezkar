@@ -716,7 +716,7 @@ export function databaseIdentity(connectionString: string): string | null {
 
 export class DatabaseTransferConnectionError extends Error {
   constructor(
-    readonly stage: "source" | "target",
+    readonly stage: "source" | "target" | "source_read_only" | "target_read_only",
     readonly postgresCode: string | undefined,
     options?: ErrorOptions
   ) {
@@ -753,8 +753,16 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
       throw new DatabaseTransferConnectionError("target", postgresCode, { cause: error });
     }
     try {
-      await assertReadOnlySession(sourceClient);
-      await assertReadOnlySession(targetClient);
+      try {
+        await assertReadOnlySession(sourceClient);
+      } catch (error) {
+        throw new DatabaseTransferConnectionError("source_read_only", undefined, { cause: error });
+      }
+      try {
+        await assertReadOnlySession(targetClient);
+      } catch (error) {
+        throw new DatabaseTransferConnectionError("target_read_only", undefined, { cause: error });
+      }
       await assertDistinctConnectedDatabases(sourceClient, targetClient, sourceIdentity, targetIdentity);
       const [source, target] = await Promise.all([
         readSnapshot(sourceClient), readSnapshot(targetClient)
