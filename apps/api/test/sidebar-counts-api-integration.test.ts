@@ -128,10 +128,10 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
     )).rows[0];
     await apiPool.query("INSERT INTO task_assignees(task_id,employee_id,assigned_by) VALUES($1,$2,$3)",
       [openTask.id, workerEmployee.id, manager.id]);
-    const inProgressTask = (await apiPool.query(
+    await apiPool.query(
       "INSERT INTO tasks(title,created_by,status) VALUES('Manager in progress task',$1,'IN_PROGRESS') RETURNING id",
       [manager.id]
-    )).rows[0];
+    );
     const completedTask = (await apiPool.query(
       "INSERT INTO tasks(title,created_by,status) VALUES('Worker completed task',$1,'COMPLETED') RETURNING id",
       [manager.id]

@@ -1,11 +1,27 @@
 import pg from "pg";
+import { createHash } from "node:crypto";
+import { assertDistinctConnectedDatabases, assertDistinctDatabaseIdentities, assertReadOnlySession, createReadOnlySourcePool, createTargetPool } from "./data-transfer-connection.service.js";
 
-type ColumnShape = { name: string; type: string; nullable: boolean; defaultValue: string | null };
+type ColumnShape = {
+  name: string; type: string; udtSchema: string; udtName: string;
+  domainSchema: string | null; domainName: string | null;
+  nullable: boolean; defaultValue: string | null; identity: string; generated: string;
+  collation: string | null;
+};
 type TableShape = {
   estimate: number;
   columns: ColumnShape[];
   primaryKey: string[];
   foreignKeys: string[];
+  dependencies: string[];
+  indexes: string[];
+  constraints: string[];
+  triggers: string[];
+  rlsEnabled: boolean;
+  rlsForced: boolean;
+  policies: string[];
+  partitioning: string;
+  ownership: string;
 };
 type FeatureCounts = {
   views: number;
@@ -15,6 +31,7 @@ type FeatureCounts = {
   largeObjects: number;
   customTypes: number;
   routines: number;
+  sequences: number;
 };
 type DatabaseSnapshot = {
   tables: Map<string, TableShape>;
@@ -25,59 +42,200 @@ type DatabaseSnapshot = {
   views: string[];
   materializedViews: string[];
   triggers: string[];
+  extensions: string[];
+  customTypes: string[];
+  routines: string[];
+  sequences: string[];
+  unsupportedRelations: string[];
+  unsupportedSchemas: string[];
+  schemas: string[];
+  defaultPrivileges: string[];
+  databaseAccess: string[];
+  roles: string[];
+  roleMemberships: string[];
   features: FeatureCounts;
 };
 
+export function roleMembershipQueryForVersion(serverVersionNum: number): string {
+  const membershipOptions = serverVersionNum >= 160000
+    ? "m.inherit_option, m.set_option"
+    : "member.rolinherit AS inherit_option, TRUE AS set_option";
+  return `
+          SELECT granted.rolname AS granted_role, member.rolname AS member_role,
+                 grantor.rolname AS grantor_role, m.admin_option, ${membershipOptions}
+            FROM pg_auth_members m
+            JOIN pg_roles granted ON granted.oid = m.roleid
+            JOIN pg_roles member ON member.oid = m.member
+            JOIN pg_roles grantor ON grantor.oid = m.grantor
+           ORDER BY granted_role, member_role, grantor_role
+  `;
+}
+
 async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
-  await client.query("BEGIN READ ONLY");
+  await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await client.query("SET LOCAL statement_timeout = '15000'");
+    const schemaInventory = await client.query(`
+          SELECT n.nspname AS schema_name,
+                 pg_get_userbyid(n.nspowner) AS owner_name,
+                 CASE WHEN n.nspacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(n.nspacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl
+            FROM pg_namespace n
+           WHERE n.nspname <> 'information_schema'
+             AND n.nspname !~ '^pg_'
+           ORDER BY n.nspname
+    `);
+    const unsupportedSchemas = await client.query(`
+          SELECT DISTINCT n.nspname AS schema_name
+            FROM pg_namespace n
+           WHERE n.nspname <> 'public'
+             AND n.nspname <> 'information_schema'
+             AND n.nspname !~ '^pg_'
+             AND (
+               EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r','p','v','m','S','f'))
+               OR EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = n.oid)
+               OR EXISTS (SELECT 1 FROM pg_type t WHERE t.typnamespace = n.oid AND t.typtype IN ('e','d','c'))
+             )
+           ORDER BY n.nspname
+    `);
+    const defaultPrivileges = await client.query(`
+          SELECT COALESCE(n.nspname, '<global>') AS schema_name,
+                 role_name.rolname AS owner_name,
+                 d.defaclobjtype AS object_type,
+                 CASE WHEN d.defaclacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(d.defaclacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS privileges
+            FROM pg_default_acl d
+            JOIN pg_roles role_name ON role_name.oid = d.defaclrole
+            LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+           ORDER BY schema_name, owner_name, object_type, privileges
+    `);
+    const databaseAccess = await client.query(`
+          SELECT d.datname, pg_get_userbyid(d.datdba) AS owner_name,
+                 CASE WHEN d.datacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(d.datacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl, d.datallowconn, d.datconnlimit
+            FROM pg_database d
+           WHERE d.datname = current_database()
+    `);
+    const roles = await client.query(`
+          SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
+                 rolcanlogin, rolreplication, rolbypassrls, rolconnlimit,
+                 COALESCE(rolvaliduntil::text, '') AS valid_until,
+                 COALESCE(rolconfig::text, '') AS configuration
+            FROM pg_roles
+           ORDER BY rolname
+    `);
+    const serverVersionResult = await client.query<{ server_version_num: string }>(
+      "SHOW server_version_num"
+    );
+    const serverVersionNum = Number(serverVersionResult.rows[0]?.server_version_num);
+    if (!Number.isInteger(serverVersionNum) || serverVersionNum < 90000) {
+      throw new Error("Unable to determine a supported PostgreSQL server version for role inspection");
+    }
+    const roleMemberships = await client.query(
+      roleMembershipQueryForVersion(serverVersionNum)
+    );
+    const unsupportedRelations = await client.query(`
+          SELECT n.nspname || '.' || c.relname AS relation_name
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public' AND c.relkind = 'f'
+           ORDER BY n.nspname, c.relname
+    `);
     const tables = await client.query(`
-
           SELECT n.nspname AS schema_name, c.relname AS table_name,
-                 GREATEST(c.reltuples, 0)::bigint AS estimated_rows
+                 GREATEST(c.reltuples, 0)::bigint AS estimated_rows,
+                 pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
+                 COALESCE(c.reloptions, ARRAY[]::text[]) AS relation_options,
+                 c.relkind AS relation_kind, c.relispartition AS is_partition,
+                 CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) ELSE '' END AS partition_key,
+                 CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid, true) ELSE '' END AS partition_bound,
+                 ARRAY(
+                   SELECT pn.nspname || '.' || parent.relname
+                     FROM pg_inherits inh
+                     JOIN pg_class parent ON parent.oid = inh.inhparent
+                     JOIN pg_namespace pn ON pn.oid = parent.relnamespace
+                    WHERE inh.inhrelid = c.oid ORDER BY pn.nspname, parent.relname
+                 )::text[] AS parents,
+                 ARRAY(
+                   SELECT cn.nspname || '.' || child.relname
+                     FROM pg_inherits inh
+                     JOIN pg_class child ON child.oid = inh.inhrelid
+                     JOIN pg_namespace cn ON cn.oid = child.relnamespace
+                    WHERE inh.inhparent = c.oid ORDER BY cn.nspname, child.relname
+                 )::text[] AS children
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-           WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
-             AND n.nspname NOT LIKE 'pg_toast%'
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
            ORDER BY n.nspname,c.relname
     `);
+    // information_schema.columns is privilege-filtered and may silently omit
+    // columns for restricted roles. Read the PostgreSQL catalogs directly instead.
     const columns = await client.query(`
-
-          SELECT table_schema,table_name,column_name,
-                 COALESCE(NULLIF(data_type,''),udt_name) AS type,
-                 is_nullable='YES' AS nullable,column_default
-            FROM information_schema.columns
-           WHERE table_schema NOT IN ('pg_catalog','information_schema')
-           ORDER BY table_schema,table_name,ordinal_position
+          SELECT n.nspname AS table_schema, c.relname AS table_name,
+                 a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS type,
+                 tn.nspname AS udt_schema, t.typname AS udt_name,
+                 CASE WHEN t.typtype = 'd' THEN tn.nspname ELSE NULL END AS domain_schema,
+                 CASE WHEN t.typtype = 'd' THEN t.typname ELSE NULL END AS domain_name,
+                 NOT a.attnotnull AS nullable,
+                 pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                 CASE a.attidentity WHEN 'a' THEN 'ALWAYS' WHEN 'd' THEN 'BY DEFAULT' ELSE '' END AS identity_generation,
+                 CASE a.attgenerated WHEN 's' THEN 'STORED' WHEN 'v' THEN 'VIRTUAL' ELSE '' END AS is_generated,
+                 CASE WHEN a.attcollation <> 0 THEN cn.nspname || '.' || coll.collname ELSE NULL END AS collation
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_type t ON t.oid = a.atttypid
+            JOIN pg_namespace tn ON tn.oid = t.typnamespace
+            LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+            LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+            LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
+           WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+             AND a.attnum > 0 AND NOT a.attisdropped
+           ORDER BY n.nspname,c.relname,a.attnum
     `);
+    const expectedColumnCounts = await client.query(`
+          SELECT n.nspname AS table_schema, c.relname AS table_name, count(a.attnum)::int AS column_count
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+           GROUP BY n.nspname,c.relname
+           ORDER BY n.nspname,c.relname
+    `);
+    // information_schema.table_constraints/key_column_usage are privilege-filtered.
+    // Use pg_catalog so restricted inspection roles still see the full primary-key shape.
     const primaryKeys = await client.query(`
-
-          SELECT tc.table_schema,tc.table_name,kcu.column_name,kcu.ordinal_position
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON kcu.constraint_catalog=tc.constraint_catalog AND kcu.constraint_schema=tc.constraint_schema
-             AND kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema AND kcu.table_name=tc.table_name
-           WHERE tc.constraint_type='PRIMARY KEY'
-           ORDER BY tc.table_schema,tc.table_name,kcu.ordinal_position
+          SELECT n.nspname AS table_schema, t.relname AS table_name,
+                 a.attname AS column_name, key_column.ordinality AS ordinal_position
+            FROM pg_constraint con
+            JOIN pg_class t ON t.oid = con.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS key_column(attnum, ordinality)
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_column.attnum
+           WHERE con.contype = 'p' AND n.nspname = 'public'
+           ORDER BY n.nspname, t.relname, key_column.ordinality
     `);
     const foreignKeys = await client.query(`
 
           SELECT n.nspname AS table_schema,t.relname AS table_name,
-                 pg_get_constraintdef(con.oid,true) AS signature
+                 pg_get_constraintdef(con.oid,true) AS signature,
+                 rn.nspname AS referenced_schema, rt.relname AS referenced_table
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
-           WHERE con.contype='f' AND n.nspname NOT IN ('pg_catalog','information_schema')
+            JOIN pg_class rt ON rt.oid=con.confrelid
+            JOIN pg_namespace rn ON rn.oid=rt.relnamespace
+           WHERE con.contype='f' AND n.nspname = 'public'
            ORDER BY n.nspname,t.relname,pg_get_constraintdef(con.oid,true)
     `);
     const indexes = await client.query(`
-
-          SELECT schemaname,tablename,
-                 (CASE WHEN indexdef LIKE 'CREATE UNIQUE INDEX %' THEN 'UNIQUE' ELSE 'NONUNIQUE' END)
-                 || substring(indexdef FROM ' USING .*$') AS definition
-            FROM pg_indexes
-           WHERE schemaname NOT IN ('pg_catalog','information_schema')
-           ORDER BY schemaname,tablename,definition
+          SELECT n.nspname AS schemaname, t.relname AS tablename,
+                 replace(pg_get_indexdef(i.indexrelid),
+                   format('INDEX %I ON', index_relation.relname), 'INDEX ON') ||
+                 format(' [valid=%s,ready=%s,live=%s,unique=%s,primary=%s]',
+                   i.indisvalid, i.indisready, i.indislive, i.indisunique, i.indisprimary) AS definition
+            FROM pg_index i
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class index_relation ON index_relation.oid = i.indexrelid
+           WHERE n.nspname = 'public' AND t.relkind IN ('r','p')
+           ORDER BY n.nspname, t.relname, definition
     `);
     const constraints = await client.query(`
 
@@ -86,62 +244,311 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             FROM pg_constraint con
             JOIN pg_class t ON t.oid=con.conrelid
             JOIN pg_namespace n ON n.oid=t.relnamespace
-           WHERE con.contype IN ('u','c','x') AND n.nspname NOT IN ('pg_catalog','information_schema')
+           WHERE con.contype IN ('u','c','x') AND n.nspname = 'public'
            ORDER BY n.nspname,t.relname,con.contype,pg_get_constraintdef(con.oid,true)
     `);
     const views = await client.query(`
 
-          SELECT schemaname,viewname,definition FROM pg_views
-           WHERE schemaname NOT IN ('pg_catalog','information_schema')
-           ORDER BY schemaname,viewname
+          SELECT v.schemaname, v.viewname, v.definition,
+                 pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
+                 COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
+            FROM pg_views v
+            JOIN pg_class c ON c.relname = v.viewname
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = v.schemaname
+           WHERE v.schemaname = 'public'
+           ORDER BY v.schemaname,v.viewname
     `);
     const materializedViews = await client.query(`
 
-          SELECT schemaname,matviewname,definition FROM pg_matviews
-           WHERE schemaname NOT IN ('pg_catalog','information_schema')
-           ORDER BY schemaname,matviewname
+          SELECT v.schemaname, v.matviewname, v.definition,
+                 pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
+                 COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
+            FROM pg_matviews v
+            JOIN pg_class c ON c.relname = v.matviewname
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = v.schemaname
+           WHERE v.schemaname = 'public'
+           ORDER BY v.schemaname, v.matviewname
+    `);
+    const rowSecurity = await client.query(`
+          SELECT n.nspname AS schema_name, c.relname AS table_name,
+                 c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+           ORDER BY n.nspname, c.relname
+    `);
+    // pg_policies is privilege-filtered for non-owners. Read pg_policy directly
+    // so restricted inspection roles cannot silently report an empty policy set.
+    const policies = await client.query(`
+          SELECT n.nspname AS schemaname, c.relname AS tablename,
+                 p.polname AS policyname,
+                 CASE WHEN p.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END AS permissive,
+                 ARRAY(
+                   SELECT CASE WHEN role_oid = 0 THEN 'PUBLIC' ELSE r.rolname END
+                     FROM unnest(p.polroles) AS role_oid
+                     LEFT JOIN pg_roles r ON r.oid = role_oid
+                    ORDER BY 1
+                 )::text[] AS roles,
+                 CASE p.polcmd WHEN '*' THEN 'ALL' WHEN 'r' THEN 'SELECT'
+                   WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE'
+                   ELSE p.polcmd::text END AS cmd,
+                 pg_get_expr(p.polqual, p.polrelid) AS qual,
+                 pg_get_expr(p.polwithcheck, p.polrelid) AS with_check
+            FROM pg_policy p
+            JOIN pg_class c ON c.oid = p.polrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public'
+           ORDER BY n.nspname, c.relname, p.polname
+    `);
+    const expectedPolicyCounts = await client.query(`
+          SELECT n.nspname AS schema_name, c.relname AS table_name,
+                 count(p.oid)::int AS policy_count
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_policy p ON p.polrelid = c.oid
+           WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+           GROUP BY n.nspname, c.relname
+           ORDER BY n.nspname, c.relname
     `);
     const triggers = await client.query(`
 
           SELECT n.nspname AS schema_name,c.relname AS table_name,t.tgname AS trigger_name,
-                 pg_get_triggerdef(t.oid,true) AS definition
+                 pg_get_triggerdef(t.oid,true) AS definition, t.tgenabled AS enabled_state
             FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
             JOIN pg_namespace n ON n.oid=c.relnamespace
-           WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema')
+           WHERE NOT t.tgisinternal AND n.nspname = 'public'
            ORDER BY n.nspname,c.relname,t.tgname
     `);
+    const extensions = await client.query(`
+          SELECT e.extname, e.extversion, n.nspname AS schema_name,
+                  pg_get_userbyid(e.extowner) AS owner_name
+             FROM pg_extension e
+            JOIN pg_namespace n ON n.oid = e.extnamespace
+           ORDER BY e.extname, n.nspname
+    `);
+    const customTypes = await client.query(`
+          SELECT n.nspname AS schema_name, t.typname, t.typtype,
+                  pg_get_userbyid(t.typowner) AS owner_name, CASE WHEN t.typacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(t.typacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
+                  CASE WHEN t.typtype = 'e' THEN (
+                   SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
+                     FROM pg_enum e WHERE e.enumtypid = t.oid
+                 ) ELSE NULL END AS enum_values,
+                 CASE WHEN t.typtype = 'd' THEN (
+                   SELECT string_agg(pg_get_constraintdef(dc.oid, true), ',' ORDER BY dc.conname)
+                     FROM pg_constraint dc WHERE dc.contypid = t.oid
+                 ) ELSE NULL END AS domain_constraints,
+                 CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE NULL END AS domain_base,
+                 CASE WHEN t.typtype = 'c' THEN (
+                   SELECT string_agg(
+                     format('%s:%s:%s:%s', a.attname, format_type(a.atttypid, a.atttypmod),
+                       a.attnotnull, COALESCE(coll.collname, '')),
+                     ',' ORDER BY a.attnum
+                   )
+                     FROM pg_attribute a
+                     LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+                    WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped
+                 ) ELSE NULL END AS composite_attributes
+            FROM pg_type t
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+           WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
+             AND (t.typtype <> 'c' OR NOT EXISTS (
+               SELECT 1 FROM pg_class row_type
+                WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c'
+             ))
+           ORDER BY n.nspname, t.typname
+    `);
+    const sequences = await client.query(`
+          SELECT n.nspname AS schema_name, c.relname AS sequence_name,
+                 format_type(s.seqtypid, NULL) AS data_type,
+                  pg_get_userbyid(c.relowner) AS owner_name, CASE WHEN c.relacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(c.relacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl,
+                  s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle,
+                 COALESCE(refn.nspname || '.' || tbl.relname || '.' || att.attname, '') AS owned_by
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_sequence s ON s.seqrelid = c.oid
+            LEFT JOIN pg_depend d
+              ON d.classid = 'pg_class'::regclass AND d.objid = c.oid
+             AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a','i')
+            LEFT JOIN pg_class tbl ON tbl.oid = d.refobjid
+            LEFT JOIN pg_namespace refn ON refn.oid = tbl.relnamespace
+            LEFT JOIN pg_attribute att ON att.attrelid = d.refobjid AND att.attnum = d.refobjsubid
+           WHERE c.relkind = 'S' AND n.nspname = 'public'
+           ORDER BY n.nspname, c.relname
+    `);
+    const routines = await client.query(`
+          SELECT n.nspname AS schema_name, p.proname,
+                 pg_get_function_identity_arguments(p.oid) AS identity_arguments,
+                 pg_get_function_result(p.oid) AS result_type,
+                 p.prokind,
+                 CASE WHEN p.prokind = 'a' THEN
+                   format('AGGREGATE kind=%s args=%s result=%s transition=%s state=%s final=%s combine=%s init=%s direct_args=%s final_extra=%s final_modify=%s',
+                     aggregate.aggkind, pg_get_function_identity_arguments(p.oid),
+                     pg_get_function_result(p.oid), aggregate.aggtransfn::regprocedure::text,
+                     aggregate.aggtranstype::regtype::text, aggregate.aggfinalfn::regprocedure::text,
+                     aggregate.aggcombinefn::regprocedure::text, COALESCE(aggregate.agginitval, ''),
+                     aggregate.aggnumdirectargs, aggregate.aggfinalextra, aggregate.aggfinalmodify)
+                   ELSE pg_get_functiondef(p.oid)
+                 END AS definition,
+                 owner_role.rolname AS owner_name, p.prosecdef AS security_definer,
+                 p.proleakproof AS leakproof, p.proisstrict AS strict,
+                 p.provolatile AS volatility, p.proparallel AS parallel_safety,
+                 p.proconfig AS configuration, CASE WHEN p.proacl IS NULL THEN NULL ELSE ARRAY(SELECT acl_item.value::text FROM unnest(p.proacl) AS acl_item(value) ORDER BY acl_item.value::text)::text END AS acl
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+            LEFT JOIN pg_aggregate aggregate ON aggregate.aggfnoid = p.oid
+           WHERE n.nspname = 'public' AND p.prokind IN ('f','p','a','w')
+           ORDER BY n.nspname, p.proname, identity_arguments
+    `);
+    // Compare every returned object list with catalog-derived totals. Some
+    // convenience views can filter metadata by privileges; a mismatch must fail closed.
+    const expectedObjectCounts = await client.query(`
+          SELECT
+            (SELECT count(*) FROM pg_index i
+               JOIN pg_class t ON t.oid = i.indrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public' AND t.relkind IN ('r','p'))::int AS indexes,
+            (SELECT count(*) FROM pg_constraint con
+               JOIN pg_class t ON t.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public' AND con.contype IN ('u','c','x'))::int AS constraints,
+            (SELECT count(*) FROM pg_constraint con
+               JOIN pg_class t ON t.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public' AND con.contype = 'f')::int AS foreign_keys,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'v')::int AS views,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'm')::int AS materialized_views,
+            (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+               JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE NOT t.tgisinternal AND n.nspname = 'public')::int AS triggers,
+            (SELECT count(*) FROM pg_extension)::int AS extensions,
+            (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
+              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
+                AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type
+                  WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
+            (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','a','w'))::int AS routines,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE c.relkind='S' AND n.nspname='public')::int AS sequences,
+             (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE c.relkind='f' AND n.nspname='public')::int AS foreign_tables
+    `);
+
     const features = await client.query(`
 
           SELECT
-            (SELECT count(*) FROM pg_views WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS views,
-            (SELECT count(*) FROM pg_matviews WHERE schemaname NOT IN ('pg_catalog','information_schema'))::int AS materialized_views,
+            (SELECT count(*) FROM pg_views WHERE schemaname = 'public')::int AS views,
+            (SELECT count(*) FROM pg_matviews WHERE schemaname = 'public')::int AS materialized_views,
             (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
                JOIN pg_namespace n ON n.oid=c.relnamespace
-              WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema'))::int AS triggers,
+              WHERE NOT t.tgisinternal AND n.nspname = 'public')::int AS triggers,
             (SELECT count(*) FROM pg_extension)::int AS extensions,
             (SELECT count(*) FROM pg_largeobject_metadata)::int AS large_objects,
             (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-              WHERE t.typtype IN ('e','d','c') AND n.nspname NOT IN ('pg_catalog','information_schema'))::int AS custom_types,
+              WHERE t.typtype IN ('e','d','c') AND n.nspname = 'public'
+                AND (t.typtype <> 'c' OR NOT EXISTS (SELECT 1 FROM pg_class row_type
+                  WHERE row_type.reltype = t.oid AND row_type.relkind <> 'c')))::int AS custom_types,
             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-              WHERE n.nspname NOT IN ('pg_catalog','information_schema'))::int AS routines
+              WHERE n.nspname = 'public' AND p.prokind IN ('f','p','a','w'))::int AS routines,
+            (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE c.relkind='S' AND n.nspname='public')::int AS sequences
     `);
 
     const tableMap = new Map<string, TableShape>();
     for (const row of tables.rows) {
       tableMap.set(`${row.schema_name}.${row.table_name}`, {
-        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: []
+        estimate: Number(row.estimated_rows) || 0, columns: [], primaryKey: [], foreignKeys: [], dependencies: [], indexes: [], constraints: [], triggers: [],
+        rlsEnabled: false, rlsForced: false, policies: [],
+        partitioning: JSON.stringify({ kind: row.relation_kind, isPartition: row.is_partition,
+          key: row.partition_key, bound: row.partition_bound, parents: row.parents ?? [], children: row.children ?? [] }),
+        ownership: JSON.stringify({ owner: row.owner_name, acl: row.acl, options: row.relation_options ?? [] })
       });
     }
     for (const row of columns.rows) {
       tableMap.get(`${row.table_schema}.${row.table_name}`)?.columns.push({
-        name: row.column_name, type: row.type, nullable: row.nullable, defaultValue: row.column_default
+        name: row.column_name, type: row.type, udtSchema: row.udt_schema, udtName: row.udt_name,
+        domainSchema: row.domain_schema, domainName: row.domain_name,
+        nullable: row.nullable, defaultValue: row.column_default,
+        identity: row.identity_generation ?? "", generated: row.is_generated ?? "",
+        collation: row.collation ?? null
       });
+    }
+    const expectedCounts = new Map<string, number>(
+      expectedColumnCounts.rows.map((row: any) => [
+        `${row.table_schema}.${row.table_name}`, Number(row.column_count)
+      ])
+    );
+    for (const [tableName, table] of tableMap) {
+      const expected = expectedCounts.get(tableName);
+      if (expected === undefined || table.columns.length !== expected) {
+        throw new Error(`Incomplete column metadata for ${tableName}; expected ${expected ?? "unknown"} columns but read ${table.columns.length}`);
+      }
     }
     for (const row of primaryKeys.rows) {
       tableMap.get(`${row.table_schema}.${row.table_name}`)?.primaryKey.push(row.column_name);
     }
     for (const row of foreignKeys.rows) {
-      tableMap.get(`${row.table_schema}.${row.table_name}`)?.foreignKeys.push(row.signature);
+      const table = tableMap.get(`${row.table_schema}.${row.table_name}`);
+      table?.foreignKeys.push(row.signature);
+      table?.dependencies.push(`${row.referenced_schema}.${row.referenced_table}`);
+    }
+    for (const row of indexes.rows) {
+      tableMap.get(`${row.schemaname}.${row.tablename}`)?.indexes.push(row.definition);
+    }
+    for (const row of constraints.rows) {
+      tableMap.get(`${row.table_schema}.${row.table_name}`)?.constraints.push(`${row.constraint_type}:${row.definition ?? ""}`);
+    }
+    for (const row of triggers.rows) {
+      tableMap.get(`${row.schema_name}.${row.table_name}`)?.triggers.push(`${row.trigger_name}:${row.definition}`);
+    }
+    for (const row of rowSecurity.rows) {
+      const table = tableMap.get(`${row.schema_name}.${row.table_name}`);
+      if (table) {
+        table.rlsEnabled = Boolean(row.rls_enabled);
+        table.rlsForced = Boolean(row.rls_forced);
+      }
+    }
+    const expectedPolicyCountMap = new Map<string, number>(
+      expectedPolicyCounts.rows.map((row: any) => [
+        `${row.schema_name}.${row.table_name}`, Number(row.policy_count)
+      ])
+    );
+    const actualPolicyCounts = new Map<string, number>();
+    for (const row of policies.rows) {
+      const tableName = `${row.schemaname}.${row.tablename}`;
+      actualPolicyCounts.set(tableName, (actualPolicyCounts.get(tableName) ?? 0) + 1);
+      tableMap.get(tableName)?.policies.push(
+        `${row.policyname}:${row.permissive}:${(row.roles ?? []).join(",")}:${row.cmd}:${row.qual ?? ""}:${row.with_check ?? ""}`
+      );
+    }
+    for (const [tableName, expected] of expectedPolicyCountMap) {
+      const actual = actualPolicyCounts.get(tableName) ?? 0;
+      if (actual !== expected) {
+        throw new Error(`Incomplete row-security policy metadata for ${tableName}; expected ${expected} policies but read ${actual}`);
+      }
+    }
+
+    const expectedObjects = expectedObjectCounts.rows[0] ?? {};
+    const observedObjectCounts: Record<string, number> = {
+      indexes: indexes.rows.length,
+      constraints: constraints.rows.length,
+      foreign_keys: foreignKeys.rows.length,
+      views: views.rows.length,
+      materialized_views: materializedViews.rows.length,
+      triggers: triggers.rows.length,
+      extensions: extensions.rows.length,
+      custom_types: customTypes.rows.length,
+      routines: routines.rows.length,
+      sequences: sequences.rows.length,
+      foreign_tables: unsupportedRelations.rows.length
+    };
+    for (const [objectName, observed] of Object.entries(observedObjectCounts)) {
+      const expected = Number(expectedObjects[objectName]);
+      if (!Number.isFinite(expected) || observed !== expected) {
+        throw new Error(`Incomplete ${objectName} metadata; expected ${expectedObjects[objectName] ?? "unknown"} objects but read ${observed}`);
+      }
     }
 
     const featureRow = features.rows[0] ?? {};
@@ -152,7 +559,8 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       extensions: Number(featureRow.extensions) || 0,
       largeObjects: Number(featureRow.large_objects) || 0,
       customTypes: Number(featureRow.custom_types) || 0,
-      routines: Number(featureRow.routines) || 0
+      routines: Number(featureRow.routines) || 0,
+      sequences: Number(featureRow.sequences) || 0
     };
     return {
       tables: tableMap,
@@ -161,11 +569,32 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       indexes: indexes.rows.map((row: any) => `${row.schemaname}.${row.tablename}:${row.definition}`),
       constraints: constraints.rows.map((row: any) =>
         `${row.table_schema}.${row.table_name}:${row.constraint_type}:${row.definition ?? ""}`),
-      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${row.definition}`),
+      views: views.rows.map((row: any) => `${row.schemaname}.${row.viewname}:${fingerprint(JSON.stringify({ definition: row.definition, owner: row.owner_name, acl: row.acl, reloptions: row.reloptions ?? [] }))}`),
       materializedViews: materializedViews.rows.map((row: any) =>
-        `${row.schemaname}.${row.matviewname}:${row.definition}`),
+        `${row.schemaname}.${row.matviewname}:${fingerprint(JSON.stringify({ definition: row.definition, owner: row.owner_name, acl: row.acl, reloptions: row.reloptions ?? [] }))}`),
       triggers: triggers.rows.map((row: any) =>
-        `${row.schema_name}.${row.table_name}.${row.trigger_name}:${row.definition}`),
+        `${row.schema_name}.${row.table_name}.${row.trigger_name}:${fingerprint(JSON.stringify({ definition: row.definition, enabled: row.enabled_state }))}`),
+      extensions: extensions.rows.map((row: any) =>
+        `${row.extname}:${row.extversion}:${row.schema_name}:${row.owner_name}`),
+      customTypes: customTypes.rows.map((row: any) =>
+        `${row.schema_name}.${row.typname}:${row.typtype}:${row.owner_name}:${row.acl ?? ""}:${row.domain_base ?? ""}:${row.enum_values ?? ""}:${row.domain_constraints ?? ""}:${row.composite_attributes ?? ""}`),
+      routines: routines.rows.map((row: any) =>
+        `${row.schema_name}.${row.proname}(${row.identity_arguments}):${row.result_type}:${row.prokind}:${fingerprint(JSON.stringify({
+          definition: row.definition, owner: row.owner_name, securityDefiner: row.security_definer,
+          leakproof: row.leakproof, strict: row.strict, volatility: row.volatility,
+          parallelSafety: row.parallel_safety, configuration: row.configuration ?? [], acl: row.acl
+        }))}`),
+      sequences: sequences.rows.map((row: any) =>
+        `${row.schema_name}.${row.sequence_name}:${row.data_type}:${row.owner_name}:${row.acl ?? ""}:${row.seqstart}:${row.seqincrement}:${row.seqmin}:${row.seqmax}:${row.seqcache}:${row.seqcycle}:${row.owned_by}`),
+      unsupportedRelations: unsupportedRelations.rows.map((row: any) => row.relation_name),
+      unsupportedSchemas: unsupportedSchemas.rows.map((row: any) => row.schema_name),
+      schemas: schemaInventory.rows.map((row: any) => `${row.schema_name}:${row.owner_name}:${row.acl ?? ""}`),
+      defaultPrivileges: defaultPrivileges.rows.map((row: any) =>
+        `${row.schema_name}:${row.owner_name}:${row.object_type}:${row.privileges ?? ""}`),
+      databaseAccess: databaseAccess.rows.map((row: any) =>
+        `${row.datname}:${row.owner_name}:${row.acl ?? ""}:${row.datallowconn}:${row.datconnlimit}`),
+      roles: roles.rows.map((row: any) => JSON.stringify(row)),
+      roleMemberships: roleMemberships.rows.map((row: any) => JSON.stringify(row)),
       features: featureCounts
     };
   } finally {
@@ -173,18 +602,34 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
   }
 }
 
-function diff(source: string[], target: string[]) {
-  const targetSet = new Set(target);
-  const sourceSet = new Set(source);
-  return {
-    missingInTarget: source.filter(value => !targetSet.has(value)),
-    missingInSource: target.filter(value => !sourceSet.has(value))
-  };
+function fingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function diffObjectSignatures(source: string[], target: string[]) {
+  // Compare as multisets, not Sets: repeated identical definitions still
+  // represent distinct database objects and must not disappear silently.
+  const targetCounts = new Map<string, number>();
+  const sourceCounts = new Map<string, number>();
+  for (const value of target) targetCounts.set(value, (targetCounts.get(value) ?? 0) + 1);
+  for (const value of source) sourceCounts.set(value, (sourceCounts.get(value) ?? 0) + 1);
+
+  const missingInTarget: string[] = [];
+  const missingInSource: string[] = [];
+  for (const [value, count] of sourceCounts) {
+    const difference = count - (targetCounts.get(value) ?? 0);
+    for (let index = 0; index < difference; index += 1) missingInTarget.push(value);
+  }
+  for (const [value, count] of targetCounts) {
+    const difference = count - (sourceCounts.get(value) ?? 0);
+    for (let index = 0; index < difference; index += 1) missingInSource.push(value);
+  }
+  return { missingInTarget, missingInSource };
 }
 
 function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
   const names = [...new Set([...source.tables.keys(), ...target.tables.keys()])].sort();
-  return names.map(name => {
+  const tableComparisons = names.map(name => {
     const left = source.tables.get(name);
     const right = target.tables.get(name);
     const differences: string[] = [];
@@ -193,24 +638,61 @@ function compareSnapshots(source: DatabaseSnapshot, target: DatabaseSnapshot) {
     if (left && right) {
       const columnSignature = (table: TableShape) =>
         table.columns.map(column =>
-          `${column.name}:${column.type}:${column.nullable}:${column.defaultValue ?? ""}`).sort();
+          `${column.name}:${column.type}:${column.udtSchema}.${column.udtName}:${column.domainSchema ?? ""}.${column.domainName ?? ""}:${column.nullable}:${column.defaultValue ?? ""}:${column.identity}:${column.generated}:${column.collation ?? ""}`).sort();
       if (JSON.stringify(columnSignature(left)) !== JSON.stringify(columnSignature(right))) {
         differences.push("اختلاف الأعمدة أو أنواعها أو خصائصها");
       }
-      if (JSON.stringify(left.primaryKey) !== JSON.stringify(right.primaryKey)) {
+      if (left.primaryKey.length === 0 || right.primaryKey.length === 0) {
+        differences.push("غياب المفتاح الأساسي؛ لا يمكن ضمان استئناف النقل ومنع التكرار بأمان");
+      } else if (JSON.stringify(left.primaryKey) !== JSON.stringify(right.primaryKey)) {
         differences.push("اختلاف المفتاح الأساسي");
       }
       if (JSON.stringify([...left.foreignKeys].sort()) !== JSON.stringify([...right.foreignKeys].sort())) {
         differences.push("اختلاف المفاتيح الخارجية");
+      }
+      if (JSON.stringify([...left.indexes].sort()) !== JSON.stringify([...right.indexes].sort())) {
+        differences.push("اختلاف الفهارس");
+      }
+      if (JSON.stringify([...left.constraints].sort()) !== JSON.stringify([...right.constraints].sort())) {
+        differences.push("اختلاف قيود UNIQUE أو CHECK");
+      }
+      if (JSON.stringify([...left.triggers].sort()) !== JSON.stringify([...right.triggers].sort())) {
+        differences.push("اختلاف تعريف المشغلات أو حالة تفعيلها؛ قد تؤثر على البيانات عند الإدخال");
+      }
+      const hasUnsupportedPartitioning = (table: TableShape): boolean => {
+        try {
+          const shape = JSON.parse(table.partitioning) as {
+            kind?: string; isPartition?: boolean; parents?: string[]; children?: string[];
+          };
+          return shape.kind === "p" || Boolean(shape.isPartition) ||
+            Boolean(shape.parents?.length) || Boolean(shape.children?.length);
+        } catch {
+          return true;
+        }
+      };
+      if (left.partitioning !== right.partitioning) {
+        differences.push("اختلاف تقسيم الجدول أو حدود الأقسام أو علاقات الوراثة");
+      }
+      if (hasUnsupportedPartitioning(left) || hasUnsupportedPartitioning(right)) {
+        differences.push("الجداول المقسمة أو الموروثة خارج نطاق النقل الآمن حاليًا؛ يلزم دعم طوبولوجيا الأقسام قبل إدراجها في الخطة");
+      }
+      if (left.ownership !== right.ownership) {
+        differences.push("اختلاف ملكية الجدول أو صلاحياته أو إعدادات التخزين");
+      }
+      if (left.rlsEnabled !== right.rlsEnabled || left.rlsForced !== right.rlsForced ||
+          JSON.stringify([...left.policies].sort()) !== JSON.stringify([...right.policies].sort())) {
+        differences.push("اختلاف إعدادات RLS أو سياسات الوصول؛ قد يتغير سلوك القراءة والكتابة");
       }
     }
     const status = !left ? "target_only" : !right ? "source_only" :
       differences.length ? "schema_mismatch" : "compatible";
     return {
       table: name, status, sourceEstimate: left?.estimate ?? 0,
-      targetEstimate: right?.estimate ?? 0, differences
+      targetEstimate: right?.estimate ?? 0, dependencies: left?.dependencies ?? [],
+      hasPrimaryKey: Boolean(left?.primaryKey.length && right?.primaryKey.length), differences
     };
   });
+  return tableComparisons;
 }
 
 export function databaseIdentity(connectionString: string): string | null {
@@ -219,11 +701,14 @@ export function databaseIdentity(connectionString: string): string | null {
     const host = parsed.hostname.toLowerCase();
     const port = parsed.port || "5432";
     const database = decodeURIComponent(parsed.pathname.slice(1));
-    // Supabase regional pooler hostnames are shared across projects. The project
-    // reference is encoded in the pooler username, so include it in endpoint identity.
+    // Normalize direct and pooled Supabase endpoints to the same project identity.
+    const directSupabase = host.match(/^db\.([a-z0-9]+)\.supabase\.co$/);
     const isSupabasePooler = host.endsWith(".pooler.supabase.com");
-    const username = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
-    return host && database ? `${host}:${port}/${database}${username ? `/${username}` : ""}` : null;
+    const poolerUser = isSupabasePooler ? decodeURIComponent(parsed.username).toLowerCase() : "";
+    const pooledSupabase = poolerUser.match(/^postgres\.([a-z0-9_-]+)$/);
+    const supabaseProjectRef = directSupabase?.[1] ?? pooledSupabase?.[1];
+    if (supabaseProjectRef && database) return `supabase:${supabaseProjectRef}/${database}`;
+    return host && database ? `${host}:${port}/${database}` : null;
   } catch {
     return null;
   }
@@ -232,16 +717,10 @@ export function databaseIdentity(connectionString: string): string | null {
 export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: string) {
   const sourceIdentity = databaseIdentity(sourceUrl);
   const targetIdentity = databaseIdentity(targetUrl);
-  if (sourceUrl === targetUrl || (sourceIdentity && targetIdentity && sourceIdentity === targetIdentity)) {
-    throw new Error("مصدر البيانات والوجهة يشيران إلى نفس قاعدة البيانات؛ أوقف الفحص لحماية البيانات.");
-  }
+  assertDistinctDatabaseIdentities(sourceIdentity, targetIdentity);
 
-  const sourcePool = new pg.Pool({
-    connectionString: sourceUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000
-  });
-  const targetPool = new pg.Pool({
-    connectionString: targetUrl, max: 1, connectionTimeoutMillis: 5000, idleTimeoutMillis: 1000
-  });
+  const sourcePool = createReadOnlySourcePool(sourceUrl);
+  const targetPool = createTargetPool(targetUrl);
 
   try {
     const sourceClient = await sourcePool.connect();
@@ -253,10 +732,43 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
       throw error;
     }
     try {
+      await assertReadOnlySession(sourceClient);
+      await assertReadOnlySession(targetClient);
+      await assertDistinctConnectedDatabases(sourceClient, targetClient, sourceIdentity, targetIdentity);
       const [source, target] = await Promise.all([
         readSnapshot(sourceClient), readSnapshot(targetClient)
       ]);
       const comparison = compareSnapshots(source, target);
+      const unsupportedSchemaNames = [...new Set([
+        ...source.unsupportedSchemas,
+        ...target.unsupportedSchemas
+      ])].sort();
+      const unsupportedSchemaBlockers = unsupportedSchemaNames.map(name => ({
+        table: `schema:${name}`,
+        status: "unsupported_schema",
+        sourceEstimate: 0,
+        targetEstimate: 0,
+        dependencies: [] as string[],
+        hasPrimaryKey: false,
+        differences: ["Schema خارج نطاق فحص وترحيل الجداول المدعومة حاليًا؛ يجب فحص محتوياته وصلاحياته يدويًا قبل أي نقل"]
+      }));
+      const schemaDifferences = diffObjectSignatures(source.schemas, target.schemas);
+      const defaultPrivilegeDifferences = diffObjectSignatures(source.defaultPrivileges, target.defaultPrivileges);
+      const databaseAccessDifferences = diffObjectSignatures(source.databaseAccess, target.databaseAccess);
+      const roleDifferences = diffObjectSignatures(source.roles, target.roles);
+      const roleMembershipDifferences = diffObjectSignatures(source.roleMemberships, target.roleMemberships);
+      const unsupportedRelationBlockers = [...new Set([
+        ...source.unsupportedRelations,
+        ...target.unsupportedRelations
+      ])].sort().map(name => ({
+        table: name,
+        status: "unsupported_relation",
+        sourceEstimate: 0,
+        targetEstimate: 0,
+        dependencies: [] as string[],
+        hasPrimaryKey: false,
+        differences: ["علاقة خارجية (FOREIGN TABLE) خارج نطاق فحص وترحيل الجداول المدعومة؛ يجب مراجعتها يدويًا قبل أي نقل"]
+      }));
       return {
         source: {
           tableCount: source.tables.size, estimatedRows: source.estimatedRows,
@@ -267,22 +779,42 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
           foreignKeyCount: target.foreignKeyCount
         },
         comparison,
-        blockers: comparison.filter(row => row.status !== "compatible"),
+        blockers: [...comparison.filter(row => row.status !== "compatible"), ...unsupportedSchemaBlockers, ...unsupportedRelationBlockers],
+        unsupportedSchemas: { source: source.unsupportedSchemas, target: target.unsupportedSchemas },
+        globalObjectDifferences: {
+          schemas: { source: source.schemas.length, target: target.schemas.length, differences: schemaDifferences },
+          defaultPrivileges: { source: source.defaultPrivileges.length, target: target.defaultPrivileges.length, differences: defaultPrivilegeDifferences },
+          databaseAccess: { source: source.databaseAccess.length, target: target.databaseAccess.length, differences: databaseAccessDifferences },
+          roles: { source: source.roles.length, target: target.roles.length, differences: roleDifferences },
+          roleMemberships: { source: source.roleMemberships.length, target: target.roleMemberships.length, differences: roleMembershipDifferences }
+        },
+        unsupportedRelations: {
+          source: source.unsupportedRelations,
+          target: target.unsupportedRelations
+        },
         objectComparison: {
           indexes: { source: source.indexes.length, target: target.indexes.length,
-            differences: diff(source.indexes, target.indexes) },
+            differences: diffObjectSignatures(source.indexes, target.indexes) },
           constraints: { source: source.constraints.length, target: target.constraints.length,
-            differences: diff(source.constraints, target.constraints) },
+            differences: diffObjectSignatures(source.constraints, target.constraints) },
           views: { source: source.views.length, target: target.views.length,
-            differences: diff(source.views, target.views) },
+            differences: diffObjectSignatures(source.views, target.views) },
           materializedViews: { source: source.materializedViews.length, target: target.materializedViews.length,
-            differences: diff(source.materializedViews, target.materializedViews) },
+            differences: diffObjectSignatures(source.materializedViews, target.materializedViews) },
           triggers: { source: source.triggers.length, target: target.triggers.length,
-            differences: diff(source.triggers, target.triggers) }
+            differences: diffObjectSignatures(source.triggers, target.triggers) },
+          extensions: { source: source.extensions.length, target: target.extensions.length,
+            differences: diffObjectSignatures(source.extensions, target.extensions) },
+          customTypes: { source: source.customTypes.length, target: target.customTypes.length,
+            differences: diffObjectSignatures(source.customTypes, target.customTypes) },
+          routines: { source: source.routines.length, target: target.routines.length,
+            differences: diffObjectSignatures(source.routines, target.routines) },
+          sequences: { source: source.sequences.length, target: target.sequences.length,
+            differences: diffObjectSignatures(source.sequences, target.sequences) }
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
-        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. لا ينفذ نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
+        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. مقارنة الجداول والكائنات التفصيلية محصورة في public؛ أي Schema مستخدم خارج public يظهر كمانع مستقل. تتم مقارنة ملكية وصلاحيات الـSchemas، بما فيها public، والصلاحيات الافتراضية المسجلة في pg_default_acl. تتم أيضًا مقارنة مالك قاعدة البيانات وصلاحيات CONNECT/CREATE TEMP، وخصائص الأدوار وعضوياتها بالاسم لا عبر OIDs؛ اختلاف أدوار المنصة المُدارة يحتاج سياسة mapping قبل أي نقل. Large Objects يُعرض عددها فقط دون مقارنة المحتوى أو الملكية. لا ينفذ الفحص نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
       };
     } finally {
       sourceClient.release();

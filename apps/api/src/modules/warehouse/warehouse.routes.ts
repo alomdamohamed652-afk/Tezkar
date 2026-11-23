@@ -152,7 +152,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
           if(Math.abs(lotQuantity-Number(balance.quantity))>1e-7) throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المكان لا يطابق مجموع دفعات التكلفة؛ تم إيقاف النقل لحماية المخزون",409);
           for(const lot of lots.rows){
             const qty=Number(lot.remaining_quantity);
-            const sourceCost=await changeBalance(client,balance.product_id,location.rows[0].warehouse_id,id,-qty,Number(lot.unit_cost));
+            await changeBalance(client,balance.product_id,location.rows[0].warehouse_id,id,-qty,Number(lot.unit_cost));
             const source=await client.query("INSERT INTO stock_movements(movement_type,product_id,warehouse_id,location_id,quantity,unit_id,unit_cost,total_cost,batch_code,notes,created_by,reference_type) SELECT 'TRANSFER_OUT',$1,$2,$3,$4,p.unit_id,$5,$6,$7,'نقل قبل تعطيل المكان',$8,'LOCATION_DEACTIVATION' FROM products p WHERE p.id=$1 RETURNING id",[balance.product_id,location.rows[0].warehouse_id,id,qty,lot.unit_cost,qty*Number(lot.unit_cost),lot.batch_code,request.user!.userId]);
             await client.query("UPDATE inventory_lots SET remaining_quantity=0,updated_at=now() WHERE id=$1",[lot.id]);
             await client.query("INSERT INTO stock_movement_lots(movement_id,lot_id,quantity,unit_cost,total_cost) VALUES($1,$2,$3,$4,$5)",[source.rows[0].id,lot.id,qty,lot.unit_cost,qty*Number(lot.unit_cost)]);
@@ -188,7 +188,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     if(parsed.data.productId){params.push(parsed.data.productId);where.push("b.product_id=$"+params.length);}
     const result=await pool.query("SELECT b.product_id,b.warehouse_id,b.location_id,b.quantity,b.avg_unit_cost,b.inventory_value,p.code AS product_code,p.name AS product_name,u.name AS unit_name,w.code AS warehouse_code,w.name AS warehouse_name,w.warehouse_type,l.code AS location_code,l.name AS location_name FROM stock_balances b JOIN products p ON p.id=b.product_id JOIN units u ON u.id=p.unit_id JOIN warehouses w ON w.id=b.warehouse_id JOIN warehouse_locations l ON l.id=b.location_id WHERE "+where.join(" AND ")+" ORDER BY p.name,w.name,l.code",params);
     const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
-    const data=canViewCosts?result.rows:result.rows.map(({avg_unit_cost,inventory_value,...row})=>row);
+    const data=canViewCosts?result.rows:result.rows.map(({avg_unit_cost:_avgUnitCost,inventory_value:_inventoryValue,...row})=>row);
     return {data};
   });
 
@@ -204,7 +204,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
       JOIN warehouse_locations loc ON loc.id=l.location_id JOIN units u ON u.id=p.unit_id
       WHERE ${where.join(" AND ")} ORDER BY p.name,l.created_at,l.id`,params);
     const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
-    const data=canViewCosts?r.rows:r.rows.map(({unit_cost,...row})=>row);
+    const data=canViewCosts?r.rows:r.rows.map(({unit_cost:_unitCost,...row})=>row);
     return {data};
   });
 
@@ -222,7 +222,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     const hasMore=result.rows.length>parsed.data.limit;
     const rows=hasMore?result.rows.slice(0,parsed.data.limit):result.rows;
     const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
-    const data=canViewCosts?rows:rows.map(({unit_cost,total_cost,order_id,order_stage_id,order_code,order_name,stage_name,scrap_origin_reference,...row})=>({
+    const data=canViewCosts?rows:rows.map(({unit_cost:_unitCost,total_cost:_totalCost,order_id:_orderId,order_stage_id:_orderStageId,order_code:_orderCode,order_name:_orderName,stage_name:_stageName,scrap_origin_reference,...row})=>({
       ...row,
       ...(row.scrap_origin_type==="ORDER"?{scrap_origin_reference:undefined}:{scrap_origin_reference})
     }));

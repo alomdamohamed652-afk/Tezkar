@@ -1,0 +1,93 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { buildTransferPlan } from "../src/modules/data-transfer/data-transfer-plan.service.js";
+
+const table = (name: string, dependencies: string[] = [], status = "compatible") => ({
+  table: name, status, sourceEstimate: 12, targetEstimate: 0, dependencies, hasPrimaryKey: true, differences: []
+});
+
+test("transfer plan orders referenced tables before dependent tables", () => {
+  const plan = buildTransferPlan([
+    table("public.order_items", ["public.orders"]),
+    table("public.orders"),
+    table("public.users")
+  ]);
+  assert.deepEqual(plan.readyOrder.map(item => item.table), [
+    "public.orders", "public.order_items", "public.users"
+  ]);
+  assert.equal(plan.writeEnabled, false);
+});
+
+test("transfer plan blocks schema mismatches and tables depending on them", () => {
+  const plan = buildTransferPlan([
+    table("public.users", [], "schema_mismatch"),
+    table("public.orders", ["public.users"])
+  ]);
+  assert.deepEqual(plan.readyOrder, []);
+  assert.equal(plan.blocked.length, 2);
+});
+
+test("transfer plan defers cyclic foreign-key dependencies", () => {
+  const plan = buildTransferPlan([
+    table("public.a", ["public.b"]),
+    table("public.b", ["public.a"])
+  ]);
+  assert.equal(plan.readyOrder.length, 0);
+  assert.equal(plan.deferred.length, 2);
+});
+
+test("transfer plan blocks tables downstream of a cycle instead of mislabeling them cyclic", () => {
+  const plan = buildTransferPlan([
+    table("public.a", ["public.b"]),
+    table("public.b", ["public.a"]),
+    table("public.c", ["public.a"]),
+    table("public.d", ["public.c"])
+  ]);
+  assert.deepEqual(plan.deferred.map(item => item.table), ["public.a", "public.b"]);
+  assert.deepEqual(plan.blocked.map(item => item.table), ["public.c", "public.d"]);
+  assert.ok(plan.blocked.every(item => item.reason.includes("دورة علاقات مؤجلة")));
+  assert.equal(plan.totals.deferredTables, 2);
+  assert.equal(plan.totals.blockedTables, 2);
+});
+
+test("transfer plan blocks references outside the eligible public table set", () => {
+  const plan = buildTransferPlan([table("public.profiles", ["auth.users"])]);
+  assert.equal(plan.blocked.length, 1);
+  assert.match(plan.blocked[0].reason, /خارج نطاق/);
+});
+
+test("transfer plan blocks tables without primary keys", () => {
+  const plan = buildTransferPlan([{
+    ...table("public.audit_log"),
+    hasPrimaryKey: false
+  }]);
+  assert.equal(plan.readyOrder.length, 0);
+  assert.equal(plan.blocked.length, 1);
+  assert.match(plan.blocked[0].reason, /مفتاح أساسي/);
+});
+
+test("transfer plan blocks otherwise-compatible tables when global custom types, extensions, or sequences differ", () => {
+  const plan = buildTransferPlan(
+    [table("public.workers"), table("public.orders", ["public.workers"])],
+    ["الأنواع المخصصة"]
+  );
+  assert.equal(plan.readyOrder.length, 0);
+  assert.equal(plan.blocked.length, 2);
+  assert.ok(plan.blocked.every(item => item.reason.includes("الأنواع المخصصة")));
+  assert.equal(plan.writeEnabled, false);
+});
+
+
+test("transfer plan blocks unsupported foreign relations and their dependent tables", () => {
+  const plan = buildTransferPlan([
+    table("public.workers"),
+    table("public.remote_workers", [], "unsupported_relation"),
+    table("public.orders", ["public.remote_workers"])
+  ]);
+  assert.deepEqual(plan.readyOrder.map(item => item.table), ["public.workers"]);
+  assert.ok(plan.blocked.some(item =>
+    item.table === "public.remote_workers" && item.reason.includes("FOREIGN TABLE")
+  ));
+  assert.ok(plan.blocked.some(item => item.table === "public.orders"));
+  assert.equal(plan.writeEnabled, false);
+});

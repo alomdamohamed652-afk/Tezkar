@@ -13,7 +13,6 @@ const EXPORT_BATCH_SIZE = 500;
 
 type TableInfo = { table_name: string; primary_key_columns: string[] };
 type ColumnInfo = { column_name: string; pg_type: string };
-type SequenceInfo = { sequence_name: string };
 
 async function listBackupTables(client: pg.PoolClient): Promise<TableInfo[]> {
   // A plain SELECT from an inheritance/partition parent can include descendant

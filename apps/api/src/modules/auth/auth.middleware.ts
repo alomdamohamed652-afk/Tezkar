@@ -30,7 +30,9 @@ export async function authenticateRequest(
     throw error;
   });
   try {
-    request.user = await getSessionUser(client, token);
+    const routePath = request.url.split("?")[0] ?? request.url;
+    const isDataTransferInspection = routePath.startsWith("/api/admin/data-transfer/");
+    request.user = await getSessionUser(client, token, { touchLastSeen: !isDataTransferInspection });
   } finally {
     client.release();
   }

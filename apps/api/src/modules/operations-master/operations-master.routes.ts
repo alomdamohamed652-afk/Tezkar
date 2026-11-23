@@ -6,7 +6,6 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 
-const code=z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/);
 const name=z.string().trim().min(2).max(120);
 const createRate=z.object({productId:z.string().uuid().nullable().optional(),stageId:z.string().uuid(),productionTypeId:z.string().uuid().nullable().optional(),rateGroupId:z.string().uuid().nullable().optional(),wageTypeId:z.string().uuid(),unitId:z.string().uuid(),rate:z.number().nonnegative(),effectiveFrom:z.string().date(),effectiveTo:z.string().date().nullable().optional()});
 

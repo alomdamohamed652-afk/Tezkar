@@ -5,27 +5,29 @@ import { requirePermission } from "../rbac/permission.guard.js";
 import { inspectDatabaseTransfer } from "./data-transfer-inspection.service.js";
 import { checkDataTransferRateLimit } from "./data-transfer-rate-limit.js";
 import { inspectSelectedTableCounts, parseRequestedTables, type RequestedTable } from "./data-transfer-counts.service.js";
+import { buildTransferPlan } from "./data-transfer-plan.service.js";
 
 export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/inspection", {
     preHandler: [authenticateRequest, requirePermission("system.backup.export")]
   }, async (request, reply) => {
-    if (!env.LEGACY_DATABASE_URL) {
+    if (!env.TARGET_DATABASE_URL) {
       return reply.code(503).header("cache-control", "no-store, private").send({
         error: {
-          code: "LEGACY_DATABASE_NOT_CONFIGURED",
-          message: "قاعدة البيانات القديمة غير مُعدة على خدمة API؛ لم يتم بدء الفحص."
+          code: "TARGET_DATABASE_NOT_CONFIGURED",
+          message: "قاعدة البيانات الهدف غير مُعدة على خدمة API؛ لم يتم بدء الفحص."
         }
       });
     }
 
-    const retryAfterMs = checkDataTransferRateLimit("inspection:" + request.user!.userId);
+    const retryAfterMs = checkDataTransferRateLimit("all:" + request.user!.userId);
     if (retryAfterMs > 0) {
       return reply.code(429).header("cache-control", "no-store, private").header("retry-after", String(Math.ceil(retryAfterMs / 1000))).send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
     }
 
     try {
-      const report = await inspectDatabaseTransfer(env.LEGACY_DATABASE_URL, env.DATABASE_URL);
+      const report = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL!);
+      request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.inspection", requestId: request.id }, "Read-only data transfer inspection completed");
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
       app.log.error({ err: error }, "Read-only database transfer inspection failed");
@@ -40,9 +42,9 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/data-transfer/counts", {
     preHandler: [authenticateRequest, requirePermission("system.backup.export")]
   }, async (request, reply) => {
-    if (!env.LEGACY_DATABASE_URL) {
+    if (!env.TARGET_DATABASE_URL) {
       return reply.code(503).header("cache-control", "no-store, private").send({
-        error: { code: "LEGACY_DATABASE_NOT_CONFIGURED", message: "قاعدة البيانات القديمة غير مُعدة؛ لم يبدأ فحص الأعداد." }
+        error: { code: "TARGET_DATABASE_NOT_CONFIGURED", message: "قاعدة البيانات الهدف غير مُعدة؛ لم يبدأ فحص الأعداد." }
       });
     }
 
@@ -59,18 +61,88 @@ export async function dataTransferRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const retryAfterMs = checkDataTransferRateLimit("counts:" + request.user!.userId);
+    const retryAfterMs = checkDataTransferRateLimit("all:" + request.user!.userId);
     if (retryAfterMs > 0) {
       return reply.code(429).header("cache-control", "no-store, private").header("retry-after", String(Math.ceil(retryAfterMs / 1000))).send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص الأعداد مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
     }
 
     try {
-      const report = await inspectSelectedTableCounts(env.LEGACY_DATABASE_URL, env.DATABASE_URL, tables);
+      const report = await inspectSelectedTableCounts(env.DATABASE_URL, env.TARGET_DATABASE_URL!, tables);
+      request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.counts", tableCount: tables.length, requestId: request.id }, "Read-only selected table counts completed");
       return reply.header("cache-control", "no-store, private").send(report);
     } catch (error) {
       app.log.error({ err: error }, "Read-only selected table count inspection failed");
       return reply.code(503).header("cache-control", "no-store, private").send({
         error: { code: "DATA_TRANSFER_COUNTS_FAILED", message: "تعذر فحص أعداد الجداول المحددة." }
+      });
+    }
+  });
+
+  app.get("/api/admin/data-transfer/plan", {
+    preHandler: [authenticateRequest, requirePermission("system.backup.export")]
+  }, async (request, reply) => {
+    if (!env.TARGET_DATABASE_URL) {
+      return reply.code(503).header("cache-control", "no-store, private").send({
+        error: { code: "TARGET_DATABASE_NOT_CONFIGURED", message: "قاعدة البيانات الهدف غير مُعدة؛ لم يتم إنشاء خطة." }
+      });
+    }
+
+    const retryAfterMs = checkDataTransferRateLimit("all:" + request.user!.userId);
+    if (retryAfterMs > 0) {
+      return reply.code(429).header("cache-control", "no-store, private")
+        .header("retry-after", String(Math.ceil(retryAfterMs / 1000)))
+        .send({ error: { code: "DATA_TRANSFER_RATE_LIMITED", message: "تم تنفيذ فحص مؤخرًا. انتظر قليلًا قبل إعادة المحاولة." } });
+    }
+
+    try {
+      const inspection = await inspectDatabaseTransfer(env.DATABASE_URL, env.TARGET_DATABASE_URL);
+      // Conservative gate: all public database-object differences must be resolved before transfer readiness.
+      const objectLabels: { [key: string]: string } = {
+        indexes: "الفهارس", constraints: "القيود", views: "Views",
+        materializedViews: "Materialized Views", triggers: "Triggers",
+        extensions: "Extensions", customTypes: "الأنواع المخصصة",
+        routines: "Functions / Procedures", sequences: "Sequences"
+      };
+      const globalBlockers = Object.keys(objectLabels).flatMap(key => {
+        const item = inspection.objectComparison[key as keyof typeof inspection.objectComparison];
+        return item && (item.differences.missingInTarget.length > 0 || item.differences.missingInSource.length > 0)
+          ? [objectLabels[key] ?? key]
+          : [];
+      });
+      if (inspection.unsupportedRelations.source.length || inspection.unsupportedRelations.target.length) {
+        globalBlockers.push("FOREIGN TABLES غير المدعومة");
+      }
+      if (inspection.unsupportedSchemas.source.length || inspection.unsupportedSchemas.target.length) {
+        globalBlockers.push("Schemas خارج نطاق النقل المدعوم");
+      }
+      for (const [key, label] of [
+        ["schemas", "ملكية وصلاحيات الـSchemas"],
+        ["defaultPrivileges", "Default Privileges"],
+        ["databaseAccess", "Database ACL وملكية قاعدة البيانات"],
+        ["roles", "خصائص الأدوار"],
+        ["roleMemberships", "عضويات الأدوار"]
+      ] as const) {
+        const item = inspection.globalObjectDifferences[key];
+        if (item.differences.missingInTarget.length || item.differences.missingInSource.length) {
+          globalBlockers.push(label);
+        }
+      }
+      // Large-object metadata is counted but content and ownership are not compared.
+      // Never label ordinary table rows as globally ready while opaque DB objects remain unverified.
+      if ((inspection.sourceFeatures?.largeObjects ?? 0) > 0 ||
+          (inspection.targetFeatures?.largeObjects ?? 0) > 0) {
+        globalBlockers.push("Large Objects غير المفحوصة المحتوى");
+      }
+      const plan = buildTransferPlan(inspection.comparison, globalBlockers);
+      request.log.info({ actorUserId: request.user!.userId, operation: "data-transfer.plan", readyTables: plan.totals.readyTables, blockedTables: plan.totals.blockedTables, requestId: request.id }, "Read-only data transfer plan preview completed");
+      return reply.header("cache-control", "no-store, private").send({
+        ...plan,
+        note: "هذه معاينة توافق بنيوي وترتيب فقط، وليست اعتمادًا لجاهزية نقل البيانات. تعريفات Sequences تُقارن دون قراءة last_value/is_called؛ يجب تسويتها بعد النقل قبل السماح بأي كتابة لاحقة. لا يتم هنا نسخ أو تعديل أو حذف بيانات، ولا تشغيل migrations."
+      });
+    } catch (error) {
+      app.log.error({ err: error }, "Read-only database transfer planning failed");
+      return reply.code(503).header("cache-control", "no-store, private").send({
+        error: { code: "DATA_TRANSFER_PLAN_FAILED", message: "تعذر إنشاء خطة النقل الآمنة." }
       });
     }
   });

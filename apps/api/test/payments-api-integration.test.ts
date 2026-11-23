@@ -3325,7 +3325,7 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       // A completed source order may close the remaining difference before the
       // 30-day inactivity threshold, but only after all approved worker production
       // on that order has been settled and no production remains pending.
-      const closureProduction=await insertDifferenceProduction(5,50);
+      await insertDifferenceProduction(5,50);
       const otherOrderWorker=(await apiPool.query(
         "INSERT INTO employees(full_name) VALUES($1) RETURNING id",
         ["Other Order Worker "+randomBytes(4).toString("hex")]

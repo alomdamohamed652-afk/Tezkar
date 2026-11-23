@@ -1,5 +1,6 @@
 import pg from "pg";
 import { databaseIdentity } from "./data-transfer-inspection.service.js";
+import { assertDistinctConnectedDatabases, assertDistinctDatabaseIdentities, assertReadOnlySession, createReadOnlySourcePool, createTargetPool } from "./data-transfer-connection.service.js";
 
 const MAX_TABLES = 5;
 const STATEMENT_TIMEOUT_MS = 1500;
@@ -23,6 +24,7 @@ export function parseRequestedTables(value: unknown): RequestedTable[] {
   return unique.map(key => {
     const separator = key.indexOf(".");
     const schema = key.slice(0, separator);
+    if (schema !== "public") throw new Error("يسمح بفحص جداول مخطط public فقط.");
     const table = key.slice(separator + 1);
     return { schema, table, key };
   });
@@ -75,28 +77,12 @@ export async function countRequestedTable(
   }
 }
 
-async function countOnDatabase(connectionString: string, tables: RequestedTable[]) {
-  const pool = new pg.Pool({
-    connectionString,
-    max: 1,
-    connectionTimeoutMillis: 5000,
-    idleTimeoutMillis: 1000
-  });
-
-  try {
-    const client = await pool.connect();
-    try {
-      const results = [];
-      for (const item of tables) {
-        results.push(await countRequestedTable(client, item));
-      }
-      return results;
-    } finally {
-      client.release();
-    }
-  } finally {
-    await pool.end();
+async function countOnClient(client: pg.PoolClient, tables: RequestedTable[]) {
+  const results = [];
+  for (const item of tables) {
+    results.push(await countRequestedTable(client, item));
   }
+  return results;
 }
 
 export async function inspectSelectedTableCounts(
@@ -109,17 +95,33 @@ export async function inspectSelectedTableCounts(
   }
   const sourceIdentity = databaseIdentity(sourceUrl);
   const targetIdentity = databaseIdentity(targetUrl);
-  if (sourceUrl === targetUrl || (sourceIdentity && targetIdentity && sourceIdentity === targetIdentity)) {
-    throw new Error("مصدر البيانات والوجهة يشيران إلى نفس قاعدة البيانات؛ أوقف الفحص لحماية البيانات.");
+  assertDistinctDatabaseIdentities(sourceIdentity, targetIdentity);
+  const sourcePool = createReadOnlySourcePool(sourceUrl);
+  const targetPool = createTargetPool(targetUrl);
+  let sourceClient: pg.PoolClient | undefined;
+  let targetClient: pg.PoolClient | undefined;
+  try {
+    sourceClient = await sourcePool.connect();
+    targetClient = await targetPool.connect();
+    await Promise.all([
+      assertReadOnlySession(sourceClient),
+      assertReadOnlySession(targetClient)
+    ]);
+    // Apply the same connected-database identity guard used by full inspection.
+    await assertDistinctConnectedDatabases(sourceClient, targetClient, sourceIdentity, targetIdentity);
+    const [source, target] = await Promise.all([
+      countOnClient(sourceClient, tables),
+      countOnClient(targetClient, tables)
+    ]);
+    return {
+      limit: { maxTablesPerRequest: MAX_TABLES, statementTimeoutMs: STATEMENT_TIMEOUT_MS },
+      source,
+      target,
+      note: "أعداد فعلية للجداول المحددة فقط. كل استعلام داخل معاملة قراءة فقط وبمهلة مستقلة؛ الجداول التي تتجاوز المهلة لا تُستكمل."
+    };
+  } finally {
+    sourceClient?.release();
+    targetClient?.release();
+    await Promise.all([sourcePool.end(), targetPool.end()]);
   }
-  const [source, target] = await Promise.all([
-    countOnDatabase(sourceUrl, tables),
-    countOnDatabase(targetUrl, tables)
-  ]);
-  return {
-    limit: { maxTablesPerRequest: MAX_TABLES, statementTimeoutMs: STATEMENT_TIMEOUT_MS },
-    source,
-    target,
-    note: "أعداد فعلية للجداول المحددة فقط. كل استعلام داخل معاملة قراءة فقط وبمهلة مستقلة؛ الجداول التي تتجاوز المهلة لا تُستكمل."
-  };
 }
