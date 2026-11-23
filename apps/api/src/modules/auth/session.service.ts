@@ -52,7 +52,11 @@ export async function createSession(client: pg.PoolClient, user: SessionUser, de
   return { token, expiresAt };
 }
 
-export async function getSessionUser(client: pg.PoolClient, token: string): Promise<SessionUser | null> {
+export async function getSessionUser(
+  client: pg.PoolClient,
+  token: string,
+  options: { touchLastSeen?: boolean } = {}
+): Promise<SessionUser | null> {
   const tokenHash = hashToken(token);
   const result = await client.query(
     `SELECT u.id AS user_id, u.employee_id, u.username, e.full_name, u.is_bootstrap, u.must_complete_setup, u.must_change_password,
@@ -74,7 +78,7 @@ export async function getSessionUser(client: pg.PoolClient, token: string): Prom
   // every authenticated API request. The SQL predicate also makes concurrent
   // requests safe: only the first request after the one-minute window updates it.
   const lastSeenAt = new Date(row.last_seen_at).getTime();
-  if (!Number.isFinite(lastSeenAt) || Date.now() - lastSeenAt >= 60_000) {
+  if (options.touchLastSeen !== false && (!Number.isFinite(lastSeenAt) || Date.now() - lastSeenAt >= 60_000)) {
     await client.query(
       "UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute')",
       [tokenHash]
