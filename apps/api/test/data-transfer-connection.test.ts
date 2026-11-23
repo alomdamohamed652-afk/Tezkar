@@ -21,21 +21,46 @@ test("target inspection pool enforces the same PostgreSQL read-only startup sett
   return pool.end();
 });
 
-test("source session guard accepts only a server-confirmed read-only session", async () => {
+test("session guard explicitly sets read-only mode before verifying PostgreSQL", async () => {
+  const statements: string[] = [];
   await assertReadOnlySession({
     async query(sql: string) {
-      assert.equal(sql, "SHOW transaction_read_only");
-      return { rows: [{ transaction_read_only: "on" }] };
+      statements.push(sql);
+      if (sql === "SHOW transaction_read_only") {
+        return { rows: [{ transaction_read_only: "on" }] };
+      }
+      return { rows: [] };
     }
   } as never);
+  assert.deepEqual(statements, [
+    "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
+    "SHOW transaction_read_only"
+  ]);
 });
 
-test("source session guard fails closed when PostgreSQL does not confirm read-only", async () => {
+test("session guard fails closed when PostgreSQL does not confirm read-only", async () => {
   await assert.rejects(
     () => assertReadOnlySession({
-      async query() { return { rows: [{ transaction_read_only: "off" }] }; }
+      async query(sql: string) {
+        if (sql === "SHOW transaction_read_only") {
+          return { rows: [{ transaction_read_only: "off" }] };
+        }
+        return { rows: [] };
+      }
     } as never),
     /ليس للقراءة فقط/
+  );
+});
+
+test("session guard fails closed if the pooler refuses the read-only session setting", async () => {
+  await assert.rejects(
+    () => assertReadOnlySession({
+      async query(sql: string) {
+        if (sql.startsWith("SET SESSION")) throw new Error("read-only setting rejected");
+        return { rows: [{ transaction_read_only: "off" }] };
+      }
+    } as never),
+    /read-only setting rejected/
   );
 });
 
