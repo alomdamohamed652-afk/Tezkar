@@ -21,17 +21,17 @@ test("database identity normalizes hostname case and PostgreSQL default port", (
 
 test("role membership inspection uses PostgreSQL 16 membership options when available", () => {
   const query = roleMembershipQueryForVersion(160000);
-  assert.match(query, /m\\.inherit_option/);
-  assert.match(query, /m\\.set_option/);
-  assert.doesNotMatch(query, /member\\.rolinherit AS inherit_option/);
+  assert.match(query, /m\.inherit_option/);
+  assert.match(query, /m\.set_option/);
+  assert.doesNotMatch(query, /member\.rolinherit AS inherit_option/);
 });
 
 test("role membership inspection remains compatible with PostgreSQL 15 and older", () => {
   const query = roleMembershipQueryForVersion(150000);
-  assert.match(query, /member\\.rolinherit AS inherit_option/);
+  assert.match(query, /member\.rolinherit AS inherit_option/);
   assert.match(query, /TRUE AS set_option/);
-  assert.doesNotMatch(query, /m\\.inherit_option/);
-  assert.doesNotMatch(query, /m\\.set_option/);
+  assert.doesNotMatch(query, /m\.inherit_option/);
+  assert.doesNotMatch(query, /m\.set_option/);
 });
 
 test("database identity returns null for malformed connection strings", () => {
