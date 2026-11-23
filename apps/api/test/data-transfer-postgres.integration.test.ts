@@ -168,6 +168,10 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     assert.ok(result.objectComparison.triggers.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.routines.differences.missingInTarget.length === 0);
     assert.ok(result.objectComparison.sequences.differences.missingInTarget.length === 0);
+    assert.deepEqual(result.globalObjectDifferences.roles.differences, { missingInTarget: [], missingInSource: [] },
+      "role attributes must be compared by role name across database snapshots");
+    assert.deepEqual(result.globalObjectDifferences.roleMemberships.differences, { missingInTarget: [], missingInSource: [] },
+      "role memberships and grant options must be compared");
     for (const objectName of [
       "indexes", "constraints", "views", "materializedViews", "triggers",
       "extensions", "customTypes", "routines", "sequences"
