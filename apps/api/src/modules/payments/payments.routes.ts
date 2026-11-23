@@ -1,6 +1,7 @@
 import { amountUnits, roundedAmount } from "./settlement-money.js";
 import type { FastifyInstance } from "fastify";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { receiptFileName, renderReceiptPdf } from "./receipt-pdf.service.js";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -1109,6 +1110,29 @@ export async function paymentsRoutes(app:FastifyInstance){
     const parsed = z.object({ paymentId: z.string().uuid() }).safeParse(request.params);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "رقم الدفعة غير صحيح", 422);
     return buildSettlementReceipt(parsed.data.paymentId);
+  });
+
+  // Real server-generated PDF (Arabic shaped, named after the worker, code and date).
+  const sendReceiptPdf = async (reply: import("fastify").FastifyReply, receipt: Awaited<ReturnType<typeof buildSettlementReceipt>>["data"]) => {
+    const pdf = await renderReceiptPdf(receipt as never);
+    const name = receiptFileName(receipt as never);
+    return reply.header("Content-Type", "application/pdf").header("Content-Disposition", `attachment; filename="invoice.pdf"; filename*=UTF-8''${encodeURIComponent(name)}`).header("X-Content-Type-Options", "nosniff").send(pdf);
+  };
+  app.get("/api/worker-payments/:paymentId/settlement-receipt/pdf", {
+    preHandler: [authenticateRequest, requirePermission("worker_payments.pay")]
+  }, async (request, reply) => {
+    const parsed = z.object({ paymentId: z.string().uuid() }).safeParse(request.params);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "رقم الدفعة غير صحيح", 422);
+    reply.header("Cache-Control", "no-store, private");
+    return sendReceiptPdf(reply, (await buildSettlementReceipt(parsed.data.paymentId)).data);
+  });
+  app.get("/api/public/settlement-receipts/:token/pdf", async (request, reply) => {
+    publicReceiptRateLimit(request as never);
+    reply.header("Cache-Control", "no-store, private").header("Pragma", "no-cache").header("Referrer-Policy", "no-referrer").header("X-Robots-Tag", "noindex, nofollow");
+    const parsed = z.object({ token: z.string().min(20).max(300) }).safeParse(request.params);
+    const paymentId = parsed.success ? verifyReceiptToken(parsed.data.token) : null;
+    if (!paymentId) throw new AppError("RECEIPT_LINK_INVALID", "رابط الفاتورة غير صالح أو منتهي", 404);
+    return sendReceiptPdf(reply, (await buildSettlementReceipt(paymentId)).data);
   });
 
   // Creates a signed, expiring view link for one settlement receipt (the worker opens it without logging in).
