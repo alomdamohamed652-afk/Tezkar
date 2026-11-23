@@ -2,11 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   databaseIdentity,
+  diffObjectSignatures,
   inspectDatabaseTransfer,
   roleMembershipQueryForVersion
 } from "../src/modules/data-transfer/data-transfer-inspection.service.js";
 import { parseRequestedTables } from "../src/modules/data-transfer/data-transfer-counts.service.js";
 import { assertDistinctConnectedDatabases } from "../src/modules/data-transfer/data-transfer-connection.service.js";
+
+test("object signature comparison preserves duplicate definition counts", () => {
+  assert.deepEqual(diffObjectSignatures(
+    ["same-definition", "same-definition", "source-only"],
+    ["same-definition", "target-only"]
+  ), {
+    missingInTarget: ["same-definition", "source-only"],
+    missingInSource: ["target-only"]
+  });
+});
 
 test("database identity normalizes hostname case and PostgreSQL default port", () => {
   assert.equal(
