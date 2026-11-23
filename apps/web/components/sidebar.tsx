@@ -10,6 +10,9 @@ type NavItem={icon:string;label:string;href:string;permissions?:string[];conditi
 type NavGroup={label:string;items:NavItem[]};
 
 const groups:NavGroup[]=[
+ {label:"حسابي",items:[
+  {icon:"☺",label:"أنا",href:"/me",permissions:["attendance.view_own","payroll.view_own"]}
+ ]},
  {label:"التشغيل",items:[
   {icon:"⌂",label:"الرئيسية",href:"/",permissions:["dashboard.view"]},
   {icon:"▤",label:"الطلبات",href:"/orders",permissions:["orders.view"]},

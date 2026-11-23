@@ -2107,3 +2107,8 @@ textarea:hover:not(:disabled) {
  body.printing-receipt .receipt-print-root,body.printing-receipt .receipt-print-root *{visibility:visible!important}
  body.printing-receipt .receipt-print-root{display:block!important;position:static;margin:0;padding:0;border:0;max-width:none;background:#fff}
 }
+
+/* Delivery note: logo on top, centered above the company name */
+.print-sheet .print-brand{flex-direction:column;gap:6px}
+.print-sheet .print-brand img{width:96px;height:96px;flex:0 0 96px}
+.print-sheet .print-brand div{text-align:center}
