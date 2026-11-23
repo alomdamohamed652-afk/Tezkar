@@ -64,11 +64,28 @@ async function inspectTarget(connectionString: string) {
          EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_admin') AS supabase_admin`
     );
     const objects = await client.query(
-      `SELECT count(*)::text AS count
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public'
-          AND c.relkind IN ('r','p','v','m','S','f')`
+      `SELECT (
+         (SELECT count(*) FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public'
+            AND c.relkind IN ('r','p','v','m','S','f'))
+         +
+         (SELECT count(*) FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public')
+         +
+         (SELECT count(*) FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+          WHERE n.nspname = 'public')
+         +
+         (SELECT count(*) FROM pg_operator o
+           JOIN pg_namespace n ON n.oid = o.oprnamespace
+          WHERE n.nspname = 'public')
+         +
+         (SELECT count(*) FROM pg_collation c
+           JOIN pg_namespace n ON n.oid = c.collnamespace
+          WHERE n.nspname = 'public')
+       )::text AS count`
     );
     const database = await client.query(
       "SELECT current_database() AS database_name, current_user"
