@@ -5,6 +5,7 @@ import {Sidebar,usePermissions} from "../../components/sidebar";
 import {formatMoney} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 import {api} from "../../lib/api";
+import {AdministrativeSettlement} from "./administrative-settlement";
 
 type Summary={total_earned:string;total_paid:string;remaining:string};
 type Entry={id:string;code:string;employee_name?:string;employee_code?:string;entry_type:"PRODUCTION_APPROVAL"|"WORKER_PAYMENT"|"ADJUSTMENT";credit_amount:string;debit_amount:string;production_code?:string|null;payment_code?:string|null;created_at:string;notes?:string|null};
@@ -74,6 +75,8 @@ export default function EarningsPage(){
      {adjustments.map(x=><tr key={x.id}><td className="mono">{x.code}</td><td>{x.employee_code} — {x.employee_name}</td><td>{x.shift_name||"عام"}</td><td>{x.adjustment_type==="BONUS"?"بونص":"خصم"}</td><td className="money">{money(x.amount)}</td><td>{x.reason}</td><td>{x.adjustment_date}</td></tr>)}{!adjustments.length&&<tr><td colSpan={7}>لا توجد بونصات أو خصومات مسجلة.</td></tr>}
     </tbody></table></div>
    </section>}
+
+   {!isWorker&&has("earnings.administrative_settlement.create")&&<AdministrativeSettlement employees={employees} presetEmployeeId={typeof window!=="undefined"?new URLSearchParams(window.location.search).get("settle")??undefined:undefined} onDone={()=>void load()}/>}
 
    {summary&&<section className="stats finance-stats"><article className="card stat"><div className="stat-label">إجمالي المستحق</div><div className="stat-value">{money(summary.total_earned)}</div></article><article className="card stat"><div className="stat-label">إجمالي المدفوع</div><div className="stat-value">{money(summary.total_paid)}</div></article><article className="card stat accent"><div className="stat-label">المتبقي</div><div className="stat-value">{money(summary.remaining)}</div></article></section>}
 
