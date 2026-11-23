@@ -558,11 +558,12 @@ export async function orderRoutes(app: FastifyInstance) {
       newRate:z.number().nonnegative(),
       newRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).optional(),
       scope:z.enum(["NEW_ONLY","UNPAID_ONLY","ALL"]),
-      reason:z.string().trim().min(2).max(500)
+      reason:z.string().trim().max(500).nullish()
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات تغيير سعر الطلبية غير صحيحة",422);
     if(!await canViewOrderFinancials(request.user!.userId))
       throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تغيير أسعار المراحل وإعادة احتساب المستحقات متاح للمخولين ماليًا فقط",403);
+    const priceChangeReason=parsed.data.reason?.trim()||null;
     const result=await withTransaction(async client=>{
       const order=await client.query("SELECT id,code,order_name,status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
       if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلبية غير موجودة",404);
@@ -576,7 +577,7 @@ export async function orderRoutes(app: FastifyInstance) {
       await client.query("UPDATE order_stages SET stage_rate=$1,stage_rate_method=COALESCE($2,stage_rate_method) WHERE id=$3",[newRate,parsed.data.newRateMethod??null,parsed.data.orderStageId]);
       const created=await client.query(
         "INSERT INTO order_price_changes(order_id,order_stage_id,previous_rate,new_rate,new_rate_method,scope,reason,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
-        [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.newRateMethod??stage.rows[0].stage_rate_method??null,parsed.data.scope,parsed.data.reason,request.user!.userId]
+        [orderId,parsed.data.orderStageId,oldRate,newRate,parsed.data.newRateMethod??stage.rows[0].stage_rate_method??null,parsed.data.scope,priceChangeReason,request.user!.userId]
       );
       let affected=0,totalDelta=0;
       if(parsed.data.scope!=="NEW_ONLY"){
@@ -637,7 +638,7 @@ export async function orderRoutes(app: FastifyInstance) {
               const debit=item.delta<0?Math.abs(item.delta):0;
               await client.query(
                 "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',$2,$3,$4,$5)",
-                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / إنتاج "+item.production_code+" / سجل "+item.id+" — "+parsed.data.reason]
+                [item.employee_id,credit,debit,request.user!.userId,(item.delta<0?"خصم فرق تعديل سعر الطلبية ":"تسوية فرق تعديل سعر الطلبية ")+order.rows[0].code+" / إنتاج "+item.production_code+" / سجل "+item.id+(priceChangeReason?" — "+priceChangeReason:"")]
               );
             }
           }
@@ -646,7 +647,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
       const updated=await client.query("UPDATE order_price_changes SET affected_entries=$1,total_delta=$2 WHERE id=$3 RETURNING *",[affected,Math.round((totalDelta+Number.EPSILON)*100)/100,created.rows[0].id]);
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"price_change",module:"orders",entityType:"order_price_change",entityId:updated.rows[0].id,beforeData:{stageRate:oldRate},afterData:updated.rows[0],metadata:{orderCode:order.rows[0].code,stageId:parsed.data.orderStageId,scope:parsed.data.scope,reason:parsed.data.reason,newRate,newRateMethod:parsed.data.newRateMethod??stage.rows[0].stage_rate_method,affectedEntries:affected,totalDelta},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"price_change",module:"orders",entityType:"order_price_change",entityId:updated.rows[0].id,beforeData:{stageRate:oldRate},afterData:updated.rows[0],metadata:{orderCode:order.rows[0].code,stageId:parsed.data.orderStageId,scope:parsed.data.scope,reason:priceChangeReason,newRate,newRateMethod:parsed.data.newRateMethod??stage.rows[0].stage_rate_method,affectedEntries:affected,totalDelta},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return updated.rows[0];
     });
     return reply.code(201).send({data:result});
