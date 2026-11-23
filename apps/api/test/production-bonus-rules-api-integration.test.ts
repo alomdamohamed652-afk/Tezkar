@@ -56,7 +56,8 @@ test("production bonus rules: CRUD, audit and best-threshold selection", {
         import("../src/modules/auth/auth.routes.js"),
         import("../src/modules/production/production.routes.js"),
         import("../src/modules/production/bonus-rules.routes.js"),
-        import("../src/modules/auth/auth.service.js"),
+        import("../src/db/pool.js")
+      ]);
         import("../src/db/pool.js")
     apiPool = poolModule.pool;
     const server = Fastify();
