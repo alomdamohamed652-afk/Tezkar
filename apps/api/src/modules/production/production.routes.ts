@@ -1,3 +1,4 @@
+import { findAutoBonusRule } from "./bonus-rules.routes.js";
 import { productionPaidSql, paymentAllocatedSql } from "../payments/settlement-calculation.js";
 import type { FastifyInstance } from "fastify";
 
@@ -636,6 +637,17 @@ payment_totals.paid_amount,
       if (!Number.isFinite(earning) || earning < 0) {
         throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج بشكل صحيح", 422);
       }
+      // Automatic count-based bonus: only when nobody typed a manual bonus. The result is written into the normal bonus fields,
+      // so it is an ordinary editable/deletable adjustment; deleting it later simply leaves the record without a bonus.
+      let autoBonusRuleId: string | null = null;
+      if (!(Number(parsed.data.bonusAmount ?? 0) > 0) && !parsed.data.bonusReason?.trim()) {
+        const rule = await findAutoBonusRule(client, { stageId: parsed.data.stageId, productId: parsed.data.productId, quantity: parsed.data.quantity });
+        if (rule) {
+          parsed.data.bonusAmount = rule.bonus_amount;
+          parsed.data.bonusReason = rule.description;
+          autoBonusRuleId = rule.id;
+        }
+      }
       if (earning + Number(parsed.data.bonusAmount ?? 0) < Number(parsed.data.deductionAmount ?? 0)) {
         throw new AppError("DEDUCTION_EXCEEDS_EARNING", "الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب", 422);
       }
@@ -721,6 +733,9 @@ payment_totals.paid_amount,
         );
       }
 
+      if (autoBonusRuleId) {
+        await client.query("UPDATE employee_earnings_adjustments SET bonus_rule_id=$1,auto_generated=TRUE WHERE production_entry_id=$2 AND adjustment_type='BONUS' AND ledger_id IS NULL",[autoBonusRuleId,created.id]);
+      }
       await writeAudit(client, {
         actorUserId: request.user!.userId,
         actorEmployeeId: request.user!.employeeId,
@@ -729,6 +744,7 @@ payment_totals.paid_amount,
         entityType: "production_entry",
         entityId: created.id,
         afterData: created,
+        metadata: autoBonusRuleId ? { autoBonusRuleId, autoBonusAmount: parsed.data.bonusAmount } : {},
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"] ?? null
       });
@@ -922,11 +938,13 @@ payment_totals.paid_amount,
          data.shiftLeaderEmployeeId===undefined?current.shift_leader_employee_id:data.shiftLeaderEmployeeId,
          rate.id??null,effectiveRate,rate.wage_type_id,rate.wage_type_code,method,rate.percentage_base??null,baseAmount,earning,bonusAmount,deductionAmount,id]
       );
+      const keptRuleId=(await client.query("SELECT bonus_rule_id FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL AND adjustment_type='BONUS' AND bonus_rule_id IS NOT NULL LIMIT 1",[id])).rows[0]?.bonus_rule_id??null;
       await client.query("DELETE FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL",[id]);
+      // An automatic bonus is kept as an ordinary adjustment on edit (not silently recalculated); its rule link is preserved while the bonus is unchanged.
       if(bonusAmount>0)await client.query(
-        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
-         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
-        [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId]
+        `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by,bonus_rule_id,auto_generated)
+         VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7,$8,$8 IS NOT NULL)`,
+        [employeeId,shiftId,id,bonusAmount,finalBonusReason!,workDate,request.user!.userId,data.bonusAmount===undefined?keptRuleId:null]
       );
       if(deductionAmount>0)await client.query(
         `INSERT INTO employee_earnings_adjustments(employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by)
@@ -1437,7 +1455,7 @@ payment_totals.paid_amount,
     if(q.data.from){params.push(q.data.from);where.push("a.adjustment_date>=$"+params.length);}
     if(q.data.to){params.push(q.data.to);where.push("a.adjustment_date<=$"+params.length);}
     const r=await pool.query(`
-      SELECT a.id,a.code,a.adjustment_date,a.adjustment_type,a.amount,a.reason,
+      SELECT a.id,a.code,a.adjustment_date,a.adjustment_type,a.amount,a.reason,a.auto_generated,
              e.code AS employee_code,e.full_name AS employee_name,
              s.code AS shift_code,s.name AS shift_name,
              p.code AS production_code
