@@ -148,7 +148,7 @@ export default function PayrollSlipPage() {
         </section>
 
         {calculation && <section className="slip-section">
-          <h3>كيف ات حساب مرتبك؟</h3>
+          <h3>كيف يُحسب مرتبك؟</h3>
           <table><tbody>
             <tr><td>الراتب الأساسي الشهري{calculation.policy?.workDaysPerMonth?<small className="line-note">{"على أساس "+calculation.policy.workDaysPerMonth+" يوم عمل في الشهر × "+(calculation.policy.dailyWorkMinutes??"—")+" دقيقة عمل في اليوم"}</small>:null}</td><td>{money(item.base_salary)}</td></tr>
             {calculation.minuteRate!=null && <tr><td>سعر الدقيقة المحتسبة<small className="line-note">الراتب الأساسي ÷ إجمالي دقائق العمل المقررة في الشهر</small></td><td>{Number(calculation.minuteRate).toLocaleString("ar-EG",{maximumFractionDigits:4})} ج.م</td></tr>}
