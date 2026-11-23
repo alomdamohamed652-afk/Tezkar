@@ -117,13 +117,66 @@ export function buildTransferPlan(tables: TransferPlanTable[], globalBlockers: s
   }
 
   const ordered = new Set(readyOrder.map(item => item.table));
-  const deferred = [...candidates.entries()]
-    .filter(([name]) => !ordered.has(name))
-    .map(([name, table]) => ({
+  const remaining = new Set([...candidates.keys()].filter(name => !ordered.has(name)));
+
+  // Find actual strongly connected components. Kahn's remaining nodes also
+  // include tables that merely depend on a cycle; those are blocked, not cyclic.
+  let nextIndex = 0;
+  const indexes = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const cycleMembers = new Set<string>();
+  const visit = (name: string): void => {
+    indexes.set(name, nextIndex);
+    lowLinks.set(name, nextIndex);
+    nextIndex += 1;
+    stack.push(name);
+    onStack.add(name);
+
+    for (const dependency of [...new Set(candidates.get(name)?.dependencies ?? [])]) {
+      if (!remaining.has(dependency)) continue;
+      if (!indexes.has(dependency)) {
+        visit(dependency);
+        lowLinks.set(name, Math.min(lowLinks.get(name)!, lowLinks.get(dependency)!));
+      } else if (onStack.has(dependency)) {
+        lowLinks.set(name, Math.min(lowLinks.get(name)!, indexes.get(dependency)!));
+      }
+    }
+
+    if (lowLinks.get(name) !== indexes.get(name)) return;
+    const component: string[] = [];
+    let member: string;
+    do {
+      member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== name);
+
+    const selfReferential = component.length === 1 &&
+      (candidates.get(component[0])?.dependencies ?? []).includes(component[0]);
+    if (component.length > 1 || selfReferential) {
+      for (const item of component) cycleMembers.add(item);
+    }
+  };
+
+  for (const name of remaining) {
+    if (!indexes.has(name)) visit(name);
+  }
+
+  const deferred = [...cycleMembers].sort().map(name => ({
+    table: name,
+    reason: "هذا الجدول عضو في دورة علاقات فعلية؛ يلزم تصميم معالجة خاصة للمفاتيح الأجنبية قبل نقله.",
+    dependencies: [...new Set(candidates.get(name)?.dependencies ?? [])].sort()
+  }));
+  const cycleBlocked = [...remaining]
+    .filter(name => !cycleMembers.has(name))
+    .map(name => ({
       table: name,
-      reason: "تعذر تحديد ترتيب آمن بسبب دورة علاقات أو اعتماد دائري؛ لن يُدرج في ترتيب النقل التلقائي.",
-      dependencies: [...new Set(table.dependencies)].sort()
+      reason: "يعتمد هذا الجدول، بشكل مباشر أو غير مباشر، على دورة علاقات مؤجلة؛ لذلك لا يمكن نقله تلقائيًا.",
+      dependencies: [...new Set(candidates.get(name)?.dependencies ?? [])].sort()
     }));
+  for (const item of cycleBlocked) blocked.set(item.table, item);
 
   return {
     readyOrder,
