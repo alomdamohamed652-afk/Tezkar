@@ -4,6 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { consumeInventoryLots } from "./inventory-lots.service.js";
@@ -192,7 +193,7 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     if(!orderLine.rowCount)throw new AppError("ORDER_ITEM_MISMATCH","سطر منتج لا يتبع الطلبية",409);
     if(lines.rows.some((line:any)=>String(line.order_item_id)===orderItemId&&line.product_id!==orderLine.rows[0].product_id))
      throw new AppError("ORDER_ITEM_MISMATCH","المنتج في مسودة التسليم لا يطابق المنتج المرتبط بسطر الطلبية",409);
-    const produced=await client.query("SELECT COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3",[d.rows[0].order_id,orderLine.rows[0].product_id,orderItemId]);
+    const produced=await client.query("SELECT COALESCE(SUM(pe.quantity - COALESCE(sr.scrap,0)),0) AS quantity FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id LEFT JOIN LATERAL (SELECT SUM(quantity) AS scrap FROM production_scrap_records sr WHERE sr.production_entry_id=pe.id) sr ON TRUE WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3",[d.rows[0].order_id,orderLine.rows[0].product_id,orderItemId]);
     const reserved=await client.query("SELECT COALESCE(SUM(l.quantity),0) AS quantity FROM delivery_permission_lines l JOIN delivery_permissions p ON p.id=l.delivery_permission_id WHERE p.order_id=$1 AND l.product_id=$2 AND (l.order_item_id=$3 OR l.order_item_id IS NULL) AND p.status IN ('READY','RELEASED') AND p.id<>$4",[d.rows[0].order_id,orderLine.rows[0].product_id,orderItemId,id]);
     if(quantity>Number(produced.rows[0].quantity)-Number(reserved.rows[0].quantity)+1e-9)throw new AppError("DELIVERY_EXCEEDS_PRODUCTION","إجمالي الكراتين يتجاوز الإنتاج المعتمد المتبقي للطلبية",409);
    }
@@ -210,11 +211,17 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
   const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
   const row=await withTransaction(async(client)=>{
    const d=await client.query("SELECT * FROM delivery_permissions WHERE id=$1 FOR UPDATE",[id]);
-   if(!d.rowCount)throw new AppError("NOT_FOUND","المسودة غير موجودة",404);
-   if(d.rows[0].created_by!==request.user!.userId)throw new AppError("FORBIDDEN","لا يمكنك إلغاء مسودة أنشأها مستخدم آخر",403);
-   if(d.rows[0].status!=="DRAFT")throw new AppError("INVALID_STATUS","لا يمكن إلغاء سجل لم يعد مسودة",409);
+   if(!d.rowCount)throw new AppError("NOT_FOUND","إذن التسليم غير موجود",404);
+   if(!["DRAFT","READY"].includes(d.rows[0].status))throw new AppError("INVALID_STATUS","لا يمكن إلغاء إذن تسليم بهذه الحالة",409);
+   const reason=typeof (request.body as {reason?:unknown})?.reason==="string"?(request.body as {reason:string}).reason.trim():"";
+   if(d.rows[0].status==="DRAFT"){
+    if(d.rows[0].created_by!==request.user!.userId)throw new AppError("FORBIDDEN","لا يمكنك إلغاء مسودة أنشأها مستخدم آخر",403);
+   }else{
+    if(!await hasPermission(client,request.user!.userId,"deliveries.release"))throw new AppError("FORBIDDEN","إلغاء إذن تسليم جاهز يتطلب صلاحية صرف التسليمات",403);
+    if(reason.length<2)throw new AppError("VALIDATION_ERROR","سبب الإلغاء مطلوب لإذن التسليم الجاهز",422);
+   }
    const updated=await client.query("UPDATE delivery_permissions SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING *",[id]);
-   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"cancel",module:"warehouse",entityType:"delivery_permission",entityId:id,afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+   await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"cancel",module:"warehouse",entityType:"delivery_permission",entityId:id,beforeData:{status:d.rows[0].status},afterData:updated.rows[0],metadata:reason?{reason}:{},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return updated.rows[0];
   });
   return {data:redactDeliveryValue(row,canViewFinancials)};
@@ -238,23 +245,24 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
    }
    if(!orderLine.rowCount||Number(orderLine.rows[0]?.quantity??0)<=0)throw new AppError("PRODUCT_NOT_IN_ORDER","الصنف ليس ضمن الطلبية المحددة",422);
    const resolvedOrderItemId=orderLine.rows[0].id;
-   const produced=await client.query(`SELECT COALESCE(SUM(pe.quantity),0) AS quantity
-     FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id
+   const produced=await client.query(`SELECT COALESCE(SUM(pe.quantity - COALESCE(sr.scrap,0)),0) AS quantity
+     FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id LEFT JOIN LATERAL (SELECT SUM(quantity) AS scrap FROM production_scrap_records sr WHERE sr.production_entry_id=pe.id) sr ON TRUE
      WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3`,[orderId,productId,resolvedOrderItemId]);
    const reserved=await client.query(`SELECT COALESCE(SUM(dl.quantity),0) AS quantity
      FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
      WHERE dp.order_id=$1 AND dl.product_id=$2 AND (dl.order_item_id=$3 OR dl.order_item_id IS NULL) AND dp.status IN ('READY','RELEASED')`,[orderId,productId,resolvedOrderItemId]);
-   let stockQuantity:number|null=null,stockReserved:number|null=null,stockAvailable:number|null=null;
+   let stockQuantity:number|null=null,stockReserved:number|null=null,stockAvailable:number|null=null,stockConfirmedQuantity:number|null=null,stockConfirmedAvailable:number|null=null;
    if(warehouseId&&locationId){
     await assertLocation(client,warehouseId,locationId);
     const stock=await client.query("SELECT quantity FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3",[productId,warehouseId,locationId]);
+    const confirmedLots=await client.query("SELECT COALESCE(SUM(remaining_quantity),0) AS quantity FROM inventory_lots WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 AND remaining_quantity>0 AND cost_confirmed=TRUE",[productId,warehouseId,locationId]);
     const stockRes=await client.query(`SELECT COALESCE(SUM(dl.quantity),0) AS quantity
       FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id
       WHERE dl.product_id=$1 AND dl.warehouse_id=$2 AND dl.location_id=$3 AND dp.status='READY'`,[productId,warehouseId,locationId]);
-    stockQuantity=Number(stock.rows[0]?.quantity??0);stockReserved=Number(stockRes.rows[0].quantity);stockAvailable=Math.max(0,stockQuantity-stockReserved);
+    stockQuantity=Number(stock.rows[0]?.quantity??0);stockReserved=Number(stockRes.rows[0].quantity);stockAvailable=Math.max(0,stockQuantity-stockReserved);stockConfirmedQuantity=Number(confirmedLots.rows[0].quantity);stockConfirmedAvailable=Math.max(0,stockConfirmedQuantity-stockReserved);
    }
    const producedQuantity=Number(produced.rows[0].quantity),reservedQuantity=Number(reserved.rows[0].quantity);
-   return {orderId,orderItemId:resolvedOrderItemId,productId,orderedQuantity:Number(orderLine.rows[0].quantity),approvedProduction:producedQuantity,reservedDelivery:reservedQuantity,productionAvailable:Math.max(0,producedQuantity-reservedQuantity),stockQuantity,stockReserved,stockAvailable};
+   return {orderId,orderItemId:resolvedOrderItemId,productId,orderedQuantity:Number(orderLine.rows[0].quantity),approvedProduction:producedQuantity,reservedDelivery:reservedQuantity,productionAvailable:Math.max(0,producedQuantity-reservedQuantity),stockQuantity,stockReserved,stockAvailable,stockConfirmedQuantity,stockConfirmedAvailable};
   });
   return {data:result};
  });
@@ -313,9 +321,9 @@ export async function cartonDeliveryRoutes(app:FastifyInstance){
     }
 
     const produced=await client.query(
-      `SELECT COALESCE(SUM(pe.quantity),0) AS quantity
+      `SELECT COALESCE(SUM(pe.quantity - COALESCE(sr.scrap,0)),0) AS quantity
          FROM production_entries pe
-         JOIN order_stages os ON os.id=pe.order_stage_id
+         JOIN order_stages os ON os.id=pe.order_stage_id LEFT JOIN LATERAL (SELECT SUM(quantity) AS scrap FROM production_scrap_records sr WHERE sr.production_entry_id=pe.id) sr ON TRUE
         WHERE os.order_id=$1 AND pe.product_id=$2 AND pe.status='APPROVED' AND os.order_item_id=$3`,
       [parsed.data.orderId,line.productId,resolvedOrderItemId]);
     const reserved=await client.query(
