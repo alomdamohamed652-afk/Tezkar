@@ -42,6 +42,8 @@ import { notificationRoutes } from "./modules/notifications/notifications.routes
 import { systemResetRoutes } from "./modules/system-reset/system-reset.routes.js";
 import { attendanceRoutes } from "./modules/attendance/attendance.routes.js";
 import { runMaturedWorkerPaymentDifferenceJob } from "./modules/payments/worker-payment-differences.service.js";
+import { accountHealthRoutes } from "./modules/account-health/account-health.routes.js";
+import { administrativeSettlementRoutes } from "./modules/account-health/administrative-settlement.routes.js";
 import { backupRoutes } from "./modules/backup/backup.routes.js";
 import { dataTransferRoutes } from "./modules/data-transfer/data-transfer.routes.js";
 
@@ -120,6 +122,8 @@ app.setErrorHandler((error, _request, reply) => {
 });
 
 await app.register(backupRoutes);
+await app.register(accountHealthRoutes);
+await app.register(administrativeSettlementRoutes);
 await app.register(dataTransferRoutes);
 await app.register(healthRoutes);
 await app.register(authRoutes);
