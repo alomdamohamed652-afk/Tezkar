@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
@@ -20,6 +21,7 @@ const line=z.object({
   notes:z.string().trim().max(500).optional()
 });
 const schema=z.object({
+  idempotencyKey:z.string().uuid().optional(),
   receiptDate:z.string().date().optional(),
   source:z.string().trim().min(2).max(200),
   notes:z.string().trim().max(1000).optional(),
@@ -86,6 +88,10 @@ export async function receiptRoutes(app:FastifyInstance){
    if(Math.abs(quantity-originalQuantity)>1e-7)throw new AppError("INVENTORY_LOT_ALREADY_CONSUMED","لا يمكن اعتماد تكلفة دفعة بدأ صرفها؛ راجع سجل الحركة والتكلفة يدويًا.",409);
    const balance=await client.query("SELECT quantity,inventory_value FROM stock_balances WHERE product_id=$1 AND warehouse_id=$2 AND location_id=$3 FOR UPDATE",[lot.rows[0].product_id,lot.rows[0].warehouse_id,lot.rows[0].location_id]);
    if(!balance.rowCount||Number(balance.rows[0].quantity)+1e-9<quantity)throw new AppError("INVENTORY_INTEGRITY_MISMATCH","رصيد المخزون لا يغطي كمية الدفعة المعلقة؛ راجع المخزون قبل اعتماد التكلفة",409);
+   const receiptDate=lot.rows[0].receipt_line_id
+    ?(await client.query("SELECT wr.receipt_date::text AS d FROM warehouse_receipt_lines wrl JOIN warehouse_receipts wr ON wr.id=wrl.receipt_id WHERE wrl.id=$1",[lot.rows[0].receipt_line_id])).rows[0]?.d as string|undefined
+    :undefined;
+   await assertAccountingPeriodOpen(client,receiptDate??null);
    const oldCost=Number(lot.rows[0].unit_cost);
    const delta=(parsed.data.unitCost-oldCost)*quantity;
    const nextValue=Number(balance.rows[0].inventory_value)+delta;
@@ -103,8 +109,21 @@ export async function receiptRoutes(app:FastifyInstance){
   const p=schema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الاستلام غير صحيحة",422);
   const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
   if(!canViewCosts&&p.data.lines.some(item=>item.unitCost!==undefined))throw new AppError("WAREHOUSE_COST_PERMISSION_REQUIRED","لا تملك صلاحية تسجيل تكلفة الأصناف. يمكن تسجيل الكمية دون تكلفة، ويستكمل مدير المخزن بيانات التكلفة.",403);
+  const {idempotencyKey,...fingerprintPayload}=p.data;
+  const idempotencyFingerprint=idempotencyKey?createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex"):null;
+  let idempotentReplay=false;
   const row=await withTransaction(async client=>{
    const receiptDate=p.data.receiptDate??new Date().toISOString().slice(0,10);
+   const today=(await client.query("SELECT current_date::text AS d")).rows[0].d as string;
+   if(receiptDate>today)throw new AppError("RECEIPT_DATE_IN_FUTURE","تاريخ الاستلام لا يمكن أن يكون في المستقبل",422);
+   if(idempotencyKey){
+    const existing=await client.query("SELECT * FROM warehouse_receipts WHERE idempotency_key=$1 FOR UPDATE",[idempotencyKey]);
+    if(existing.rowCount){
+     if(existing.rows[0].idempotency_payload_hash!==idempotencyFingerprint)throw new AppError("IDEMPOTENCY_KEY_REUSED","مفتاح إعادة المحاولة مستخدم مع بيانات استلام مختلفة",409);
+     idempotentReplay=true;
+     return existing.rows[0];
+    }
+   }
    await assertAccountingPeriodOpen(client,receiptDate);
    const productIds=[...new Set(p.data.lines.map(item=>item.productId))].sort();
    const lockedProducts=await client.query(
@@ -112,7 +131,7 @@ export async function receiptRoutes(app:FastifyInstance){
     [productIds]
    );
    if(lockedProducts.rowCount!==productIds.length)throw new AppError("PRODUCT_NOT_FOUND","يوجد صنف غير موجود أو غير متابع مخزنيًا",422);
-   const r=await client.query("INSERT INTO warehouse_receipts(receipt_date,source,notes,created_by) VALUES($1,$2,$3,$4) RETURNING *",[receiptDate,p.data.source,p.data.notes??null,request.user!.userId]);
+   const r=await client.query("INSERT INTO warehouse_receipts(receipt_date,source,notes,created_by,idempotency_key,idempotency_payload_hash) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[receiptDate,p.data.source,p.data.notes??null,request.user!.userId,idempotencyKey??null,idempotencyFingerprint]);
    for(const item of p.data.lines){
     const product=await client.query("SELECT id,unit_id FROM products WHERE id=$1 AND is_active=TRUE AND track_inventory=TRUE",[item.productId]);
     if(!product.rowCount)throw new AppError("PRODUCT_NOT_FOUND","الصنف غير موجود أو غير متابع مخزنيًا",422);
@@ -128,6 +147,6 @@ export async function receiptRoutes(app:FastifyInstance){
    await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"warehouse",entityType:"warehouse_receipt",entityId:r.rows[0].id,afterData:r.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
    return r.rows[0];
   });
-  return reply.code(201).send({data:row});
+  return reply.code(idempotentReplay?200:201).send({data:row,replayed:idempotentReplay});
  });
 }
