@@ -38,7 +38,8 @@ export async function selfServiceRoutes(app: FastifyInstance) {
       scheduledStart: r.scheduledStart, scheduledEnd: r.scheduledEnd,
       firstIn: r.firstIn, lastOut: r.lastOut,
       workedMinutes: r.workedMinutes, lateMinutes: r.lateMinutes, earlyMinutes: r.earlyMinutes,
-      overtimeMinutes: r.overtimeMinutes, permissionMinutes: r.permissionMinutes ?? 0
+      overtimeMinutes: r.overtimeMinutes, permissionMinutes: r.permissionMinutes ?? 0,
+      outsideSchedule: r.outsideSchedule ?? false
     }));
     return { data: { days: rows, punches: punches.rows } };
   });
