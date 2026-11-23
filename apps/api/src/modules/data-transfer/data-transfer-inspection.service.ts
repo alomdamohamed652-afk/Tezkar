@@ -50,6 +50,9 @@ type DatabaseSnapshot = {
   unsupportedSchemas: string[];
   schemas: string[];
   defaultPrivileges: string[];
+  databaseAccess: string[];
+  roles: string[];
+  roleMemberships: string[];
   features: FeatureCounts;
 };
 
@@ -88,6 +91,29 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
             JOIN pg_roles role_name ON role_name.oid = d.defaclrole
             LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
            ORDER BY schema_name, owner_name, object_type, privileges
+    `);
+    const databaseAccess = await client.query(`
+          SELECT d.datname, pg_get_userbyid(d.datdba) AS owner_name,
+                 d.datacl::text AS acl, d.datallowconn, d.datconnlimit
+            FROM pg_database d
+           WHERE d.datname = current_database()
+    `);
+    const roles = await client.query(`
+          SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
+                 rolcanlogin, rolreplication, rolbypassrls, rolconnlimit,
+                 COALESCE(rolvaliduntil::text, '') AS valid_until,
+                 COALESCE(rolconfig::text, '') AS configuration
+            FROM pg_roles
+           ORDER BY rolname
+    `);
+    const roleMemberships = await client.query(`
+          SELECT granted.rolname AS granted_role, member.rolname AS member_role,
+                 grantor.rolname AS grantor_role, m.admin_option, m.inherit_option, m.set_option
+            FROM pg_auth_members m
+            JOIN pg_roles granted ON granted.oid = m.roleid
+            JOIN pg_roles member ON member.oid = m.member
+            JOIN pg_roles grantor ON grantor.oid = m.grantor
+           ORDER BY granted_role, member_role, grantor_role
     `);
     const unsupportedRelations = await client.query(`
           SELECT n.nspname || '.' || c.relname AS relation_name
@@ -549,6 +575,10 @@ async function readSnapshot(client: pg.PoolClient): Promise<DatabaseSnapshot> {
       schemas: schemaInventory.rows.map((row: any) => `${row.schema_name}:${row.owner_name}:${row.acl ?? ""}`),
       defaultPrivileges: defaultPrivileges.rows.map((row: any) =>
         `${row.schema_name}:${row.owner_name}:${row.object_type}:${row.privileges ?? ""}`),
+      databaseAccess: databaseAccess.rows.map((row: any) =>
+        `${row.datname}:${row.owner_name}:${row.acl ?? ""}:${row.datallowconn}:${row.datconnlimit}`),
+      roles: roles.rows.map((row: any) => JSON.stringify(row)),
+      roleMemberships: roleMemberships.rows.map((row: any) => JSON.stringify(row)),
       features: featureCounts
     };
   } finally {
@@ -696,6 +726,9 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
       }));
       const schemaDifferences = diff(source.schemas, target.schemas);
       const defaultPrivilegeDifferences = diff(source.defaultPrivileges, target.defaultPrivileges);
+      const databaseAccessDifferences = diff(source.databaseAccess, target.databaseAccess);
+      const roleDifferences = diff(source.roles, target.roles);
+      const roleMembershipDifferences = diff(source.roleMemberships, target.roleMemberships);
       const unsupportedRelationBlockers = [...new Set([
         ...source.unsupportedRelations,
         ...target.unsupportedRelations
@@ -722,7 +755,10 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         unsupportedSchemas: { source: source.unsupportedSchemas, target: target.unsupportedSchemas },
         globalObjectDifferences: {
           schemas: { source: source.schemas.length, target: target.schemas.length, differences: schemaDifferences },
-          defaultPrivileges: { source: source.defaultPrivileges.length, target: target.defaultPrivileges.length, differences: defaultPrivilegeDifferences }
+          defaultPrivileges: { source: source.defaultPrivileges.length, target: target.defaultPrivileges.length, differences: defaultPrivilegeDifferences },
+          databaseAccess: { source: source.databaseAccess.length, target: target.databaseAccess.length, differences: databaseAccessDifferences },
+          roles: { source: source.roles.length, target: target.roles.length, differences: roleDifferences },
+          roleMemberships: { source: source.roleMemberships.length, target: target.roleMemberships.length, differences: roleMembershipDifferences }
         },
         unsupportedRelations: {
           source: source.unsupportedRelations,
@@ -750,7 +786,7 @@ export async function inspectDatabaseTransfer(sourceUrl: string, targetUrl: stri
         },
         sourceFeatures: source.features,
         targetFeatures: target.features,
-        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. مقارنة الجداول والكائنات التفصيلية محصورة في public؛ أي Schema مستخدم خارج public يظهر كمانع مستقل. تتم مقارنة ملكية وصلاحيات الـSchemas، بما فيها public، والصلاحيات الافتراضية المسجلة في pg_default_acl. الأدوار وعضوياتها وDatabase ACL ليست ضمن المقارنة الكاملة بعد. Large Objects يُعرض عددها فقط دون مقارنة المحتوى أو الملكية. لا ينفذ الفحص نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
+        note: "الفحص للقراءة فقط ويعرض تقديرات PostgreSQL. مقارنة الجداول والكائنات التفصيلية محصورة في public؛ أي Schema مستخدم خارج public يظهر كمانع مستقل. تتم مقارنة ملكية وصلاحيات الـSchemas، بما فيها public، والصلاحيات الافتراضية المسجلة في pg_default_acl. تتم أيضًا مقارنة مالك قاعدة البيانات وصلاحيات CONNECT/CREATE TEMP، وخصائص الأدوار وعضوياتها بالاسم لا عبر OIDs؛ اختلاف أدوار المنصة المُدارة يحتاج سياسة mapping قبل أي نقل. Large Objects يُعرض عددها فقط دون مقارنة المحتوى أو الملكية. لا ينفذ الفحص نسخًا أو تعديلًا أو حذفًا أو ترحيلًا لأي بيانات أو مخطط."
       };
     } finally {
       sourceClient.release();
