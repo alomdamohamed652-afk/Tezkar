@@ -201,6 +201,8 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
       await changedTarget.query("ALTER INDEX public.workers_name_partial_renamed RENAME TO workers_name_partial_idx");
       await changedTarget.query(`ALTER TABLE public.workers OWNER TO ${quoteDb(ownerRole)}`);
       await changedTarget.query(`GRANT SELECT ON public.workers TO ${quoteDb(ownerRole)}`);
+      await changedTarget.query(`GRANT CREATE ON SCHEMA public TO ${quoteDb(ownerRole)}`);
+      await changedTarget.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ${quoteDb(ownerRole)}`);
       await changedTarget.query("ALTER TYPE public.worker_state ADD VALUE 'archived'");
       await changedTarget.query("ALTER TABLE public.workers DISABLE TRIGGER workers_audit_trigger");
       await changedTarget.query("ALTER VIEW public.worker_balances SET (security_barrier = true)");
@@ -213,7 +215,22 @@ test("database transfer inspection compares two real disposable PostgreSQL datab
     } finally {
       await changedTarget.end();
     }
+    const sourceCustomSchema = new pg.Pool({ connectionString: databaseUrl(sourceName), max: 1 });
+    try {
+      await sourceCustomSchema.query("CREATE SCHEMA transfer_custom");
+      await sourceCustomSchema.query("CREATE TABLE transfer_custom.private_fixture (id integer PRIMARY KEY)");
+    } finally {
+      await sourceCustomSchema.end();
+    }
     const changedObjects = await inspectDatabaseTransfer(databaseUrl(sourceName), databaseUrl(targetName));
+    assert.ok(changedObjects.unsupportedSchemas.source.includes("transfer_custom"),
+      "non-public schemas containing user objects must be explicitly surfaced");
+    assert.ok(changedObjects.blockers.some(item => item.table === "schema:transfer_custom"),
+      "unsupported non-public schemas must create explicit blockers");
+    assert.ok(changedObjects.globalObjectDifferences.schemas.differences.missingInTarget.length > 0,
+      "schema ownership/ACL differences must be compared");
+    assert.ok(changedObjects.globalObjectDifferences.defaultPrivileges.differences.missingInTarget.length > 0,
+      "default privilege differences must be compared");
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInTarget.length > 0);
     assert.ok(changedObjects.objectComparison.customTypes.differences.missingInSource.length > 0);
     assert.ok(changedObjects.objectComparison.sequences.differences.missingInTarget.length > 0);
