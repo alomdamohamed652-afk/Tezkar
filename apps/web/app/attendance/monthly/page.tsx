@@ -23,9 +23,9 @@ type Policy = { employee_id: string; work_days_per_month: number; daily_work_min
 
 const punchLabels: Record<string, string> = { IN: "دخول", OUT: "خروج", OVERTIME_IN: "دخول إضافي", OVERTIME_OUT: "خروج إضافي", UNKNOWN: "غير معروف" };
 const reviewLabels: Record<string, string> = { PENDING: "بانتظار المراجعة", AUTO_ACCEPTED: "مقبولة تلقائيًا", APPROVED: "معتمدة", REJECTED: "مرفوضة" };
-const statusLabels: Record<string, string> = { PRESENT: "حاضر", ABSENT: "غياب غير مؤكد", MISSING_PUNCH: "بصمة ناقصة", DAY_OFF: "إجازة / راحة", DAY_OFF_WITH_PUNCH: "حركة في الإجازة", NOT_STARTED: "لم يبدأ اليوم", NO_SCHEDULE: "بدون جدول", NO_SCHEDULE_WITH_PUNCH: "حركة بدون جدول" };
+const statusLabels: Record<string, string> = { PRESENT: "حاضر", ABSENT: "غياب غير مؤكد", MISSING_PUNCH: "بصمة ناقصة", DAY_OFF: "إجازة / راحة", DAY_OFF_WITH_PUNCH: "حركة في الإجازة", UNPAID_LEAVE: "إجازة بدون أجر", NOT_STARTED: "لم يبدأ اليوم", NO_SCHEDULE: "بدون جدول", NO_SCHEDULE_WITH_PUNCH: "حركة بدون جدول" };
 
-type CellKind = "ok" | "review" | "missing" | "absent" | "off" | "offpunch" | "nosched" | "noschedpunch" | "future";
+type CellKind = "ok" | "review" | "missing" | "absent" | "off" | "offpunch" | "unpaidleave" | "nosched" | "noschedpunch" | "future";
 const cellMeta: Record<CellKind, { mark: string; label: string }> = {
   ok: { mark: "✓", label: "بصمات سليمة" },
   review: { mark: "!", label: "تحتاج مراجعة" },
@@ -33,6 +33,7 @@ const cellMeta: Record<CellKind, { mark: string; label: string }> = {
   absent: { mark: "غ؟", label: "غياب غير مؤكد (بصمات ناقصة)" },
   off: { mark: "ر", label: "إجازة / راحة" },
   offpunch: { mark: "ر+", label: "حركة في الإجازة" },
+  unpaidleave: { mark: "إ−", label: "إجازة بدون أجر (بخصم اليوم)" },
   nosched: { mark: "—", label: "بدون جدول" },
   noschedpunch: { mark: "؟", label: "حركة بدون جدول" },
   future: { mark: "·", label: "لم يبدأ اليوم" }
@@ -42,6 +43,7 @@ function classify(row: DayRow): CellKind {
   if (row.status === "NOT_STARTED") return "future";
   if (row.status === "DAY_OFF") return "off";
   if (row.status === "DAY_OFF_WITH_PUNCH") return "offpunch";
+  if (row.status === "UNPAID_LEAVE") return "unpaidleave";
   if (row.status === "NO_SCHEDULE") return "nosched";
   if (row.status === "NO_SCHEDULE_WITH_PUNCH") return "noschedpunch";
   if (row.status === "ABSENT") return "absent";
@@ -68,7 +70,7 @@ export default function AttendanceMonthlyPage() {
   const [savingHours, setSavingHours] = useState("");
   const canViewPolicy = has("payroll.view"), canEditPolicy = has("payroll.manage");
   const canManageAtt = has("attendance.manage");
-  const [editChoice, setEditChoice] = useState<"MANUAL" | "DAY_OFF" | "ABSENT" | null>(null);
+  const [editChoice, setEditChoice] = useState<"MANUAL" | "DAY_OFF" | "UNPAID_LEAVE" | "ABSENT" | null>(null);
   const [editNote, setEditNote] = useState("");
   const [editError, setEditError] = useState("");
   const [savingDay, setSavingDay] = useState(false);
@@ -195,7 +197,7 @@ export default function AttendanceMonthlyPage() {
   }
 
   const monthSummary = useMemo(() => {
-    const counts: Record<CellKind, number> = { ok: 0, review: 0, missing: 0, absent: 0, off: 0, offpunch: 0, nosched: 0, noschedpunch: 0, future: 0 };
+    const counts: Record<CellKind, number> = { ok: 0, review: 0, missing: 0, absent: 0, off: 0, offpunch: 0, unpaidleave: 0, nosched: 0, noschedpunch: 0, future: 0 };
     for (const r of rows) if (employeeFilter === "ALL" || r.employeeId === employeeFilter) counts[classify(r)]++;
     return counts;
   }, [rows, employeeFilter]);
@@ -329,8 +331,12 @@ export default function AttendanceMonthlyPage() {
                   <small>يُحتسب يوم عمل عادي بالدقائق المجدولة ({(scheduledMinutesOf(selected) / 60).toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ساعة) بدون تسجيل بصمات وهمية أو وقت إضافي.</small>
                 </button>
                 <button type="button" className={"day-settle-option" + (editChoice === "DAY_OFF" ? " active" : "")} onClick={() => setEditChoice("DAY_OFF")}>
-                  <strong>إجازة بدون خصم</strong>
-                  <small>لا خصم من المرتب لهذا اليوم ولا أجر راحة عنه. يُحسب ضمن أيام الإجازة المسجلة يدويًا في الشهر.</small>
+                  <strong>إجازة مدفوعة (بدون خصم)</strong>
+                  <small>لا خصم من المرتب لهذا اليوم ولا أجر راحة عنه. يُحسب ضمن أيام الإجازة المدفوعة المسجلة يدويًا في الشهر.</small>
+                </button>
+                <button type="button" className={"day-settle-option" + (editChoice === "UNPAID_LEAVE" ? " active" : "")} onClick={() => setEditChoice("UNPAID_LEAVE")}>
+                  <strong>إجازة بدون أجر</strong>
+                  <small>خصم يوم كامل من المرتب عند الاعتماد، وتُسجَّل إجازة موثقة بقرار الإدارة وليست غيابًا.</small>
                 </button>
                 <button type="button" className={"day-settle-option" + (editChoice === "ABSENT" ? " active" : "")} onClick={() => setEditChoice("ABSENT")}>
                   <strong>غياب مؤكد</strong>
@@ -338,6 +344,7 @@ export default function AttendanceMonthlyPage() {
                 </button>
               </div>
               {editChoice === "DAY_OFF" && (() => { const p = policies[selected.employeeId]; const used = manualLeaveDays.get(selected.employeeId) ?? 0; return p && "allowed_leave_days_per_month" in p ? <div className="month-note warn" style={{ marginTop: 8 }}>إجازات مسجلة يدويًا على أيام عمل هذا الشهر لهذا الموظف: {used.toLocaleString("ar-EG")} يوم{editChoice === "DAY_OFF" && !(selected.manualOverride && selected.status === "DAY_OFF") ? " (سيصبح " + (used + 1).toLocaleString("ar-EG") + ")" : ""}؛ المسموح المحدد: {p.allowed_leave_days_per_month === null || p.allowed_leave_days_per_month === undefined ? "غير محدد" : Number(p.allowed_leave_days_per_month).toLocaleString("ar-EG") + " يوم"}. العرض للمتابعة فقط، لا يوجد منع تلقائي عند تجاوز العدد.</div> : null; })()}
+              {editChoice === "UNPAID_LEAVE" && <div className="month-note warn" style={{ marginTop: 8 }}>تُخصم قيمة يوم كامل من المرتب عند اعتماد المسير، وتُحسب إجازة موثقة بقرار الإدارة وليست غيابًا، ولا تستهلك من أيام الإجازة المدفوعة.</div>}
               <div className="day-settle-note"><input type="text" maxLength={500} placeholder="سبب التسوية (إجباري) — مثال: عطل جهاز البصمة وتأكدت الإدارة من الحضور" value={editNote} onChange={e => setEditNote(e.target.value)} /></div>
               {editError && <div className="alert" style={{ marginTop: 8 }}>{editError}</div>}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
@@ -375,6 +382,7 @@ export default function AttendanceMonthlyPage() {
         .month-cell-absent { background: #fdecec; color: #b23c3c; border-color: #f2c4c4; }
         .month-cell-off { background: #eef2f7; color: #64748b; border-color: #dbe3ec; }
         .month-cell-offpunch { background: #e0f2fe; color: #0369a1; border-color: #bae0f5; }
+        .month-cell-unpaidleave { background: #fdf2f8; color: #be185d; border-color: #f5c6dd; }
         .month-cell-nosched { background: #f4f5f7; color: #94a3b8; border-color: #e2e8f0; }
         .month-cell-noschedpunch { background: #f3e8ff; color: #7c3aed; border-color: #e1cffb; }
         .month-cell-future { background: transparent; color: #c2ccd8; border-color: transparent; cursor: default; }
