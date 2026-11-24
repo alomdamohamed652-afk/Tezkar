@@ -77,6 +77,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [controller]);
 
+  useEffect(() => {
+    if (!snapshot.ready || snapshot.session) return;
+    if (typeof window === "undefined") return;
+    const publicPaths = ["/login", "/register", "/forgot-password"];
+    const path = window.location.pathname;
+    if (publicPaths.some((p) => path === p || path.startsWith(p + "/"))) return;
+    const next = path + window.location.search;
+    window.location.replace("/login?next=" + encodeURIComponent(next));
+  }, [snapshot.ready, snapshot.session]);
+
   const permissions = snapshot.session?.permissions ?? null;
   const has = useMemo(
     () => (code: string) => permissions?.includes(code) ?? false,
