@@ -121,7 +121,7 @@ export async function assertOtpRateAllowed(
   const key = createHash("sha256").update(`otp-rate:${scope}:${id.trim().toLowerCase()}`).digest("hex");
   const r = await pool.query(
     `INSERT INTO auth_login_attempts (attempt_key, username_key, ip_address, failure_count, window_started_at, blocked_until, updated_at)
-     VALUES ($1,$2,'',1,now(),NULL,now())
+     VALUES ($1,$2,$6,1,now(),NULL,now())
      ON CONFLICT (attempt_key) DO UPDATE SET
        failure_count = CASE WHEN auth_login_attempts.window_started_at <= now() - ($3 || ' minutes')::interval THEN 1 ELSE auth_login_attempts.failure_count + 1 END,
        window_started_at = CASE WHEN auth_login_attempts.window_started_at <= now() - ($3 || ' minutes')::interval THEN now() ELSE auth_login_attempts.window_started_at END,
@@ -131,7 +131,7 @@ export async function assertOtpRateAllowed(
          ELSE auth_login_attempts.blocked_until END,
        updated_at = now()
      RETURNING blocked_until`,
-    [key, `${scope}:${id.slice(0, 40)}`, String(windowMinutes), maxAttempts, String(blockMinutes)]
+    [key, `${scope}:${id.slice(0, 40)}`, String(windowMinutes), maxAttempts, String(blockMinutes), null]
   );
   const blockedUntil = r.rows[0]?.blocked_until;
   if (blockedUntil && new Date(blockedUntil).getTime() > Date.now()) {
