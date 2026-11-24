@@ -67,6 +67,12 @@ export default function AttendanceMonthlyPage() {
   const [leaveDraft, setLeaveDraft] = useState<Record<string, string>>({});
   const [savingHours, setSavingHours] = useState("");
   const canViewPolicy = has("payroll.view"), canEditPolicy = has("payroll.manage");
+  const canManageAtt = has("attendance.manage");
+  const [editChoice, setEditChoice] = useState<"MANUAL" | "DAY_OFF" | "ABSENT" | null>(null);
+  const [editNote, setEditNote] = useState("");
+  const [editError, setEditError] = useState("");
+  const [savingDay, setSavingDay] = useState(false);
+  useEffect(() => { setEditChoice(null); setEditNote(""); setEditError(""); }, [selected]);
 
   const daysInMonth = useMemo(() => {
     const [y, m] = month.split("-").map(Number);
@@ -132,6 +138,62 @@ export default function AttendanceMonthlyPage() {
     return map;
   }, [rows]);
 
+  const scheduledMinutesOf = (row: DayRow) => {
+    if (row.scheduledStart && row.scheduledEnd) {
+      const [sh, sm] = row.scheduledStart.split(":").map(Number);
+      const [eh, em] = row.scheduledEnd.split(":").map(Number);
+      let diff = eh * 60 + em - (sh * 60 + sm);
+      if (diff <= 0) diff += 1440;
+      return diff;
+    }
+    return policies[row.employeeId]?.daily_work_minutes ?? 480;
+  };
+
+  const manualLeaveDays = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of rows) if (r.manualOverride && r.status === "DAY_OFF" && !r.isDayOff) map.set(r.employeeId, (map.get(r.employeeId) ?? 0) + 1);
+    return map;
+  }, [rows]);
+
+  async function saveDayClassification() {
+    if (!selected || !editChoice) return;
+    const note = editNote.trim();
+    if (note.length < 2) { setEditError("اكتب سبب التسوية (إجباري، يُحفظ مع اسم المنفذ)."); return; }
+    setSavingDay(true); setEditError(""); setError(""); setNotice("");
+    try {
+      await api("/api/attendance/manual-days", {
+        method: "PUT",
+        body: JSON.stringify({
+          employeeId: selected.employeeId,
+          date: selected.date,
+          status: editChoice,
+          firstIn: null,
+          lastOut: null,
+          workedMinutes: editChoice === "MANUAL" ? scheduledMinutesOf(selected) : 0,
+          lateMinutes: 0,
+          earlyMinutes: 0,
+          note
+        })
+      });
+      setSelected(null);
+      await load();
+      setNotice("تم حفظ تسوية اليوم مع تسجيل السبب واسم المنفذ.");
+    } catch (e) { setEditError(e instanceof Error ? e.message : "تعذر حفظ تسوية اليوم."); }
+    finally { setSavingDay(false); }
+  }
+
+  async function deleteDayOverride() {
+    if (!selected || !window.confirm("حذف التسوية اليدوية لهذا اليوم والرجوع إلى حساب البصمات الأصلي؟")) return;
+    setSavingDay(true); setEditError("");
+    try {
+      await api("/api/attendance/manual-days/" + encodeURIComponent(selected.employeeId) + "/" + selected.date, { method: "DELETE" });
+      setSelected(null);
+      await load();
+      setNotice("تم حذف التسوية اليدوية والرجوع إلى حساب البصمات الأصلي.");
+    } catch (e) { setEditError(e instanceof Error ? e.message : "تعذر حذف التسوية اليدوية."); }
+    finally { setSavingDay(false); }
+  }
+
   const monthSummary = useMemo(() => {
     const counts: Record<CellKind, number> = { ok: 0, review: 0, missing: 0, absent: 0, off: 0, offpunch: 0, nosched: 0, noschedpunch: 0, future: 0 };
     for (const r of rows) if (employeeFilter === "ALL" || r.employeeId === employeeFilter) counts[classify(r)]++;
@@ -182,7 +244,7 @@ export default function AttendanceMonthlyPage() {
 
   return (
     <div className="app-shell"><Sidebar active="/attendance/monthly" /><main className="main">
-      <header className="topbar"><div><h1 className="page-title">سجلات حضور الشهر</h1><p className="page-subtitle">كل أيام الشهر لكل موظف في شاشة واحدة. اضغط أي يوم لترى بصماته: السليمة، والمشكوك فيها، والتي تحتاج تصحيحًا. شبكة الشهر للعرض فقط؛ إعدادات الساعات والإجازات في الأسفل قابلة للتعديل لمن لديه صلاحية إدارة الرواتب.</p></div></header>
+      <header className="topbar"><div><h1 className="page-title">سجلات حضور الشهر</h1><p className="page-subtitle">كل أيام الشهر لكل موظف في شاشة واحدة. اضغط أي يوم لترى بصماته: السليمة، والمشكوك فيها، والتي تحتاج تصحيحًا. شبكة الشهر للعرض؛ تسوية اليوم اليدوية متاحة لمن لديه صلاحية إدارة الحضور، وإعدادات الساعات والإجازات في الأسفل قابلة للتعديل لمن لديه صلاحية إدارة الرواتب.</p></div></header>
       <section className="content">
         <section className="card form-card"><div className="card-header"><h2 className="card-title">اختيار الشهر</h2></div>
           <div className="form-grid">
@@ -197,7 +259,7 @@ export default function AttendanceMonthlyPage() {
           </div>
         </section>
 
-        <section className="card"><div className="card-header"><div><h2 className="card-title">شبكة الشهر ({daysInMonth} يومًا)</h2>{rows.length > 0 && <span className="form-hint">سليم {monthSummary.ok} · مراجعة {monthSummary.review} · ناقصة {monthSummary.missing} · غياب غير مؤكد {monthSummary.absent}</span>}</div><span className="status muted">عرض فقط، لا يغيّر أي سجل أو مرتب</span></div>
+        <section className="card"><div className="card-header"><div><h2 className="card-title">شبكة الشهر ({daysInMonth} يومًا)</h2>{rows.length > 0 && <span className="form-hint">سليم {monthSummary.ok} · مراجعة {monthSummary.review} · ناقصة {monthSummary.missing} · غياب غير مؤكد {monthSummary.absent}</span>}</div><span className="status muted">{canManageAtt ? "الشبكة للعرض؛ التسوية اليدوية موثقة وتؤثر عند الاعتماد" : "عرض فقط، لا يغيّر أي سجل أو مرتب"}</span></div>
           {loading ? <div className="empty">جارٍ تحميل سجلات الشهر...</div> : !rows.length ? <div className="empty">لا توجد سجلات لهذا الشهر.</div> : (
             <div className="table-wrap"><table className="month-grid"><thead><tr><th className="month-emp-col">الموظف</th>{Array.from({ length: daysInMonth }, (_, i) => <th key={i + 1}>{i + 1}</th>)}</tr></thead>
               <tbody>{visibleEmployees.map(emp => (
@@ -258,6 +320,31 @@ export default function AttendanceMonthlyPage() {
               ? <div className="month-note">سُوّي هذا اليوم يدويًا كغياب موثق بقرار مسؤول.</div>
               : <div className="alert"><strong>غياب غير مؤكد:</strong> هذا اليوم مجدول ولا توجد له أي بصمة مسجلة. قد يكون السبب عطل تسجيل أو مشكلة نقل بيانات من الجهاز، وليس بالضرورة غيابًا فعليًا. عند اعتماد المسير يُخصم عن هذا اليوم يوم كامل ما لم تتم مراجعته وتسويته.</div>)}
             {(() => { const s = selected.scheduledStart, e2 = selected.scheduledEnd; if (!s || !e2) return null; const [sh, sm] = s.split(":").map(Number); const [eh, em] = e2.split(":").map(Number); return eh * 60 + em <= sh * 60 + sm ? <div className="month-note">وردية تمتد بعد منتصف الليل؛ بصمة الخروج التي بعد منتصف الليل تُنسب لهذا اليوم ضمن مهلة سماح الخروج المضبوطة.</div> : null; })()}
+            {canManageAtt && <section>
+              <h3 className="card-title" style={{ fontSize: 14, margin: "0 0 8px" }}>تسوية اليوم</h3>
+              {selected.manualOverride && <div className="month-note" style={{ marginBottom: 8 }}>هذا اليوم عليه تسوية يدوية موثقة{selected.manualNote ? ": " + selected.manualNote : ""}. حفظ تسوية جديدة يستبدلها، ويمكن حذفها للرجوع إلى حساب البصمات الأصلي.</div>}
+              <div className="day-settle-options">
+                <button type="button" className={"day-settle-option" + (editChoice === "MANUAL" ? " active" : "")} onClick={() => setEditChoice("MANUAL")}>
+                  <strong>حضور يدوي</strong>
+                  <small>يُحتسب يوم عمل عادي بالدقائق المجدولة ({(scheduledMinutesOf(selected) / 60).toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ساعة) بدون تسجيل بصمات وهمية أو وقت إضافي.</small>
+                </button>
+                <button type="button" className={"day-settle-option" + (editChoice === "DAY_OFF" ? " active" : "")} onClick={() => setEditChoice("DAY_OFF")}>
+                  <strong>إجازة بدون خصم</strong>
+                  <small>لا خصم من المرتب لهذا اليوم ولا أجر راحة عنه. يُحسب ضمن أيام الإجازة المسجلة يدويًا في الشهر.</small>
+                </button>
+                <button type="button" className={"day-settle-option" + (editChoice === "ABSENT" ? " active" : "")} onClick={() => setEditChoice("ABSENT")}>
+                  <strong>غياب مؤكد</strong>
+                  <small>خصم يوم كامل من المرتب عند اعتماد المسير.</small>
+                </button>
+              </div>
+              {editChoice === "DAY_OFF" && (() => { const p = policies[selected.employeeId]; const used = manualLeaveDays.get(selected.employeeId) ?? 0; return p && "allowed_leave_days_per_month" in p ? <div className="month-note warn" style={{ marginTop: 8 }}>إجازات مسجلة يدويًا على أيام عمل هذا الشهر لهذا الموظف: {used.toLocaleString("ar-EG")} يوم{editChoice === "DAY_OFF" && !(selected.manualOverride && selected.status === "DAY_OFF") ? " (سيصبح " + (used + 1).toLocaleString("ar-EG") + ")" : ""}؛ المسموح المحدد: {p.allowed_leave_days_per_month === null || p.allowed_leave_days_per_month === undefined ? "غير محدد" : Number(p.allowed_leave_days_per_month).toLocaleString("ar-EG") + " يوم"}. العرض للمتابعة فقط، لا يوجد منع تلقائي عند تجاوز العدد.</div> : null; })()}
+              <div className="day-settle-note"><input type="text" maxLength={500} placeholder="سبب التسوية (إجباري) — مثال: عطل جهاز البصمة وتأكدت الإدارة من الحضور" value={editNote} onChange={e => setEditNote(e.target.value)} /></div>
+              {editError && <div className="alert" style={{ marginTop: 8 }}>{editError}</div>}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                <button className="primary-button" disabled={savingDay || !editChoice || editNote.trim().length < 2} onClick={() => void saveDayClassification()}>{savingDay ? "جارٍ الحفظ..." : "حفظ التسوية"}</button>
+                {selected.manualOverride && <button type="button" className="secondary-btn" disabled={savingDay} onClick={() => void deleteDayOverride()}>حذف التسوية اليدوية</button>}
+              </div>
+            </section>}
             <section><h3 className="card-title" style={{ fontSize: 14, margin: "0 0 8px" }}>البصمات المظبوطة ({punchGroups.good.length})</h3>
               {!punchGroups.good.length ? <div className="empty">لا توجد بصمات مظبوطة.</div> : punchGroups.good.map((p, i) => <div key={p.id} className="month-punch-row"><strong>{i + 1}.</strong><span>{fmtTime(p.punchAt)}</span><span className="status success">{punchLabels[p.effectiveStatus] ?? p.effectiveStatus}</span><small>{reviewLabels[p.reviewStatus] ?? p.reviewStatus}</small>{p.correctionDecision === "APPLIED" && <small>· بعد تصحيح معتمد</small>}</div>)}
             </section>
@@ -272,7 +359,7 @@ export default function AttendanceMonthlyPage() {
               {selected.status !== "MISSING_PUNCH" && !(selected.duplicatePunchCount ?? 0) && !punchGroups.rejected.length && !(selected.correctionSuggestions ?? []).length && <div className="empty">لا توجد مشاكل تحتاج تصحيحًا في هذا اليوم.</div>}
             </section>
             {!selected.punchTimeline?.length && selected.status !== "ABSENT" && <div className="month-note warn">لا توجد بصمات مسجلة في هذا اليوم. غياب البصمة لا يعني بالضرورة غيابًا فعليًا. راجع سبب العطل قبل الاعتماد.</div>}
-            <p className="form-hint" style={{ margin: 0 }}>تصحيح البصمات والتسوية اليدوية واعتماد التصحيحات يتم من شاشة «الحضور والبصمة»؛ هذه الشاشة للمراجعة فقط.</p>
+            <p className="form-hint" style={{ margin: 0 }}>تصحيح البصمات واعتماد التصحيحات يتم من شاشة «الحضور والبصمة». تسوية اليوم من هنا يدوية وتوثق باسم المنفذ وسببها، وتُحتسب في المسير عند الاعتماد.</p>
           </div>
         </div></div>
       )}
@@ -295,6 +382,17 @@ export default function AttendanceMonthlyPage() {
         .month-punch-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
         .month-punch-row small { color: var(--muted); }
         .month-note { padding: 11px 13px; border: 1px solid #bae0f5; border-radius: 10px; background: #e0f2fe; color: #075985; font-size: 12px; font-weight: 600; line-height: 1.7; }
+        .day-settle-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .day-settle-option { border: 1px solid var(--border-strong); border-radius: 10px; background: #fff; padding: 10px 12px; text-align: right; cursor: pointer; font-family: inherit; display: grid; gap: 4px; transition: border-color .14s ease, box-shadow .14s ease, background .14s ease; }
+        .day-settle-option strong { font-size: 13px; color: var(--ink); }
+        .day-settle-option small { color: var(--muted); font-size: 11px; line-height: 1.6; }
+        .day-settle-option:hover { border-color: #94a3b8; }
+        .day-settle-option.active { border-color: var(--primary); box-shadow: var(--focus); background: #eff6ff; }
+        .day-settle-note { margin-top: 10px; }
+        .day-settle-note input { width: 100%; min-height: 40px; border: 1px solid var(--border-strong); border-radius: 10px; outline: 0; background: #fff; color: var(--ink); padding: 8px 11px; font-size: 13px; font-family: inherit; transition: border-color .14s ease, box-shadow .14s ease; }
+        .day-settle-note input::placeholder { color: #a1adbd; font-size: 12px; }
+        .day-settle-note input:hover { border-color: #94a3b8; }
+        .day-settle-note input:focus { border-color: var(--primary); box-shadow: var(--focus); }
         .month-note.warn { border-color: #f2d3a7; background: #fff3e0; color: #b45309; }
         .settings-list { display: grid; }
         .settings-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -306,7 +404,7 @@ export default function AttendanceMonthlyPage() {
         .settings-field input:hover { border-color: #94a3b8; }
         .settings-field input:focus { border-color: var(--primary); box-shadow: var(--focus); }
         .settings-field input:disabled { background: #f5f8fd; color: var(--muted); cursor: not-allowed; }
-        @media (max-width: 700px) { .month-emp-col { min-width: 110px; } .month-cell { width: 24px; height: 24px; font-size: 11px; } .settings-row { gap: 10px; } .settings-who { flex: 1 1 100%; } }
+        @media (max-width: 700px) { .month-emp-col { min-width: 110px; } .month-cell { width: 24px; height: 24px; font-size: 11px; } .settings-row { gap: 10px; } .settings-who { flex: 1 1 100%; } .day-settle-options { grid-template-columns: 1fr; } }
       `}</style>
     </main></div>
   );
