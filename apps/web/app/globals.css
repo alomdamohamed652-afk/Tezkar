@@ -2266,3 +2266,14 @@ textarea:hover:not(:disabled) {
 .email-badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:800}
 .email-badge-verified{background:var(--success-bg);color:var(--success);border:1px solid #bbf7d0}
 .email-badge-pending{background:#fffbeb;color:#92400e;border:1px solid #fde68a}
+
+/* Forgot-password: tabs, banners, links */
+.auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px}
+.auth-tabs button{min-height:44px;padding:9px 10px;border-radius:10px;font-size:13px;font-weight:800;line-height:1.45;white-space:normal}
+.auth-banner{display:flex;align-items:center;gap:8px;padding:11px 13px;border-radius:10px;font-size:13px;font-weight:700;line-height:1.7}
+.auth-banner.success{border:1px solid #bbf7d0;background:var(--success-bg);color:var(--success)}
+.auth-masked{margin:0;font-size:13px;color:var(--ink-2)}
+.auth-secondary-wide{width:100%;justify-content:center;text-align:center}
+.auth-links{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-top:20px;font-size:13px}
+.auth-submit-link{display:flex;text-decoration:none;margin-top:14px;align-items:center;justify-content:center;gap:8px}
+@media(max-width:420px){.auth-tabs{grid-template-columns:1fr}}
