@@ -845,7 +845,8 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   .sidebar-footer .logout-item .nav-icon{color:#fca5a5;background:rgb(248 113 113 / 12%)}
   .sidebar-footer .nav-item:hover{background:rgb(255 255 255 / 10%)}
   .main{padding:15px 12px 28px}
-  .topbar{align-items:flex-start;margin-bottom:15px}
+  .topbar{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:15px}
+  .topbar .form-actions{flex-wrap:wrap;padding:0}
   .user-chip{display:none}
   .page-title{font-size:23px}
   .page-subtitle{font-size:12px}
