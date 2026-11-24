@@ -2202,3 +2202,88 @@ textarea:hover:not(:disabled) {
  .dn-preview-paper{width:auto;max-width:none;box-shadow:none;border-radius:0;padding:0}
  .print-sheet.delivery-note{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
+
+/* ===== Brand refresh preview: a touch of the new auth glass look ===== */
+body{
+  background:
+    radial-gradient(1100px 520px at 88% -8%, rgb(59 130 246 / 10%), transparent 62%),
+    radial-gradient(900px 520px at -12% 108%, rgb(37 99 235 / 8%), transparent 58%),
+    linear-gradient(168deg,#f8faff 0%,#edf2fb 100%);
+  background-attachment:fixed;
+}
+.app-shell{background:transparent}
+
+.sidebar{
+  background:
+    radial-gradient(420px 260px at 112% -4%, rgb(96 165 250 / 22%), transparent 60%),
+    radial-gradient(520px 360px at -22% 105%, rgb(59 130 246 / 16%), transparent 55%),
+    linear-gradient(180deg,#0b1e4b 0%,#0f2a63 52%,#123a7a 100%);
+  border-left:1px solid rgb(147 197 253 / 16%);
+  box-shadow:8px 0 30px rgb(11 30 75 / 18%);
+}
+.brand{border-bottom-color:rgb(191 219 254 / 14%)}
+.brand-mark{
+  background:linear-gradient(145deg,#3b82f6,#1d4ed8);
+  box-shadow:0 8px 22px rgb(37 99 235 / 38%),0 0 0 1px rgb(255 255 255 / 12%);
+}
+.nav-title{color:#8ba3d0}
+.nav-item{color:#c3cfe6}
+.nav-item:hover{background:rgb(255 255 255 / 7%);border-color:rgb(191 219 254 / 14%);color:#fff}
+.nav-item.active{
+  background:rgb(255 255 255 / 10%);
+  border-color:rgb(147 197 253 / 34%);
+  color:#fff;
+  box-shadow:0 0 20px rgb(59 130 246 / 22%),inset 0 1px 0 rgb(255 255 255 / 10%);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+}
+.nav-item.active .nav-icon{
+  background:linear-gradient(145deg,#3b82f6,#2563eb);
+  color:#fff;
+  box-shadow:0 4px 12px rgb(37 99 235 / 40%);
+}
+.sidebar-user{background:rgb(255 255 255 / 6%);border-color:rgb(191 219 254 / 14%)}
+.sidebar-footer{border-top-color:rgb(191 219 254 / 14%)}
+
+.page-title{
+  background:linear-gradient(120deg,#16285c 15%,#2563eb 90%);
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}
+
+.card{
+  background:rgb(255 255 255 / 82%);
+  backdrop-filter:blur(10px) saturate(1.15);
+  -webkit-backdrop-filter:blur(10px) saturate(1.15);
+  border:1px solid rgb(255 255 255 / 70%);
+  box-shadow:0 10px 26px rgb(30 58 138 / 8%);
+}
+.user-chip{
+  background:rgb(255 255 255 / 78%);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  border-color:rgb(255 255 255 / 70%);
+  box-shadow:0 6px 16px rgb(30 58 138 / 8%);
+}
+
+.primary-button{
+  background:linear-gradient(135deg,#3b82f6,#2563eb);
+  border-color:transparent;
+  box-shadow:0 8px 18px rgb(37 99 235 / 26%);
+}
+.primary-button:hover{
+  background:linear-gradient(135deg,#2563eb,#1d4ed8);
+  border-color:transparent;
+  box-shadow:0 10px 22px rgb(37 99 235 / 32%);
+}
+
+.tab{background:rgb(255 255 255 / 80%)}
+.tab.active{
+  background:linear-gradient(135deg,#3b82f6,#2563eb);
+  border-color:transparent;
+  color:#fff;
+  box-shadow:0 6px 14px rgb(37 99 235 / 24%);
+}
+
+.table-wrap th{background:linear-gradient(180deg,#eef4ff,#e3edfd);color:#1e3a8a}
