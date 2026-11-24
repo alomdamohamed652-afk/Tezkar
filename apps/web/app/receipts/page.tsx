@@ -1,5 +1,5 @@
 "use client";
-import {FormEvent,useEffect,useMemo,useState} from "react";
+import {FormEvent,useEffect,useMemo,useRef,useState} from "react";
 import {api} from "../../lib/api";
 import {Sidebar,usePermissions} from "../../components/sidebar";
 import {formatMoney} from "../../lib/format";
@@ -47,8 +47,10 @@ export default function ReceiptsPage(){
  function update(i:number,key:keyof Line,value:string){setLines(v=>v.map((x,n)=>n===i?{...x,[key]:value}:x))}
  function addLine(){setLines(v=>[...v,{productId:"",warehouseId:"",locationId:"",quantity:"",unitCost:"",batchCode:"",weight:""}])}
  function removeLine(i:number){setLines(v=>v.filter((_,n)=>n!==i))}
+ const submitKey=useRef(crypto.randomUUID());
  async function submit(e:FormEvent){e.preventDefault();setSaving(true);setError("");try{
-  await api("/api/warehouse/receipts",{method:"POST",body:JSON.stringify({receiptDate,source,notes:notes||undefined,lines:lines.map(x=>({productId:x.productId,warehouseId:x.warehouseId,locationId:x.locationId,quantity:Number(normalizeNumber(x.quantity)),...(canViewCosts&&x.unitCost.trim()!==""?{unitCost:Number(normalizeNumber(x.unitCost))}:{}),batchCode:x.batchCode||undefined,weight:x.weight?Number(normalizeNumber(x.weight)):undefined}))})});
+  await api("/api/warehouse/receipts",{method:"POST",body:JSON.stringify({idempotencyKey:submitKey.current,receiptDate,source,notes:notes||undefined,lines:lines.map(x=>({productId:x.productId,warehouseId:x.warehouseId,locationId:x.locationId,quantity:Number(normalizeNumber(x.quantity)),...(canViewCosts&&x.unitCost.trim()!==""?{unitCost:Number(normalizeNumber(x.unitCost))}:{}),batchCode:x.batchCode||undefined,weight:x.weight?Number(normalizeNumber(x.weight)):undefined}))})});
+  submitKey.current=crypto.randomUUID();
   setSource("");setNotes("");setLines([{productId:"",warehouseId:"",locationId:"",quantity:"",unitCost:"",batchCode:"",weight:""}]);await load();
  }catch(e){setError(e instanceof Error?e.message:"تعذر تسجيل الاستلام")}finally{setSaving(false)}}
  return <div className="app-shell"><Sidebar active="/receipts"/><main className="main"><header className="topbar"><div><h1 className="page-title">الاستلامات</h1><p className="page-subtitle">استلام قماش ومنتجات وخامات ومستلزمات وتسجيلها على المخزن بتكلفتها وسجل حركة مستقل.</p></div></header><section className="content">{error&&<div className="alert error">{error}</div>}
