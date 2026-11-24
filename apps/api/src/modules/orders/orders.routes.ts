@@ -515,7 +515,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
   app.patch("/api/order-stages/:id", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request) => {
     const id=(request.params as {id:string}).id;
-    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional()}).safeParse(request.body);
+    const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional(),reason:z.string().trim().min(2).max(500).optional()}).safeParse(request.body);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات تعديل المرحلة غير صحيحة",422);
     if((parsed.data.stageRate!==undefined||parsed.data.stageRateMethod!==undefined)&&!await canViewOrderFinancials(request.user!.userId))
       throw new AppError("FINANCIAL_PERMISSION_REQUIRED","تعديل سعر المرحلة وطريقة احتسابه متاح للمخولين ماليًا فقط",403);
@@ -530,7 +530,8 @@ export async function orderRoutes(app: FastifyInstance) {
       if(parentOrder.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل مراحلها",409);
       const current=await client.query("SELECT * FROM order_stages WHERE id=$1 FOR UPDATE",[id]);
       if(!current.rowCount)throw new AppError("ORDER_STAGE_NOT_FOUND","مرحلة الطلب غير موجودة",404);
-      if(p.status==="COMPLETED"&&current.rows[0].planned_quantity!=null&&Number(current.rows[0].completed_quantity||0)+1e-9<Number(current.rows[0].planned_quantity)){
+      const effectivePlanned=p.plannedQuantity??current.rows[0].planned_quantity;
+      if(p.status==="COMPLETED"&&effectivePlanned!=null&&Number(current.rows[0].completed_quantity||0)+1e-9<Number(effectivePlanned)){
         throw new AppError("ORDER_STAGE_QUANTITY_INCOMPLETE","لا يمكن إكمال المرحلة قبل تحقيق الكمية المخططة",409);
       }
       const stage= p.stageId||p.stageName ? await ensureStage(client,{stageId:p.stageId,stageName:p.stageName}) : {id:current.rows[0].stage_id};
@@ -538,7 +539,49 @@ export async function orderRoutes(app: FastifyInstance) {
       if(!outputProductId&&p.outputProductName)outputProductId=(await ensureProduct(client,{productName:p.outputProductName})).id;
       await client.query("UPDATE order_stages SET stage_id=COALESCE($1,stage_id),output_product_id=COALESCE($2,output_product_id),sequence_no=COALESCE($3,sequence_no),planned_quantity=COALESCE($4,planned_quantity),status=COALESCE($5,status),notes=COALESCE($6,notes),stage_rate=COALESCE($7,stage_rate),stage_rate_method=COALESCE($8,stage_rate_method),production_type_id=COALESCE($9,production_type_id),is_final_product=COALESCE($10,is_final_product),order_item_id=CASE WHEN $10=FALSE OR $5='CANCELLED' THEN NULL ELSE order_item_id END WHERE id=$11 RETURNING *",[stage.id,outputProductId??null,p.sequenceNo??null,p.plannedQuantity??null,p.status??null,p.notes??null,p.stageRate??null,p.stageRateMethod??null,p.productionTypeId??null,p.isFinalProduct??null,id]);
       if(outputProductId)await client.query("INSERT INTO stage_outputs(stage_id,product_id,is_default) VALUES($1,$2,TRUE) ON CONFLICT(stage_id,product_id) DO UPDATE SET is_default=EXCLUDED.is_default",[stage.id,outputProductId]);
-      if((p.isFinalProduct!==undefined && p.isFinalProduct!==current.rows[0].is_final_product) || (current.rows[0].is_final_product && (p.outputProductName!==undefined || p.outputProductId!==undefined || p.plannedQuantity!==undefined || p.status==="CANCELLED"))) await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
+      const productChanged=outputProductId!==undefined&&outputProductId!==null&&String(outputProductId)!==String(current.rows[0].output_product_id);
+      const structuralChange=(p.isFinalProduct!==undefined&&p.isFinalProduct!==current.rows[0].is_final_product)
+        ||(current.rows[0].is_final_product&&(productChanged||p.status==="CANCELLED"));
+      const quantityChange=Boolean(current.rows[0].is_final_product)
+        &&p.plannedQuantity!==undefined&&p.plannedQuantity!==null
+        &&Number(p.plannedQuantity)!==Number(current.rows[0].planned_quantity??NaN);
+      if(structuralChange){
+        await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
+      }else if(quantityChange){
+        const activity=await client.query(
+          `SELECT
+             EXISTS(SELECT 1 FROM production_entries pe JOIN order_stages os ON os.id=pe.order_stage_id WHERE os.order_id=$1 AND pe.status <> 'CANCELLED') AS has_production,
+             EXISTS(SELECT 1 FROM machine_productions mp JOIN order_stages os ON os.id=mp.order_stage_id WHERE os.order_id=$1 AND mp.status <> 'CANCELLED') AS has_machine_production,
+             EXISTS(SELECT 1 FROM stock_movements WHERE order_id=$1) AS has_stock_movements,
+             EXISTS(SELECT 1 FROM delivery_permissions WHERE order_id=$1 AND status <> 'CANCELLED') AS has_deliveries`,
+          [current.rows[0].order_id]
+        );
+        const hasActivity=activity.rows[0].has_production||activity.rows[0].has_machine_production||activity.rows[0].has_stock_movements||activity.rows[0].has_deliveries;
+        if(!current.rows[0].order_item_id||!hasActivity){
+          await syncOrderLinesFromFinalStages(client,current.rows[0].order_id);
+        }else{
+          if(!await hasPermission(client,request.user!.userId,"orders.edit_agreed_quantity"))
+            throw new AppError("AGREED_QUANTITY_PERMISSION_REQUIRED","تعديل الكمية المتفق عليها بعد بدء الإنتاج أو التسليم متاح لمن لديه صلاحية تعديل الكمية المتفق عليها فقط",403);
+          if(!p.reason)
+            throw new AppError("AGREED_QUANTITY_REASON_REQUIRED","اكتب سبب تعديل الكمية المتفق عليها",422);
+          const newQuantity=Number(p.plannedQuantity);
+          if(!Number.isFinite(newQuantity)||newQuantity<=0)
+            throw new AppError("AGREED_QUANTITY_INVALID","الكمية المتفق عليها يجب أن تكون رقمًا موجبًا",422);
+          const floorResult=await client.query(
+            `SELECT GREATEST(
+               (SELECT COALESCE(SUM(pe.quantity),0) FROM production_entries pe JOIN order_stages os2 ON os2.id=pe.order_stage_id WHERE os2.order_item_id=$1 AND pe.status='APPROVED'),
+               (SELECT COALESCE(SUM(mp.quantity),0) FROM machine_productions mp JOIN order_stages os3 ON os3.id=mp.order_stage_id WHERE os3.order_item_id=$1 AND mp.status<>'CANCELLED'),
+               (SELECT COALESCE(SUM(dl.quantity),0) FROM delivery_permission_lines dl JOIN delivery_permissions dp ON dp.id=dl.delivery_permission_id WHERE dl.order_item_id=$1 AND dp.status<>'CANCELLED')
+             ) AS floor`,[current.rows[0].order_item_id]);
+          const recordedFloor=Number(floorResult.rows[0].floor||0);
+          if(newQuantity+1e-9<recordedFloor)
+            throw new AppError("AGREED_QUANTITY_BELOW_RECORDED","لا يمكن أن تقل الكمية المتفق عليها عن المسجل فعليًا على الطلبية ("+recordedFloor+"): إنتاج معتمد أو إنتاج ماكينات أو أذونات تسليم غير ملغاة",409);
+          const line=await client.query("SELECT quantity FROM production_order_lines WHERE id=$1 AND order_id=$2 FOR UPDATE",[current.rows[0].order_item_id,current.rows[0].order_id]);
+          if(!line.rowCount)throw new AppError("ORDER_LINE_NOT_FOUND","سطر المنتج النهائي غير موجود",404);
+          await client.query("UPDATE production_order_lines SET quantity=$1 WHERE id=$2",[newQuantity,current.rows[0].order_item_id]);
+          await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId??null,action:"update_agreed_quantity",module:"orders",entityType:"production_order_line",entityId:current.rows[0].order_item_id,beforeData:{quantity:Number(line.rows[0].quantity),stagePlannedQuantity:Number(current.rows[0].planned_quantity)},afterData:{quantity:newQuantity,stagePlannedQuantity:newQuantity},metadata:{reason:p.reason,orderStageId:id,recordedFloor},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+        }
+      }
       if(current.rows[0].order_item_id && (p.isFinalProduct===false || p.status==="CANCELLED")) {
         await client.query(
           "DELETE FROM production_order_lines pol WHERE pol.id=$1 AND pol.order_id=$2 AND NOT EXISTS(SELECT 1 FROM order_stages os WHERE os.order_item_id=pol.id)",
