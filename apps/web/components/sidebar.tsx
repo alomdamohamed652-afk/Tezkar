@@ -38,7 +38,8 @@ const groups:NavGroup[]=[
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
   {icon:"◍",label:"العهدة النقدية",href:"/custody",permissions:["cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.transfer","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"]},
   {icon:"▣",label:"العهد العينية وتسويتها",href:"/custody/assets",permissions:["custody.view","custody.view_own","custody.create","custody.settle","custody.transfer"]},
-  {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]}
+  {icon:"₤",label:"مستحقاتي",href:"/earnings",permissions:["earnings.view_own"]},
+  {icon:"☺",label:"أنا",href:"/me",permissions:["attendance.view_own","payroll.view_own"]}
  ]},
  {label:"الإدارة",items:[
   {icon:"⌕",label:"البحث المركزي",href:"/search",permissions:["orders.view","products.view","warehouse.view","payment_requests.view","cash_custody.view","cash_custody.view_own","employees.view","deliveries.view","payroll.view","advances.view","advances.view_own","tasks.view","tasks.view_own","cartons.view","finance.expenses.view","finance.revenues.view","finance.period_close.view"]},
@@ -51,9 +52,6 @@ const groups:NavGroup[]=[
   {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
   {icon:"⇄",label:"فحص وترحيل قاعدة البيانات",href:"/settings/data-transfer",permissions:["system.backup.export"]},
   {icon:"◉",label:"أمان الحسابات وسجل النشاط",href:"/admin/security",permissions:["users.view"]}
- ]},
- {label:"حسابي",items:[
-  {icon:"☺",label:"أنا",href:"/me",permissions:["attendance.view_own","payroll.view_own"]}
  ]}
 ];
 
