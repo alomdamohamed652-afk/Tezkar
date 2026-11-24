@@ -96,6 +96,7 @@ export default function ForgotPasswordPage() {
 
       {step === "code" && <form className="auth-form" onSubmit={submitConfirm}>
         {message ? <div role="status" style={{ padding: 12, borderRadius: 12, background: "#e8f7ef", color: "#176b48" }}>{message}</div> : null}
+        <div className="auth-note" role="note">لو الرسالة مش ظاهرة في الوارد، بص في السبام / الرسائل غير الهامة.</div>
         <label className="auth-field"><span>كود التحقق (6 أرقام)</span><input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr" placeholder="••••••" autoFocus required /></label>
         <label className="auth-field"><span>كلمة المرور الجديدة (12 حرفًا على الأقل)</span><input value={newPassword} onChange={e => setNewPassword(e.target.value)} type="password" minLength={12} autoComplete="new-password" required /></label>
         <label className="auth-field"><span>تأكيد كلمة المرور الجديدة</span><input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" minLength={12} autoComplete="new-password" required /></label>

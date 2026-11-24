@@ -10,9 +10,36 @@ export default function RegisterPage() {
   const [phone,setPhone]=useState("");
   const [password,setPassword]=useState("");
   const [confirmPassword,setConfirmPassword]=useState("");
+  const [email,setEmail]=useState("");
+  const [emailCode,setEmailCode]=useState("");
+  const [codeSent,setCodeSent]=useState(false);
+  const [codeSending,setCodeSending]=useState(false);
+  const [codeMessage,setCodeMessage]=useState("");
   const [error,setError]=useState("");
   const [submitted,setSubmitted]=useState(false);
   const [loading,setLoading]=useState(false);
+
+  async function sendEmailCode() {
+    if(codeSending)return;
+    setError("");setCodeMessage("");
+    const trimmed=email.trim();
+    if(!/^\S+@\S+\.\S+$/.test(trimmed)){setError("اكتب البريد الإلكتروني بشكل صحيح الأول");return;}
+    setCodeSending(true);
+    try {
+      const response=await fetch(`${API}/api/auth/register/email/request`,{
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        credentials:"include",
+        body:JSON.stringify({email:trimmed})
+      });
+      const body=await response.json().catch(()=>null);
+      if(!response.ok)throw new Error(body?.error?.message??"تعذر إرسال كود التحقق");
+      setCodeSent(true);
+      setCodeMessage(body?.message??"تم إرسال كود التحقق إلى بريدك.");
+    } catch(err) {
+      setError(err instanceof Error?err.message:"تعذر إرسال كود التحقق");
+    } finally {setCodeSending(false);}
+  }
 
   async function submit(event:FormEvent) {
     event.preventDefault();
@@ -20,13 +47,14 @@ export default function RegisterPage() {
     setError("");
     if(phone.replace(/\D/g,"").length<10){setError("رقم الموبايل إلزامي ولازم يحتوي على 10 أرقام على الأقل");return;}
     if(password!==confirmPassword){setError("كلمتا المرور غير متطابقتين");return;}
+    if(!codeSent||emailCode.trim().length<4){setError("أرسل كود التحقق لبريدك الإلكتروني واكتبه هنا");return;}
     setLoading(true);
     try {
       const response=await fetch(`${API}/api/auth/register`,{
         method:"POST",
         headers:{"content-type":"application/json"},
         credentials:"include",
-        body:JSON.stringify({fullName,username:username.trim(),phone:phone.trim(),password,confirmPassword})
+        body:JSON.stringify({fullName,username:username.trim(),phone:phone.trim(),password,confirmPassword,email:email.trim(),emailCode:emailCode.trim()})
       });
       const body=await response.json().catch(()=>null);
       if(!response.ok)throw new Error(body?.error?.message??"تعذر إرسال طلب التسجيل");
@@ -39,7 +67,7 @@ export default function RegisterPage() {
   return <main className="auth-page" dir="rtl">
     <div className="auth-shell">
       <section className="auth-showcase" aria-label="نظام تذكار">
-        <div className="auth-showcase-top"><div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار"/></div><div><strong>تذكار</strong><span>إدارة المصنع</span></div></div>
+        <div className="auth-showcase-top"><div className="auth-logo-mark"><img src="/tezkar-logo.png" alt="شعار تذكار"/></div><div><strong>تذكار</strong><span>إدارة المصنع</span></div></div>
         <div className="auth-showcase-content"><span className="auth-kicker">بوابة انضمام جديدة</span><h2>حسابك يبدأ<br/><em>بموافقة الإدارة.</em></h2><p>أنشئ طلبك مرة واحدة، والإدارة هتراجع بياناتك وتحدد صلاحياتك وتربط حسابك بملف الموظف لو كنت مسجلًا كموظف.</p>
           <div style={{display:"grid",gap:12,marginTop:24}}>
             <div style={{display:"flex",alignItems:"center",gap:12}}><span style={{display:"grid",placeItems:"center",width:32,height:32,borderRadius:10,background:"rgba(34,197,94,.18)",color:"#86efac",fontWeight:900}}>1</span><span>اكتب بياناتك ورقم الموبايل الصحيح</span></div>
@@ -58,6 +86,13 @@ export default function RegisterPage() {
           <label className="auth-field"><span>الاسم بالكامل</span><div className="auth-input-wrap"><input value={fullName} onChange={e=>setFullName(e.target.value)} autoComplete="name" minLength={3} maxLength={160} required placeholder="اكتب اسمك بالكامل"/></div></label>
           <label className="auth-field"><span>اسم المستخدم (إنجليزي)</span><div className="auth-input-wrap"><input value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" pattern="[A-Za-z0-9._-]{3,100}" minLength={3} maxLength={100} required placeholder="مثال: ahmed.mohamed"/></div><small style={{color:"var(--muted,#64748b)"}}>تقدر تستخدمه أو رقم الموبايل لتسجيل الدخول.</small></label>
           <label className="auth-field"><span>رقم الموبايل <b style={{color:"#dc2626"}}>* إلزامي</b></span><div className="auth-input-wrap"><input value={phone} onChange={e=>setPhone(e.target.value)} autoComplete="tel" minLength={10} maxLength={30} inputMode="tel" pattern="[+()0-9 .-]{10,30}" required placeholder="01xxxxxxxxx"/></div><small style={{color:"var(--muted,#64748b)"}}>لازم يكون رقم صحيح ومش مرتبط بحساب تاني.</small></label>
+          <label className="auth-field"><span>البريد الإلكتروني <b style={{color:"#dc2626"}}>* إلزامي</b></span><div className="auth-input-wrap"><input value={email} onChange={e=>{setEmail(e.target.value);setCodeSent(false);setEmailCode("");setCodeMessage("")}} type="email" dir="ltr" autoComplete="email" maxLength={320} required placeholder="name@example.com"/></div><small style={{color:"var(--muted,#64748b)"}}>هيوصلك عليه كود تحقق، وهتقدر بيه تستعيد كلمة المرور بعدين.</small></label>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <button type="button" className="secondary-btn" onClick={()=>void sendEmailCode()} disabled={codeSending||!email.trim()}>{codeSending?"جاري الإرسال...":codeSent?"إعادة إرسال الكود":"إرسال كود التحقق"}</button>
+            {codeMessage&&<span style={{color:"#176b48",fontSize:12,fontWeight:700}}>{codeMessage}</span>}
+          </div>
+          {codeSent&&<div className="auth-note" role="note">لو الرسالة مش ظاهرة في الوارد، بص في السبام / الرسائل غير الهامة.</div>}
+          {codeSent&&<label className="auth-field"><span>كود التحقق من البريد (6 أرقام)</span><div className="auth-input-wrap"><input value={emailCode} onChange={e=>setEmailCode(e.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr" required placeholder="••••••"/></div></label>}
           <label className="auth-field"><span>كلمة المرور (12 حرفًا على الأقل)</span><div className="auth-input-wrap"><input value={password} onChange={e=>setPassword(e.target.value)} type="password" autoComplete="new-password" minLength={12} maxLength={200} required placeholder="أنشئ كلمة مرور قوية"/></div></label>
           <label className="auth-field"><span>تأكيد كلمة المرور</span><div className="auth-input-wrap"><input value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} type="password" autoComplete="new-password" minLength={12} maxLength={200} required placeholder="أعد كتابة كلمة المرور"/></div></label>
           {error&&<div className="auth-error" role="alert"><span className="auth-error-icon">!</span><span>{error}</span></div>}
