@@ -2,6 +2,7 @@ import { createHash, createHmac, randomInt, timingSafeEqual } from "node:crypto"
 import type pg from "pg";
 import { pool } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
+import { buildOtpEmail } from "./email-otp.template.js";
 
 export type OtpPurpose = "EMAIL_VERIFY" | "PASSWORD_RESET";
 
@@ -151,23 +152,12 @@ export async function sendOtpEmail(to: string, code: string, purpose: OtpPurpose
     console.error("[email-otp] BREVO_API_KEY or BREVO_SENDER_EMAIL missing; OTP email not sent.");
     return { ok: false, reason: "missing_config" };
   }
-  const subject = purpose === "EMAIL_VERIFY" ? "تأكيد بريدك الإلكتروني — تذكار" : "كود إعادة تعيين كلمة المرور — تذكار";
-  const intro = purpose === "EMAIL_VERIFY"
-    ? "طلبت إضافة هذا البريد إلى حسابك في نظام تذكار."
-    : "طلبت إعادة تعيين كلمة المرور لحسابك في نظام تذكار.";
-  const text = [
-    intro,
-    "",
-    `كود التحقق: ${code}`,
-    "",
-    `الكود صالح لمدة ${OTP_TTL_MINUTES} دقائق ويُستخدم مرة واحدة.`,
-    "لو لم تطلب ذلك تجاهل هذه الرسالة، ولن يتغير أي شيء في حسابك."
-  ].join("\n");
+  const { subject, html, text } = buildOtpEmail(purpose, code, OTP_TTL_MINUTES);
   try {
     const res = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: { "api-key": apiKey, "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ sender: { email: senderEmail, name: senderName }, to: [{ email: to }], subject, textContent: text })
+      body: JSON.stringify({ sender: { email: senderEmail, name: senderName }, to: [{ email: to }], subject, textContent: text, htmlContent: html })
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
