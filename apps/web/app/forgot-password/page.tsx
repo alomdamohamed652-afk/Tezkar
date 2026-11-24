@@ -103,6 +103,13 @@ export default function ForgotPasswordPage() {
         <p>عندك طريقين: استعادة فورية على بريدك الإلكتروني المسجل، أو طلب مراجعة من الإدارة.</p>
       </div>
 
+      {path === "email" && <div className="auth-steps" aria-hidden="true">
+        {["التحقق","التعيين","الانتهاء"].map((label,i)=>{
+          const idx = step === "phone" || step === "email" ? 0 : step === "code" ? 1 : 2;
+          return <div key={label} className={"auth-step"+(i<idx?" done":i===idx?" current":"")}><span className="auth-step-dot">{i<idx?"✓":i+1}</span><span className="auth-step-label">{label}</span></div>;
+        })}
+      </div>}
+
       <div className="auth-tabs">
         <button type="button" className={path === "email" ? "primary-button" : "secondary-btn"} onClick={() => { setPath("email"); setError(""); setMessage(""); }}>على البريد — فوري</button>
         <button type="button" className={path === "admin" ? "primary-button" : "secondary-btn"} onClick={() => { setPath("admin"); setError(""); setMessage(""); }}>من الإدارة — 6 لـ 24 ساعة</button>
