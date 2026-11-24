@@ -1,3 +1,4 @@
+import { getGeneralAccountDetails } from "./general-account-details.js";
 /** Internal SQL fragments only. Callers pass trusted SQL expressions, never request text. */
 export function netAllocationSql(alias:string, source:string):string {
   return `${alias}.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r WHERE r.allocation_source='${source}' AND r.source_allocation_id=${alias}.id),0)`;
@@ -118,6 +119,40 @@ export async function getSettlementReconciliation(client:import("pg").PoolClient
   // No implicit transfer into orders. Includes standalone adjustments, carry,
   // no-order production, closure exclusions and account-boundary rounding.
   const orderTotal=Math.round(orders.reduce((sum,row)=>sum+row.remaining,0)*100)/100;
-  return {orders,orderTotal,generalAccount:Math.round((available-orderTotal)*100)/100,total:available,
+  const generalAccountDetails=await getGeneralAccountDetails(client,employeeId,available,orderTotal);
+  return {orders,orderTotal,generalAccountDetails,generalAccount:Math.round((available-orderTotal)*100)/100,total:available,
     allocationPolicy:"SIGNED_ORDER_BALANCES_PLUS_GENERAL_ACCOUNT"};
+}
+
+export function activeDifferencePaymentProductionAllocationSql(paymentIdExpr:string,settlementIdExpr:string|null,approvedAtCondition="") {
+  const eligible = `p.status='APPROVED' ${approvedAtCondition}`;
+  const net = (alias:string,source:string) =>
+    `GREATEST(${alias}.amount-COALESCE((SELECT SUM(r.amount) FROM worker_payment_allocation_reversals r
+      WHERE r.allocation_source='${source}' AND r.source_allocation_id=${alias}.id),0),0)`;
+  const canonical = settlementIdExpr ? `
+    WHEN EXISTS(SELECT 1 FROM employee_earnings_settlement_allocations x WHERE x.settlement_id=${settlementIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","EMPLOYEE_EARNINGS_SETTLEMENT")})
+        FROM employee_earnings_settlement_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.settlement_id=${settlementIdExpr} AND ${eligible}),0)
+        +COALESCE((SELECT SUM(ev.amount)
+          FROM worker_payment_settlement_difference_events ev
+          JOIN production_entries p ON p.id=ev.production_entry_id
+          WHERE ev.worker_payment_id=${paymentIdExpr}
+            AND ev.event_type='ALLOCATED_TO_PRODUCTION'
+            AND ${eligible}
+            AND NOT EXISTS(SELECT 1 FROM worker_payment_settlement_difference_events rv
+              WHERE rv.reverses_event_id=ev.id AND rv.event_type='REVERSED')),0)` : "";
+  return `CASE
+    ${canonical}
+    WHEN EXISTS(SELECT 1 FROM worker_payment_order_allocations x WHERE x.worker_payment_id=${paymentIdExpr})
+      THEN COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_ORDER")})
+        FROM worker_payment_order_allocations a
+        JOIN production_entries p ON p.id=a.production_entry_id
+        WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+    ELSE COALESCE((SELECT SUM(${net("a","WORKER_PAYMENT_LEGACY")})
+      FROM worker_payment_allocations a
+      JOIN production_entries p ON p.id=a.production_entry_id
+      WHERE a.worker_payment_id=${paymentIdExpr} AND ${eligible}),0)
+  END`;
 }

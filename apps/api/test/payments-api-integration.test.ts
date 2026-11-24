@@ -176,6 +176,10 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(summaryBody.availableBreakdown.calculatedAvailable),500,
         "diagnostic breakdown must match the legacy ledger fallback when no approved production exists");
       assert.equal(summaryBody.availableBreakdown.calculationMode,"LEDGER_FALLBACK");
+      assert.equal(summaryBody.reconciliation.generalAccountDetails.mode,"LEDGER_FALLBACK");
+      assert.equal(summaryBody.reconciliation.generalAccountDetails.total,500);
+      assert.equal(summaryBody.reconciliation.generalAccountDetails.unexplainedDifference,0);
+
       assert.equal(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries.length,1,
         "the reconciliation breakdown must return each standalone ledger adjustment contributing to the balance");
       assert.equal(summaryBody.availableBreakdown.ledgerOnlyAdjustmentEntries[0].notes,"test-only earned balance");
@@ -4074,6 +4078,35 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       const priceBridgeSummary=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bridgeWorker}`,headers:{cookie:managerCookie}});
       assert.equal(priceBridgeSummary.statusCode,200,priceBridgeSummary.body);
       assert.equal(priceBridgeSummary.json().data.availableForSettlement,530,"current entitlement already includes price delta, anonymous credit must not count twice");
+      for(const response of [bridgeSummary,duplicateBridgeScoped,bridgeAdvanceSummary,fractionalSummary,priceBridgeSummary]){
+        const reconciliation=response.json().data.reconciliation;
+        const details=reconciliation.generalAccountDetails;
+        assert.ok(details,"typed general account details must be returned");
+        const sourceSum=details.entries.reduce((sum:number,row:any)=>sum+Number(row.amountExact),0);
+        assert.ok(Math.abs(sourceSum+details.roundingAdjustment+details.unexplainedDifference-reconciliation.generalAccount)<0.0001,
+          "per-source signed effects and explicit rounding/unexplained lines reproduce the general bucket");
+        assert.equal(details.unexplainedDifference,0,"supported synthetic scenarios must have no unexplained difference");
+      }
+      const bridgeDetails=bridgeSummary.json().data.reconciliation.generalAccountDetails;
+      assert.ok(bridgeDetails.entries.some((row:any)=>row.sourceType==='UNLINKED_LEDGER_ADJUSTMENT'&&row.needsReview),
+        "anonymous historical debit remains unresolved, never relabeled as reversal by note matching");
+      assert.ok(bridgeDetails.entries.some((row:any)=>row.sourceType==='CANCELLED_APPROVAL_BRIDGE'&&!row.needsReview));
+      assert.ok(bridgeAdvanceSummary.json().data.reconciliation.generalAccountDetails.entries.some((row:any)=>row.sourceType==='ADVANCE_PRINCIPAL_EXCLUSION'));
+      assert.ok(priceBridgeSummary.json().data.reconciliation.generalAccountDetails.entries.some((row:any)=>row.sourceType==='PRICE_DELTA_EXCLUSION'));
+      const detailsClosureWorker=(await apiPool.query("INSERT INTO employees(full_name) VALUES('Synthetic Details Closure Worker') RETURNING id")).rows[0].id;
+      const detailsOldProduction=await bridgeProduction(100,"APPROVED",detailsClosureWorker);
+      await apiPool.query("UPDATE production_entries SET approved_at=now()-interval '2 days' WHERE id=$1",[detailsOldProduction]);
+      await apiPool.query("INSERT INTO employee_production_closures(employee_id,closed_at,notes,closed_by) VALUES($1,now()-interval '1 day','Synthetic details closure',$2)",[detailsClosureWorker,manager.id]);
+      await bridgeProduction(40,"APPROVED",detailsClosureWorker);
+      const detailsClosureSummary=await app.inject({method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${detailsClosureWorker}`,headers:{cookie:managerCookie}});
+      assert.equal(detailsClosureSummary.statusCode,200,detailsClosureSummary.body);
+      const closureDetails=detailsClosureSummary.json().data.reconciliation.generalAccountDetails;
+      assert.equal(detailsClosureSummary.json().data.availableForSettlement,40);
+      assert.equal(closureDetails.total,-100);
+      assert.equal(closureDetails.unexplainedDifference,0);
+      assert.ok(closureDetails.entries.some((row:any)=>row.sourceId===detailsOldProduction&&row.scope==='CLOSURE_EXCLUSION'&&row.amount===-100));
+
+
 
     }catch(error){console.error("Payments integration assertion failed before cleanup:",error);throw error}finally{await app.close()}
   }finally{
