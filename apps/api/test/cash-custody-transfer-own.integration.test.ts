@@ -96,10 +96,11 @@ test("cash custody own-scope transfers and permission grouping normalization", {
       const viewOnlyRole = (await apiPool.query("INSERT INTO roles(code,name,is_system) VALUES('transfer_view_only_test','عرض فقط اختبار',FALSE) RETURNING id")).rows[0];
       await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT $1,p.id FROM permissions p WHERE p.code='cash_custody.view_own'", [viewOnlyRole.id]);
       const userD = await mkUser("trfd-", empD, "transfer_view_only_test", pwD);
+      const mgrUserId = (await apiPool.query("SELECT id FROM users WHERE username=$1", [mgrUser])).rows[0].id as string;
 
       // Custody accounts: A holds 500, B holds 100, C has no account at all.
-      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',500,CURRENT_DATE,'رصيد افتتاحي',NULL)", [empA]);
-      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',100,CURRENT_DATE,'رصيد افتتاحي',NULL)", [empB]);
+      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',500,CURRENT_DATE,'رصيد افتتاحي',$2)", [empA, mgrUserId]);
+      await apiPool.query("INSERT INTO cash_custody_transactions(employee_id,direction,amount,transaction_date,description,created_by) VALUES($1,'IN',100,CURRENT_DATE,'رصيد افتتاحي',$2)", [empB, mgrUserId]);
       const balanceOf = async (employeeId: string) => Number((await apiPool.query(
         "SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS b FROM cash_custody_transactions WHERE employee_id=$1", [employeeId]
       )).rows[0].b);
