@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAdminHealth, recordServerError } from "../src/modules/health/admin-health.service.js";
+import { getAdminHealth, maskIp, maskUsername, recordServerError } from "../src/modules/health/admin-health.service.js";
 
 function mockDb(handlers: Array<[string, unknown[]]>) {
   return { async query(sql: string) {
@@ -27,7 +27,8 @@ test("admin health aggregates database, migrations, backup, failed logins", asyn
   assert.equal(health.lastBackupAt, "2026-11-24T03:00:00.000Z");
   assert.equal(health.failedLogins24h, 3);
   assert.equal(health.recentFailedLogins.length, 1);
-  assert.equal(health.recentFailedLogins[0].username, "admin");
+  assert.equal(health.recentFailedLogins[0].username, "a***");
+  assert.equal(health.recentFailedLogins[0].ip, "1.2.*.*");
 });
 
 test("admin health reports degraded when the database is down and never throws", async () => {
@@ -41,7 +42,7 @@ test("admin health reports degraded when the database is down and never throws",
 });
 
 test("recordServerError keeps the newest errors first and caps the buffer", async () => {
-  for (let i = 0; i < 60; i++) recordServerError({ route: "/api/x/" + i, method: "GET", message: "boom " + i });
+  for (let i = 0; i < 60; i++) recordServerError({ route: "/api/x/" + i, method: "GET", name: "Error" });
   const db = mockDb([
     ["SELECT 1 AS ok", [{ ok: 1 }]],
     ["schema_migrations ORDER BY version DESC", []],
@@ -54,4 +55,17 @@ test("recordServerError keeps the newest errors first and caps the buffer", asyn
   assert.equal(health.recentErrors.length, 20);
   assert.equal(health.recentErrors[0].route, "/api/x/59");
   assert.equal(health.recentErrors[19].route, "/api/x/40");
+  assert.equal(health.recentErrors[0].name, "Error");
+  assert.ok(!("message" in health.recentErrors[0]), "raw error messages must not be exposed");
+});
+
+test("maskUsername and maskIp minimize failed sign-in identifiers", () => {
+  assert.equal(maskUsername("admin"), "a***");
+  assert.equal(maskUsername("  mohamed  "), "m***");
+  assert.equal(maskUsername(""), null);
+  assert.equal(maskUsername(null), null);
+  assert.equal(maskIp("197.32.14.200"), "197.32.*.*");
+  assert.equal(maskIp("2001:db8:85a3:8d3:1319:8a2e:370:7348"), "2001:db8:85a3:8d3::*");
+  assert.equal(maskIp("not-an-ip"), "***");
+  assert.equal(maskIp(null), null);
 });

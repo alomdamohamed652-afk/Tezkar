@@ -4,25 +4,47 @@ type HealthDb = { query: (sql: string, values?: unknown[]) => Promise<{ rows: an
 
 // In-memory ring buffer of recent 5xx errors, fed by the global error handler.
 // No table needed: the buffer is per-process and resets on deploy, which is
-// fine for a "is the system healthy right now" view.
+// fine for a "is the system healthy right now" view. Only the error class
+// name is kept, never raw message text: DB/driver messages can carry SQL,
+// column names or values, and this surface must not expose them.
 export type RecentError = {
   at: string;
   route: string;
   method: string;
-  message: string;
+  name: string;
 };
 
 const MAX_RECENT_ERRORS = 50;
 const recentErrors: RecentError[] = [];
 
-export function recordServerError(input: { route: string; method: string; message: string }): void {
+export function recordServerError(input: { route: string; method: string; name: string }): void {
   recentErrors.unshift({
     at: new Date().toISOString(),
     route: input.route,
     method: input.method,
-    message: input.message.slice(0, 300)
+    name: input.name.slice(0, 80)
   });
   if (recentErrors.length > MAX_RECENT_ERRORS) recentErrors.length = MAX_RECENT_ERRORS;
+}
+
+// Failed sign-in rows are minimized before display: enough to spot a brute
+// force pattern, without exposing full usernames or client addresses.
+export function maskUsername(username: string | null): string | null {
+  if (!username) return null;
+  const trimmed = username.trim();
+  return trimmed ? trimmed[0] + "***" : null;
+}
+
+export function maskIp(ip: string | null): string | null {
+  if (!ip) return null;
+  const trimmed = ip.trim();
+  const v4 = trimmed.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (v4) return v4[1] + "." + v4[2] + ".*.*";
+  if (trimmed.includes(":")) {
+    const groups = trimmed.split(":").filter(Boolean);
+    if (groups.length) return groups.slice(0, 4).join(":") + "::*";
+  }
+  return "***";
 }
 
 export async function getAdminHealth(db: HealthDb = pool) {
@@ -84,8 +106,8 @@ export async function getAdminHealth(db: HealthDb = pool) {
     );
     return result.rows.map((row) => ({
       at: row.occurred_at,
-      username: row.username ?? null,
-      ip: row.ip ?? null
+      username: maskUsername(row.username ?? null),
+      ip: maskIp(row.ip ?? null)
     }));
   }, []);
 

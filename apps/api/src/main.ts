@@ -121,7 +121,7 @@ app.setErrorHandler((error, request, reply) => {
   recordServerError({
     route: request.routeOptions?.url ?? request.url ?? "unknown",
     method: request.method ?? "unknown",
-    message: error instanceof Error ? error.message : String(error)
+    name: error instanceof Error ? error.name : "Error"
   });
   app.log.error(error);
   return reply.code(500).send({
