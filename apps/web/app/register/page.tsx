@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { API_BASE as API } from "../../lib/api-base";
+import { OtpInput } from "../../components/otp-input";
 
 export default function RegisterPage() {
   const [fullName,setFullName]=useState("");
@@ -92,7 +93,7 @@ export default function RegisterPage() {
             {codeMessage&&<span style={{color:"#176b48",fontSize:12,fontWeight:700}}>{codeMessage}</span>}
           </div>
           {codeSent&&<div className="auth-note" role="note">لو الرسالة مش ظاهرة في الوارد، بص في السبام / الرسائل غير الهامة.</div>}
-          {codeSent&&<label className="auth-field"><span>كود التحقق من البريد (6 أرقام)</span><div className="auth-input-wrap"><input value={emailCode} onChange={e=>setEmailCode(e.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr" required placeholder="••••••"/></div></label>}
+          {codeSent&&<label className="auth-field"><span>كود التحقق من البريد (6 أرقام)</span><OtpInput value={emailCode} onChange={setEmailCode}/></label>}
           <label className="auth-field"><span>كلمة المرور (12 حرفًا على الأقل)</span><div className="auth-input-wrap"><input value={password} onChange={e=>setPassword(e.target.value)} type="password" autoComplete="new-password" minLength={12} maxLength={200} required placeholder="أنشئ كلمة مرور قوية"/></div></label>
           <label className="auth-field"><span>تأكيد كلمة المرور</span><div className="auth-input-wrap"><input value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} type="password" autoComplete="new-password" minLength={12} maxLength={200} required placeholder="أعد كتابة كلمة المرور"/></div></label>
           {error&&<div className="auth-error" role="alert"><span className="auth-error-icon">!</span><span>{error}</span></div>}

@@ -2277,3 +2277,11 @@ textarea:hover:not(:disabled) {
 .auth-links{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-top:20px;font-size:13px}
 .auth-submit-link{display:flex;text-decoration:none;margin-top:14px;align-items:center;justify-content:center;gap:8px}
 @media(max-width:420px){.auth-tabs{grid-template-columns:1fr}}
+
+/* ===== 6-box OTP input ===== */
+.otp-boxes{display:flex;gap:10px;justify-content:center;direction:ltr}
+.otp-box{width:46px;height:54px;text-align:center;font-size:22px;font-weight:700;font-family:inherit;color:var(--ink,#0f172a);background:#fff;border:1.5px solid var(--border,#dbe3ee);border-radius:12px;outline:none;transition:border-color .15s,box-shadow .15s;caret-color:var(--primary)}
+.otp-box:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.18)}
+.otp-boxes-error .otp-box{border-color:#dc2626}
+.otp-boxes-error .otp-box:focus{box-shadow:0 0 0 3px rgba(220,38,38,.15)}
+@media (max-width:480px){.otp-box{width:42px;height:50px;font-size:20px}.otp-boxes{gap:8px}}

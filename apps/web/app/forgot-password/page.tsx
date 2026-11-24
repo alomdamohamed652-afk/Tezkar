@@ -2,6 +2,7 @@
 import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { API_BASE as API } from "../../lib/api-base";
+import { OtpInput } from "../../components/otp-input";
 
 type Path = "email" | "admin";
 type EmailStep = "phone" | "email" | "code" | "done";
@@ -125,7 +126,7 @@ export default function ForgotPasswordPage() {
         {step === "code" && <form className="auth-form" onSubmit={submitConfirm}>
           {message ? <div className="auth-banner success" role="status">{message}</div> : null}
           <div className="auth-note" role="note">لو الرسالة مش ظاهرة في الوارد، بص في السبام / الرسائل غير الهامة.</div>
-          <label className="auth-field"><span>كود التحقق (6 أرقام)</span><div className="auth-input-wrap"><input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr" placeholder="••••••" autoFocus required /></div></label>
+          <label className="auth-field"><span>كود التحقق (6 أرقام)</span><OtpInput value={code} onChange={setCode} autoFocus/></label>
           <label className="auth-field"><span>كلمة المرور الجديدة (12 حرفًا على الأقل)</span><div className="auth-input-wrap"><input value={newPassword} onChange={e => setNewPassword(e.target.value)} type="password" minLength={12} autoComplete="new-password" required /></div></label>
           <label className="auth-field"><span>تأكيد كلمة المرور الجديدة</span><div className="auth-input-wrap"><input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" minLength={12} autoComplete="new-password" required /></div></label>
           {error ? <div className="auth-error" role="alert"><span className="auth-error-icon">!</span><span>{error}</span></div> : null}
