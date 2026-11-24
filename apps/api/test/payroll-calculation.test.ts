@@ -177,3 +177,71 @@ test("minute rate rejects a zero effective scheduled-minute denominator", () => 
     days: []
   }), /Invalid scheduled payroll minutes/);
 });
+
+test("unpaid leave deducts a full scheduled day itemized separately from absence", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-09", status: "UNPAID_LEAVE" }]
+  });
+  assert.equal(result.unpaidLeaveMinutes, 480);
+  assert.equal(result.absenceMinutes, 0);
+  assert.equal(result.dayOffWorkedMinutes, 0);
+  assert.equal(result.deductionMinutes, 480);
+  assert.equal(result.deductionAmount, 230.77);
+});
+
+test("unpaid leave and absence in the same month stay itemized and both deduct", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [
+      { date: "2026-11-09", status: "UNPAID_LEAVE" },
+      { date: "2026-11-10", status: "ABSENT" }
+    ]
+  });
+  assert.equal(result.unpaidLeaveMinutes, 480);
+  assert.equal(result.absenceMinutes, 480);
+  assert.equal(result.deductionMinutes, 960);
+  assert.equal(result.deductionAmount, 461.54);
+});
+
+test("paid leave day override carries no deduction and no rest-work bonus", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-09", status: "DAY_OFF", isDayOff: false, workedMinutes: 0 }]
+  });
+  assert.equal(result.deductionMinutes, 0);
+  assert.equal(result.dayOffWorkedMinutes, 0);
+  assert.equal(result.dayOffBonus, 0);
+  assert.equal(result.totalBonus, 0);
+});
+
+test("manual presence on a scheduled workday deducts nothing and earns no rest bonus", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-09", status: "MANUAL", workedMinutes: 480 }]
+  });
+  assert.equal(result.deductionMinutes, 0);
+  assert.equal(result.dayOffWorkedMinutes, 0);
+  assert.equal(result.overtimeMinutes, 0);
+  assert.equal(result.totalBonus, 0);
+});
+
+test("paid permission time is credited against an unpaid-leave day before deduction", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000,
+    existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-09", status: "UNPAID_LEAVE", paidPermissionMinutes: 120 }]
+  });
+  assert.equal(result.paidPermissionMinutes, 120);
+  assert.equal(result.unpaidLeaveMinutes, 360);
+  assert.equal(result.deductionAmount, 173.08);
+});
