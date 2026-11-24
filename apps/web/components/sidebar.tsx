@@ -46,12 +46,8 @@ const groups:NavGroup[]=[
   {icon:"▦",label:"التقارير",href:"/reports",permissions:["reports.view"]},
   {icon:"▣",label:"الموظفون",href:"/employees",permissions:["employees.view"]},
   {icon:"◷",label:"الحضور والبصمة",href:"/attendance",permissions:["attendance.view","attendance.import","attendance.manage","attendance.review"]},
-  {icon:"♙",label:"طلبات الحسابات",href:"/registration-requests",permissions:["users.create"]},
-  {icon:"↻",label:"طلبات إعادة تعيين كلمة المرور",href:"/password-reset-requests",permissions:["users.create"]},
   {icon:"◈",label:"البيانات الأساسية",href:"/master-data",permissions:["products.view","rates.view","stages.view"]},
   {icon:"⚙",label:"الإعدادات",href:"/settings",permissions:["users.view","payment_methods.manage"]},
-  {icon:"⇄",label:"فحص وترحيل قاعدة البيانات",href:"/settings/data-transfer",permissions:["system.backup.export"]},
-  {icon:"◉",label:"أمان الحسابات وسجل النشاط",href:"/admin/security",permissions:["users.view"]}
  ]}
 ];
 
@@ -138,7 +134,6 @@ export function Sidebar({active}:{active:string}){
  },[permissions]);
  const visibleGroups=useMemo(()=>groups.map(group=>({...group,items:group.items.filter(item=>{
    if(permissions===null)return false;
-   if(item.href==="/admin/security"&&!session?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())))return false;
    if(!item.permissions?.some(p=>permissions.includes(p)))return false;
    if(!item.conditional)return true;
    if(item.conditional==="advance"&&permissions.includes("advances.view"))return true;

@@ -2202,3 +2202,7 @@ textarea:hover:not(:disabled) {
  .dn-preview-paper{width:auto;max-width:none;box-shadow:none;border-radius:0;padding:0}
  .print-sheet.delivery-note{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
+
+/* ===== settings embedded tabs ===== */
+.settings-embed-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+@media (min-width:641px){.settings-tabs{flex-wrap:wrap;overflow:visible}}
