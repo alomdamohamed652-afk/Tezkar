@@ -225,7 +225,7 @@ export default function AttendanceMonthlyPage() {
           ))}
         </section>
 
-        <section className="card"><div className="card-header"><div><h2 className="card-title">ساعات العمل وأيام الإجازة المسموحة لكل موظف</h2><p className="form-hint">ساعات العمل اليومية تُقرأ لحظة اعتماد المسير: أي مسير لم يُعتمد بعد، بما فيه المسودات المحفوظة، يُحتسب بالقيمة الجديدة عند اعتماده؛ المعتمد لا يتغير. أيام الإجازة المسموحة رصيد شهري للمتابعة فقط حاليًا ولا تدخل في الاحتساب.</p></div><span className="status pending">قابلة للتعديل · تؤثر عند الاعتماد</span></div>
+        <section className="card"><div className="card-header"><div><h2 className="card-title">ساعات العمل وأيام الإجازة المسموحة لكل موظف</h2><p className="form-hint">ساعات العمل اليومية تُقرأ لحظة اعتماد المسير: أي مسير لم يُعتمد بعد، بما فيه المسودات المحفوظة، يُحتسب بالقيمة الجديدة عند اعتماده؛ المعتمد لا يتغير. أيام الإجازة المسموحة شهريًا إعداد للمتابعة فقط حاليًا: لا يُحسب له استهلاك أو ترحيل ولا يدخل في الاحتساب.</p></div><span className="status pending">قابلة للتعديل · تؤثر عند الاعتماد</span></div>
           {!canViewPolicy ? <div className="empty">عرض الإعدادات يتطلب صلاحية عرض الرواتب.</div> : !employees.length ? <div className="empty">حمّل شهرًا أولًا لعرض الموظفين.</div> : (
             <div className="settings-list">
               {visibleEmployees.map(emp => {
