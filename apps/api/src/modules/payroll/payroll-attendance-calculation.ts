@@ -50,7 +50,7 @@ export function calculatePayrollAttendance(input: {
   }
   const minuteRate = (baseSalary + existingBonus) / scheduledMinutes;
   let lateMinutes = 0, earlyMinutes = 0, paidPermissionMinutes = 0, unpaidPermissionMinutes = 0;
-  let absenceMinutes = 0, overtimeMinutes = 0, dayOffWorkedMinutes = 0;
+  let absenceMinutes = 0, unpaidLeaveMinutes = 0, overtimeMinutes = 0, dayOffWorkedMinutes = 0;
   for (const day of days) {
     if (day.needsReview) throw new Error("ATTENDANCE_REVIEW_REQUIRED");
     const worked = minutes(day.workedMinutes);
@@ -67,19 +67,25 @@ export function calculatePayrollAttendance(input: {
       absenceMinutes += Math.max(0, policy.dailyWorkMinutes - minutes(day.paidPermissionMinutes) - unpaidPermission);
       continue;
     }
+    if (day.status === "UNPAID_LEAVE") {
+      const unpaidPermission = minutes(day.unpaidPermissionMinutes);
+      unpaidPermissionMinutes += unpaidPermission;
+      unpaidLeaveMinutes += Math.max(0, policy.dailyWorkMinutes - minutes(day.paidPermissionMinutes) - unpaidPermission);
+      continue;
+    }
     lateMinutes += minutes(day.lateMinutes);
     earlyMinutes += minutes(day.earlyMinutes);
     unpaidPermissionMinutes += minutes(day.unpaidPermissionMinutes);
     overtimeMinutes += minutes(day.overtimeMinutes);
   }
   if (dayOffWorkedMinutes > 0 && policy.dayOffPayAmount <= 0) throw new Error("DAY_OFF_RATE_REQUIRED");
-  const deductionMinutes = lateMinutes + earlyMinutes + unpaidPermissionMinutes + absenceMinutes;
+  const deductionMinutes = lateMinutes + earlyMinutes + unpaidPermissionMinutes + absenceMinutes + unpaidLeaveMinutes;
   const deductionAmount = money(deductionMinutes * minuteRate);
   const overtimeBonus = money(overtimeMinutes * minuteRate * policy.overtimeMultiplier);
   const dayOffBonus = money((dayOffWorkedMinutes / policy.dailyWorkMinutes) * policy.dayOffPayAmount);
   return {
     scheduledMinutes, minuteRate: Math.round((minuteRate + Number.EPSILON) * 10000) / 10000,
-    lateMinutes, earlyMinutes, paidPermissionMinutes, unpaidPermissionMinutes, absenceMinutes,
+    lateMinutes, earlyMinutes, paidPermissionMinutes, unpaidPermissionMinutes, absenceMinutes, unpaidLeaveMinutes,
     deductionMinutes, overtimeMinutes, dayOffWorkedMinutes,
     deductionAmount, overtimeBonus, dayOffBonus,
     totalBonus: money(overtimeBonus + dayOffBonus),

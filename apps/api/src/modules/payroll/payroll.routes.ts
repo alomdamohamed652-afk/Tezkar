@@ -495,9 +495,9 @@ export async function payrollRoutes(app: FastifyInstance) {
         }
         const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
         if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
-          VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب',$2,$3,$4,'attendance:deduction')
+          VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب والإجازة غير المدفوعة',$2,$3,$4,'attendance:deduction')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
-          [item.id,calculation.deductionAmount,`سعر الدقيقة ${calculation.minuteRate.toFixed(4)} ج.م؛ التأخير ${calculation.lateMinutes} د، الانصراف المبكر ${calculation.earlyMinutes} د، الإذن غير المدفوع ${calculation.unpaidPermissionMinutes} د، الغياب ${calculation.absenceMinutes} د.`,request.user!.userId]);
+          [item.id,calculation.deductionAmount,`سعر الدقيقة ${calculation.minuteRate.toFixed(4)} ج.م؛ التأخير ${calculation.lateMinutes} د، الانصراف المبكر ${calculation.earlyMinutes} د، الإذن غير المدفوع ${calculation.unpaidPermissionMinutes} د، الغياب ${calculation.absenceMinutes} د، الإجازة غير المدفوعة ${calculation.unpaidLeaveMinutes} د.`,request.user!.userId]);
         if(calculation.overtimeBonus>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'BONUS','مقابل الوقت الإضافي',$2,$3,$4,'attendance:overtime')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
