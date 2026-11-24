@@ -10,7 +10,7 @@ type PayrollItem={id:string;employee_id:string;employee_code:string;employee_nam
 type PayrollData={period:{id:string;period_month:string;status:string}|null;items:PayrollItem[];totals:{employees:number;net:number;paid:number;remaining:number;recordedExpense?:number;expenseDifference?:number;missingExpenseCount?:number;missingExpenseAmount?:number;expenseMismatchCount?:number}};
 type PayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;settlement_source?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";reference:string|null;notes:string|null;paid_by_username:string|null;created_at:string};
 type AdjustmentLine={id:string;payroll_item_id:string;line_type:"BONUS"|"DEDUCTION";description:string;amount:string|number;notes:string|null;status:"ACTIVE"|"VOIDED";void_reason?:string|null;voided_at?:string|null;voided_by_username?:string|null;created_by_username?:string|null};
-type SalaryComponent={id:string;employee_id:string;line_type:"BONUS"|"DEDUCTION";name:string;amount:string|number;is_active:boolean;notes:string|null;created_at:string;created_by_username:string|null};
+type SalaryComponent={id:string;employee_id:string;line_type:"BONUS"|"DEDUCTION";name:string;amount:string|number;effective_from:string;effective_to:string|null;is_active:boolean;notes:string|null;created_at:string;created_by_username:string|null};
 type SalaryHistoryItem={id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null;created_at:string;created_by_username:string|null};
 type OwnPayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;settlement_source?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";reference:string|null;notes:string|null};
 type OwnPayrollItem={id:string;employee_id:string;period_month:string;period_status:string;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount:string|number;net_amount:string|number;status:string;notes:string|null;paid_amount:string|number;remaining_amount:string|number;payments:OwnPayrollPayment[]};
@@ -38,7 +38,7 @@ export default function PayrollPage(){
  const [historyTarget,setHistoryTarget]=useState<PayrollItem|null>(null),[paymentHistory,setPaymentHistory]=useState<PayrollPayment[]>([]),[historyLoading,setHistoryLoading]=useState(false);
  const [salaryHistory,setSalaryHistory]=useState<SalaryHistoryItem[]>([]),[salaryHistoryEmployeeId,setSalaryHistoryEmployeeId]=useState(""),[salaryHistoryLoading,setSalaryHistoryLoading]=useState(false);
  const [components,setComponents]=useState<SalaryComponent[]>([]),[componentsEmployeeId,setComponentsEmployeeId]=useState(""),[componentsLoading,setComponentsLoading]=useState(false),[editingComponentId,setEditingComponentId]=useState<string|null>(null);
- const [componentType,setComponentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[componentName,setComponentName]=useState(""),[componentAmount,setComponentAmount]=useState(""),[componentNotes,setComponentNotes]=useState("");
+ const [componentType,setComponentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[componentName,setComponentName]=useState(""),[componentAmount,setComponentAmount]=useState(""),[componentNotes,setComponentNotes]=useState(""),[componentFrom,setComponentFrom]=useState(today()),[componentTo,setComponentTo]=useState("");
  const [ownPayroll,setOwnPayroll]=useState<OwnPayrollData|null>(null);
  const [policyWorkDays,setPolicyWorkDays]=useState("26"),[policyDailyHours,setPolicyDailyHours]=useState("8"),[policyDayOffPay,setPolicyDayOffPay]=useState("0"),[policyOvertimeMultiplier,setPolicyOvertimeMultiplier]=useState("1.5"),[policyLoading,setPolicyLoading]=useState(false),[policyLoadedEmployeeId,setPolicyLoadedEmployeeId]=useState("");
  const [adjustmentTarget,setAdjustmentTarget]=useState<PayrollItem|null>(null),[adjustmentLines,setAdjustmentLines]=useState<AdjustmentLine[]>([]),[adjustmentLoading,setAdjustmentLoading]=useState(false);
@@ -77,28 +77,28 @@ export default function PayrollPage(){
   if(!id)return;setComponentsLoading(true);setError("");
   try{
    const r=await api<{data:{employee:{id:string;full_name:string;code:string};components:SalaryComponent[]}}>("/api/payroll/employees/"+id+"/salary-components");
-   setComponents(r.data.components);setComponentsEmployeeId(id);setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");
+   setComponents(r.data.components);setComponentsEmployeeId(id);setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");setComponentFrom(today());setComponentTo("");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مفردات المرتب")}
   finally{setComponentsLoading(false)}
  }
  async function saveComponent(e:FormEvent){
   e.preventDefault();if(!employeeId)return;setBusy(true);setError("");setNotice("");
   try{
-   const body=JSON.stringify({lineType:componentType,name:componentName.trim(),amount:Number(componentAmount),notes:componentNotes.trim()||null});
+   const body=JSON.stringify({lineType:componentType,name:componentName.trim(),amount:Number(componentAmount),effectiveFrom:componentFrom,effectiveTo:componentTo||null,notes:componentNotes.trim()||null});
    if(editingComponentId){
     const current=components.find(c=>c.id===editingComponentId);
-    await api("/api/payroll/salary-components/"+editingComponentId,{method:"PATCH",body:JSON.stringify({lineType:componentType,name:componentName.trim(),amount:Number(componentAmount),isActive:current?current.is_active:true,notes:componentNotes.trim()||null})});
+    await api("/api/payroll/salary-components/"+editingComponentId,{method:"PATCH",body:JSON.stringify({lineType:componentType,name:componentName.trim(),amount:Number(componentAmount),effectiveFrom:componentFrom,effectiveTo:componentTo||null,isActive:current?current.is_active:true,notes:componentNotes.trim()||null})});
     setNotice("تم تحديث المفردة. تُطبق على مسيرات المسودة عند إعادة توليدها.");
    }else{
     await api("/api/payroll/employees/"+employeeId+"/salary-components",{method:"POST",body});
     setNotice("تمت إضافة المفردة. تُطبق تلقائيًا عند توليد مسير جديد.");
    }
-   setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");
+   setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");setComponentFrom(today());setComponentTo("");
    await showComponents();
   }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ المفردة")}
   finally{setBusy(false)}
  }
- function editComponent(c:SalaryComponent){setEditingComponentId(c.id);setComponentType(c.line_type);setComponentName(c.name);setComponentAmount(String(c.amount));setComponentNotes(c.notes??"")}
+ function editComponent(c:SalaryComponent){setEditingComponentId(c.id);setComponentType(c.line_type);setComponentName(c.name);setComponentAmount(String(c.amount));setComponentNotes(c.notes??"");setComponentFrom(String(c.effective_from).slice(0,10));setComponentTo(c.effective_to?String(c.effective_to).slice(0,10):"")}
  async function toggleComponent(c:SalaryComponent){
   setBusy(true);setError("");setNotice("");
   try{
@@ -211,10 +211,12 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
      <label>النوع<select value={componentType} onChange={e=>setComponentType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">بدل / إضافي</option><option value="DEDUCTION">خصم ثابت</option></select></label>
      <label>اسم المفردة<input value={componentName} onChange={e=>setComponentName(e.target.value)} maxLength={240} placeholder="مثال: بدل مواصلات" required/></label>
      <label>القيمة الشهرية (ج.م)<input type="number" min="0.01" step="0.01" value={componentAmount} onChange={e=>setComponentAmount(e.target.value)} required/></label>
+     <label>ساري من تاريخ<input type="date" value={componentFrom} onChange={e=>setComponentFrom(e.target.value)} required/></label>
+     <label>ساري حتى تاريخ (اختياري)<input type="date" value={componentTo} min={componentFrom} onChange={e=>setComponentTo(e.target.value)} /><span className="form-hint">اتركه فارغًا لو المفردة مستمرة بلا نهاية.</span></label>
      <label>ملاحظات<input value={componentNotes} onChange={e=>setComponentNotes(e.target.value)} maxLength={1000}/></label>
-     <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" disabled={busy||!componentName.trim()||!componentAmount}>{editingComponentId?"حفظ التعديل":"إضافة المفردة"}</button>{editingComponentId&&<button type="button" className="secondary-btn" onClick={()=>{setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("")}}>إلغاء التعديل</button>}</div>
+     <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" disabled={busy||!componentName.trim()||!componentAmount}>{editingComponentId?"حفظ التعديل":"إضافة المفردة"}</button>{editingComponentId&&<button type="button" className="secondary-btn" onClick={()=>{setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");setComponentFrom(today());setComponentTo("")}}>إلغاء التعديل</button>}</div>
     </form>
-    {!components.length?<div className="empty">لا توجد مفردات ثابتة لهذا الموظف بعد.</div>:<div className="table-wrap"><table><thead><tr><th>المفردة</th><th>النوع</th><th>القيمة الشهرية</th><th>الحالة</th><th>ملاحظات</th><th>إجراءات</th></tr></thead><tbody>{components.map(c=><tr key={c.id}><td className="strong">{c.name}</td><td>{c.line_type==="BONUS"?"بدل / إضافي":"خصم ثابت"}</td><td>{money(c.amount)} ج.م</td><td><span className={"status "+(c.is_active?"success":"muted")}>{c.is_active?"نشطة":"موقوفة"}</span></td><td>{c.notes||"—"}</td><td><div className="row-actions"><button type="button" className="secondary-btn" disabled={busy} onClick={()=>editComponent(c)}>تعديل</button><button type="button" className={c.is_active?"danger-button":"secondary-btn"} disabled={busy} onClick={()=>void toggleComponent(c)}>{c.is_active?"إيقاف":"تفعيل"}</button></div></td></tr>)}</tbody></table></div>}
+    {!components.length?<div className="empty">لا توجد مفردات ثابتة لهذا الموظف بعد.</div>:<div className="table-wrap"><table><thead><tr><th>المفردة</th><th>النوع</th><th>القيمة الشهرية</th><th>السريان</th><th>الحالة</th><th>ملاحظات</th><th>إجراءات</th></tr></thead><tbody>{components.map(c=><tr key={c.id}><td className="strong">{c.name}</td><td>{c.line_type==="BONUS"?"بدل / إضافي":"خصم ثابت"}</td><td>{money(c.amount)} ج.م</td><td>{String(c.effective_from).slice(0,10)}{c.effective_to?" ← "+String(c.effective_to).slice(0,10):" ← مفتوح"}</td><td><span className={"status "+(c.is_active?"success":"muted")}>{c.is_active?"نشطة":"موقوفة"}</span></td><td>{c.notes||"—"}</td><td><div className="row-actions"><button type="button" className="secondary-btn" disabled={busy} onClick={()=>editComponent(c)}>تعديل</button><button type="button" className={c.is_active?"danger-button":"secondary-btn"} disabled={busy} onClick={()=>void toggleComponent(c)}>{c.is_active?"إيقاف":"تفعيل"}</button></div></td></tr>)}</tbody></table></div>}
    </>}
   </section>}
   <section className="card"><div className="card-header"><div><h2 className="card-title">مسير الرواتب الشهري</h2><div className="form-hint">يتم تثبيت الراتب في المسير عند إنشائه، وأي تغيير لاحق لا يغير المسيرات السابقة. الخصم هنا يدوي ولا ينشئ مصروفًا تلقائيًا؛ سجّل التلفيات أو الإهلاك يدويًا في المالية بشكل منفصل، ولا تخصم القيمة من العهدة النقدية إلا لو دُفعت منها فعلًا.</div></div></div>
