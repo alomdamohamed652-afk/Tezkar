@@ -25,6 +25,17 @@ export interface PayrollAttendancePolicy {
 }
 
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+/**
+ * Provisional unresolved-calculation guard (not an approved business rule): while the shared
+ * allowance model is configured, approval requires the payroll month to be fully in the past.
+ * Approving earlier would freeze rest consumption and payout before the month's actual
+ * nonattendance is known. Legacy policies without a configured allowance are unaffected.
+ */
+export function assertLeaveAllowanceFinalizable(input: { allowedLeaveDaysPerMonth: number | null; monthEnd: string; today: string }) {
+  if (input.allowedLeaveDaysPerMonth === null || input.allowedLeaveDaysPerMonth === undefined) return;
+  if (input.monthEnd >= input.today) throw new Error("LEAVE_PAYOUT_EARLY_FINALIZATION");
+}
 const minutes = (value: number | undefined) => {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100000) throw new RangeError("Invalid attendance minutes.");

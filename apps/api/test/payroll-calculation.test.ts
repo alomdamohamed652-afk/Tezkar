@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "../src/modules/payroll/payroll-calculation.js";
-import { calculatePayrollAttendance } from "../src/modules/payroll/payroll-attendance-calculation.js";
+import { assertLeaveAllowanceFinalizable, calculatePayrollAttendance } from "../src/modules/payroll/payroll-attendance-calculation.js";
 
 test("fixed deduction rounds the payable amount to two decimal places", () => {
   const result = calculatePayrollDeduction({
@@ -374,19 +374,19 @@ test("pool mode: a partial salary period with the allowance fully consumed appro
   assert.equal(result.leavePayoutAmount, 0);
 });
 
-test("pool mode, current behavior: future workdays are neutral while future unworked rest days still consume the allowance", () => {
-  const futureWorkdays = Array.from({ length: 4 }, (_, i) => ({ date: "2026-11-" + String(27 + i).padStart(2, "0"), status: "NOT_STARTED" }));
-  const result = calculatePayrollAttendance({
-    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
-    days: [
-      ...flexMonthDays(20, 0, 2),
-      ...futureWorkdays.map(d => ({ ...d })),
-      { date: "2026-11-25", status: "DAY_OFF" },
-      { date: "2026-11-26", status: "DAY_OFF" }
-    ]
-  });
-  assert.equal(result.attendedDays, 20);
-  assert.equal(result.restDaysUsed, 4);
-  assert.equal(result.leavePayoutAmount, 0);
-  assert.equal(result.deductionMinutes, 0);
+
+test("finalization guard: legacy policy without allowance ignores the month boundary", () => {
+  assert.doesNotThrow(() => assertLeaveAllowanceFinalizable({ allowedLeaveDaysPerMonth: null, monthEnd: "2026-11-30", today: "2026-11-24" }));
+});
+
+test("finalization guard: allowance pool approves once the month is fully past", () => {
+  assert.doesNotThrow(() => assertLeaveAllowanceFinalizable({ allowedLeaveDaysPerMonth: 4, monthEnd: "2026-11-30", today: "2026-12-01" }));
+});
+
+test("finalization guard: allowance pool blocks approval on the last day of the month itself", () => {
+  assert.throws(() => assertLeaveAllowanceFinalizable({ allowedLeaveDaysPerMonth: 4, monthEnd: "2026-11-30", today: "2026-11-30" }), /LEAVE_PAYOUT_EARLY_FINALIZATION/);
+});
+
+test("finalization guard: allowance pool blocks approval mid-month", () => {
+  assert.throws(() => assertLeaveAllowanceFinalizable({ allowedLeaveDaysPerMonth: 4, monthEnd: "2026-11-30", today: "2026-11-24" }), /LEAVE_PAYOUT_EARLY_FINALIZATION/);
 });

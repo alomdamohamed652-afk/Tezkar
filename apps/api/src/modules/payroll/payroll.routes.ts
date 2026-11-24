@@ -7,7 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
-import { calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
+import { assertLeaveAllowanceFinalizable, calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
 import { buildAttendanceReport } from "../attendance/attendance-report.service.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
@@ -477,6 +477,14 @@ export async function payrollRoutes(app: FastifyInstance) {
             throw new AppError("PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE","يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
           return {...day,status:"NOT_STARTED",needsReview:false,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,isDayOff:false};
         });
+        // Provisional guard: with the shared allowance configured, the month must be fully past
+        // before approval, so rest consumption and payout reflect actual reviewed nonattendance only.
+        const cairoToday=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+        try {
+          assertLeaveAllowanceFinalizable({allowedLeaveDaysPerMonth:rawPolicy.allowed_leave_days_per_month===null||rawPolicy.allowed_leave_days_per_month===undefined?null:Number(rawPolicy.allowed_leave_days_per_month),monthEnd,today:cairoToday});
+        } catch {
+          throw new AppError("LEAVE_PAYOUT_EARLY_FINALIZATION","لا يمكن اعتماد مسير لموظف له رصيد راحة مشترك قبل اكتمال الشهر؛ اعتمد بعد نهايته حتى لا تتجمد مستحقات غير محسومة.",409);
+        }
         let calculation;
         try {
           calculation=calculatePayrollAttendance({
@@ -497,10 +505,6 @@ export async function payrollRoutes(app: FastifyInstance) {
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
         const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),allowedLeaveDaysPerMonth:rawPolicy.allowed_leave_days_per_month===null||rawPolicy.allowed_leave_days_per_month===undefined?null:Number(rawPolicy.allowed_leave_days_per_month),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
-        if(policySnapshot.allowedLeaveDaysPerMonth!==null&&calculation.leavePayoutDays>0){
-          const cairoToday=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-          if(monthEnd>cairoToday)throw new AppError("LEAVE_PAYOUT_EARLY_FINALIZATION","لا يمكن صرف بدل الرصيد غير المستخدم قبل اكتمال الشهر؛ اعتمد المسير بعد نهايته.",409);
-        }
         if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب والإجازة غير المدفوعة',$2,$3,$4,'attendance:deduction')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
