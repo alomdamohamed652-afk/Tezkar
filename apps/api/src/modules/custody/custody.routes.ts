@@ -114,14 +114,14 @@ export async function custodyRoutes(app:FastifyInstance){
       // Own-scope permissions use their explicit *_own codes in the permission
       // catalog; checking the base code with scope="own" would miss those users.
       const permissionScopes:Array<[string,"own"|"all"]>=[
-        ["custody.create","all"],["custody.create_own","own"],
+        ["custody.create","all"],
         ["custody.view","all"],["custody.view_own","own"],
         ["cash_custody.create","all"],["cash_custody.create_own","own"],
         ["cash_custody.view","all"],["cash_custody.view_own","own"],
         ["cash_custody.order_collection","all"],["cash_custody.order_collection_own","own"],
         ["cash_custody.order_expense","all"],["cash_custody.order_expense_own","own"],
         ["cash_custody.worker_payment_out","all"],["cash_custody.worker_payment_out_own","own"],
-        ["custody.transfer","all"],["cash_custody.transfer","all"],["worker_payments.pay","all"]
+        ["custody.transfer","all"],["cash_custody.transfer","all"],["cash_custody.transfer_own","own"]
       ];
       let hasAny=false;let hasAll=false;
       for(const [code,scope] of permissionScopes){
@@ -286,9 +286,41 @@ export async function custodyRoutes(app:FastifyInstance){
     }finally{client.release();}
   });
 
-  app.post("/api/cash-custody/transfers",{preHandler:[authenticateRequest,requirePermission("cash_custody.transfer")]},async(request,reply)=>{
+  // Transfer targets: all-scope users keep the full active-employee list; own-scope
+  // users may only receive into employees who actually hold a cash custody account.
+  app.get("/api/cash-custody/transfer-targets",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.transfer","all"],["cash_custody.transfer_own","own"])]},async(request)=>{
+    const client=await pool.connect();
+    try{
+      const userId=request.user!.userId;
+      if(await hasPermission(client,userId,"cash_custody.transfer","all")){
+        const all=await client.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE ORDER BY full_name,code");
+        return {data:all.rows};
+      }
+      const own=await client.query(
+        `SELECT e.id,e.code,e.full_name FROM employees e
+         WHERE e.is_active=TRUE
+           AND e.id<>(SELECT employee_id FROM users WHERE id=$1)
+           AND EXISTS(SELECT 1 FROM cash_custody_transactions c WHERE c.employee_id=e.id)
+         ORDER BY e.full_name,e.code`,[userId]);
+      return {data:own.rows};
+    }finally{client.release();}
+  });
+
+  app.post("/api/cash-custody/transfers",{preHandler:[authenticateRequest,requireAnyPermission(["cash_custody.transfer","all"],["cash_custody.transfer_own","own"])]},async(request,reply)=>{
     const p=cashTransferSchema.safeParse(request.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحويل العهدة النقدية غير صحيحة",422);
     const result=await withTransaction(async client=>{
+      // Own-scope transfers move money out of the caller's own custody only, and only
+      // into an employee who actually holds a cash custody account.
+      const canAll=await hasPermission(client,request.user!.userId,"cash_custody.transfer","all");
+      if(!canAll){
+        const caller=await client.query("SELECT employee_id FROM users WHERE id=$1",[request.user!.userId]);
+        const ownEmployeeId=caller.rows[0]?.employee_id as string|undefined;
+        if(!ownEmployeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+        if(p.data.fromEmployeeId!==ownEmployeeId)throw new AppError("OWN_SCOPE_ONLY","لا يمكنك التحويل إلا من عهدتك النقدية",403);
+        if(p.data.toEmployeeId===ownEmployeeId)throw new AppError("INVALID_TRANSFER_TARGET","لا يمكن التحويل إلى عهدتك نفسها",422);
+        const target=await client.query("SELECT 1 FROM cash_custody_transactions WHERE employee_id=$1 LIMIT 1",[p.data.toEmployeeId]);
+        if(!target.rowCount)throw new AppError("TARGET_HAS_NO_CUSTODY","الموظف المستلم ليس لديه عهدة نقدية",422);
+      }
       const ids=[p.data.fromEmployeeId,p.data.toEmployeeId].sort();const locked=await client.query("SELECT id FROM employees WHERE id=ANY($1::uuid[]) AND is_active=TRUE ORDER BY id FOR UPDATE",[ids]);
       if(locked.rowCount!==2)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف المحول أو المستلم غير موجود أو غير نشط",422);
       const date=p.data.transactionDate??new Date().toISOString().slice(0,10);
