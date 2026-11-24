@@ -320,5 +320,17 @@ test("manual advance repayment reversal is append-only and reverses ledger and c
     [previousReversal.json().data.reversal.id]
   );
   assert.equal(Number(previousCash.rows[0].count),0,'previous-custody reversal must not create a cash movement');
+
+  // Concurrent same-key submissions must collapse to one reversal: one create, one replay.
+  const concurrentKey=randomUUID();
+  const concurrentPayload={sourceType:"ADVANCE_REPAYMENT",sourceId:rep,amount:20,reason:"تصحيح السداد المتزامن",idempotencyKey:concurrentKey};
+  const concurrentReversals=await Promise.all([1,2].map(()=>server.inject({method:"POST",url:"/api/accounting/reversals",headers:{cookie:cookieHeader},payload:concurrentPayload})));
+  assert.deepEqual(concurrentReversals.map(r=>r.statusCode).sort(),[200,201],
+    "concurrent same-key reversals must return one create and one replay, not a database error: "+
+    concurrentReversals.map(r=>r.statusCode+": "+r.body).join("\n"));
+  assert.equal(new Set(concurrentReversals.map(r=>r.json().data.reversal.id)).size,1,
+    "both concurrent same-key responses must reference the same reversal");
+  const concurrentCount=await db.query("SELECT COUNT(*)::int AS count FROM financial_reversals WHERE idempotency_key=$1",[concurrentKey]);
+  assert.equal(concurrentCount.rows[0].count,1,"concurrent same-key reversals must create exactly one reversal");
  }finally{if(app)await app.close();if(db)await db.end();const c=new pg.Client({connectionString:adminUrl});await c.connect();try{await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)}finally{await c.end()}}
 });
