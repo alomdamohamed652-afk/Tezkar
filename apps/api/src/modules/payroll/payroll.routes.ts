@@ -9,6 +9,7 @@ import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accoun
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
 import { calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
 import { buildAttendanceReport } from "../attendance/attendance-report.service.js";
+import { applySalaryComponentsToDraft } from "./salary-components.service.js";
 
 const monthSchema = z.string().regex(/^(?!0000-)\d{4}-(0[1-9]|1[0-2])$/, "الشهر يجب أن يكون بصيغة YYYY-MM وبشهر صحيح");
 const profileSchema = z.object({
@@ -151,6 +152,78 @@ export async function payrollRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: result });
   });
 
+  const componentSchema = z.object({
+    lineType: z.enum(["BONUS","DEDUCTION"]),
+    name: z.string().trim().min(2).max(240),
+    amount: z.number().positive().max(100000000),
+    isActive: z.boolean().optional(),
+    notes: z.string().trim().max(1000).nullable().optional()
+  }).strict();
+
+  // مفردات المرتب الثابتة: بدلات وخصومات متكررة تُطبق تلقائيًا عند توليد المسير.
+  app.get("/api/payroll/employees/:id/salary-components", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
+    const employeeId=(request.params as {id:string}).id;
+    const employee=await pool.query("SELECT id,full_name,code FROM employees WHERE id=$1",[employeeId]);
+    if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
+    const components=await pool.query(`SELECT c.*,u.username AS created_by_username
+      FROM employee_salary_components c LEFT JOIN users u ON u.id=c.created_by
+      WHERE c.employee_id=$1 ORDER BY c.line_type,c.name`,[employeeId]);
+    return {data:{employee:employee.rows[0],components:components.rows}};
+  });
+
+  app.post("/api/payroll/employees/:id/salary-components", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async (request, reply) => {
+    const employeeId=(request.params as {id:string}).id;
+    const parsed=componentSchema.safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","أدخل نوع المفردة واسمها وقيمتها بصورة صحيحة",422);
+    const result=await withTransaction(async client=>{
+      const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
+      if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",404);
+      const duplicate=await client.query(
+        "SELECT 1 FROM employee_salary_components WHERE employee_id=$1 AND line_type=$2 AND lower(name)=lower($3) AND is_active=TRUE",
+        [employeeId,parsed.data.lineType,parsed.data.name]);
+      if(duplicate.rowCount)throw new AppError("SALARY_COMPONENT_DUPLICATE","توجد مفردة نشطة بنفس الاسم والنوع لهذا الموظف",409);
+      const inserted=await client.query(
+        `INSERT INTO employee_salary_components(employee_id,line_type,name,amount,is_active,notes,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [employeeId,parsed.data.lineType,parsed.data.name,parsed.data.amount,parsed.data.isActive??true,parsed.data.notes??null,request.user!.userId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create_salary_component",module:"payroll",entityType:"employee_salary_component",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return inserted.rows[0];
+    });
+    return reply.code(201).send({data:result});
+  });
+
+  app.patch("/api/payroll/salary-components/:componentId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
+    const componentId=(request.params as {componentId:string}).componentId;
+    const parsed=componentSchema.safeParse(request.body);
+    if(!parsed.success)throw new AppError("VALIDATION_ERROR","أدخل نوع المفردة واسمها وقيمتها بصورة صحيحة",422);
+    return withTransaction(async client=>{
+      const before=await client.query("SELECT * FROM employee_salary_components WHERE id=$1 FOR UPDATE",[componentId]);
+      if(!before.rowCount)throw new AppError("SALARY_COMPONENT_NOT_FOUND","مفردة المرتب غير موجودة",404);
+      const duplicate=await client.query(
+        "SELECT 1 FROM employee_salary_components WHERE employee_id=$1 AND line_type=$2 AND lower(name)=lower($3) AND is_active=TRUE AND id<>$4",
+        [before.rows[0].employee_id,parsed.data.lineType,parsed.data.name,componentId]);
+      if(duplicate.rowCount)throw new AppError("SALARY_COMPONENT_DUPLICATE","توجد مفردة نشطة بنفس الاسم والنوع لهذا الموظف",409);
+      const updated=await client.query(
+        `UPDATE employee_salary_components SET line_type=$1,name=$2,amount=$3,is_active=$4,notes=$5,updated_at=now()
+         WHERE id=$6 RETURNING *`,
+        [parsed.data.lineType,parsed.data.name,parsed.data.amount,parsed.data.isActive??before.rows[0].is_active,parsed.data.notes===undefined?before.rows[0].notes:parsed.data.notes,componentId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_salary_component",module:"payroll",entityType:"employee_salary_component",entityId:componentId,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {data:updated.rows[0]};
+    });
+  });
+
+  // الإيقاف وليس الحذف: البنود المولدة سابقًا تحتفظ بمرجعها للمفردة.
+  app.delete("/api/payroll/salary-components/:componentId", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
+    const componentId=(request.params as {componentId:string}).componentId;
+    return withTransaction(async client=>{
+      const before=await client.query("SELECT * FROM employee_salary_components WHERE id=$1 FOR UPDATE",[componentId]);
+      if(!before.rowCount)throw new AppError("SALARY_COMPONENT_NOT_FOUND","مفردة المرتب غير موجودة",404);
+      const updated=await client.query("UPDATE employee_salary_components SET is_active=FALSE,updated_at=now() WHERE id=$1 RETURNING *",[componentId]);
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"deactivate_salary_component",module:"payroll",entityType:"employee_salary_component",entityId:componentId,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return {data:updated.rows[0]};
+    });
+  });
+
   app.get("/api/payroll/employees/:id/salary-history", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
     const employeeId=(request.params as {id:string}).id;
     const employee=await pool.query("SELECT id,full_name,code FROM employees WHERE id=$1",[employeeId]);
@@ -239,6 +312,9 @@ export async function payrollRoutes(app: FastifyInstance) {
         ON CONFLICT(period_id,employee_id) DO NOTHING`, [period.id,month]);
       // Fixed monthly installments are allocated only to the take-home pay available in this draft.
       // Repayments are committed when the payroll period is approved, not on draft generation.
+      // Apply each employee's active salary components (مفردات المرتب) before
+      // advance allocation so repayments see the final bonus/deduction totals.
+      await applySalaryComponentsToDraft(client, period.id, request.user!.userId);
       const payrollItems = await client.query(
         "SELECT id,employee_id,base_salary,bonus_amount,deduction_amount FROM payroll_items WHERE period_id=$1 ORDER BY employee_id FOR UPDATE",
         [period.id]
