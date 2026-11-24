@@ -28,7 +28,7 @@ export async function accountRoutes(app: FastifyInstance) {
 
   app.get("/api/account/profile", { preHandler: [authenticateRequest] }, async (request) => {
     const r=await pool.query(
-      `SELECT u.username,u.code,u.must_change_password,e.full_name,e.code AS employee_code,
+      `SELECT u.username,u.code,u.must_change_password,u.email,u.email_verified_at,e.full_name,e.code AS employee_code,
               COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL),'{}') AS roles
          FROM users u
          LEFT JOIN employees e ON e.id=u.employee_id
