@@ -2117,3 +2117,39 @@ textarea:hover:not(:disabled) {
 .print-sheet .print-brand{flex-direction:column;gap:6px}
 .print-sheet .print-brand img{width:96px;height:96px;flex:0 0 96px}
 .print-sheet .print-brand div{text-align:center}
+
+/* Delivery note redesign (print only, scoped to .delivery-note so carton/coding prints are untouched) */
+@media print{
+ .print-sheet.delivery-note{color:#0f172a;font-family:"IBM Plex Sans Arabic","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ .print-sheet.delivery-note .dn-header{display:flex;justify-content:space-between;align-items:flex-start;gap:8mm;padding-bottom:3.5mm;border-bottom:.8mm solid #2563eb;margin-bottom:4.5mm}
+ .print-sheet.delivery-note .dn-brand{display:flex;align-items:center;gap:3.5mm;text-align:right}
+ .print-sheet.delivery-note .dn-brand img{width:16mm;height:16mm;object-fit:contain;flex:0 0 16mm}
+ .print-sheet.delivery-note .dn-brand strong{display:block;font-size:15pt;font-weight:700;line-height:1.25;color:#0f172a}
+ .print-sheet.delivery-note .dn-brand span{display:block;font-size:8.5pt;color:#64748b;font-weight:500;margin-top:.8mm}
+ .print-sheet.delivery-note .dn-title{text-align:left}
+ .print-sheet.delivery-note .dn-title h1{margin:0;font-size:17pt;font-weight:700;color:#1d4ed8;line-height:1.25}
+ .print-sheet.delivery-note .dn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10pt;font-weight:600;color:#334155;margin-top:1mm;direction:ltr;text-align:left}
+ .print-sheet.delivery-note .dn-title .print-barcode{width:46mm;margin:2mm 0 0;text-align:left}
+ .print-sheet.delivery-note .print-grid{grid-template-columns:repeat(3,1fr);gap:0;margin-top:0;border:1px solid #dbe3ee;border-radius:2mm;overflow:hidden;background:#fff}
+ .print-sheet.delivery-note .print-grid>div{border:0;border-inline-start:1px solid #e6ecf4;border-top:1px solid #e6ecf4;padding:2.2mm 3mm;min-height:11mm}
+ .print-sheet.delivery-note .print-grid>div:nth-child(3n+1){border-inline-start:0}
+ .print-sheet.delivery-note .print-grid>div:nth-child(-n+3){border-top:0}
+ .print-sheet.delivery-note .print-grid b{font-size:7.5pt;color:#64748b;font-weight:500;margin-bottom:.8mm}
+ .print-sheet.delivery-note .print-grid span{font-size:10pt;font-weight:700;color:#0f172a;line-height:1.4}
+ .print-sheet.delivery-note .print-section-title{font-size:10.5pt;font-weight:700;color:#0f172a;margin:4.5mm 0 2mm;padding-inline-start:2.5mm;border-inline-start:1.1mm solid #2563eb}
+ .print-sheet.delivery-note .print-delivery-lines{width:100%;min-width:0;table-layout:fixed;border-collapse:separate;border-spacing:0;border:1px solid #dbe3ee;border-radius:2mm;overflow:hidden;font-size:8.5pt}
+ .print-sheet.delivery-note .print-delivery-lines th,.print-sheet.delivery-note .print-delivery-lines td{border:0;border-inline-start:1px solid #e6ecf4;padding:2mm 2.2mm;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;background:transparent}
+ .print-sheet.delivery-note .print-delivery-lines th:last-child,.print-sheet.delivery-note .print-delivery-lines td:last-child{border-inline-start:0}
+ .print-sheet.delivery-note .print-delivery-lines thead{background:#dbeafe}
+ .print-sheet.delivery-note .print-delivery-lines thead th{background:#dbeafe;color:#1d4ed8;font-weight:700;font-size:8.5pt;border-bottom:.5mm solid #2563eb}
+ .print-sheet.delivery-note .print-delivery-lines tbody tr:nth-child(even){background:#f6f9fd}
+ .print-sheet.delivery-note .print-delivery-lines tbody tr+tr td{border-top:1px solid #e6ecf4}
+ .print-sheet.delivery-note .print-delivery-lines tfoot td{background:#eff6ff;border-top:.4mm solid #60a5fa;font-weight:700;color:#1e3a8a}
+ .print-sheet.delivery-note .print-extra{border:1px solid #e6ecf4;border-radius:2mm;background:#f8fafc;padding:2.2mm 3mm;font-size:8.5pt;margin-top:2.5mm;text-align:right}
+ .print-sheet.delivery-note .print-extra b{color:#334155}
+ .print-sheet.delivery-note .signature-row{display:flex;gap:5mm;margin-top:9mm}
+ .print-sheet.delivery-note .signature-box{flex:1;min-height:18mm;border:1px solid #cbd5e1;border-radius:2mm;padding:2.2mm 3mm;display:flex;flex-direction:column}
+ .print-sheet.delivery-note .signature-box b{font-size:9pt;font-weight:700;color:#334155}
+ .print-sheet.delivery-note .signature-box span{display:block;margin-top:auto;border-top:1px solid #94a3b8;padding-top:1.5mm;text-align:center;font-size:8pt;color:#64748b;font-weight:500}
+ .print-sheet.delivery-note .print-note{border-top:1px solid #e6ecf4;margin-top:5mm;padding-top:2.2mm;font-size:8pt;color:#64748b;text-align:center}
+}
