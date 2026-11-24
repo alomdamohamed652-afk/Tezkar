@@ -43,7 +43,9 @@ export default function LoginPage() {
       if(!res.ok) throw new Error(body?.error?.message ?? "تعذر تسجيل الدخول");
       notifyApiSessionChanged("login");
       if(body?.newDevice) window.dispatchEvent(new CustomEvent("tezkar:mutation-success",{detail:{title:"تم التعرف على جهاز جديد",message:"تم حفظ هذا الجهاز في سجل أمان حسابك."}}));
-      router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : "/");
+      const requested = new URLSearchParams(window.location.search).get("next");
+      const safeNext = requested && requested.startsWith("/") && !requested.startsWith("//") && !requested.startsWith("/\\") ? requested : "/";
+      router.replace(body?.requiresSetup ? "/setup" : body?.data?.mustChangePassword ? "/account" : safeNext);
     } catch(err) {
       setError(err instanceof Error ? err.message : "تعذر تسجيل الدخول");
     } finally {
