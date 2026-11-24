@@ -135,7 +135,7 @@ export async function emailOtpRoutes(app: FastifyInstance) {
       throw new AppError("EMAIL_UNAVAILABLE", "خدمة البريد غير متاحة حاليًا. حاول مرة أخرى لاحقًا.", 503);
     }
     await withTransaction(client =>
-      writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "request_email_verify", module: "auth", entityType: "user", entityId: userId, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null })
+      writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "request_email_verify", module: "auth", entityType: "user", entityId: userId, ipAddress: getClientIp(request.ip), userAgent: request.headers["user-agent"] ?? null })
     );
     return { data: { sent: true }, message: "تم إرسال كود التأكيد إلى بريدك. الكود صالح لمدة 10 دقائق." };
   });
@@ -152,7 +152,7 @@ export async function emailOtpRoutes(app: FastifyInstance) {
       const ok = await verifyOtp(client, userId, "EMAIL_VERIFY", parsed.data.code);
       if (!ok) throw new AppError("OTP_INVALID", GENERIC_CODE_ERROR, 400);
       await client.query("UPDATE users SET email_verified_at=now(), updated_at=now() WHERE id=$1", [userId]);
-      await writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "verify_account_email", module: "auth", entityType: "user", entityId: userId, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
+      await writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "verify_account_email", module: "auth", entityType: "user", entityId: userId, ipAddress: getClientIp(request.ip), userAgent: request.headers["user-agent"] ?? null });
     });
     return { data: { verified: true }, message: "تم تأكيد بريدك الإلكتروني. يمكنك الآن استخدامه لاستعادة كلمة المرور." };
   });
