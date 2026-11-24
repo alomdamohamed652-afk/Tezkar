@@ -64,27 +64,28 @@ export function buildOtpEmail(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(copy.subject)}</title>
 </head>
-<body style="margin:0;padding:0;background-color:${PAGE_BG};">
-<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="${PAGE_BG}" style="background-color:${PAGE_BG};">
+<body dir="rtl" style="margin:0;padding:0;background-color:${PAGE_BG};direction:rtl;">
+<div dir="rtl" lang="ar" style="direction:rtl;text-align:right;">
+<table role="presentation" dir="rtl" width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="${PAGE_BG}" style="background-color:${PAGE_BG};direction:rtl;">
 <tr><td align="center" style="padding:28px 12px;">
-<table role="presentation" width="600" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background-color:#ffffff;border:1px solid #e2e8f0;border-radius:16px;">
+<table role="presentation" dir="rtl" width="600" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background-color:#ffffff;border:1px solid #e2e8f0;border-radius:16px;direction:rtl;">
   <tr>
-    <td style="padding:22px 28px 18px;border-bottom:1px solid #eef2f7;">
-      <table role="presentation" border="0" cellpadding="0" cellspacing="0">
+    <td dir="rtl" align="right" style="padding:22px 28px 18px;border-bottom:1px solid #eef2f7;direction:rtl;text-align:right;">
+      <table role="presentation" dir="rtl" border="0" cellpadding="0" cellspacing="0" align="right" style="direction:rtl;">
         <tr>
           <td style="padding-left:12px;"><img src="${esc(logoUrl)}" width="52" height="52" alt="تذكار" style="display:block;border:0;border-radius:12px;"></td>
-          <td>
-            <div style="font-family:Tahoma,Arial,sans-serif;font-size:20px;font-weight:bold;color:${INK};">تذكار</div>
-            <div style="font-family:Tahoma,Arial,sans-serif;font-size:12px;color:${MUTED};padding-top:2px;">نظام إدارة الإنتاج</div>
+          <td dir="rtl" align="right" style="direction:rtl;text-align:right;">
+            <div style="font-family:Tahoma,Arial,sans-serif;font-size:20px;font-weight:bold;color:${INK};text-align:right;">تذكار</div>
+            <div style="font-family:Tahoma,Arial,sans-serif;font-size:12px;color:${MUTED};padding-top:2px;text-align:right;">نظام إدارة الإنتاج</div>
           </td>
         </tr>
       </table>
     </td>
   </tr>
   <tr>
-    <td style="padding:26px 28px 4px;">
-      <div style="font-family:Tahoma,Arial,sans-serif;font-size:22px;font-weight:bold;color:${INK};">${esc(copy.title)}</div>
-      <div style="font-family:Tahoma,Arial,sans-serif;font-size:14px;line-height:24px;color:${BODY};padding-top:10px;">${esc(copy.intro)}</div>
+    <td dir="rtl" align="right" style="padding:26px 28px 4px;direction:rtl;text-align:right;">
+      <div style="font-family:Tahoma,Arial,sans-serif;font-size:22px;font-weight:bold;color:${INK};text-align:right;">${esc(copy.title)}</div>
+      <div style="font-family:Tahoma,Arial,sans-serif;font-size:14px;line-height:24px;color:${BODY};padding-top:10px;text-align:right;">${esc(copy.intro)}</div>
     </td>
   </tr>
   <tr>
@@ -94,22 +95,23 @@ export function buildOtpEmail(
           <td align="center" dir="ltr" style="background-color:${CODE_BG};border:2px solid ${BRAND_BLUE};border-radius:14px;padding:14px 30px;font-family:'Courier New',Courier,monospace;font-size:32px;font-weight:bold;letter-spacing:10px;color:${BRAND_BLUE_DARK};">${esc(code)}</td>
         </tr>
       </table>
-      <div style="font-family:Tahoma,Arial,sans-serif;font-size:12px;color:${MUTED};padding-top:12px;">${esc(expiry)}</div>
+      <div dir="rtl" style="font-family:Tahoma,Arial,sans-serif;font-size:12px;color:${MUTED};padding-top:12px;text-align:center;">${esc(expiry)}</div>
     </td>
   </tr>
   <tr>
-    <td style="padding:12px 28px 26px;">
-      <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">
+    <td dir="rtl" align="right" style="padding:12px 28px 26px;direction:rtl;text-align:right;">
+      <table role="presentation" dir="rtl" width="100%" border="0" cellpadding="0" cellspacing="0" style="direction:rtl;">
         <tr>
-          <td style="background-color:#f8fafc;border-radius:10px;padding:12px 16px;font-family:Tahoma,Arial,sans-serif;font-size:12px;line-height:20px;color:${MUTED};">${esc(copy.ignore)}</td>
+          <td dir="rtl" align="right" style="background-color:#f8fafc;border-radius:10px;padding:12px 16px;font-family:Tahoma,Arial,sans-serif;font-size:12px;line-height:20px;color:${MUTED};direction:rtl;text-align:right;">${esc(copy.ignore)}</td>
         </tr>
       </table>
     </td>
   </tr>
 </table>
-<div style="font-family:Tahoma,Arial,sans-serif;font-size:11px;color:${FAINT};padding-top:14px;">رسالة آلية من نظام تذكار، برجاء عدم الرد عليها.</div>
+<div dir="rtl" align="center" style="font-family:Tahoma,Arial,sans-serif;font-size:12px;color:${FAINT};padding-top:14px;text-align:center;">رسالة آلية من نظام تذكار، برجاء عدم الرد عليها.</div>
 </td></tr>
 </table>
+</div>
 </body>
 </html>`;
 
