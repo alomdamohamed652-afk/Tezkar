@@ -390,3 +390,26 @@ test("finalization guard: allowance pool blocks approval on the last day of the 
 test("finalization guard: allowance pool blocks approval mid-month", () => {
   assert.throws(() => assertLeaveAllowanceFinalizable({ allowedLeaveDaysPerMonth: 4, monthEnd: "2026-11-30", today: "2026-11-24" }), /LEAVE_PAYOUT_EARLY_FINALIZATION/);
 });
+
+test("pool mode: an explicit confirmed-absence settlement on a rest-scheduled day wins over the schedule flag and deducts", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [...flexMonthDays(26, 0, 3), { date: "2026-11-30", status: "ABSENT", isDayOff: true, manualOverride: true }]
+  });
+  assert.equal(result.restDaysUsed, 3);
+  assert.equal(result.leavePayoutDays, 1);
+  assert.equal(result.absenceMinutes, 480);
+  assert.equal(result.deductionAmount, 300);
+});
+
+test("pool mode: an explicit unpaid-leave settlement on a rest-scheduled day wins over the schedule flag and deducts as leave", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [...flexMonthDays(26, 0, 3), { date: "2026-11-30", status: "UNPAID_LEAVE", isDayOff: true, manualOverride: true }]
+  });
+  assert.equal(result.restDaysUsed, 3);
+  assert.equal(result.leavePayoutDays, 1);
+  assert.equal(result.unpaidLeaveMinutes, 480);
+  assert.equal(result.absenceMinutes, 0);
+  assert.equal(result.deductionAmount, 300);
+});

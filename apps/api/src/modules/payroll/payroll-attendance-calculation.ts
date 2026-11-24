@@ -75,16 +75,22 @@ export function calculatePayrollAttendance(input: {
     if (day.needsReview) throw new Error("ATTENDANCE_REVIEW_REQUIRED");
     const worked = minutes(day.workedMinutes);
     paidPermissionMinutes += minutes(day.paidPermissionMinutes);
+    const explicitDeductionSettlement = day.manualOverride === true && (day.status === "ABSENT" || day.status === "UNPAID_LEAVE");
     if (day.isDayOff || day.status === "DAY_OFF" || day.status === "DAY_OFF_WITH_PUNCH") {
-      if (leaveAllowance !== null) {
+      if (leaveAllowance !== null && !explicitDeductionSettlement) {
         // Flexible-rest model: an unworked rest/leave day consumes the shared allowance;
         // a worked day counts as attendance instead of a rest-day bonus, so the same day
         // is never paid both as rest-work bonus and as leave-payout/extra-day pay.
         if (worked > 0) attendedDays++; else poolDays++;
         continue;
       }
-      dayOffWorkedMinutes += worked;
-      continue;
+      if (leaveAllowance === null) {
+        dayOffWorkedMinutes += worked;
+        continue;
+      }
+      // Pool mode with an explicit audited absence/unpaid-leave settlement on a
+      // rest-scheduled day: the reviewed decision wins over the schedule flag and
+      // falls through to the deduction branches below.
     }
     if (day.status === "MISSING_PUNCH") throw new Error("ATTENDANCE_MISSING_PUNCH");
     if (day.status === "NO_SCHEDULE" || day.status === "NO_SCHEDULE_WITH_PUNCH") throw new Error("ATTENDANCE_SCHEDULE_REQUIRED");
