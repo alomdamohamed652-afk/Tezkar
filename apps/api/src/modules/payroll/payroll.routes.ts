@@ -78,7 +78,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       COALESCE(p.work_days_per_month,26)::int AS work_days_per_month,
       COALESCE(p.daily_work_minutes,480)::int AS daily_work_minutes,
       COALESCE(p.day_off_pay_amount,0)::numeric AS day_off_pay_amount,
-      COALESCE(p.overtime_multiplier,1.5)::numeric AS overtime_multiplier
+      COALESCE(p.overtime_multiplier,1.5)::numeric AS overtime_multiplier,
+      p.allowed_leave_days_per_month::float AS allowed_leave_days_per_month
       FROM employees e LEFT JOIN employee_payroll_attendance_policies p ON p.employee_id=e.id
       WHERE e.id=$1`,[employeeId]);
     if(!result.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
@@ -91,18 +92,24 @@ export async function payrollRoutes(app: FastifyInstance) {
       workDaysPerMonth:z.number().int().min(1).max(31),
       dailyWorkMinutes:z.number().int().min(1).max(1440),
       dayOffPayAmount:z.number().min(0).max(100000000),
-      overtimeMultiplier:z.number().min(0).max(5)
+      overtimeMultiplier:z.number().min(0).max(5),
+      // Monthly allowed-leave balance is tracked for follow-up only; it never
+      // feeds the attendance pay calculation. Omitting it keeps the saved value.
+      allowedLeaveDaysPerMonth:z.number().min(0).max(31).nullable().optional()
     }).safeParse(request.body);
     if(!z.string().uuid().safeParse(employeeId).success||!parsed.success)throw new AppError("VALIDATION_ERROR","إعدادات احتساب الأجر غير صحيحة",422);
     const saved=await withTransaction(async client=>{
       if(!(await client.query("SELECT id FROM employees WHERE id=$1",[employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
-      const result=await client.query(`INSERT INTO employee_payroll_attendance_policies(employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,updated_by)
-        VALUES($1,$2,$3,$4,$5,$6)
+      const leaveProvided=parsed.data.allowedLeaveDaysPerMonth!==undefined;
+      const result=await client.query(`INSERT INTO employee_payroll_attendance_policies(employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,allowed_leave_days_per_month,updated_by)
+        VALUES($1,$2,$3,$4,$5,$6,$7)
         ON CONFLICT(employee_id) DO UPDATE SET work_days_per_month=EXCLUDED.work_days_per_month,
           daily_work_minutes=EXCLUDED.daily_work_minutes,day_off_pay_amount=EXCLUDED.day_off_pay_amount,
-          overtime_multiplier=EXCLUDED.overtime_multiplier,updated_by=EXCLUDED.updated_by,updated_at=now()
-        RETURNING employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier`,
-        [employeeId,parsed.data.workDaysPerMonth,parsed.data.dailyWorkMinutes,parsed.data.dayOffPayAmount,parsed.data.overtimeMultiplier,request.user!.userId]);
+          overtime_multiplier=EXCLUDED.overtime_multiplier,
+          allowed_leave_days_per_month=CASE WHEN $8 THEN EXCLUDED.allowed_leave_days_per_month ELSE employee_payroll_attendance_policies.allowed_leave_days_per_month END,
+          updated_by=EXCLUDED.updated_by,updated_at=now()
+        RETURNING employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,allowed_leave_days_per_month`,
+        [employeeId,parsed.data.workDaysPerMonth,parsed.data.dailyWorkMinutes,parsed.data.dayOffPayAmount,parsed.data.overtimeMultiplier,parsed.data.allowedLeaveDaysPerMonth??null,request.user!.userId,leaveProvided]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_attendance_pay_policy",module:"payroll",entityType:"employee_payroll_attendance_policy",entityId:employeeId,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return result.rows[0];
     });
