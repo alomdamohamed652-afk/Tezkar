@@ -245,3 +245,91 @@ test("paid permission time is credited against an unpaid-leave day before deduct
   assert.equal(result.unpaidLeaveMinutes, 360);
   assert.equal(result.deductionAmount, 173.08);
 });
+
+const flexMonthDays = (present: number, offWorked: number, offRest: number) => [
+  ...Array.from({ length: present }, (_, i) => ({ date: "2026-11-" + String(i + 1).padStart(2, "0"), status: "PRESENT" })),
+  ...Array.from({ length: offWorked }, (_, i) => ({ date: "2026-11-" + String(present + i + 1).padStart(2, "0"), status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 480 })),
+  ...Array.from({ length: offRest }, (_, i) => ({ date: "2026-11-" + String(present + offWorked + i + 1).padStart(2, "0"), status: "DAY_OFF" })),
+];
+
+const flexPolicy = { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 300, overtimeMultiplier: 1.5, allowedLeaveDaysPerMonth: 4 };
+
+test("flexible rest: 28 attended and 2 rested pays the 2 unused allowance days once at the configured rate", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: flexMonthDays(26, 2, 2)
+  });
+  assert.equal(result.attendedDays, 28);
+  assert.equal(result.restDaysUsed, 2);
+  assert.equal(result.leavePayoutDays, 2);
+  assert.equal(result.leavePayoutAmount, 600);
+  assert.equal(result.dayOffWorkedMinutes, 0);
+  assert.equal(result.dayOffBonus, 0);
+  assert.equal(result.deductionMinutes, 0);
+});
+
+test("flexible rest: full-month attendance pays out the entire allowance once", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: flexMonthDays(26, 4, 0)
+  });
+  assert.equal(result.attendedDays, 30);
+  assert.equal(result.restDaysUsed, 0);
+  assert.equal(result.leavePayoutDays, 4);
+  assert.equal(result.leavePayoutAmount, 1200);
+  assert.equal(result.dayOffBonus, 0);
+});
+
+test("flexible rest: attending exactly the prescribed days and using all allowance pays no compensation", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: flexMonthDays(26, 0, 4)
+  });
+  assert.equal(result.attendedDays, 26);
+  assert.equal(result.restDaysUsed, 4);
+  assert.equal(result.leavePayoutDays, 0);
+  assert.equal(result.leavePayoutAmount, 0);
+});
+
+test("flexible rest: a manual paid-leave day consumes the shared allowance", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [...flexMonthDays(25, 0, 4), { date: "2026-11-30", status: "DAY_OFF", isDayOff: false, workedMinutes: 0 }]
+  });
+  assert.equal(result.attendedDays, 25);
+  assert.equal(result.restDaysUsed, 4);
+  assert.equal(result.leavePayoutAmount, 0);
+});
+
+test("flexible rest: payout requires the configured day rate", () => {
+  assert.throws(() => calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0,
+    policy: { ...flexPolicy, dayOffPayAmount: 0 },
+    days: flexMonthDays(26, 4, 0)
+  }), /DAY_OFF_RATE_REQUIRED/);
+});
+
+test("flexible rest: unpaid leave deducts without consuming the paid allowance", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [...flexMonthDays(26, 0, 3), { date: "2026-11-30", status: "UNPAID_LEAVE" }]
+  });
+  assert.equal(result.restDaysUsed, 3);
+  assert.equal(result.leavePayoutDays, 1);
+  assert.equal(result.leavePayoutAmount, 300);
+  assert.equal(result.unpaidLeaveMinutes, 480);
+  assert.equal(result.deductionMinutes, 480);
+  assert.equal(result.deductionAmount, 300);
+});
+
+test("legacy policy without a configured allowance keeps the rest-day bonus behavior", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 6000, existingBonus: 0,
+    policy: { workDaysPerMonth: 26, dailyWorkMinutes: 480, dayOffPayAmount: 200, overtimeMultiplier: 1.5 },
+    days: [{ date: "2026-11-05", status: "DAY_OFF_WITH_PUNCH", isDayOff: true, workedMinutes: 480 }]
+  });
+  assert.equal(result.dayOffBonus, 200);
+  assert.equal(result.leavePayoutDays, 0);
+  assert.equal(result.leavePayoutAmount, 0);
+  assert.equal(result.attendedDays, 0);
+});
