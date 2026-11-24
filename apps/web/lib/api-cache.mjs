@@ -1,3 +1,4 @@
+/* global window */
 const REFERENCE_DATA_CACHE_TTL_MS = 30_000;
 const BADGE_COUNT_CACHE_TTL_MS = 15_000;
 const MAX_GET_CACHE_ENTRIES = 100;
@@ -70,6 +71,36 @@ export function createMemoryGetCache({ maxEntries = MAX_GET_CACHE_ENTRIES, now =
     delete(key) { return entries.delete(key); },
     clear() { entries.clear(); },
     get size() { return entries.size; }
+  };
+}
+
+export function createSessionStorageGetCache({ key = "tezkar-reference-cache-v1", storage = typeof window !== "undefined" ? window.sessionStorage : null, now = Date.now } = {}) {
+  function read() {
+    if (!storage) return {};
+    try { const parsed = JSON.parse(storage.getItem(key) || "{}"); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { /* Ignore unavailable or malformed session storage. */ return {}; }
+  }
+  return {
+    get(cacheKey) {
+      const entries = read();
+      const entry = entries[cacheKey];
+      if (!entry || typeof entry !== "object" || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= now() || !Object.prototype.hasOwnProperty.call(entry, "value")) {
+        if (Object.prototype.hasOwnProperty.call(entries, cacheKey)) {
+          delete entries[cacheKey];
+          try { storage?.setItem(key, JSON.stringify(entries)); } catch { /* Session storage may be disabled or full. */ }
+        }
+        return undefined;
+      }
+      return entry.value;
+    },
+    set(cacheKey, value, ttlMs) {
+      if (!storage || ttlMs <= 0) return;
+      const entries = read();
+      entries[cacheKey] = { value, expiresAt: now() + ttlMs };
+      const keys = Object.keys(entries);
+      for (const oldKey of keys.slice(0, Math.max(0, keys.length - 40))) delete entries[oldKey];
+      try { storage.setItem(key, JSON.stringify(entries)); } catch { /* Session storage may be disabled or full. */ }
+    },
+    clear() { try { storage?.removeItem(key); } catch { /* Session storage may be disabled. */ } }
   };
 }
 

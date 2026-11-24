@@ -15,3 +15,14 @@ export interface PendingGetRegistry {
   clear(): void;
 }
 export function createPendingGetRegistry(): PendingGetRegistry;
+
+export interface SessionStorageGetCache {
+  get(key: string): unknown;
+  set(key: string, value: unknown, ttlMs: number): void;
+  clear(): void;
+}
+export function createSessionStorageGetCache(options?: {
+  key?: string;
+  storage?: Storage | null;
+  now?: () => number;
+}): SessionStorageGetCache;

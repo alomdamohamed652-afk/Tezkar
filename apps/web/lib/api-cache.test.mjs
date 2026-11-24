@@ -4,6 +4,7 @@ import {
   createGetCacheKey,
   createMemoryGetCache,
   createPendingGetRegistry,
+  createSessionStorageGetCache,
   getApiCacheTtl
 } from "./api-cache.mjs";
 
@@ -93,4 +94,52 @@ test("only navigation badge counts receive a short 15-second TTL", () => {
   }
   assert.equal(getApiCacheTtl("/api/notifications"), 0);
   assert.equal(getApiCacheTtl("/api/tasks"), 0);
+});
+
+test("session storage cache expires and clears safely", () => {
+  let now = 10;
+  const values = new Map();
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage, now: () => now });
+  cache.set("reference", { rows: [1] }, 30_000);
+  assert.deepEqual(cache.get("reference"), { rows: [1] });
+  now = 30_011;
+  assert.equal(cache.get("reference"), undefined);
+  cache.set("another", 2, 30_000);
+  cache.clear();
+  assert.equal(values.has("tezkar-reference-cache-v1"), false);
+});
+
+test("session storage cache ignores malformed or non-object payloads", () => {
+  const values = new Map([["tezkar-reference-cache-v1", "null"]]);
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage });
+  assert.equal(cache.get("reference"), undefined);
+  cache.set("reference", { rows: [2] }, 30_000);
+  assert.deepEqual(cache.get("reference"), { rows: [2] });
+});
+
+
+test("session storage cache rejects entries without a valid expiry or value", () => {
+  const values = new Map([["tezkar-reference-cache-v1", JSON.stringify({
+    noExpiry: { value: "stale" },
+    invalidExpiry: { value: "stale", expiresAt: "never" },
+    valid: { value: "fresh", expiresAt: Date.now() + 30_000 }
+  })]]);
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage });
+  assert.equal(cache.get("noExpiry"), undefined);
+  assert.equal(cache.get("invalidExpiry"), undefined);
+  assert.equal(cache.get("valid"), "fresh");
+});
+
+test("session storage cache retains no more than 40 entries", () => {
+  const values = new Map();
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const cache = createSessionStorageGetCache({ storage, now: () => 100 });
+  for (let i = 0; i < 45; i++) cache.set(`entry-${i}`, i, 30_000);
+  const saved = JSON.parse(values.get("tezkar-reference-cache-v1"));
+  assert.equal(Object.keys(saved).length, 40);
+  assert.equal(cache.get("entry-0"), undefined);
+  assert.equal(cache.get("entry-44"), 44);
 });
