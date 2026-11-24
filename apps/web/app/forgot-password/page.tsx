@@ -87,7 +87,7 @@ export default function ForgotPasswordPage() {
       </form>}
 
       {step === "email" && <form className="auth-form" onSubmit={submitRequest}>
-        <p style={{ margin: "0 0 4px" }}>البريد المسجل للرقم ده يبدأ بالشكل: <b dir="ltr">{maskedEmail}</b></p>
+        <p style={{ margin: "0 0 4px" }}>البريد المسجل على هذا الرقم: <b dir="ltr">{maskedEmail}</b></p>
         <label className="auth-field"><span>اكتب بريدك الإلكتروني كاملًا</span><input value={email} onChange={e => setEmail(e.target.value)} type="email" dir="ltr" placeholder="name@example.com" autoFocus required /></label>
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <button className="auth-submit" disabled={loading}>{loading ? "جاري الإرسال..." : "إرسال الكود"}</button>
@@ -101,7 +101,7 @@ export default function ForgotPasswordPage() {
         <label className="auth-field"><span>تأكيد كلمة المرور الجديدة</span><input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" minLength={12} autoComplete="new-password" required /></label>
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <button className="auth-submit" disabled={loading}>{loading ? "جاري التأكيد..." : "تغيير كلمة المرور"}</button>
-        <button type="button" className="secondary-btn" onClick={() => { setStep("email"); setError(""); }}>إعادة إرسال كود</button>
+        <button type="button" className="secondary-btn" onClick={() => { setStep("email"); setError(""); }}>إرسال الكود مرة أخرى</button>
       </form>}
 
       {step === "done" && <div role="status" style={{ padding: 12, borderRadius: 12, background: "#e8f7ef", color: "#176b48" }}>{message} <Link href="/login">تسجيل الدخول</Link></div>}
