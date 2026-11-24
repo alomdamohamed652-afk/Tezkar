@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { isIP } from "node:net";
 import { z } from "zod";
 import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
@@ -38,6 +39,11 @@ async function findUserByPhone(phoneDigits: string): Promise<FoundUser | null> {
 const GENERIC_SENT_MESSAGE = "لو البيانات مطابقة لحسابك هيوصلك كود التحقق على بريدك خلال دقائق.";
 const GENERIC_CODE_ERROR = "الكود غير صحيح أو منتهي الصلاحية. اطلب كودًا جديدًا وحاول مرة أخرى.";
 
+function getClientIp(ip: string | undefined): string | null {
+  const value = ip?.trim() ?? "";
+  return value && isIP(value) ? value : null;
+}
+
 export async function emailOtpRoutes(app: FastifyInstance) {
   // Step 1 (public): phone -> masked email. Unknown phones get a stable fake
   // mask so account existence is never revealed.
@@ -45,8 +51,9 @@ export async function emailOtpRoutes(app: FastifyInstance) {
     const parsed = z.object({ phone: z.string().trim().min(6).max(30) }).safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اكتب رقم الموبايل بشكل صحيح", 422);
     const phoneDigits = normalizePhoneDigits(parsed.data.phone);
+    const clientIp = getClientIp(request.ip);
     await assertOtpRateAllowed("lookup-phone", phoneDigits || parsed.data.phone, 3, 60, 60, "محاولات كثيرة على هذا الرقم. حاول مرة أخرى بعد ساعة.");
-    await assertOtpRateAllowed("lookup-ip", request.ip, 10, 15, 15, "محاولات كثيرة. حاول مرة أخرى بعد 15 دقيقة.");
+    if (clientIp) await assertOtpRateAllowed("lookup-ip", clientIp, 10, 15, 15, "محاولات كثيرة. حاول مرة أخرى بعد 15 دقيقة.");
     const user = await findUserByPhone(phoneDigits);
     const maskedEmail = user?.email && user.email_verified_at
       ? maskEmail(user.email)
@@ -63,19 +70,20 @@ export async function emailOtpRoutes(app: FastifyInstance) {
     }).safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اكتب رقم الموبايل والبريد الإلكتروني بشكل صحيح", 422);
     const phoneDigits = normalizePhoneDigits(parsed.data.phone);
+    const clientIp = getClientIp(request.ip);
     await assertOtpRateAllowed("request-phone", phoneDigits || parsed.data.phone, 3, 60, 60, "طلبات كثيرة على هذا الرقم. حاول مرة أخرى بعد ساعة.");
-    await assertOtpRateAllowed("request-ip", request.ip, 5, 15, 15, "طلبات كثيرة. حاول مرة أخرى بعد 15 دقيقة.");
+    if (clientIp) await assertOtpRateAllowed("request-ip", clientIp, 5, 15, 15, "طلبات كثيرة. حاول مرة أخرى بعد 15 دقيقة.");
     const user = await findUserByPhone(phoneDigits);
     if (user?.email && user.email_verified_at && safeEqualText(user.email.trim().toLowerCase(), parsed.data.email.trim().toLowerCase())) {
       const code = await withTransaction(client =>
-        createOtp(client, user.id, "PASSWORD_RESET", request.ip, request.headers["user-agent"] ?? null)
+        createOtp(client, user.id, "PASSWORD_RESET", clientIp, request.headers["user-agent"] ?? null)
       );
       const sent = await sendOtpEmail(user.email, code, "PASSWORD_RESET");
       if (!sent.ok) {
         await withTransaction(client => consumeActiveOtps(client, user.id, "PASSWORD_RESET"));
       } else {
         await withTransaction(client =>
-          writeAudit(client, { actorUserId: user.id, actorEmployeeId: null, action: "request_password_reset_email_otp", module: "auth", entityType: "user", entityId: user.id, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null })
+          writeAudit(client, { actorUserId: user.id, actorEmployeeId: null, action: "request_password_reset_email_otp", module: "auth", entityType: "user", entityId: user.id, ipAddress: clientIp, userAgent: request.headers["user-agent"] ?? null })
         );
       }
     }
@@ -93,7 +101,8 @@ export async function emailOtpRoutes(app: FastifyInstance) {
     }).safeParse(request.body);
     if (!parsed.success || parsed.data.newPassword !== parsed.data.confirmPassword)
       throw new AppError("VALIDATION_ERROR", "كلمة المرور الجديدة لازم تكون 12 حرفًا على الأقل ومتطابقة مع التأكيد", 422);
-    await assertOtpRateAllowed("confirm-ip", request.ip, 10, 15, 15, "محاولات كثيرة. حاول مرة أخرى بعد 15 دقيقة.");
+    const clientIp = getClientIp(request.ip);
+    if (clientIp) await assertOtpRateAllowed("confirm-ip", clientIp, 10, 15, 15, "محاولات كثيرة. حاول مرة أخرى بعد 15 دقيقة.");
     const user = await findUserByPhone(normalizePhoneDigits(parsed.data.phone));
     if (!user) throw new AppError("OTP_INVALID", GENERIC_CODE_ERROR, 400);
     await withTransaction(async client => {
@@ -102,7 +111,7 @@ export async function emailOtpRoutes(app: FastifyInstance) {
       await client.query("UPDATE users SET password_hash=$1, must_change_password=FALSE, updated_at=now() WHERE id=$2", [hashPassword(parsed.data.newPassword), user.id]);
       await client.query("UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [user.id]);
       await client.query("UPDATE password_reset_otps SET consumed_at=now() WHERE user_id=$1 AND consumed_at IS NULL", [user.id]);
-      await writeAudit(client, { actorUserId: user.id, actorEmployeeId: null, action: "reset_password_email_otp", module: "auth", entityType: "user", entityId: user.id, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
+      await writeAudit(client, { actorUserId: user.id, actorEmployeeId: null, action: "reset_password_email_otp", module: "auth", entityType: "user", entityId: user.id, ipAddress: getClientIp(request.ip), userAgent: request.headers["user-agent"] ?? null });
     });
     return { data: { reset: true }, message: "تم تغيير كلمة المرور. سجّل دخولك بكلمة المرور الجديدة." };
   });
@@ -118,7 +127,7 @@ export async function emailOtpRoutes(app: FastifyInstance) {
     if (taken.rowCount) throw new AppError("EMAIL_TAKEN", "هذا البريد مسجل على حساب آخر", 409);
     const code = await withTransaction(async client => {
       await client.query("UPDATE users SET email=$1, email_verified_at=NULL, updated_at=now() WHERE id=$2", [email, userId]);
-      return createOtp(client, userId, "EMAIL_VERIFY", request.ip, request.headers["user-agent"] ?? null);
+      return createOtp(client, userId, "EMAIL_VERIFY", getClientIp(request.ip), request.headers["user-agent"] ?? null);
     });
     const sent = await sendOtpEmail(email, code, "EMAIL_VERIFY");
     if (!sent.ok) {
@@ -126,7 +135,7 @@ export async function emailOtpRoutes(app: FastifyInstance) {
       throw new AppError("EMAIL_UNAVAILABLE", "خدمة البريد غير متاحة حاليًا. حاول مرة أخرى لاحقًا.", 503);
     }
     await withTransaction(client =>
-      writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "request_email_verify", module: "auth", entityType: "user", entityId: userId, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null })
+      writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "request_email_verify", module: "auth", entityType: "user", entityId: userId, ipAddress: getClientIp(request.ip), userAgent: request.headers["user-agent"] ?? null })
     );
     return { data: { sent: true }, message: "تم إرسال كود التأكيد إلى بريدك. الكود صالح لمدة 10 دقائق." };
   });
@@ -143,7 +152,7 @@ export async function emailOtpRoutes(app: FastifyInstance) {
       const ok = await verifyOtp(client, userId, "EMAIL_VERIFY", parsed.data.code);
       if (!ok) throw new AppError("OTP_INVALID", GENERIC_CODE_ERROR, 400);
       await client.query("UPDATE users SET email_verified_at=now(), updated_at=now() WHERE id=$1", [userId]);
-      await writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "verify_account_email", module: "auth", entityType: "user", entityId: userId, ipAddress: request.ip, userAgent: request.headers["user-agent"] ?? null });
+      await writeAudit(client, { actorUserId: userId, actorEmployeeId: request.user!.employeeId, action: "verify_account_email", module: "auth", entityType: "user", entityId: userId, ipAddress: getClientIp(request.ip), userAgent: request.headers["user-agent"] ?? null });
     });
     return { data: { verified: true }, message: "تم تأكيد بريدك الإلكتروني. يمكنك الآن استخدامه لاستعادة كلمة المرور." };
   });
