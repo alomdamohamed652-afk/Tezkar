@@ -233,8 +233,8 @@ export default function AttendanceMonthlyPage() {
                 const supportsLeave = policy ? "allowed_leave_days_per_month" in policy : false;
                 return <div key={emp.id} className="settings-row">
                   <div className="settings-who"><strong>{emp.name}</strong><small className="mono" style={{ display: "block" }}>{emp.code}</small></div>
-                  <label className="settings-field"><span>ساعات العمل اليومية</span>{policy ? <input type="number" min={1} max={24} step={0.25} style={{ width: 90 }} value={hoursDraft[emp.id] ?? ""} disabled={!canEditPolicy} onChange={e => setHoursDraft(old => ({ ...old, [emp.id]: e.target.value }))} /> : <span>—</span>}</label>
-                  {supportsLeave && <label className="settings-field"><span>أيام الإجازة المسموحة شهريًا</span><input type="number" min={0} max={31} step={0.5} style={{ width: 90 }} placeholder="غير محدد" value={leaveDraft[emp.id] ?? ""} disabled={!canEditPolicy} onChange={e => setLeaveDraft(old => ({ ...old, [emp.id]: e.target.value }))} /></label>}
+                  <label className="settings-field"><span>ساعات العمل اليومية</span>{policy ? <input type="number" min={1} max={24} step={0.25} value={hoursDraft[emp.id] ?? ""} disabled={!canEditPolicy} onChange={e => setHoursDraft(old => ({ ...old, [emp.id]: e.target.value }))} /> : <span>—</span>}</label>
+                  {supportsLeave && <label className="settings-field"><span>أيام الإجازة المسموحة شهريًا</span><input type="number" min={0} max={31} step={0.5} placeholder="غير محدد" value={leaveDraft[emp.id] ?? ""} disabled={!canEditPolicy} onChange={e => setLeaveDraft(old => ({ ...old, [emp.id]: e.target.value }))} /></label>}
                   {canEditPolicy && policy && <button className="secondary-btn" disabled={savingHours === emp.id} onClick={() => void saveHours(emp)}>{savingHours === emp.id ? "جارٍ الحفظ..." : "حفظ"}</button>}
                 </div>;
               })}
@@ -300,7 +300,12 @@ export default function AttendanceMonthlyPage() {
         .settings-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); }
         .settings-row:last-child { border-bottom: 0; }
         .settings-who { flex: 1 1 170px; min-width: 140px; }
-        .settings-field { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+        .settings-field { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--ink-2); }
+        .settings-field input { width: 92px; min-height: 40px; border: 1px solid var(--border-strong); border-radius: 10px; outline: 0; background: #fff; color: var(--ink); padding: 8px 11px; font-size: 14px; font-family: inherit; transition: border-color .14s ease, box-shadow .14s ease, background .14s ease; }
+        .settings-field input::placeholder { color: #a1adbd; font-size: 12px; font-weight: 500; }
+        .settings-field input:hover { border-color: #94a3b8; }
+        .settings-field input:focus { border-color: var(--primary); box-shadow: var(--focus); }
+        .settings-field input:disabled { background: #f5f8fd; color: var(--muted); cursor: not-allowed; }
         @media (max-width: 700px) { .month-emp-col { min-width: 110px; } .month-cell { width: 24px; height: 24px; font-size: 11px; } .settings-row { gap: 10px; } .settings-who { flex: 1 1 100%; } }
       `}</style>
     </main></div>
