@@ -317,7 +317,6 @@ export async function custodyRoutes(app:FastifyInstance){
         const ownEmployeeId=caller.rows[0]?.employee_id as string|undefined;
         if(!ownEmployeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
         if(p.data.fromEmployeeId!==ownEmployeeId)throw new AppError("OWN_SCOPE_ONLY","لا يمكنك التحويل إلا من عهدتك النقدية",403);
-        if(p.data.toEmployeeId===ownEmployeeId)throw new AppError("INVALID_TRANSFER_TARGET","لا يمكن التحويل إلى عهدتك نفسها",422);
         const target=await client.query("SELECT 1 FROM cash_custody_transactions WHERE employee_id=$1 LIMIT 1",[p.data.toEmployeeId]);
         if(!target.rowCount)throw new AppError("TARGET_HAS_NO_CUSTODY","الموظف المستلم ليس لديه عهدة نقدية",422);
       }

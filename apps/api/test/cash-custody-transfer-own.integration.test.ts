@@ -135,10 +135,10 @@ test("cash custody own-scope transfers and permission grouping normalization", {
       assert.equal(foreignSource.statusCode, 403, foreignSource.body);
       assert.equal(foreignSource.json().error.code, "OWN_SCOPE_ONLY");
 
-      // Own-scope: cannot transfer to oneself.
+      // Own-scope: cannot transfer to oneself (rejected by the shared transfer schema).
       const selfTarget = await transfer(cookieA, { fromEmployeeId: empA, toEmployeeId: empA, amount: 10, description: "إلى نفسي" });
       assert.equal(selfTarget.statusCode, 422, selfTarget.body);
-      assert.equal(selfTarget.json().error.code, "INVALID_TRANSFER_TARGET");
+      assert.equal(selfTarget.json().error.code, "VALIDATION_ERROR");
 
       // View-only users cannot transfer at all.
       const viewOnly = await transfer(cookieD, { fromEmployeeId: empD, toEmployeeId: empB, amount: 10, description: "بدون صلاحية تحويل" });
