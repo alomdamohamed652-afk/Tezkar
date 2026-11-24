@@ -11,7 +11,7 @@ type Health={
  lastBackupAt:string|null;
  failedLogins24h:number;
  recentFailedLogins:Array<{at:string;username:string|null;ip:string|null}>;
- recentErrors:Array<{at:string;route:string;method:string;message:string}>;
+ recentErrors:Array<{at:string;route:string;method:string;name:string}>;
 };
 
 function fmt(value:string|null){return value?new Date(value).toLocaleString("ar-EG",{timeZone:"Africa/Cairo"}):"—";}
@@ -26,17 +26,17 @@ export default function AdminHealthPage(){
  {health&&<>
   <div className="stats">
    <div className={"card stat"+(health.database.status==="ok"?"":" warning")}><div className="stat-label">قاعدة البيانات</div><div className="stat-value">{health.database.status==="ok"?"تعمل":"متوقفة"}</div><div className="stat-note">{health.database.latencyMs!==null?"زمن الاستجابة "+Math.round(health.database.latencyMs)+" مللي ثانية":"لا يمكن الوصول إليها"}</div></div>
-   <div className="card stat"><div className="stat-label">آخر نسخة احتياطية</div><div className="stat-value" style={{fontSize:18}}>{fmt(health.lastBackupAt)}</div><div className="stat-note">{health.lastBackupAt?"مسجلة من سجل العمليات":"لم يتم تسجيل أي نسخة بعد"}</div></div>
+   <div className="card stat"><div className="stat-label">آخر نسخة احتياطية</div><div className="stat-value" style={{fontSize:18}}>{fmt(health.lastBackupAt)}</div><div className="stat-note">{health.lastBackupAt?"آخر عملية تصدير مسجلة في سجل العمليات، وليست إثبات نسخة كاملة قابلة للاسترجاع":"لم يتم تسجيل أي نسخة بعد"}</div></div>
    <div className="card stat"><div className="stat-label">آخر migration</div><div className="stat-value" dir="ltr" style={{fontSize:14,wordBreak:"break-all",textAlign:"right"}}>{health.migrations.last?health.migrations.last.version:"—"}</div><div className="stat-note">{health.migrations.last?"طُبقت "+fmt(health.migrations.last.appliedAt):""} · الإجمالي {health.migrations.count}</div></div>
    <div className={"card stat"+(health.failedLogins24h>0?" warning":"")}><div className="stat-label">محاولات دخول فاشلة (24 ساعة)</div><div className="stat-value">{health.failedLogins24h.toLocaleString("ar-EG")}</div></div>
   </div>
   <section className="card"><div className="card-header"><h2 className="card-title">أخطاء الخادم الأخيرة</h2><span>{health.recentErrors.length} خطأ منذ آخر تشغيل للخادم</span></div>
    {health.recentErrors.length===0?<div className="empty">لا توجد أخطاء مسجلة منذ آخر تشغيل للخادم.</div>:
-   <div className="table-wrap"><table><thead><tr><th>التوقيت</th><th>المسار</th><th>الطريقة</th><th>الرسالة</th></tr></thead><tbody>{health.recentErrors.map((e,i)=><tr key={i}><td>{fmt(e.at)}</td><td className="mono">{e.route}</td><td>{e.method}</td><td>{e.message}</td></tr>)}</tbody></table></div>}
+   <div className="table-wrap"><table><thead><tr><th>التوقيت</th><th>المسار</th><th>الطريقة</th><th>النوع</th></tr></thead><tbody>{health.recentErrors.map((e,i)=><tr key={i}><td>{fmt(e.at)}</td><td className="mono">{e.route}</td><td>{e.method}</td><td>{e.name}</td></tr>)}</tbody></table></div>}
   </section>
   <section className="card"><div className="card-header"><h2 className="card-title">محاولات الدخول الفاشلة الأخيرة</h2></div>
    {health.recentFailedLogins.length===0?<div className="empty">لا توجد محاولات دخول فاشلة مسجلة.</div>:
-   <div className="table-wrap"><table><thead><tr><th>التوقيت</th><th>اسم المستخدم</th><th>عنوان الاتصال</th></tr></thead><tbody>{health.recentFailedLogins.map((f,i)=><tr key={i}><td>{fmt(f.at)}</td><td>{f.username??"—"}</td><td>{f.ip??"—"}</td></tr>)}</tbody></table></div>}
+   <div className="table-wrap"><table><thead><tr><th>التوقيت</th><th>اسم المستخدم</th><th>عنوان الاتصال</th></tr></thead><tbody>{health.recentFailedLogins.map((f,i)=><tr key={i}><td>{fmt(f.at)}</td><td dir="ltr">{f.username??"—"}</td><td dir="ltr">{f.ip??"—"}</td></tr>)}</tbody></table></div>}
   </section>
   {refreshedAt&&<p className="page-subtitle">آخر تحديث: {refreshedAt.toLocaleTimeString("ar-EG",{timeZone:"Africa/Cairo"})} · وقت الخادم {fmt(health.serverTime)}</p>}
  </>}
