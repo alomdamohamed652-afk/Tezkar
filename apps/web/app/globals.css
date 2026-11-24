@@ -422,6 +422,11 @@ a{color:inherit;text-decoration:none}
   font-size:12px;
   font-weight:600;
 }
+.alert.info{
+  border-color:#bfdbfe;
+  background:#eff6ff;
+  color:#1d4ed8;
+}
 .success-box{
   margin:0 auto 14px;
   padding:11px 13px;
