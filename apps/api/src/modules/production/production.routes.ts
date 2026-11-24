@@ -16,7 +16,7 @@ import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { verifyPassword } from "../auth/auth.service.js";
-import { hasPermission, assertPermissionAccountAllowed } from "../rbac/rbac.service.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { allocatePendingWorkerPaymentDifferencesForProduction } from "../payments/worker-payment-differences.service.js";
@@ -785,14 +785,13 @@ payment_totals.paid_amount,
       const originalWorkDate=current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10);
       await assertAccountingPeriodOpen(client,originalWorkDate);
       // APPROVED entries are editable only through the correcting-entry path: a dedicated
-      // permission, an optional account restriction, a mandatory reason, an immutable
-      // before/after record, and a ledger adjustment for the net earnings delta.
+      // permission, a mandatory reason, an immutable before/after record, and a ledger
+      // adjustment for the net earnings delta.
       const isApprovedCorrection=current.status==="APPROVED";
       if(current.status!=="PENDING"&&!isApprovedCorrection)throw new AppError("PRODUCTION_EDIT_LOCKED","لا يمكن تعديل إنتاج تم اعتماده أو رفضه. استخدم إجراء العكس المعتمد بدل تعديل سجل مرحّل.",409);
       let correctionReason="";
       if(isApprovedCorrection){
         if(!(await hasPermission(client,request.user!.userId,"production.edit_approved")))throw new AppError("PRODUCTION_EDIT_LOCKED","تعديل إنتاج معتمد يحتاج صلاحية خاصة؛ استخدم إجراء العكس المعتمد أو اطلب الصلاحية من الإدارة.",403);
-        await assertPermissionAccountAllowed(client,"production.edit_approved",request.user!.userId);
         correctionReason=(parsed.data.editReason??"").trim();
         if(correctionReason.length<2)throw new AppError("CORRECTION_REASON_REQUIRED","اكتب سبب تعديل سجل الإنتاج المعتمد",422);
       }
@@ -977,8 +976,6 @@ payment_totals.paid_amount,
     const id = (request.params as { id: string }).id;
 
     const row = await withTransaction(async (client) => {
-      // Approval can be restricted to specific accounts (permission_account_restrictions).
-      await assertPermissionAccountAllowed(client, "production.approve", request.user!.userId);
       // Use the same employee -> production-entry lock order as employee-level
       // production closures. This serializes approval with closure snapshots and
       // prevents an approval started earlier from receiving a pre-closure
