@@ -2168,7 +2168,7 @@ textarea:hover:not(:disabled) {
 .print-sheet.delivery-note .dn-title h1{margin:0;font-size:23pt;font-weight:800;color:#1d4ed8;line-height:1.2}
 .print-sheet.delivery-note .dn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12pt;font-weight:700;color:#0f172a;margin-top:1.5mm;direction:ltr;text-align:center;letter-spacing:1px}
 .print-sheet.delivery-note .dn-barcode{justify-self:end}
-.print-sheet.delivery-note .dn-barcode-box{width:46mm;margin:0;text-align:center;border:1px solid #cbd5e1;border-radius:2mm;padding:1.5mm 2mm 1mm;background:#fff}
+.print-sheet.delivery-note .dn-barcode-box{width:fit-content;margin:0;text-align:center;border:1px solid #cbd5e1;border-radius:2mm;padding:1.5mm 2.5mm 1mm;background:#fff}
 .print-sheet.delivery-note .print-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:0;border:1px solid #dbe3ee;border-radius:2mm;overflow:hidden;background:#fff;break-inside:avoid;text-align:right}
 .print-sheet.delivery-note .print-grid>div{border:0;border-inline-start:1px solid #e6ecf4;border-top:1px solid #e6ecf4;padding:2.4mm 3.2mm;min-height:12mm}
 .print-sheet.delivery-note .print-grid>div:nth-child(3n+1){border-inline-start:0}
