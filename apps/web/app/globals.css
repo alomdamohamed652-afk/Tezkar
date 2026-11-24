@@ -2732,3 +2732,7 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 .stage-add-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding:0 18px 16px;align-items:end}
 .stage-add-bar>label{min-width:0;display:grid;gap:6px;color:var(--ink-2);font-size:12px;font-weight:700}
 .stage-add-bar .stage-final-checkbox{display:flex;align-items:center;gap:8px;padding-bottom:12px;font-size:13px;font-weight:700;color:var(--ink-2)}
+
+/* ===== settings embedded tabs ===== */
+.settings-embed-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+@media (min-width:641px){.settings-tabs{flex-wrap:wrap;overflow:visible}}
