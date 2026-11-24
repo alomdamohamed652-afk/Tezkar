@@ -140,6 +140,7 @@ export default function AttendanceMonthlyPage() {
     return map;
   }, [rows]);
 
+  const paidDayMinutesOf = (row: DayRow) => policies[row.employeeId]?.daily_work_minutes ?? scheduledMinutesOf(row);
   const scheduledMinutesOf = (row: DayRow) => {
     if (row.scheduledStart && row.scheduledEnd) {
       const [sh, sm] = row.scheduledStart.split(":").map(Number);
@@ -171,7 +172,7 @@ export default function AttendanceMonthlyPage() {
           status: editChoice,
           firstIn: null,
           lastOut: null,
-          workedMinutes: editChoice === "MANUAL" ? scheduledMinutesOf(selected) : 0,
+          workedMinutes: editChoice === "MANUAL" ? paidDayMinutesOf(selected) : 0,
           lateMinutes: 0,
           earlyMinutes: 0,
           note
@@ -328,7 +329,7 @@ export default function AttendanceMonthlyPage() {
               <div className="day-settle-options">
                 <button type="button" className={"day-settle-option" + (editChoice === "MANUAL" ? " active" : "")} onClick={() => setEditChoice("MANUAL")}>
                   <strong>حضور يدوي</strong>
-                  <small>يُحتسب يوم عمل عادي بالدقائق المجدولة ({(scheduledMinutesOf(selected) / 60).toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ساعة) بدون تسجيل بصمات وهمية أو وقت إضافي.</small>
+                  <small>يُحتسب يوم عمل عادي بساعات العمل اليومية المضبوطة ({(paidDayMinutesOf(selected) / 60).toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ساعة) بدون تسجيل بصمات وهمية أو وقت إضافي.</small>
                 </button>
                 <button type="button" className={"day-settle-option" + (editChoice === "DAY_OFF" ? " active" : "")} onClick={() => setEditChoice("DAY_OFF")}>
                   <strong>إجازة مدفوعة (بدون خصم)</strong>
