@@ -1749,7 +1749,7 @@ textarea:hover:not(:disabled) {
 }
 
 @media print {
-  body * { visibility: hidden !important; }
+  body:has(#machine-production-report) * { visibility: hidden !important; }
   #machine-production-report, #machine-production-report * { visibility: visible !important; }
   #machine-production-report {
     position: absolute !important;
