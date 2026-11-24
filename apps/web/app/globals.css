@@ -2117,3 +2117,69 @@ textarea:hover:not(:disabled) {
 .print-sheet .print-brand{flex-direction:column;gap:6px}
 .print-sheet .print-brand img{width:96px;height:96px;flex:0 0 96px}
 .print-sheet .print-brand div{text-align:center}
+
+/* Delivery note preview overlay (screen) */
+.dn-preview-overlay{position:fixed;inset:0;z-index:70;background:rgba(15,23,42,.45);display:flex;flex-direction:column}
+.dn-preview-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;background:#0f172a;color:#fff;flex-wrap:wrap}
+.dn-preview-title{font-weight:800;font-size:14px}
+.dn-preview-actions{display:flex;gap:8px;flex-wrap:wrap}
+.dn-preview-scroll{flex:1;overflow:auto;padding:26px 14px 40px}
+.dn-preview-paper{background:#fff;width:min(210mm,100%);margin:0 auto;box-shadow:0 10px 40px rgba(15,23,42,.35);border-radius:3px;padding:12mm}
+.dn-preview-paper .print-sheet{display:block}
+@media(max-width:800px){
+ .dn-preview-toolbar{padding:10px 12px}
+ .dn-preview-scroll{padding:14px 8px 28px}
+ .dn-preview-paper{min-width:190mm;padding:8mm}
+}
+
+/* Delivery note design: shared between the on-screen preview and print so the
+   PDF matches the preview exactly (scoped to .delivery-note) */
+.print-sheet.delivery-note{color:#0f172a;font-family:"IBM Plex Sans Arabic","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right}
+.print-sheet.delivery-note .dn-header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid #2563eb;margin-bottom:5mm;break-inside:avoid}
+.print-sheet.delivery-note .dn-brand{display:flex;align-items:center;gap:4mm;text-align:right;justify-self:start}
+.print-sheet.delivery-note .dn-brand img{width:23mm;height:23mm;object-fit:contain;flex:0 0 23mm}
+.print-sheet.delivery-note .dn-brand strong{display:block;font-size:20pt;font-weight:800;line-height:1.2;color:#0f172a;white-space:nowrap}
+.print-sheet.delivery-note .dn-brand span{display:block;font-size:10pt;color:#64748b;font-weight:600;margin-top:1.2mm;white-space:nowrap}
+.print-sheet.delivery-note .dn-title{text-align:center;justify-self:center}
+.print-sheet.delivery-note .dn-title h1{margin:0;font-size:23pt;font-weight:800;color:#1d4ed8;line-height:1.2}
+.print-sheet.delivery-note .dn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12pt;font-weight:700;color:#0f172a;margin-top:1.5mm;direction:ltr;text-align:center;letter-spacing:1px}
+.print-sheet.delivery-note .dn-barcode{justify-self:end}
+.print-sheet.delivery-note .dn-barcode-box{width:46mm;margin:0;text-align:center;border:1px solid #cbd5e1;border-radius:2mm;padding:1.5mm 2mm 1mm;background:#fff}
+.print-sheet.delivery-note .print-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:0;border:1px solid #dbe3ee;border-radius:2mm;overflow:hidden;background:#fff;break-inside:avoid;text-align:right}
+.print-sheet.delivery-note .print-grid>div{border:0;border-inline-start:1px solid #e6ecf4;border-top:1px solid #e6ecf4;padding:2.4mm 3.2mm;min-height:12mm}
+.print-sheet.delivery-note .print-grid>div:nth-child(3n+1){border-inline-start:0}
+.print-sheet.delivery-note .print-grid>div:nth-child(-n+3){border-top:0}
+.print-sheet.delivery-note .print-grid b{display:block;font-size:8.5pt;color:#64748b;font-weight:600;margin-bottom:1mm}
+.print-sheet.delivery-note .print-grid span{display:block;font-size:11pt;font-weight:700;color:#0f172a;line-height:1.45}
+.print-sheet.delivery-note .print-grid .dn-notes{grid-column:1/-1;border-inline-start:0;background:#f8fafc}
+.print-sheet.delivery-note .print-section-title{font-size:11pt;font-weight:800;color:#0f172a;margin:5mm 0 2.2mm;padding-inline-start:2.5mm;border-inline-start:1.1mm solid #2563eb;break-after:avoid}
+.print-sheet.delivery-note .print-delivery-lines{width:100%;min-width:0;table-layout:fixed;border-collapse:separate;border-spacing:0;border:1px solid #dbe3ee;border-radius:2mm;overflow:hidden;font-size:9pt}
+.print-sheet.delivery-note .print-delivery-lines thead{display:table-header-group}
+.print-sheet.delivery-note .print-delivery-lines tr{break-inside:avoid}
+.print-sheet.delivery-note .print-delivery-lines th,.print-sheet.delivery-note .print-delivery-lines td{border:0;border-inline-start:1px solid #e6ecf4;padding:2.2mm 2.4mm;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;background:transparent;font-variant-numeric:tabular-nums}
+.print-sheet.delivery-note .print-delivery-lines th:last-child,.print-sheet.delivery-note .print-delivery-lines td:last-child{border-inline-start:0}
+.print-sheet.delivery-note .print-delivery-lines th:nth-child(2),.print-sheet.delivery-note .print-delivery-lines th:nth-child(3),.print-sheet.delivery-note .print-delivery-lines th:nth-child(4),.print-sheet.delivery-note .print-delivery-lines th:nth-child(5),.print-sheet.delivery-note .print-delivery-lines th:nth-child(6),
+.print-sheet.delivery-note .print-delivery-lines td:nth-child(2),.print-sheet.delivery-note .print-delivery-lines td:nth-child(3),.print-sheet.delivery-note .print-delivery-lines td:nth-child(4),.print-sheet.delivery-note .print-delivery-lines td:nth-child(5),.print-sheet.delivery-note .print-delivery-lines td:nth-child(6){text-align:center}
+.print-sheet.delivery-note .print-delivery-lines thead th{background:#dbeafe;color:#1e3a8a;font-weight:800;font-size:9.5pt;border-bottom:.5mm solid #2563eb}
+.print-sheet.delivery-note .print-delivery-lines tbody tr:nth-child(even){background:#f6f9fd}
+.print-sheet.delivery-note .print-delivery-lines tbody tr+tr td{border-top:1px solid #e6ecf4}
+.print-sheet.delivery-note .print-delivery-lines tbody tr.dn-total-row td{background:#eff6ff;border-top:.5mm solid #2563eb;font-weight:800;color:#1e3a8a;font-size:10pt}
+.print-sheet.delivery-note .print-extra{border:1px solid #e6ecf4;border-radius:2mm;background:#f8fafc;padding:2.4mm 3.2mm;font-size:9pt;margin-top:2.5mm;text-align:right;break-inside:avoid}
+.print-sheet.delivery-note .print-extra b{color:#334155}
+.print-sheet.delivery-note .signature-row{display:flex;gap:5mm;margin-top:9mm;break-inside:avoid}
+.print-sheet.delivery-note .signature-box{flex:1;min-height:26mm;border:1px solid #cbd5e1;border-radius:2mm;padding:2.6mm 3.2mm;display:flex;flex-direction:column;background:#fff}
+.print-sheet.delivery-note .signature-box>b{font-size:10pt;font-weight:800;color:#0f172a;border-bottom:1px solid #e6ecf4;padding-bottom:1.6mm}
+.print-sheet.delivery-note .signature-lines{display:grid;gap:3.2mm;margin-top:auto;padding-top:3mm}
+.print-sheet.delivery-note .sig-line{display:flex;align-items:flex-end;gap:2mm}
+.print-sheet.delivery-note .sig-line em{font-style:normal;font-size:8.5pt;color:#64748b;font-weight:600;flex:0 0 auto}
+.print-sheet.delivery-note .sig-line i{flex:1;border-bottom:1px dotted #94a3b8;height:4.5mm}
+.print-sheet.delivery-note .sig-line i.sig-filled{border-bottom-style:solid;font-family:"Aref Ruqaa","IBM Plex Sans Arabic",serif;font-style:normal;font-weight:700;color:#1e3a8a;text-align:center;font-size:15pt;line-height:1.15;height:auto;padding:0 2mm .5mm;transform:rotate(-1.6deg)}
+.print-sheet.delivery-note .print-note{border-top:1px solid #e6ecf4;margin-top:5mm;padding-top:2.2mm;font-size:8pt;color:#64748b;text-align:center}
+
+@media print{
+ .dn-preview-overlay{position:static;background:none;display:block}
+ .dn-preview-toolbar{display:none!important}
+ .dn-preview-scroll{overflow:visible;padding:0}
+ .dn-preview-paper{width:auto;max-width:none;box-shadow:none;border-radius:0;padding:0}
+ .print-sheet.delivery-note{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
