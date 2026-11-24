@@ -74,9 +74,9 @@ export default function ForgotPasswordPage() {
   return <main className="auth-page" dir="rtl"><div className="auth-shell"><section className="auth-card" style={{ maxWidth: 520, margin: "auto" }}>
     <div className="auth-heading"><span className="auth-small-label">استعادة الوصول</span><h1>نسيت كلمة المرور؟</h1><p>عندك طريقين: استعادة فورية على بريدك الإلكتروني المسجل، أو طلب مراجعة من الإدارة.</p></div>
 
-    <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-      <button type="button" className={path === "email" ? "primary-button" : "secondary-btn"} style={{ flex: 1 }} onClick={() => { setPath("email"); setError(""); setMessage(""); }}>على البريد — فوري</button>
-      <button type="button" className={path === "admin" ? "primary-button" : "secondary-btn"} style={{ flex: 1 }} onClick={() => { setPath("admin"); setError(""); setMessage(""); }}>من الإدارة — 6 لـ 24 ساعة</button>
+    <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+      <button type="button" className={path === "email" ? "primary-button" : "secondary-btn"} style={{ flex: "1 1 150px", whiteSpace: "normal" }} onClick={() => { setPath("email"); setError(""); setMessage(""); }}>على البريد — فوري</button>
+      <button type="button" className={path === "admin" ? "primary-button" : "secondary-btn"} style={{ flex: "1 1 150px", whiteSpace: "normal" }} onClick={() => { setPath("admin"); setError(""); setMessage(""); }}>من الإدارة — 6 لـ 24 ساعة</button>
     </div>
 
     {path === "email" && <>
