@@ -2153,7 +2153,7 @@ textarea:hover:not(:disabled) {
 
 /* Delivery note design: shared between the on-screen preview and print so the
    PDF matches the preview exactly (scoped to .delivery-note) */
-.print-sheet.delivery-note{color:#0f172a;font-family:"IBM Plex Sans Arabic","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right}
+.print-sheet.delivery-note{color:#0f172a;font-family:"Tajawal","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right}
 .print-sheet.delivery-note .dn-header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid #2563eb;margin-bottom:5mm;break-inside:avoid}
 .print-sheet.delivery-note .dn-brand{display:flex;align-items:center;gap:4mm;text-align:right;justify-self:start}
 .print-sheet.delivery-note .dn-brand img{width:23mm;height:23mm;object-fit:contain;flex:0 0 23mm}
