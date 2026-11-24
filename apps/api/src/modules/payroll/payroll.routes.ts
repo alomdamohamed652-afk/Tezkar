@@ -400,7 +400,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           earlyMinutes:Number(row.earlyMinutes??0),overtimeMinutes:Number(row.overtimeMinutes??0),
           paidPermissionMinutes:Number(row.paidPermissionMinutes??0),
           unpaidPermissionMinutes:Number(row.unpaidPermissionMinutes??0),
-          isDayOff:Boolean(row.isDayOff),needsReview:Boolean(row.needsReview)
+          isDayOff:Boolean(row.isDayOff),needsReview:Boolean(row.needsReview),manualOverride:Boolean(row.manualOverride)
         }));
 
       const expectedKeys=new Set<string>();
@@ -488,6 +488,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         } catch(error) {
           const code=error instanceof Error?error.message:"ATTENDANCE_CALCULATION_INVALID";
           if(code==="ATTENDANCE_REVIEW_REQUIRED")throw new AppError(code,"لا يمكن احتساب المرتب قبل مراجعة أيام الحضور التي عليها ملاحظات.",409);
+          if(code==="ATTENDANCE_ABSENCE_UNCONFIRMED")throw new AppError(code,"يوجد أيام عمل بلا بصمات لم تُسوَّ؛ سوِّها من مراجعة الحضور (إجازة مدفوعة أو غياب مؤكد) قبل اعتماد المسير.",409);
+          if(code==="LEAVE_PAYOUT_PERIOD_UNRESOLVED")throw new AppError(code,"لا يمكن صرف بدل الرصيد غير المستخدم لفترة مرتب جزئية قبل اعتماد قاعدة واضحة لها.",409);
           if(code==="ATTENDANCE_MISSING_PUNCH")throw new AppError(code,"يوجد يوم ببصمة ناقصة؛ صحح البصمة أو سوِّ اليوم يدويًا قبل اعتماد المسير.",409);
           if(code==="ATTENDANCE_SCHEDULE_REQUIRED")throw new AppError(code,"يوجد يوم في الشهر بلا جدول وردية مضبوط؛ حدّد أيام العمل والراحة لكل موظف قبل اعتماد المسير.",409);
           if(code==="PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE")throw new AppError(code,"يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
@@ -495,6 +497,10 @@ export async function payrollRoutes(app: FastifyInstance) {
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
         const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),allowedLeaveDaysPerMonth:rawPolicy.allowed_leave_days_per_month===null||rawPolicy.allowed_leave_days_per_month===undefined?null:Number(rawPolicy.allowed_leave_days_per_month),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
+        if(policySnapshot.allowedLeaveDaysPerMonth!==null&&calculation.leavePayoutDays>0){
+          const cairoToday=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+          if(monthEnd>cairoToday)throw new AppError("LEAVE_PAYOUT_EARLY_FINALIZATION","لا يمكن صرف بدل الرصيد غير المستخدم قبل اكتمال الشهر؛ اعتمد المسير بعد نهايته.",409);
+        }
         if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب والإجازة غير المدفوعة',$2,$3,$4,'attendance:deduction')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,

@@ -9,6 +9,8 @@ export interface PayrollAttendanceDay {
   paidPermissionMinutes?: number;
   unpaidPermissionMinutes?: number;
   needsReview?: boolean;
+  /** True when a manager explicitly settled the day in the monthly review (note-audited override). */
+  manualOverride?: boolean;
 }
 
 export interface PayrollAttendancePolicy {
@@ -76,6 +78,10 @@ export function calculatePayrollAttendance(input: {
     if (day.status === "MISSING_PUNCH") throw new Error("ATTENDANCE_MISSING_PUNCH");
     if (day.status === "NO_SCHEDULE" || day.status === "NO_SCHEDULE_WITH_PUNCH") throw new Error("ATTENDANCE_SCHEDULE_REQUIRED");
     if (day.status === "ABSENT") {
+      // Flexible-rest model: an unworked day becomes paid rest from the allowance, but a workday
+      // with no punches is an unconfirmed record (possible device outage). It must neither deduct
+      // nor consume the allowance silently; a manager settles it as paid leave or confirmed absence.
+      if (leaveAllowance !== null && !day.manualOverride) throw new Error("ATTENDANCE_ABSENCE_UNCONFIRMED");
       const unpaidPermission = minutes(day.unpaidPermissionMinutes);
       unpaidPermissionMinutes += unpaidPermission;
       absenceMinutes += Math.max(0, policy.dailyWorkMinutes - minutes(day.paidPermissionMinutes) - unpaidPermission);
@@ -98,11 +104,13 @@ export function calculatePayrollAttendance(input: {
   const deductionAmount = money(deductionMinutes * minuteRate);
   const overtimeBonus = money(overtimeMinutes * minuteRate * policy.overtimeMultiplier);
   const dayOffBonus = money((dayOffWorkedMinutes / policy.dailyWorkMinutes) * policy.dayOffPayAmount);
-  // Confirmed model: unused allowance is paid out and extra days beyond (prescribed + allowance)
-  // are the same single payment at the configured per-employee day rate, never two lines for one day.
+  // Confirmed model: the unused allowance is paid out once at the configured per-employee day
+  // rate. Any extra-day term beyond this is unapproved and deliberately not computed. The payout
+  // is blocked for partial salary periods until an explicit proration rule exists.
   const restDaysUsed = leaveAllowance === null ? 0 : Math.min(leaveAllowance, poolDays);
-  const leavePayoutDays = leaveAllowance === null ? 0
-    : (leaveAllowance - restDaysUsed) + Math.max(0, attendedDays - policy.workDaysPerMonth - leaveAllowance);
+  const leavePayoutDays = leaveAllowance === null ? 0 : leaveAllowance - restDaysUsed;
+  const fullPeriod = policy.scheduledMinutes === undefined || policy.scheduledMinutes === policy.workDaysPerMonth * policy.dailyWorkMinutes;
+  if (leavePayoutDays > 0 && !fullPeriod) throw new Error("LEAVE_PAYOUT_PERIOD_UNRESOLVED");
   if (leavePayoutDays > 0 && policy.dayOffPayAmount <= 0) throw new Error("DAY_OFF_RATE_REQUIRED");
   const leavePayoutAmount = money(leavePayoutDays * policy.dayOffPayAmount);
   return {
