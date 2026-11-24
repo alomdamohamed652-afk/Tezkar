@@ -2285,3 +2285,32 @@ textarea:hover:not(:disabled) {
 .otp-boxes-error .otp-box{border-color:#dc2626}
 .otp-boxes-error .otp-box:focus{box-shadow:0 0 0 3px rgba(220,38,38,.15)}
 @media (max-width:480px){.otp-box{width:42px;height:50px;font-size:20px}.otp-boxes{gap:8px}}
+
+/* ===== design exploration A: light minimal centered card ===== */
+.auth-a .auth-shell{grid-template-columns:1fr;width:min(440px,100%);min-height:0;border-radius:20px;border:1px solid var(--border);box-shadow:0 14px 44px rgba(15,23,42,.09)}
+.auth-a .auth-showcase{display:none}
+.auth-a .auth-card{padding:44px 40px 38px}
+.auth-a .auth-mobile-brand{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;margin-bottom:26px}
+.auth-a .auth-mobile-brand .auth-logo-mark{width:58px;height:58px;border-radius:16px}
+.auth-a .auth-mobile-brand strong{color:var(--ink);font-size:20px}
+.auth-a .auth-mobile-brand span{color:var(--muted)}
+.auth-a .auth-heading{text-align:center;margin-bottom:26px}
+.auth-a .auth-heading h1{font-size:26px;letter-spacing:-.4px}
+.auth-a .auth-heading p{font-size:13px}
+.auth-a .auth-small-label{letter-spacing:.4px}
+
+/* ===== design exploration B: bold brand-led ===== */
+.auth-b.auth-page{background:linear-gradient(150deg,#1e3a8a 0%,#2563eb 48%,#0ea5e9 115%)}
+.auth-b .auth-shell{grid-template-columns:1fr;width:min(470px,100%);min-height:0;border:none;border-radius:26px;background:rgba(255,255,255,.985);box-shadow:0 34px 90px rgba(8,20,50,.5),0 6px 20px rgba(8,20,50,.25)}
+.auth-b .auth-showcase{display:none}
+.auth-b .auth-card{padding:46px 44px 40px}
+.auth-b .auth-mobile-brand{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;margin-bottom:26px}
+.auth-b .auth-mobile-brand .auth-logo-mark{width:68px;height:68px;border-radius:20px;box-shadow:0 14px 34px rgba(37,99,235,.45)}
+.auth-b .auth-mobile-brand strong{color:var(--ink);font-size:24px}
+.auth-b .auth-mobile-brand span{color:var(--muted)}
+.auth-b .auth-heading{text-align:center;margin-bottom:28px}
+.auth-b .auth-heading h1{font-size:29px;letter-spacing:-.6px}
+.auth-b .auth-small-label{color:var(--primary);letter-spacing:.6px;text-transform:uppercase}
+.auth-b .primary-button{background:linear-gradient(135deg,#2563eb,#1d4ed8);box-shadow:0 12px 28px rgba(37,99,235,.35);font-weight:800}
+.auth-b .primary-button:hover{background:linear-gradient(135deg,#1d4ed8,#1e40af)}
+.auth-b .auth-input-wrap input:focus,.auth-b .auth-field>input:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(37,99,235,.16)}

@@ -79,6 +79,10 @@ export default function RegisterPage() {
         <div className="auth-showcase-footer">TEZKAR ERP <span>•</span> Factory Management</div>
       </section>
       <section className="auth-card" aria-labelledby="register-title">
+        <div className="auth-mobile-brand">
+          <div className="auth-logo-mark"><img src="/tezkar-logo.png" alt="شعار تذكار"/></div>
+          <div><strong>تذكار</strong><span>إدارة المصنع</span></div>
+        </div>
         <div style={{display:"inline-flex",alignItems:"center",gap:8,alignSelf:"flex-start",padding:"7px 11px",borderRadius:999,background:"#ecfdf5",border:"1px solid #a7f3d0",color:"#047857",fontSize:12,fontWeight:900,marginBottom:14}}>
           <span style={{width:8,height:8,borderRadius:"50%",background:"#10b981"}}/> تسجيل مستخدم جديد
         </div>
