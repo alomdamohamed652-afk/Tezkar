@@ -70,7 +70,7 @@ test("employee self-service is scoped to the signed-in employee and hides voided
       const rolePerms = await apiPool.query(
         "SELECT p.code FROM roles r JOIN role_permissions rp ON rp.role_id=r.id JOIN permissions p ON p.id=rp.permission_id WHERE r.code='employee' ORDER BY p.code");
       const codes = rolePerms.rows.map(r => r.code as string).sort();
-      assert.deepEqual(codes, ["attendance.permission.request", "attendance.permission.view_own", "attendance.view_own", "payroll.view_own"].sort());
+      assert.deepEqual(codes, ["attendance.permission.request", "attendance.permission.view_own", "attendance.view_own", "cash_custody.create_own", "cash_custody.transfer_own", "cash_custody.view_own", "payroll.view_own"].sort());
 
       // Staff cannot use manager attendance endpoints.
       const manager = await app.inject({ method: "GET", url: "/api/attendance/report?from=2026-11-01&to=2026-11-02", headers: { cookie: alice.cookie } });

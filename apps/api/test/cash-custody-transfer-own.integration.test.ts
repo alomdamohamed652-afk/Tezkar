@@ -80,6 +80,7 @@ test("cash custody own-scope transfers and permission grouping normalization", {
       const empB = await mkEmployee("Transfer Own Employee B");
       const empC = await mkEmployee("Transfer Own Employee C NoCustody");
       const empD = await mkEmployee("Transfer Own Employee D ViewOnly");
+      const empMgr = await mkEmployee("Transfer Own Manager");
       const mkUser = async (prefix: string, employeeId: string, role: string, password: string) => {
         const username = prefix + randomBytes(4).toString("hex");
         const u = (await apiPool.query(
@@ -91,7 +92,7 @@ test("cash custody own-scope transfers and permission grouping normalization", {
       };
       const pwA = "Test-Transfer-A-2026!", pwMgr = "Test-Transfer-Mgr-2026!", pwD = "Test-Transfer-D-2026!";
       const userA = await mkUser("trfa-", empA, "employee", pwA);
-      const mgrUser = await mkUser("trfmgr-", empD, "manager", pwMgr);
+      const mgrUser = await mkUser("trfmgr-", empMgr, "manager", pwMgr);
       const viewOnlyRole = (await apiPool.query("INSERT INTO roles(code,name,is_system) VALUES('transfer_view_only_test','عرض فقط اختبار',FALSE) RETURNING id")).rows[0];
       await apiPool.query("INSERT INTO role_permissions(role_id,permission_id) SELECT $1,p.id FROM permissions p WHERE p.code='cash_custody.view_own'", [viewOnlyRole.id]);
       const userD = await mkUser("trfd-", empD, "transfer_view_only_test", pwD);
