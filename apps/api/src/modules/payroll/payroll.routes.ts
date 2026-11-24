@@ -7,6 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
+import { pgDateKey } from "./pg-date-key.js";
 import { calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
 import { buildAttendanceReport } from "../attendance/attendance-report.service.js";
 
@@ -47,7 +48,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       pool.query(`SELECT id,monthly_salary,effective_from,effective_to,notes
         FROM employee_salary_profiles WHERE employee_id=$1
         ORDER BY effective_from DESC,created_at DESC LIMIT 24`,[employeeId]),
-      pool.query(`SELECT i.id,i.employee_id,p.period_month,p.status AS period_status,i.base_salary,i.bonus_amount,i.deduction_amount,
+      pool.query(`SELECT i.id,i.employee_id,p.period_month::text AS period_month,p.status AS period_status,i.base_salary,i.bonus_amount,i.deduction_amount,
           i.advance_repayment_amount,i.net_amount,i.status,i.notes,
           COALESCE((SELECT SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0) AS paid_amount,
           GREATEST(i.net_amount-COALESCE((SELECT SUM(pp.amount-COALESCE((SELECT SUM(rl.amount) FROM financial_reversal_lines rl WHERE rl.source_type='PAYROLL_PAYMENT' AND rl.source_id=pp.id),0)) FROM payroll_payments pp WHERE pp.payroll_item_id=i.id),0),0) AS remaining_amount,
@@ -302,7 +303,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const before = await client.query("SELECT i.*,p.status AS period_status,p.period_month AS accounting_period_month FROM payroll_items i JOIN payroll_periods p ON p.id=i.period_id WHERE i.id=$1 FOR UPDATE OF i,p", [id]);
       if (!before.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND", "بند الراتب غير موجود", 404);
       if (before.rows[0].period_status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "لا يمكن تعديل مسير راتب معتمد", 409);
-      const accountingDate=before.rows[0].accounting_period_month instanceof Date?before.rows[0].accounting_period_month.toISOString().slice(0,10):String(before.rows[0].accounting_period_month).slice(0,10);
+      const accountingDate=pgDateKey(before.rows[0].accounting_period_month);
       await assertAccountingMonthOpen(client,accountingDate);
       const bonus = parsed.data.bonusAmount ?? Number(before.rows[0].bonus_amount);
       const deductionMode = parsed.data.deductionMode ?? before.rows[0].deduction_mode ?? "FIXED";
@@ -368,13 +369,11 @@ export async function payrollRoutes(app: FastifyInstance) {
       const period = await client.query("SELECT * FROM payroll_periods WHERE id=$1 FOR UPDATE", [id]);
       if (!period.rowCount) throw new AppError("PAYROLL_PERIOD_NOT_FOUND", "فترة الرواتب غير موجودة", 404);
       if (period.rows[0].status !== "DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED", "الفترة ليست مسودة", 409);
-      const accountingDate=period.rows[0].period_month instanceof Date?period.rows[0].period_month.toISOString().slice(0,10):String(period.rows[0].period_month).slice(0,10);
+      const accountingDate=pgDateKey(period.rows[0].period_month);
       await assertAccountingMonthOpen(client,accountingDate);
       const count = await client.query("SELECT COUNT(*)::int AS count FROM payroll_items WHERE period_id=$1", [id]);
       if (!Number(count.rows[0].count)) throw new AppError("PAYROLL_EMPTY", "لا يوجد موظفون برواتب محددة في هذه الفترة", 409);
-      const periodMonthValue=period.rows[0].period_month;
-      const parsedPeriodMonth=periodMonthValue instanceof Date?periodMonthValue:new Date(String(periodMonthValue));
-      const monthLabel=Number.isNaN(parsedPeriodMonth.getTime())?String(periodMonthValue).slice(0,7):parsedPeriodMonth.toISOString().slice(0,7);
+      const monthLabel=pgDateKey(period.rows[0].period_month).slice(0,7);
       const monthStart=monthLabel+"-01";
       const monthEndDate=new Date(Date.UTC(Number(monthLabel.slice(0,4)),Number(monthLabel.slice(5,7)),0));
       const monthEnd=monthLabel+"-"+String(monthEndDate.getUTCDate()).padStart(2,"0");
@@ -824,7 +823,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         WHERE i.id=$1 FOR UPDATE OF i,p`,[id]);
       if(!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
       if(item.rows[0].period_status!=="DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن تعديل بنود مسير معتمد",409);
-      const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
+      const month=pgDateKey(item.rows[0].period_month);
       await assertAccountingMonthOpen(client,month);
       const line=await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[id,parsed.data.lineType,parsed.data.description,parsed.data.amount,parsed.data.notes??null,request.user!.userId]);
@@ -857,7 +856,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         WHERE i.id=$1 FOR UPDATE OF i,p`,[params.id]);
       if(!item.rowCount)throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
       if(item.rows[0].period_status!=="DRAFT")throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن تعديل بنود مسير معتمد",409);
-      const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
+      const month=pgDateKey(item.rows[0].period_month);
       await assertAccountingMonthOpen(client,month);
       const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 FOR UPDATE",[params.lineId,params.id]);
       if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
@@ -887,7 +886,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         WHERE i.id=$1 FOR UPDATE OF i,p`,[params.id]);
       if(!item.rowCount) throw new AppError("PAYROLL_ITEM_NOT_FOUND","بند الراتب غير موجود",404);
       if(item.rows[0].period_status!=="DRAFT") throw new AppError("PAYROLL_PERIOD_LOCKED","لا يمكن إلغاء بنود مسير معتمد؛ استخدم إجراء العكس المحاسبي.",409);
-      const month=item.rows[0].period_month instanceof Date?item.rows[0].period_month.toISOString().slice(0,10):String(item.rows[0].period_month).slice(0,10);
+      const month=pgDateKey(item.rows[0].period_month);
       await assertAccountingMonthOpen(client,month);
       const before=await client.query("SELECT * FROM payroll_adjustment_lines WHERE id=$1 AND payroll_item_id=$2 FOR UPDATE",[params.lineId,params.id]);
       if(!before.rowCount)throw new AppError("PAYROLL_ADJUSTMENT_NOT_FOUND","بند المكافأة أو الخصم غير موجود",404);
