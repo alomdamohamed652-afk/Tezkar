@@ -2349,15 +2349,15 @@ textarea:hover:not(:disabled) {
   text-align:center;
 }
 .auth-mobile-brand .auth-logo-mark{
-  width:72px;
-  height:72px;
+  width:88px;
+  height:88px;
   display:grid;
   place-items:center;
   border-radius:18px;
   background:#fff;
   box-shadow:0 10px 26px rgb(3 12 40 / 35%),0 0 24px rgb(147 197 253 / 20%);
 }
-.auth-mobile-brand .auth-logo-mark img{width:56px;height:56px;object-fit:contain}
+.auth-mobile-brand .auth-logo-mark img{width:76px;height:76px;object-fit:contain}
 .auth-mobile-brand strong{color:#fff;font-size:20px;font-weight:800;line-height:1.2}
 .auth-mobile-brand span{color:#93c5fd;font-size:11px;letter-spacing:.6px}
 .auth-heading{text-align:center;margin-bottom:26px}
