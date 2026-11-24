@@ -105,7 +105,7 @@ a{color:inherit;text-decoration:none}
 }
 .brand-mark img{width:44px;height:44px;display:block;object-fit:contain;padding:2px;border-radius:10px;background:#fff}
 .brand-name{font-size:21px;font-weight:800;line-height:1.15;color:#fff}
-.brand-sub{font-size:10px;color:#8190a5;margin-top:4px}
+.brand-sub{font-size:10px;color:#c3d4f2;margin-top:4px}
 .sidebar-user{
   min-height:52px;
   display:flex;
@@ -1015,7 +1015,7 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .auth-showcase-top span,.auth-mobile-brand span{
   display:block;
   margin-top:4px;
-  color:#94a3b8;
+  color:#c3d4f2;
   font-size:12px;
 }
 .auth-showcase-content{
@@ -2359,7 +2359,7 @@ textarea:hover:not(:disabled) {
 }
 .auth-mobile-brand .auth-logo-mark img{width:76px;height:76px;object-fit:contain}
 .auth-mobile-brand strong{color:#fff;font-size:20px;font-weight:800;line-height:1.2}
-.auth-mobile-brand span{color:#93c5fd;font-size:11px;letter-spacing:.6px}
+.auth-mobile-brand span{color:#c3d4f2;font-size:11px;letter-spacing:.6px}
 .auth-heading{text-align:center;margin-bottom:26px}
 .auth-small-label{color:#7dd3fc}
 .auth-heading h1{color:#fff}
