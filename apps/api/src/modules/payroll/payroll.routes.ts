@@ -93,7 +93,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       dailyWorkMinutes:z.number().int().min(1).max(1440),
       dayOffPayAmount:z.number().min(0).max(100000000),
       overtimeMultiplier:z.number().min(0).max(5),
-      // Monthly allowed-leave balance is tracked for follow-up only; it never
+      // Monthly allowed-leave allowance is configuration for follow-up only; it never
       // feeds the attendance pay calculation. Omitting it keeps the saved value.
       allowedLeaveDaysPerMonth:z.number().min(0).max(31).nullable().optional()
     }).safeParse(request.body);
