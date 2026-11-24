@@ -1,5 +1,5 @@
 import { belongsToAttendanceShift, calculateOvertimeMinutes, calculateWorkedMinutes, findEffectiveAttendanceSchedule, selectAttendanceDayEvents } from "./attendance-calculation.js";
-import { suggestBoundaryPunchCorrections } from "./attendance-corrections.js";
+import { suggestBoundaryPunchCorrections, suggestOvernightCheckoutCorrections, suggestOvertimeSequenceCorrections } from "./attendance-corrections.js";
 
 type AttendanceReportDb = { query: (sql: string, values?: any[]) => Promise<{ rows: any[] }> };
 
@@ -104,7 +104,20 @@ export async function buildAttendanceReport(db:AttendanceReportDb,from:string,to
      assigned.forEach(p=>used.add(p.id));
      // The preceding day is processed only to reserve its punches; it is not part of this report.
      if(dayIndex<0)continue;
-     const correctionSuggestions=(!dayOff&&start!==null&&end!==null)?suggestBoundaryPunchCorrections({punches:assigned,shiftDate:date,startMinute:start,endMinute:end,overnight}):[];
+     let correctionSuggestions=(!dayOff&&start!==null&&end!==null)?suggestBoundaryPunchCorrections({punches:assigned,shiftDate:date,startMinute:start,endMinute:end,overnight}):[];
+     // An overnight shift with no OUT may have its checkout recorded as an IN on the
+     // following morning. Suggest flipping it, unless that punch is better explained
+     // as the next day's own clock-in (closer to the next shift's start).
+     if(overnight&&start!==null&&end!==null){
+      const nextDate=addDateKey(date,1);const nextWeekday=new Date(nextDate+"T00:00:00Z").getUTCDay();
+      const nextException=employeeExceptions.find(e=>e.start_date<=nextDate&&e.end_date>=nextDate);
+      const nextSchedule=nextException?{starts_at:nextException.starts_at,ends_at:nextException.ends_at,is_day_off:nextException.is_day_off}:findEffectiveAttendanceSchedule(employeeSchedules,employee.id,nextWeekday,nextDate);
+      const nextShiftStart=nextSchedule&&!nextSchedule.is_day_off?minutesOfTime(nextSchedule.starts_at):null;
+      const assignedIds=new Set(assigned.map(p=>p.id));
+      const nextDayCandidates=(employeePunchDates?.get(nextDate)??[]).filter(p=>p.employee_id===employee.id&&!assignedIds.has(p.id));
+      correctionSuggestions=correctionSuggestions.concat(suggestOvernightCheckoutCorrections({assignedPunches:assigned,nextDayPunches:nextDayCandidates,startMinute:start,endMinute:end,nextShiftStartMinute:nextShiftStart}));
+     }
+     correctionSuggestions=correctionSuggestions.concat(suggestOvertimeSequenceCorrections({punches:assigned}));
      const ordered=[...assigned].sort((a,b)=>new Date(a.effectivePunchAt).getTime()-new Date(b.effectivePunchAt).getTime()).map(p=>({...p,punch_at:p.effectivePunchAt,status:p.corrected_status??p.status}));
      const selectedEvents=selectAttendanceDayEvents(ordered);
      const inPunch=selectedEvents.inPunch;const outPunch=selectedEvents.outPunch;
