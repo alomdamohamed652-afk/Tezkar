@@ -13,7 +13,8 @@
     "test": "node --test-concurrency=1 --import tsx --test test/*.test.ts",
     "bootstrap": "node --env-file=.env --import tsx src/db/bootstrap-admin.ts",
     "start": "node dist/main.js",
-    "migrate": "node --env-file=.env --import tsx src/db/migrate.ts"
+    "migrate": "node --env-file=.env --import tsx src/db/migrate.ts",
+    "migrate:target": "node --env-file=.env --import tsx src/db/migrate-target.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
