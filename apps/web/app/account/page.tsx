@@ -2,13 +2,16 @@
 import {FormEvent,useEffect,useState} from "react";
 import {useRouter} from "next/navigation";
 import {api} from "../../lib/api";
-import {Sidebar} from "../../components/sidebar";
+import {Sidebar,usePermissions} from "../../components/sidebar";
+import Link from "next/link";
 
 type Profile={username:string;code:string;full_name:string|null;employee_code:string|null;roles:string[];must_change_password:boolean;email:string|null;email_verified_at:string|null};
 type Session={id:string;device_id:string|null;device_name:string|null;device_type:string|null;browser_name:string|null;os_name:string|null;ip_address:string|null;last_seen_at:string|null;expires_at:string;is_current:boolean};
 
 export default function AccountPage(){
  const router=useRouter();
+ const {has}=usePermissions();
+ const canSeeSelfService=has("attendance.view_own")||has("payroll.view_own");
  const [profile,setProfile]=useState<Profile|null>(null);
  const [sessions,setSessions]=useState<Session[]>([]);
  const [current,setCurrent]=useState(""),[next,setNext]=useState(""),[confirm,setConfirm]=useState("");
@@ -34,6 +37,7 @@ export default function AccountPage(){
   <section className="content">
    {error&&<div className="alert error">{error}</div>}{msg&&<div className="success-box">{msg}</div>}
    {profile?.must_change_password&&<div className="alert error">تم تعيين كلمة مرور مؤقتة لحسابك. غيّرها الآن قبل استخدام باقي أجزاء النظام.</div>}
+   {canSeeSelfService&&<section className="card"><div className="card-header"><h2 className="card-title">صفحتي الشخصية</h2></div><div className="card-body"><p className="form-hint">مرتبك وحضورك وبصماتك وأذوناتك ومواعيدك في مكان واحد.</p><div className="form-actions" style={{padding:0}}><Link className="primary-button" href="/me">فتح صفحة «أنا»</Link></div></div></section>}
    <section className="card"><div className="card-header"><h2 className="card-title">بيانات الحساب</h2></div><div className="form-grid"><label>اسم المستخدم<input readOnly value={profile?.username??""}/></label><label>الكود<input readOnly value={profile?.code??""}/></label><label>الموظف<input readOnly value={profile?.full_name??"حساب إداري"}/></label><label>الأدوار<input readOnly value={profile?.roles?.join("، ")??""}/></label></div></section>
    <EmailCard profile={profile} onChanged={loadProfile}/>
    <section className="card"><div className="card-header"><h2 className="card-title">الأجهزة المسجّل دخولها</h2><span className="badge">{sessions.length} جهاز</span></div>
