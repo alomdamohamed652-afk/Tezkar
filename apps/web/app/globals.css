@@ -2121,15 +2121,17 @@ textarea:hover:not(:disabled) {
 /* Delivery note redesign (print only, scoped to .delivery-note so carton/coding prints are untouched) */
 @media print{
  .print-sheet.delivery-note{color:#0f172a;font-family:"IBM Plex Sans Arabic","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right;-webkit-print-color-adjust:exact;print-color-adjust:exact}
- .print-sheet.delivery-note .dn-header{display:flex;justify-content:space-between;align-items:flex-start;gap:8mm;padding-bottom:3.5mm;border-bottom:.8mm solid #2563eb;margin-bottom:4.5mm}
- .print-sheet.delivery-note .dn-brand{display:flex;align-items:center;gap:3.5mm;text-align:right}
- .print-sheet.delivery-note .dn-brand img{width:16mm;height:16mm;object-fit:contain;flex:0 0 16mm}
- .print-sheet.delivery-note .dn-brand strong{display:block;font-size:15pt;font-weight:700;line-height:1.25;color:#0f172a}
- .print-sheet.delivery-note .dn-brand span{display:block;font-size:8.5pt;color:#64748b;font-weight:500;margin-top:.8mm}
- .print-sheet.delivery-note .dn-title{text-align:left}
- .print-sheet.delivery-note .dn-title h1{margin:0;font-size:17pt;font-weight:700;color:#1d4ed8;line-height:1.25}
- .print-sheet.delivery-note .dn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10pt;font-weight:600;color:#334155;margin-top:1mm;direction:ltr;text-align:left}
- .print-sheet.delivery-note .dn-title .print-barcode{width:46mm;margin:2mm 0 0;text-align:left}
+ .print-sheet.delivery-note .dn-header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid #2563eb;margin-bottom:5mm}
+ .print-sheet.delivery-note .dn-brand{display:flex;align-items:center;gap:4mm;text-align:right}
+ .print-sheet.delivery-note .dn-brand img{width:24mm;height:24mm;object-fit:contain;flex:0 0 24mm}
+ .print-sheet.delivery-note .dn-brand strong{display:block;font-size:20pt;font-weight:800;line-height:1.2;color:#0f172a;white-space:nowrap}
+ .print-sheet.delivery-note .dn-brand span{display:block;font-size:10pt;color:#64748b;font-weight:600;margin-top:1.2mm;white-space:nowrap}
+ .print-sheet.delivery-note .dn-title{text-align:center;justify-self:center}
+ .print-sheet.delivery-note .dn-brand{justify-self:start}
+ .print-sheet.delivery-note .dn-barcode{justify-self:end}
+ .print-sheet.delivery-note .dn-title h1{margin:0;font-size:22pt;font-weight:800;color:#1d4ed8;line-height:1.2}
+ .print-sheet.delivery-note .dn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11pt;font-weight:700;color:#334155;margin-top:1.5mm;direction:ltr;text-align:center;letter-spacing:.5px}
+ .print-sheet.delivery-note .dn-barcode{width:46mm;margin:0;text-align:center}
  .print-sheet.delivery-note .print-grid{grid-template-columns:repeat(3,1fr);gap:0;margin-top:0;border:1px solid #dbe3ee;border-radius:2mm;overflow:hidden;background:#fff}
  .print-sheet.delivery-note .print-grid>div{border:0;border-inline-start:1px solid #e6ecf4;border-top:1px solid #e6ecf4;padding:2.2mm 3mm;min-height:11mm}
  .print-sheet.delivery-note .print-grid>div:nth-child(3n+1){border-inline-start:0}
