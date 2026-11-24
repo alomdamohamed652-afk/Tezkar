@@ -490,7 +490,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           if(code==="ATTENDANCE_MISSING_PUNCH")throw new AppError(code,"يوجد يوم ببصمة ناقصة؛ صحح البصمة أو سوِّ اليوم يدويًا قبل اعتماد المسير.",409);
           if(code==="ATTENDANCE_SCHEDULE_REQUIRED")throw new AppError(code,"يوجد يوم في الشهر بلا جدول وردية مضبوط؛ حدّد أيام العمل والراحة لكل موظف قبل اعتماد المسير.",409);
           if(code==="PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE")throw new AppError(code,"يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
-          if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر يوم الراحة لهذا الموظف.",409);
+          if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر اليوم الزيادة/الراحة لهذا الموظف.",409);
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
         const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
