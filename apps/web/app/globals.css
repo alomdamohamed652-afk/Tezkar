@@ -1105,8 +1105,8 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   font-size:14px;
   line-height:1.8;
 }
-.auth-form{display:grid;gap:19px}
-.auth-field{display:grid;gap:8px}
+.auth-form{display:grid;grid-template-columns:minmax(0,1fr);gap:19px}
+.auth-field{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
 .auth-field>span{
   color:var(--ink-2);
   font-size:13px;
@@ -1132,6 +1132,25 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
   box-shadow:0 0 0 4px rgba(37,99,235,.08);
 }
 .auth-input-wrap input::placeholder{color:#a7b2c3}
+.auth-field>input{
+  width:100%;
+  height:52px;
+  padding:0 14px;
+  border:1px solid var(--border);
+  border-radius:13px;
+  outline:none;
+  background:#fbfcfe;
+  color:var(--ink);
+  font:inherit;
+  font-size:14px;
+  transition:border-color .18s,box-shadow .18s,background .18s;
+}
+.auth-field>input:focus{
+  border-color:#93c5fd;
+  background:#fff;
+  box-shadow:0 0 0 4px rgba(37,99,235,.08);
+}
+.auth-field>input::placeholder{color:#a7b2c3}
 .auth-input-icon{
   position:absolute;
   right:15px;top:50%;
