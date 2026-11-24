@@ -333,3 +333,45 @@ test("legacy policy without a configured allowance keeps the rest-day bonus beha
   assert.equal(result.leavePayoutAmount, 0);
   assert.equal(result.attendedDays, 0);
 });
+
+test("pool mode, current behavior: a confirmed absence deducts a full day and does not consume the allowance", () => {
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [...flexMonthDays(25, 0, 4), { date: "2026-11-30", status: "ABSENT" }]
+  });
+  assert.equal(result.attendedDays, 25);
+  assert.equal(result.restDaysUsed, 4);
+  assert.equal(result.leavePayoutAmount, 0);
+  assert.equal(result.absenceMinutes, 480);
+  assert.equal(result.deductionAmount, 300);
+});
+
+test("pool mode, current behavior: pre-hire days as NOT_STARTED neither deduct nor consume the allowance, and the unused allowance still pays out", () => {
+  const preHire = Array.from({ length: 19 }, (_, i) => ({ date: "2026-11-" + String(i + 1).padStart(2, "0"), status: "NOT_STARTED" }));
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [...preHire, ...flexMonthDays(9, 0, 2).map((d, i) => ({ ...d, date: "2026-11-" + String(20 + i).padStart(2, "0") }))]
+  });
+  assert.equal(result.attendedDays, 9);
+  assert.equal(result.restDaysUsed, 2);
+  assert.equal(result.leavePayoutDays, 2);
+  assert.equal(result.leavePayoutAmount, 600);
+  assert.equal(result.deductionMinutes, 0);
+});
+
+test("pool mode, current behavior: future workdays are neutral while future unworked rest days still consume the allowance", () => {
+  const futureWorkdays = Array.from({ length: 4 }, (_, i) => ({ date: "2026-11-" + String(27 + i).padStart(2, "0"), status: "NOT_STARTED" }));
+  const result = calculatePayrollAttendance({
+    baseSalary: 7800, existingBonus: 0, policy: flexPolicy,
+    days: [
+      ...flexMonthDays(20, 0, 2),
+      ...futureWorkdays.map(d => ({ ...d })),
+      { date: "2026-11-25", status: "DAY_OFF" },
+      { date: "2026-11-26", status: "DAY_OFF" }
+    ]
+  });
+  assert.equal(result.attendedDays, 20);
+  assert.equal(result.restDaysUsed, 4);
+  assert.equal(result.leavePayoutAmount, 0);
+  assert.equal(result.deductionMinutes, 0);
+});
