@@ -22,7 +22,10 @@ export async function applySalaryComponentsToDraft(client: Db, periodId: string,
     `INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,salary_component_id)
      SELECT i.id,c.line_type,c.name,c.amount,c.notes,$2,c.id
        FROM payroll_items i
+       JOIN payroll_periods p ON p.id=i.period_id
        JOIN employee_salary_components c ON c.employee_id=i.employee_id AND c.is_active=TRUE
+        AND c.effective_from < (p.period_month + INTERVAL '1 month')::date
+        AND (c.effective_to IS NULL OR c.effective_to >= p.period_month)
       WHERE i.period_id=$1
      RETURNING id`,
     [periodId, createdBy]

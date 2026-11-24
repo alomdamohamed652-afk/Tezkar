@@ -28,9 +28,12 @@ test("applySalaryComponentsToDraft replaces only component lines and recomputes 
   assert.ok(client.calls[0].sql.includes("salary_component_id IS NOT NULL"));
   assert.ok(client.calls[0].sql.includes("WHERE period_id=$1"));
   assert.deepEqual(client.calls[0].values, ["period-1"]);
-  // 2. Inserts from active components only, tagged with the component id.
+  // 2. Inserts from active components only, tagged with the component id,
+  //    limited to components whose effective range overlaps the period month.
   assert.ok(client.calls[1].sql.includes("c.is_active=TRUE"));
   assert.ok(client.calls[1].sql.includes("salary_component_id"));
+  assert.ok(client.calls[1].sql.includes("c.effective_from < (p.period_month + INTERVAL '1 month')::date"));
+  assert.ok(client.calls[1].sql.includes("c.effective_to >= p.period_month"));
   assert.deepEqual(client.calls[1].values, ["period-1", "user-1"]);
   // 3. Recomputes bonus/deduction totals from all ACTIVE lines (manual + generated).
   assert.ok(client.calls[2].sql.includes("UPDATE payroll_items"));

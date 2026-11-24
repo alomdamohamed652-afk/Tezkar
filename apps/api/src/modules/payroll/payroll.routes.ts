@@ -152,13 +152,16 @@ export async function payrollRoutes(app: FastifyInstance) {
     return reply.code(201).send({ data: result });
   });
 
+  const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/,"التاريخ بصيغة YYYY-MM-DD");
   const componentSchema = z.object({
     lineType: z.enum(["BONUS","DEDUCTION"]),
     name: z.string().trim().min(2).max(240),
     amount: z.number().positive().max(100000000),
+    effectiveFrom: dateString,
+    effectiveTo: dateString.nullable().optional(),
     isActive: z.boolean().optional(),
     notes: z.string().trim().max(1000).nullable().optional()
-  }).strict();
+  }).strict().refine(d=>!d.effectiveTo||d.effectiveTo>=d.effectiveFrom,{message:"تاريخ نهاية السريان قبل بدايته"});
 
   // مفردات المرتب الثابتة: بدلات وخصومات متكررة تُطبق تلقائيًا عند توليد المسير.
   app.get("/api/payroll/employees/:id/salary-components", { preHandler: [authenticateRequest, requirePermission("payroll.manage")] }, async request => {
@@ -179,13 +182,15 @@ export async function payrollRoutes(app: FastifyInstance) {
       const employee=await client.query("SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود أو غير نشط",404);
       const duplicate=await client.query(
-        "SELECT 1 FROM employee_salary_components WHERE employee_id=$1 AND line_type=$2 AND lower(name)=lower($3) AND is_active=TRUE",
-        [employeeId,parsed.data.lineType,parsed.data.name]);
-      if(duplicate.rowCount)throw new AppError("SALARY_COMPONENT_DUPLICATE","توجد مفردة نشطة بنفس الاسم والنوع لهذا الموظف",409);
+        `SELECT 1 FROM employee_salary_components
+         WHERE employee_id=$1 AND line_type=$2 AND lower(name)=lower($3) AND is_active=TRUE
+           AND effective_from<=COALESCE($5::date,'9999-12-31') AND $4::date<=COALESCE(effective_to,'9999-12-31'::date)`,
+        [employeeId,parsed.data.lineType,parsed.data.name,parsed.data.effectiveFrom,parsed.data.effectiveTo??null]);
+      if(duplicate.rowCount)throw new AppError("SALARY_COMPONENT_DUPLICATE","توجد مفردة نشطة بنفس الاسم والنوع لهذا الموظف في فترة سريان متقاطعة",409);
       const inserted=await client.query(
-        `INSERT INTO employee_salary_components(employee_id,line_type,name,amount,is_active,notes,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [employeeId,parsed.data.lineType,parsed.data.name,parsed.data.amount,parsed.data.isActive??true,parsed.data.notes??null,request.user!.userId]);
+        `INSERT INTO employee_salary_components(employee_id,line_type,name,amount,effective_from,effective_to,is_active,notes,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [employeeId,parsed.data.lineType,parsed.data.name,parsed.data.amount,parsed.data.effectiveFrom,parsed.data.effectiveTo??null,parsed.data.isActive??true,parsed.data.notes??null,request.user!.userId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create_salary_component",module:"payroll",entityType:"employee_salary_component",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return inserted.rows[0];
     });
@@ -200,13 +205,15 @@ export async function payrollRoutes(app: FastifyInstance) {
       const before=await client.query("SELECT * FROM employee_salary_components WHERE id=$1 FOR UPDATE",[componentId]);
       if(!before.rowCount)throw new AppError("SALARY_COMPONENT_NOT_FOUND","مفردة المرتب غير موجودة",404);
       const duplicate=await client.query(
-        "SELECT 1 FROM employee_salary_components WHERE employee_id=$1 AND line_type=$2 AND lower(name)=lower($3) AND is_active=TRUE AND id<>$4",
-        [before.rows[0].employee_id,parsed.data.lineType,parsed.data.name,componentId]);
-      if(duplicate.rowCount)throw new AppError("SALARY_COMPONENT_DUPLICATE","توجد مفردة نشطة بنفس الاسم والنوع لهذا الموظف",409);
+        `SELECT 1 FROM employee_salary_components
+         WHERE employee_id=$1 AND line_type=$2 AND lower(name)=lower($3) AND is_active=TRUE AND id<>$4
+           AND effective_from<=COALESCE($6::date,'9999-12-31') AND $5::date<=COALESCE(effective_to,'9999-12-31'::date)`,
+        [before.rows[0].employee_id,parsed.data.lineType,parsed.data.name,componentId,parsed.data.effectiveFrom,parsed.data.effectiveTo??null]);
+      if(duplicate.rowCount)throw new AppError("SALARY_COMPONENT_DUPLICATE","توجد مفردة نشطة بنفس الاسم والنوع لهذا الموظف في فترة سريان متقاطعة",409);
       const updated=await client.query(
-        `UPDATE employee_salary_components SET line_type=$1,name=$2,amount=$3,is_active=$4,notes=$5,updated_at=now()
-         WHERE id=$6 RETURNING *`,
-        [parsed.data.lineType,parsed.data.name,parsed.data.amount,parsed.data.isActive??before.rows[0].is_active,parsed.data.notes===undefined?before.rows[0].notes:parsed.data.notes,componentId]);
+        `UPDATE employee_salary_components SET line_type=$1,name=$2,amount=$3,effective_from=$4,effective_to=$5,is_active=$6,notes=$7,updated_at=now()
+         WHERE id=$8 RETURNING *`,
+        [parsed.data.lineType,parsed.data.name,parsed.data.amount,parsed.data.effectiveFrom,parsed.data.effectiveTo??null,parsed.data.isActive??before.rows[0].is_active,parsed.data.notes===undefined?before.rows[0].notes:parsed.data.notes,componentId]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_salary_component",module:"payroll",entityType:"employee_salary_component",entityId:componentId,beforeData:before.rows[0],afterData:updated.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return {data:updated.rows[0]};
     });

@@ -6,9 +6,13 @@ CREATE TABLE IF NOT EXISTS employee_salary_components (
   line_type TEXT NOT NULL CHECK (line_type IN ('BONUS','DEDUCTION')),
   name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 2 AND 240),
   amount NUMERIC(18,2) NOT NULL CHECK (amount > 0),
+  -- ساري من/إلى: المفردة تُطبق على مسير أي شهر يتقاطع مع فترة سريانها (بكامل قيمتها الشهرية).
+  effective_from DATE NOT NULL,
+  effective_to DATE,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   notes TEXT,
   created_by UUID NOT NULL REFERENCES users(id),
+  CHECK (effective_to IS NULL OR effective_to >= effective_from),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
