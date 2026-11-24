@@ -18,9 +18,11 @@ function encode(value:string){
  return ["*",...clean.split(""),"*"].map((char)=>PATTERNS[char]||PATTERNS["-"]);
 }
 
-export function Code39Barcode({ value, height=56 }: { value:string; height?:number }){
+export function Code39Barcode({ value, height=56, moduleWidth }: { value:string; height?:number; moduleWidth?:number }){
  const bars=useMemo(()=>encode(value),[value]);
- let x=8;
+ // Quiet zone: Code39 needs at least 10 narrow modules of white on both sides.
+ const quiet=moduleWidth?10:8;
+ let x=quiet;
  const rects: {x:number;w:number}[]=[];
  for(const pattern of bars){
   for(let i=0;i<pattern.length;i++){
@@ -31,8 +33,19 @@ export function Code39Barcode({ value, height=56 }: { value:string; height?:numb
   }
   x+=1;
  }
+ const naturalWidth=x+quiet;
+ if(moduleWidth){
+  // Natural sizing: 1 module = moduleWidth px, bars keep their true proportions.
+  return (
+   <svg role="img" aria-label={"Barcode "+value} viewBox={"0 0 "+naturalWidth+" "+(height+24)} width={naturalWidth*moduleWidth} height={(height+24)*moduleWidth} style={{display:"block"}}>
+    <rect x="0" y="0" width="100%" height="100%" fill="white"/>
+    {rects.map((r,i)=><rect key={i} x={r.x} y="4" width={r.w} height={height} fill="black"/>)}
+    <text x="50%" y={height+19} textAnchor="middle" fontFamily="monospace" fontSize="12" fill="black">{value}</text>
+   </svg>
+  );
+ }
  return (
-  <svg role="img" aria-label={"Barcode "+value} viewBox={"0 0 "+(x+8)+" "+(height+24)} width="100%" height={height+24} preserveAspectRatio="none">
+  <svg role="img" aria-label={"Barcode "+value} viewBox={"0 0 "+naturalWidth+" "+(height+24)} width="100%" height={height+24} preserveAspectRatio="none">
    <rect x="0" y="0" width="100%" height={height+24} fill="white"/>
    {rects.map((r,i)=><rect key={i} x={r.x} y="4" width={r.w} height={height} fill="black"/>)}
    <text x="50%" y={height+19} textAnchor="middle" fontFamily="monospace" fontSize="12" fill="black">{value}</text>
