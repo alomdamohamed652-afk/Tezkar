@@ -15,6 +15,7 @@ type PayrollItem = {
 type PayrollData = { period: { id: string; period_month: string; status: string } | null; items: PayrollItem[] };
 type AdjustmentLine = { id:string; line_type:"BONUS"|"DEDUCTION"; description:string; amount:string|number; notes:string|null; status?:"ACTIVE"|"VOIDED" };
 type OwnSlip = PayrollItem & { period_month:string; period_status:string; lines:AdjustmentLine[] };
+type Calculation = { month?:string; capturedAt?:string|null; policy?:{workDaysPerMonth?:number;dailyWorkMinutes?:number;dayOffPayAmount?:number;overtimeMultiplier?:number}; minuteRate?:number; lateMinutes?:number; earlyMinutes?:number; paidPermissionMinutes?:number; unpaidPermissionMinutes?:number; absenceMinutes?:number; deductionMinutes?:number; overtimeMinutes?:number; dayOffWorkedMinutes?:number; deductionAmount?:number; overtimeBonus?:number; dayOffBonus?:number };
 const money = (v: string | number) => formatMoney(v);
 const labels: Record<string, string> = { DRAFT: "مسودة — غير معتمد", APPROVED: "معتمد", CLOSED: "مغلق" };
 const statusLabels: Record<string, string> = { UNPAID: "لم يُصرف", PARTIAL: "صُرف جزئيًا", PAID: "مدفوع بالكامل", REVERSED: "تم عكس التسوية" };
@@ -26,6 +27,7 @@ export default function PayrollSlipPage() {
   const [adjustments, setAdjustments] = useState<AdjustmentLine[]>([]);
   const [month, setMonth] = useState("");
   const [loading, setLoading] = useState(true);
+  const [calculation, setCalculation] = useState<Calculation | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -47,6 +49,9 @@ export default function PayrollSlipPage() {
           setMonth(found.period_month.slice(0, 7));
           setPeriodStatus(found.period_status);
           setAdjustments(found.lines);
+          api<{ data: { calculation: Calculation | null; capturedAt: string | null } }>("/api/me/payslips/" + encodeURIComponent(itemId) + "/calculation")
+            .then(calc => { if (active) setCalculation(calc.data.calculation ? { ...calc.data.calculation, capturedAt: calc.data.capturedAt } : null); })
+            .catch(() => {});
         })
         .catch(e => { if (active) setError(e instanceof Error ? e.message : "تعذر تحميل مفردات المرتب."); })
         .finally(() => { if (active) setLoading(false); });
@@ -59,6 +64,10 @@ export default function PayrollSlipPage() {
         if (!found) { setError("لم يتم العثور على بند المرتب لهذا الشهر. تأكد من اعتماد المسير وصحة الرابط."); return; }
         setItem(found);
         setPeriodStatus(result.data.period?.status || "");
+        try {
+          const snapshot = await api<{data:{calculation:Calculation|null}}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/attendance-snapshot");
+          if (active) setCalculation(snapshot.data.calculation);
+        } catch { /* older items may have no frozen calculation */ }
         try {
           const lines = await api<{data:AdjustmentLine[]}>("/api/payroll/items/"+encodeURIComponent(itemId)+"/adjustments");
           // Cancelled (VOIDED) lines stay in the audit trail but never print on the slip.
@@ -138,6 +147,18 @@ export default function PayrollSlipPage() {
           </div>
         </section>
 
+        {calculation && <section className="slip-section">
+          <h3>كيف يُحسب مرتبك؟</h3>
+          <table><tbody>
+            <tr><td>الراتب الأساسي الشهري{calculation.policy?.workDaysPerMonth?<small className="line-note">{"على أساس "+calculation.policy.workDaysPerMonth+" يوم عمل في الشهر × "+(calculation.policy.dailyWorkMinutes??"—")+" دقيقة عمل في اليوم"}</small>:null}</td><td>{money(item.base_salary)}</td></tr>
+            {calculation.minuteRate!=null && <tr><td>سعر الدقيقة المحتسبة<small className="line-note">الراتب الأساسي ÷ إجمالي دقائق العمل المقررة في الشهر</small></td><td>{Number(calculation.minuteRate).toLocaleString("ar-EG",{maximumFractionDigits:4})} ج.م</td></tr>}
+            <tr><td>خصم الحضور (تأخير + انصراف مبكر + إذن غير مدفوع + غياب)<small className="line-note">{`تأخير ${calculation.lateMinutes??0} د · انصراف مبكر ${calculation.earlyMinutes??0} د · إذن غير مدفوع ${calculation.unpaidPermissionMinutes??0} د · غياب ${calculation.absenceMinutes??0} د`}</small></td><td>{money(calculation.deductionAmount??0)}</td></tr>
+            <tr><td>مقابل الوقت الإضافي<small className="line-note">{`${calculation.overtimeMinutes??0} دقيقة × سعر الدقيقة × معامل ${calculation.policy?.overtimeMultiplier??"—"}`}</small></td><td>{money(calculation.overtimeBonus??0)}</td></tr>
+            <tr><td>مقابل العمل في أيام الراحة والإجازات<small className="line-note">{`${calculation.dayOffWorkedMinutes??0} دقيقة عمل؛ أجر اليوم الكامل ${calculation.policy?.dayOffPayAmount??"—"} ج.م على أساس ${calculation.policy?.dailyWorkMinutes??"—"} دقيقة`}</small></td><td>{money(calculation.dayOffBonus??0)}</td></tr>
+          </tbody></table>
+          <p className="slip-note">هذه الأرقام مجمدة وقت اعتماد المسير{calculation.capturedAt?" ("+new Date(calculation.capturedAt).toLocaleString("ar-EG")+")":""} ولا تتغير بأي تعديل لاحق في الحضور. تظهر قيمتها ضمن بنود الاستحقاقات والاستقطاعات أعلاه.</p>
+        </section>}
+
         <section className="net-box">
           <div><span>صافي المرتب المستحق لهذا الشهر</span><strong>{money(item.net_amount)} ج.م</strong></div>
           <div className="net-sub"><span>تم صرفه</span><strong>{money(item.paid_amount)} ج.م</strong><span>المتبقي للصرف</span><strong>{money(item.remaining_amount)} ج.م</strong></div>
@@ -181,7 +202,8 @@ export default function PayrollSlipPage() {
         .slip-section td, .slip-section th { padding: 10px 12px; border: 1px solid #dce5ee; }
         .slip-section td:last-child, .slip-section th:last-child { text-align: left; width: 34%; font-variant-numeric: tabular-nums; }
         .subtotal td { font-weight: 800; background: #f7fafc; }
-        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }\n        .line-note { display:block; color:#718096; margin-top:4px; font-size:10px; }
+        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }
+        .line-note { display:block; color:#718096; margin-top:4px; font-size:10px; }
         .settlement-box { border: 1px solid #dce5ee; border-radius: 7px; padding: 13px; background: #fbfcfd; }
         .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
         .settlement-box p { margin: 10px 0 0; color: #65758a; font-size: 11px; line-height: 1.7; }
