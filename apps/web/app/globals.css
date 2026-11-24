@@ -2287,3 +2287,11 @@ body{
 }
 
 .table-wrap th{background:linear-gradient(180deg,#eef4ff,#e3edfd);color:#1e3a8a}
+
+/* Theme follow-ups: print safety, numerals, sidebar logo */
+@media print{
+  html,body{background:#fff!important}
+  .card,.user-chip{backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+.stat-value,.table-wrap td.money,.table-wrap td.numeric{font-variant-numeric:tabular-nums}
+.brand-mark img{padding:0}
