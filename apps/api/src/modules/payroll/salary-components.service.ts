@@ -12,6 +12,31 @@ type Db = { query: (sql: string, values?: unknown[]) => Promise<{ rows: any[]; r
  * and regeneration; the caller owns the transaction and the DRAFT check.
  */
 export async function applySalaryComponentsToDraft(client: Db, periodId: string, createdBy: string): Promise<number> {
+  // Same-name same-type components whose ranges do not overlap can still both touch
+  // one payroll month (old ends June 15, new starts June 16). Applying both in full
+  // would double-charge, and no source rule picks a winner — reject instead.
+  const ambiguous = await client.query(
+    `SELECT e.full_name, c.name
+       FROM payroll_periods p
+       JOIN payroll_items i ON i.period_id=p.id
+       JOIN employees e ON e.id=i.employee_id
+       JOIN employee_salary_components c ON c.employee_id=i.employee_id AND c.is_active=TRUE
+        AND c.effective_from < (p.period_month + INTERVAL '1 month')::date
+        AND (c.effective_to IS NULL OR c.effective_to >= p.period_month)
+      WHERE p.id=$1
+      GROUP BY e.full_name, c.line_type, c.name
+      HAVING COUNT(*)>1
+      ORDER BY e.full_name, c.name LIMIT 3`,
+    [periodId]
+  );
+  if (ambiguous.rows.length) {
+    const names = ambiguous.rows.map((row) => row.full_name + " (" + row.name + ")").join("، ");
+    throw new AppError(
+      "SALARY_COMPONENT_AMBIGUOUS_MONTH",
+      "فيه أكثر من مفردة نشطة بنفس الاسم والنوع بتتقاطع مع شهر المسير لـ: " + names + ". عدّل فترات السريان أو الأسماء قبل توليد المسير.",
+      422
+    );
+  }
   await client.query(
     `DELETE FROM payroll_adjustment_lines
      WHERE salary_component_id IS NOT NULL
