@@ -6,6 +6,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { env } from "./config.js";
 import { healthRoutes } from "./modules/health/health.routes.js";
+import { recordServerError } from "./modules/health/admin-health.service.js";
 import { employeeRoutes } from "./modules/employees/employees.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { registrationRoutes } from "./modules/auth/registration.routes.js";
@@ -104,7 +105,7 @@ app.addHook("onResponse", async (request, reply) => {
   }
 });
 
-app.setErrorHandler((error, _request, reply) => {
+app.setErrorHandler((error, request, reply) => {
   const statusCode = typeof error === "object" && error !== null && "statusCode" in error
     ? (error as { statusCode?: unknown }).statusCode
     : undefined;
@@ -117,6 +118,11 @@ app.setErrorHandler((error, _request, reply) => {
     return reply.code(statusCode).send({ error: { code, message } });
   }
 
+  recordServerError({
+    route: request.routeOptions?.url ?? request.url ?? "unknown",
+    method: request.method ?? "unknown",
+    message: error instanceof Error ? error.message : String(error)
+  });
   app.log.error(error);
   return reply.code(500).send({
     error: { code: "INTERNAL_ERROR", message: "حدث خطأ داخلي غير متوقع" }
