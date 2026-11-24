@@ -2714,3 +2714,21 @@ body{
 }
 
 body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",Tahoma,sans-serif}
+
+/* Order details page: meta grid, final products, stage add bar, contract form */
+.order-detail-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;padding:16px 18px 18px}
+.order-detail-meta>div{min-width:0;display:grid;gap:6px;align-content:start}
+.order-detail-meta span{font-size:12px;font-weight:700;color:var(--ink-2)}
+.order-detail-meta strong{font-size:15px;color:var(--ink);line-height:1.6;word-break:break-word}
+.order-detail-meta label{display:grid;gap:6px;color:var(--ink-2);font-size:12px;font-weight:700;min-width:0}
+.order-detail-meta input,.stage-add-bar input,.stage-add-bar select{width:100%;min-height:42px;border:1px solid var(--border-strong);border-radius:10px;outline:0;background:#fff;color:var(--ink);padding:9px 11px;font-size:14px;transition:border-color .14s ease,box-shadow .14s ease}
+.order-detail-meta input::placeholder,.stage-add-bar input::placeholder{color:#a1adbd}
+.order-detail-meta input:hover,.stage-add-bar input:hover,.stage-add-bar select:hover{border-color:#94a3b8}
+.order-detail-meta input:focus,.stage-add-bar input:focus,.stage-add-bar select:focus{border-color:var(--primary);box-shadow:var(--focus)}
+.final-products-list{display:flex;flex-wrap:wrap;gap:10px}
+.final-products-list>div{display:grid;gap:4px;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:#f8fafc;min-width:180px}
+.final-products-list strong{font-size:14px}
+.final-products-list span{font-size:13px;color:var(--ink-2)}
+.stage-add-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding:0 18px 16px;align-items:end}
+.stage-add-bar>label{min-width:0;display:grid;gap:6px;color:var(--ink-2);font-size:12px;font-weight:700}
+.stage-add-bar .stage-final-checkbox{display:flex;align-items:center;gap:8px;padding-bottom:12px;font-size:13px;font-weight:700;color:var(--ink-2)}
