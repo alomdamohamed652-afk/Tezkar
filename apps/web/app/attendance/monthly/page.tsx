@@ -321,7 +321,7 @@ export default function AttendanceMonthlyPage() {
           <div style={{ padding: "12px 18px 18px", display: "grid", gap: 14 }}>
             {selected.status === "ABSENT" && (selected.manualOverride
               ? <div className="month-note">سُوّي هذا اليوم يدويًا كغياب موثق بقرار مسؤول.</div>
-              : <div className="alert"><strong>غياب غير مؤكد:</strong> هذا اليوم مجدول ولا توجد له أي بصمة مسجلة. قد يكون السبب عطل تسجيل أو مشكلة نقل بيانات من الجهاز، وليس بالضرورة غيابًا فعليًا. عند اعتماد المسير يُخصم عن هذا اليوم يوم كامل ما لم تتم مراجعته وتسويته.</div>)}
+              : <div className="alert"><strong>غياب غير مؤكد:</strong> هذا اليوم مجدول ولا توجد له أي بصمة مسجلة. قد يكون السبب عطل تسجيل أو مشكلة نقل بيانات من الجهاز، وليس بالضرورة غيابًا فعليًا. {(() => { const p = policies[selected.employeeId]; return p && typeof p.allowed_leave_days_per_month === "number" ? "لهذا الموظف رصيد راحة وإجازات مشترك مضبوط: يتوقف اعتماد المسير حتى تتم مراجعة هذا اليوم وتسويته (حضور يدوي أو إجازة مدفوعة أو غياب مؤكد)، ولا يُخصم عنه تلقائيًا." : "عند اعتماد المسير يُخصم عن هذا اليوم يوم كامل ما لم تتم مراجعته وتسويته؛ وإن كان للموظف رصيد راحة وإجازات مشترك مضبوط، يتوقف الاعتماد حتى التسوية بدلًا من الخصم."; })()}</div>)}
             {(() => { const s = selected.scheduledStart, e2 = selected.scheduledEnd; if (!s || !e2) return null; const [sh, sm] = s.split(":").map(Number); const [eh, em] = e2.split(":").map(Number); return eh * 60 + em <= sh * 60 + sm ? <div className="month-note">وردية تمتد بعد منتصف الليل؛ بصمة الخروج التي بعد منتصف الليل تُنسب لهذا اليوم ضمن مهلة سماح الخروج المضبوطة.</div> : null; })()}
             {canManageAtt && <section>
               <h3 className="card-title" style={{ fontSize: 14, margin: "0 0 8px" }}>تسوية اليوم</h3>
