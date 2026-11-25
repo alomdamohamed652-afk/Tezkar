@@ -109,6 +109,32 @@ export async function productionRoutes(app: FastifyInstance) {
     return { data: result.rows };
   });
 
+  // Minimal lookup bundle for production entry/recording roles that lack the
+  // master-data view permissions (orders.view, products.view, shifts.view, employees.lookup).
+  // Returns identifiers and display names only — no rates, costs, or financial fields.
+  app.get("/api/production/lookup-data", {
+    preHandler: [authenticateRequest, requireAnyPermission(["production.create","all"],["production.view","all"])]
+  }, async () => {
+    const [employees, orders, products, shifts, shiftLeaders] = await Promise.all([
+      pool.query("SELECT id,code,full_name,is_active FROM employees WHERE is_active=TRUE ORDER BY code"),
+      pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status <> 'CANCELLED' ORDER BY created_at DESC LIMIT 500"),
+      pool.query("SELECT id,code,name FROM products WHERE is_active=TRUE ORDER BY code"),
+      pool.query(`SELECT s.id,s.code,s.name,g.name AS rate_group_name
+        FROM shifts s LEFT JOIN rate_groups g ON g.id=s.rate_group_id
+        WHERE s.is_active=TRUE ORDER BY s.code`),
+      pool.query(`SELECT sl.id,sl.shift_id,s.name AS shift_name,sl.employee_id,e.full_name AS employee_name,sl.assignment_type
+        FROM shift_leaders sl JOIN shifts s ON s.id=sl.shift_id JOIN employees e ON e.id=sl.employee_id
+        WHERE sl.is_active=TRUE ORDER BY s.code,e.code`)
+    ]);
+    return { data: {
+      employees: employees.rows,
+      orders: orders.rows,
+      products: products.rows,
+      shifts: shifts.rows,
+      shiftLeaders: shiftLeaders.rows
+    } };
+  });
+
   app.get("/api/production", {
     preHandler: [authenticateRequest, requirePermission("production.view")]
   }, async (request) => {

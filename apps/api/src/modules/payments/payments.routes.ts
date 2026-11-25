@@ -6,7 +6,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 
@@ -34,14 +34,11 @@ function isUniqueViolation(error: unknown): boolean {
   return code==="23505";
 }
 
-async function isWorker(userId:string) {
-  const r=await pool.query(
-    `SELECT u.employee_id, EXISTS(
-       SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
-       WHERE ur.user_id=$1 AND r.code='worker' AND r.is_active=TRUE
-     ) AS is_worker
-     FROM users u WHERE u.id=$1`,[userId]);
-  return r.rows[0] ?? null;
+// Own-scope access follows the account's employee link, never a role code:
+// any role granted an own-scoped payment permission sees only its own rows.
+async function ownEmployeeId(userId:string) {
+  const r=await pool.query("SELECT employee_id FROM users WHERE id=$1",[userId]);
+  return (r.rows[0]?.employee_id as string|null|undefined) ?? null;
 }
 
 async function lockEmployee(client: import("pg").PoolClient, employeeId:string) {
@@ -550,27 +547,17 @@ export async function paymentsRoutes(app:FastifyInstance){
     return reply.code(201).send({data:r.rows[0]});
   });
   app.get("/api/payment-requests/pending-count", {
-    preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
+    preHandler:[authenticateRequest,requireAnyPermission(["payment_requests.view","all"],["payment_requests.view_own","own"])]
   }, async request => {
     // Worker accounts must always receive their own count, matching the
     // employee scoping applied by GET /api/payment-requests.
-    const user=await isWorker(request.user!.userId);
-    const isWorkerAccount=Boolean(user?.is_worker);
-    const permissionScope= isWorkerAccount ? null : await pool.query(
-      `SELECT EXISTS (
-         SELECT 1 FROM user_roles ur
-         JOIN role_permissions rp ON rp.role_id=ur.role_id
-         JOIN permissions p ON p.id=rp.permission_id
-         JOIN roles r ON r.id=ur.role_id
-         WHERE ur.user_id=$1 AND p.code='payment_requests.view'
-           AND (p.scope IS NULL OR p.scope='all') AND r.is_active=TRUE
-       ) AS can_view_all`,
-      [request.user!.userId]
-    );
+    const countClient=await pool.connect();
+    let canViewAllCount=false;
+    try{canViewAllCount=await hasPermission(countClient,request.user!.userId,"payment_requests.view","all");}finally{countClient.release();}
     const params:unknown[]=[];
     let scope="";
-    if(isWorkerAccount || !permissionScope?.rows[0]?.can_view_all){
-      const employeeId=user?.employee_id ?? request.user!.employeeId;
+    if(!canViewAllCount){
+      const employeeId=await ownEmployeeId(request.user!.userId);
       if(!employeeId)throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
       params.push(employeeId);
       scope=" AND employee_id=$1";
@@ -584,15 +571,18 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   app.get("/api/payment-requests",{
-    preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
+    preHandler:[authenticateRequest,requireAnyPermission(["payment_requests.view","all"],["payment_requests.view_own","own"])]
   },async(request)=>{
     const q=z.object({status:z.enum(["PENDING","APPROVED","REJECTED","CANCELLED","PAID"]).optional()}).safeParse(request.query);
     if(!q.success) throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
-    const user=await isWorker(request.user!.userId);
+    const listClient=await pool.connect();
+    let canViewAllList=false;
+    try{canViewAllList=await hasPermission(listClient,request.user!.userId,"payment_requests.view","all");}finally{listClient.release();}
     const params:unknown[]=[]; const where:string[]=[];
-    if(user?.is_worker){
-      if(!user.employee_id) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
-      params.push(user.employee_id); where.push(`pr.employee_id=$${params.length}`);
+    if(!canViewAllList){
+      const employeeId=await ownEmployeeId(request.user!.userId);
+      if(!employeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+      params.push(employeeId); where.push(`pr.employee_id=$${params.length}`);
     }
     if(q.data.status){params.push(q.data.status);where.push(`pr.status=$${params.length}`);}
     const r=await pool.query(
@@ -619,17 +609,17 @@ export async function paymentsRoutes(app:FastifyInstance){
   });
 
   app.get("/api/payments/my-balance",{
-    preHandler:[authenticateRequest,requirePermission("payment_requests.view")]
+    preHandler:[authenticateRequest,requireAnyPermission(["payment_requests.view","all"],["payment_requests.view_own","own"])]
   },async(request)=>{
-    const user=await isWorker(request.user!.userId);
-    if(!user?.employee_id) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
+    const balanceEmployeeId=await ownEmployeeId(request.user!.userId);
+    if(!balanceEmployeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف",403);
     const client=await pool.connect();
     try{
-      const due=await getDueProductionAdvanceRepayment(client,user.employee_id,new Date().toISOString().slice(0,10));
+      const due=await getDueProductionAdvanceRepayment(client,balanceEmployeeId,new Date().toISOString().slice(0,10));
       return {data:{
-        balance:await getBalance(client,user.employee_id),
-        availableEarnings:await getAvailableEarnings(client,user.employee_id),
-        outstandingAdvanceAmount:await getOutstandingAdvanceAmount(client,user.employee_id),
+        balance:await getBalance(client,balanceEmployeeId),
+        availableEarnings:await getAvailableEarnings(client,balanceEmployeeId),
+        outstandingAdvanceAmount:await getOutstandingAdvanceAmount(client,balanceEmployeeId),
         dueAdvanceRepaymentAmount:due.total,
         dueAdvanceRepayments:due.items
       }};
@@ -644,24 +634,24 @@ export async function paymentsRoutes(app:FastifyInstance){
     const method=await pool.query("SELECT code FROM payment_methods WHERE code=$1 AND is_active=TRUE",[parsed.data.method]);
     if(!method.rowCount) throw new AppError("PAYMENT_METHOD_NOT_FOUND","طريقة القبض غير متاحة",422);
 
-    const user=await isWorker(request.user!.userId);
-    if(!user?.is_worker || !user.employee_id) throw new AppError("WORKER_ONLY","طلب القبض متاح للعامل فقط",403);
+    const requesterEmployeeId=await ownEmployeeId(request.user!.userId);
+    if(!requesterEmployeeId) throw new AppError("EMPLOYEE_LINK_REQUIRED","الحساب غير مرتبط بموظف؛ اطلب من الإدارة ربط الحساب بملف موظف",403);
 
     let row;
     try {
       row=await withTransaction(async(client)=>{
-      await lockEmployee(client,user.employee_id);
-      const available=await getAvailableEarnings(client,user.employee_id);
+      await lockEmployee(client,requesterEmployeeId);
+      const available=await getAvailableEarnings(client,requesterEmployeeId);
       if(parsed.data.amount>available+0.009) throw new AppError("INSUFFICIENT_BALANCE",`المبلغ المطلوب أكبر من مستحقات الإنتاج غير المصروفة (${available.toFixed(2)} ج.م)`,409);
       const open=await client.query(
         "SELECT id FROM payment_requests WHERE employee_id=$1 AND status IN ('PENDING','APPROVED') LIMIT 1 FOR UPDATE",
-        [user.employee_id]);
+        [requesterEmployeeId]);
       if(open.rowCount) throw new AppError("OPEN_REQUEST_EXISTS","يوجد طلب قبض مفتوح بالفعل",409);
 
       const inserted=await client.query(
         `INSERT INTO payment_requests(employee_id,amount,method,transfer_reference,requested_by)
          VALUES($1,$2,$3,$4,$5) RETURNING *`,
-        [user.employee_id,parsed.data.amount,parsed.data.method,parsed.data.transferReference?.trim() || null,request.user!.userId]);
+        [requesterEmployeeId,parsed.data.amount,parsed.data.method,parsed.data.transferReference?.trim() || null,request.user!.userId]);
       await client.query(
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
          SELECT DISTINCT u.id,'PAYMENT_REQUEST_CREATED','طلب قبض جديد للمراجعة',
@@ -675,7 +665,7 @@ export async function paymentsRoutes(app:FastifyInstance){
          WHERE u.is_active=TRUE AND u.id<>$3`,
         [inserted.rows[0].id, inserted.rows[0].amount, request.user!.userId]
       );
-      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:user.employee_id,action:"create",module:"payments",entityType:"payment_request",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:requesterEmployeeId,action:"create",module:"payments",entityType:"payment_request",entityId:inserted.rows[0].id,afterData:inserted.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return inserted.rows[0];
       });
     } catch(error) {
@@ -1646,13 +1636,13 @@ export async function paymentsRoutes(app:FastifyInstance){
   }, async (request) => {
     const parsed=z.object({employeeId:z.string().uuid().optional()}).safeParse(request.query);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","اختيار العامل غير صحيح",422);
-    const actor=await isWorker(request.user!.userId);
-    const employeeId=parsed.data.employeeId??(actor?.is_worker?actor.employee_id:null);
+    const ownId=await ownEmployeeId(request.user!.userId);
+    const employeeId=parsed.data.employeeId??ownId;
     if(!employeeId)throw new AppError("EMPLOYEE_REQUIRED","اختار العامل لعرض كشف الحساب",422);
     const client=await pool.connect();
     try{
       const canManage=await hasPermission(client,request.user!.userId,"worker_payments.pay");
-      if(!canManage&&(!actor?.is_worker||actor.employee_id!==employeeId))throw new AppError("EMPLOYEE_STATEMENT_FORBIDDEN","يمكنك عرض كشف حسابك أنت فقط",403);
+      if(!canManage&&ownId!==employeeId)throw new AppError("EMPLOYEE_STATEMENT_FORBIDDEN","يمكنك عرض كشف حسابك أنت فقط",403);
       const employee=await client.query("SELECT id,code,full_name FROM employees WHERE id=$1 AND is_active=TRUE",[employeeId]);
       if(!employee.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","العامل غير موجود أو غير نشط",404);
       const [production,orders,payments,priceChanges,ledgerEntries,totals]=await Promise.all([

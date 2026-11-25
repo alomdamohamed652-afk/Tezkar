@@ -48,7 +48,7 @@ async function addStock(client:import("pg").PoolClient,p:string,w:string,l:strin
 }
 
 export async function receiptRoutes(app:FastifyInstance){
- app.get("/api/warehouse/receipts",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+ app.get("/api/warehouse/receipts",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.view","all"],["warehouse.receipt.view","all"])]},async(request)=>{
   const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
   const r=await pool.query(
    `SELECT wr.id,wr.code,wr.receipt_date,wr.source,wr.notes,wr.created_at,
@@ -60,7 +60,7 @@ export async function receiptRoutes(app:FastifyInstance){
   return {data:r.rows};
  });
 
- app.get("/api/warehouse/receipts/:id",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+ app.get("/api/warehouse/receipts/:id",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.view","all"],["warehouse.receipt.view","all"])]},async(request)=>{
   const id=(request.params as {id:string}).id;
   const canViewCosts=await canViewWarehouseCosts(request.user!.userId,request.user!.roleCodes);
   const receipt=await pool.query("SELECT * FROM warehouse_receipts WHERE id=$1",[id]);
