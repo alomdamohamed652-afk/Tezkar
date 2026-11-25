@@ -10,6 +10,7 @@ type PayrollItem={id:string;employee_id:string;employee_code:string;employee_nam
 type PayrollData={period:{id:string;period_month:string;status:string}|null;items:PayrollItem[];totals:{employees:number;net:number;paid:number;remaining:number;recordedExpense?:number;expenseDifference?:number;missingExpenseCount?:number;missingExpenseAmount?:number;expenseMismatchCount?:number}};
 type PayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;settlement_source?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";reference:string|null;notes:string|null;paid_by_username:string|null;created_at:string};
 type AdjustmentLine={id:string;payroll_item_id:string;line_type:"BONUS"|"DEDUCTION";description:string;amount:string|number;notes:string|null;status:"ACTIVE"|"VOIDED";void_reason?:string|null;voided_at?:string|null;voided_by_username?:string|null;created_by_username?:string|null};
+type SalaryComponent={id:string;employee_id:string;line_type:"BONUS"|"DEDUCTION";name:string;amount:string|number;effective_from:string;effective_to:string|null;is_active:boolean;notes:string|null;created_at:string;created_by_username:string|null};
 type SalaryHistoryItem={id:string;monthly_salary:string|number;effective_from:string;effective_to:string|null;notes:string|null;created_at:string;created_by_username:string|null};
 type OwnPayrollPayment={id:string;amount:string|number;payment_date:string;payment_method:string|null;settlement_source?:"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY";reference:string|null;notes:string|null};
 type OwnPayrollItem={id:string;employee_id:string;period_month:string;period_status:string;base_salary:string|number;bonus_amount:string|number;deduction_amount:string|number;advance_repayment_amount:string|number;net_amount:string|number;status:string;notes:string|null;paid_amount:string|number;remaining_amount:string|number;payments:OwnPayrollPayment[]};
@@ -36,6 +37,8 @@ export default function PayrollPage(){
  const [custodyHolders,setCustodyHolders]=useState<CustodyHolder[]>([]),[custodyLoading,setCustodyLoading]=useState(false);
  const [historyTarget,setHistoryTarget]=useState<PayrollItem|null>(null),[paymentHistory,setPaymentHistory]=useState<PayrollPayment[]>([]),[historyLoading,setHistoryLoading]=useState(false);
  const [salaryHistory,setSalaryHistory]=useState<SalaryHistoryItem[]>([]),[salaryHistoryEmployeeId,setSalaryHistoryEmployeeId]=useState(""),[salaryHistoryLoading,setSalaryHistoryLoading]=useState(false);
+ const [components,setComponents]=useState<SalaryComponent[]>([]),[componentsEmployeeId,setComponentsEmployeeId]=useState(""),[componentsLoading,setComponentsLoading]=useState(false),[editingComponentId,setEditingComponentId]=useState<string|null>(null);
+ const [componentType,setComponentType]=useState<"BONUS"|"DEDUCTION">("BONUS"),[componentName,setComponentName]=useState(""),[componentAmount,setComponentAmount]=useState(""),[componentNotes,setComponentNotes]=useState(""),[componentFrom,setComponentFrom]=useState(today()),[componentTo,setComponentTo]=useState("");
  const [ownPayroll,setOwnPayroll]=useState<OwnPayrollData|null>(null);
  const [policyWorkDays,setPolicyWorkDays]=useState("26"),[policyDailyHours,setPolicyDailyHours]=useState("8"),[policyDayOffPay,setPolicyDayOffPay]=useState("0"),[policyOvertimeMultiplier,setPolicyOvertimeMultiplier]=useState("1.5"),[policyLoading,setPolicyLoading]=useState(false),[policyLoadedEmployeeId,setPolicyLoadedEmployeeId]=useState("");
  const [adjustmentTarget,setAdjustmentTarget]=useState<PayrollItem|null>(null),[adjustmentLines,setAdjustmentLines]=useState<AdjustmentLine[]>([]),[adjustmentLoading,setAdjustmentLoading]=useState(false);
@@ -69,6 +72,41 @@ export default function PayrollPage(){
    setSalaryHistory(r.data.history);setSalaryHistoryEmployeeId(employeeId);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل تغييرات الراتب")}
   finally{setSalaryHistoryLoading(false)}
+ }
+ async function showComponents(id=employeeId){
+  if(!id)return;setComponentsLoading(true);setError("");
+  try{
+   const r=await api<{data:{employee:{id:string;full_name:string;code:string};components:SalaryComponent[]}}>("/api/payroll/employees/"+id+"/salary-components");
+   setComponents(r.data.components);setComponentsEmployeeId(id);setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");setComponentFrom(today());setComponentTo("");
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مفردات المرتب")}
+  finally{setComponentsLoading(false)}
+ }
+ async function saveComponent(e:FormEvent){
+  e.preventDefault();if(!employeeId)return;setBusy(true);setError("");setNotice("");
+  try{
+   const body=JSON.stringify({lineType:componentType,name:componentName.trim(),amount:Number(componentAmount),effectiveFrom:componentFrom,effectiveTo:componentTo||null,notes:componentNotes.trim()||null});
+   if(editingComponentId){
+    const current=components.find(c=>c.id===editingComponentId);
+    await api("/api/payroll/salary-components/"+editingComponentId,{method:"PATCH",body:JSON.stringify({lineType:componentType,name:componentName.trim(),amount:Number(componentAmount),effectiveFrom:componentFrom,effectiveTo:componentTo||null,isActive:current?current.is_active:true,notes:componentNotes.trim()||null})});
+    setNotice("تم تحديث المفردة. تُطبق على مسيرات المسودة عند إعادة توليدها.");
+   }else{
+    await api("/api/payroll/employees/"+employeeId+"/salary-components",{method:"POST",body});
+    setNotice("تمت إضافة المفردة. تُطبق تلقائيًا عند توليد مسير جديد.");
+   }
+   setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");setComponentFrom(today());setComponentTo("");
+   await showComponents();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر حفظ المفردة")}
+  finally{setBusy(false)}
+ }
+ function editComponent(c:SalaryComponent){setEditingComponentId(c.id);setComponentType(c.line_type);setComponentName(c.name);setComponentAmount(String(c.amount));setComponentNotes(c.notes??"");setComponentFrom(String(c.effective_from).slice(0,10));setComponentTo(c.effective_to?String(c.effective_to).slice(0,10):"")}
+ async function toggleComponent(c:SalaryComponent){
+  setBusy(true);setError("");setNotice("");
+  try{
+   if(c.is_active){await api("/api/payroll/salary-components/"+c.id,{method:"DELETE"});setNotice("تم إيقاف المفردة. لن تُطبق على المسيرات الجديدة.")}
+   else{await api("/api/payroll/salary-components/"+c.id,{method:"PATCH",body:JSON.stringify({lineType:c.line_type,name:c.name,amount:Number(c.amount),isActive:true,notes:c.notes})});setNotice("تم تفعيل المفردة من جديد.")}
+   await showComponents();
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تغيير حالة المفردة")}
+  finally{setBusy(false)}
  }
  async function generate(){setBusy(true);setError("");setNotice("");try{const r=await api<{data:{generatedItems:number}}>("/api/payroll/generate",{method:"POST",body:JSON.stringify({month})});setNotice("تم تجهيز مسير الشهر. عدد بنود الرواتب: "+r.data.generatedItems);await load()}catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء مسير الرواتب")}finally{setBusy(false)}}
  async function showPaymentHistory(item:PayrollItem){setHistoryTarget(item);setPaymentHistory([]);setHistoryLoading(true);setError("");try{const result=await api<{data:PayrollPayment[]}>("/api/payroll/items/"+item.id+"/payments");setPaymentHistory(result.data)}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل سجل صرف الراتب")}finally{setHistoryLoading(false)}}
@@ -161,12 +199,26 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
     <div className="form-grid">
      <label>أيام العمل في الشهر<input type="number" min="1" max="31" step="1" value={policyWorkDays} onChange={e=>setPolicyWorkDays(e.target.value)} required/></label>
      <label>ساعات العمل في اليوم<input type="number" min="1" max="24" step="0.25" value={policyDailyHours} onChange={e=>setPolicyDailyHours(e.target.value)} required/></label>
-     <label>أجر يوم الراحة الكامل (ج.م)<input type="number" min="0" step="0.01" value={policyDayOffPay} onChange={e=>setPolicyDayOffPay(e.target.value)} required/><span className="form-hint">يُصرف بنسبة دقائق العمل الفعلية إلى دقائق الوردية اليومية.</span></label>
+     <label>أجر اليوم الزيادة/الراحة الكامل (ج.م)<input type="number" min="0" step="0.01" value={policyDayOffPay} onChange={e=>setPolicyDayOffPay(e.target.value)} required/><span className="form-hint">يُصرف عن العمل في يوم الراحة بنسبة دقائق العمل الفعلية إلى دقائق الوردية اليومية.</span></label>
      <label>معامل أجر الوقت الإضافي<input type="number" min="0" max="5" step="0.05" value={policyOvertimeMultiplier} onChange={e=>setPolicyOvertimeMultiplier(e.target.value)} required/></label>
     </div>
     <div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>void showAttendancePolicy()} disabled={policyLoading||!employeeId}>{policyLoading?"جارٍ التحميل...":"تحميل قواعد الموظف"}</button><button className="primary-button" disabled={busy||policyLoading||!employeeId||policyLoadedEmployeeId!==employeeId}>حفظ قواعد الحساب</button><span className="form-hint">حمّل قواعد الموظف أولًا قبل تعديلها؛ تُحفظ لكل موظف بصورة مستقلة.</span></div>
    </form>}
    {salaryHistoryEmployeeId&&salaryHistoryEmployeeId===employeeId&&<section className="card"><div className="card-header"><div><h2 className="card-title">سجل تغييرات الراتب الأساسي</h2><div className="form-hint">{employees.find(e=>e.id===salaryHistoryEmployeeId)?.full_name||""} · كل تعديل محفوظ بتاريخ سريانه</div></div><button className="secondary-btn" onClick={()=>{setSalaryHistoryEmployeeId("");setSalaryHistory([])}}>إخفاء السجل</button></div><div className="table-wrap"><table><thead><tr><th>الراتب الشهري</th><th>ساري من</th><th>ساري حتى</th><th>ملاحظات</th><th>سُجل بواسطة</th><th>تاريخ التسجيل</th></tr></thead><tbody>{salaryHistory.map(x=><tr key={x.id}><td className="strong">{money(x.monthly_salary)} ج.م</td><td>{String(x.effective_from).slice(0,10)}</td><td>{x.effective_to?String(x.effective_to).slice(0,10):"الحالي"}</td><td>{x.notes||"—"}</td><td>{x.created_by_username||"—"}</td><td>{new Date(x.created_at).toLocaleDateString("ar-EG")}</td></tr>)}{!salaryHistory.length&&<tr><td colSpan={6}>لا توجد تغييرات مسجلة لهذا الموظف.</td></tr>}</tbody></table></div></section>}
+  {has("payroll.manage")&&<section className="card form-card"><div className="card-header"><div><h2 className="card-title">مفردات المرتب الثابتة</h2><div className="form-hint">بدلات وخصومات متكررة (مواصلات، حافز ثابت، تأمينات...) تُضاف تلقائيًا كبنود مستقلة عند تجهيز مسير كل شهر، وتظهر في قسيمة المرتب باسمها.</div></div><button type="button" className="secondary-btn" disabled={!employeeId||componentsLoading} onClick={()=>void showComponents()}>{componentsLoading?"جارٍ التحميل...":componentsEmployeeId===employeeId?"تحديث القائمة":"عرض مفردات الموظف"}</button></div>
+   {componentsEmployeeId===employeeId&&<>
+    <form className="form-grid" onSubmit={saveComponent} style={{marginBottom:12}}>
+     <label>النوع<select value={componentType} onChange={e=>setComponentType(e.target.value as "BONUS"|"DEDUCTION")}><option value="BONUS">بدل / إضافي</option><option value="DEDUCTION">خصم ثابت</option></select></label>
+     <label>اسم المفردة<input value={componentName} onChange={e=>setComponentName(e.target.value)} maxLength={240} placeholder="مثال: بدل مواصلات" required/></label>
+     <label>القيمة الشهرية (ج.م)<input type="number" min="0.01" step="0.01" value={componentAmount} onChange={e=>setComponentAmount(e.target.value)} required/></label>
+     <label>ساري من تاريخ<input type="date" value={componentFrom} onChange={e=>setComponentFrom(e.target.value)} required/></label>
+     <label>ساري حتى تاريخ (اختياري)<input type="date" value={componentTo} min={componentFrom} onChange={e=>setComponentTo(e.target.value)} /><span className="form-hint">اتركه فارغًا لو المفردة مستمرة بلا نهاية.</span></label>
+     <label>ملاحظات<input value={componentNotes} onChange={e=>setComponentNotes(e.target.value)} maxLength={1000}/></label>
+     <div className="form-actions" style={{gridColumn:"1 / -1"}}><button className="primary-button" disabled={busy||!componentName.trim()||!componentAmount}>{editingComponentId?"حفظ التعديل":"إضافة المفردة"}</button>{editingComponentId&&<button type="button" className="secondary-btn" onClick={()=>{setEditingComponentId(null);setComponentName("");setComponentAmount("");setComponentNotes("");setComponentFrom(today());setComponentTo("")}}>إلغاء التعديل</button>}</div>
+    </form>
+    {!components.length?<div className="empty">لا توجد مفردات ثابتة لهذا الموظف بعد.</div>:<div className="table-wrap"><table><thead><tr><th>المفردة</th><th>النوع</th><th>القيمة الشهرية</th><th>السريان</th><th>الحالة</th><th>ملاحظات</th><th>إجراءات</th></tr></thead><tbody>{components.map(c=><tr key={c.id}><td className="strong">{c.name}</td><td>{c.line_type==="BONUS"?"بدل / إضافي":"خصم ثابت"}</td><td>{money(c.amount)} ج.م</td><td>{String(c.effective_from).slice(0,10)}{c.effective_to?" ← "+String(c.effective_to).slice(0,10):" ← مفتوح"}</td><td><span className={"status "+(c.is_active?"success":"muted")}>{c.is_active?"نشطة":"موقوفة"}</span></td><td>{c.notes||"—"}</td><td><div className="row-actions"><button type="button" className="secondary-btn" disabled={busy} onClick={()=>editComponent(c)}>تعديل</button><button type="button" className={c.is_active?"danger-button":"secondary-btn"} disabled={busy} onClick={()=>void toggleComponent(c)}>{c.is_active?"إيقاف":"تفعيل"}</button></div></td></tr>)}</tbody></table></div>}
+   </>}
+  </section>}
   <section className="card"><div className="card-header"><div><h2 className="card-title">مسير الرواتب الشهري</h2><div className="form-hint">يتم تثبيت الراتب في المسير عند إنشائه، وأي تغيير لاحق لا يغير المسيرات السابقة. الخصم هنا يدوي ولا ينشئ مصروفًا تلقائيًا؛ سجّل التلفيات أو الإهلاك يدويًا في المالية بشكل منفصل، ولا تخصم القيمة من العهدة النقدية إلا لو دُفعت منها فعلًا.</div></div></div>
    <div className="toolbar"><label>الشهر<input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></label><div className="form-actions">{has("payroll.generate")&&<button className="secondary-btn" onClick={generate} disabled={busy}>تجهيز المسير من الرواتب السارية</button>}{payroll.period&&payroll.period.status==="DRAFT"&&has("payroll.approve")&&<button className="primary-button" onClick={approve} disabled={busy}>اعتماد المسير</button>}</div></div>
    {payroll.period&&<div className="form-hint" style={{margin:"10px 0"}}>حالة الفترة: <strong>{periodStatus[payroll.period.status]||payroll.period.status}</strong></div>}
