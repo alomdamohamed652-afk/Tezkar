@@ -23,5 +23,8 @@ WHERE rp.role_id=r.id AND rp.permission_id=p.id
                  'attendance.view','finance.allocations.view',
                  'custody.view_own','cash_custody.view_own');
 
--- قرار إنتاج الماكينات معلّق على إجابة محمد:
--- لو قال يخفيها: يُضاف machine_production.view وmachine_production.create وmachines.view للحذوف.
+-- قرار إنتاج الماكينات محسوم (محمد 25 نوفمبر 15:03، رد على رسالة الحالة):
+-- «سيبة يشوف انتاج الماكينات» — العرض يفضل، فلا حذف لأي صلاحية ماكينات هنا.
+-- machine_production.view وmachines.view يبقيان (مسارات العرض كلها عليهما).
+-- machine_production.create يبقى كمنحة قائمة حالياً (نفس منطق بقاء تسجيل إنتاج العمال)،
+-- والتمييز عرض-مقابل-إضافة معروض في تقرير المراجعة قبل الاعتماد النهائي.
