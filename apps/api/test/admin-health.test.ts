@@ -39,6 +39,10 @@ test("admin health reports degraded when the database is down and never throws",
   assert.equal(health.database.latencyMs, null);
   assert.equal(health.migrations.last, null);
   assert.equal(health.lastBackupAt, null);
+  assert.equal(health.diagnostics.migrations.countAvailable, false);
+  assert.equal(health.diagnostics.backupExportAudit.available, false);
+  assert.equal(health.diagnostics.failedLoginCount.available, false);
+  assert.equal(health.diagnostics.recentFailedLogins.available, false);
 });
 
 test("recordServerError keeps the newest errors first and caps the buffer", async () => {
