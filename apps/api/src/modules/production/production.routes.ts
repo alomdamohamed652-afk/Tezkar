@@ -162,9 +162,13 @@ export async function productionRoutes(app: FastifyInstance) {
     const client = await pool.connect();
     let workerOnly = false;
     let canViewFinancials = false;
+    let canEditAll = false;
+    let canEditOwn = false;
     try {
       workerOnly = await isWorker(client, request.user!.userId);
       canViewFinancials = await hasPermission(client, request.user!.userId, "worker_payments.pay", "all");
+      canEditAll = await hasPermission(client, request.user!.userId, "production.edit", "all");
+      canEditOwn = await hasPermission(client, request.user!.userId, "production.edit_own", "own");
     } finally {
       client.release();
     }
@@ -300,7 +304,7 @@ payment_totals.paid_amount,
               pt.name AS production_type_name,
               sh.code AS shift_code,sh.name AS shift_name,
               u.code AS unit_code,u.name AS unit_name,
-              p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id
+              p.wage_type_code_snapshot,p.wage_type_method_snapshot,p.order_stage_id,p.production_type_id,p.submitted_by
          FROM page page_rows
          JOIN production_entries p ON p.id=page_rows.id
          JOIN employees e ON e.id=p.employee_id
@@ -340,11 +344,12 @@ payment_totals.paid_amount,
     const summary=canViewFinancials
       ? {quantity:Number(rawSummary.quantity??0),earned:Number(rawSummary.earned??0),paid:Number(rawSummary.paid??0),remaining:Number(rawSummary.remaining??0)}
       : {quantity:Number(rawSummary.quantity??0)};
+    const withEditScope=(rows:Record<string,unknown>[])=>rows.map(row=>({...row,can_edit:canEditAll||(canEditOwn&&row.submitted_by===request.user!.userId)}));
     if(!canViewFinancials){
       const data=result.rows.map(({base_amount:_baseAmount,rate_snapshot:_rateSnapshot,earning_amount:_earningAmount,bonus_amount:_bonusAmount,deduction_amount:_deductionAmount,bonus_reason:_bonusReason,deduction_reason:_deductionReason,total_earning_amount:_totalEarningAmount,paid_amount:_paidAmount,remaining_amount:_remainingAmount,payment_status:_paymentStatus,...safe}:Record<string,unknown>)=>safe);
-      return {data, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
+      return {data:withEditScope(data), summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit)};
     }
-    return { data: result.rows, summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
+    return { data: withEditScope(result.rows), summary, page: query.data.page, limit: query.data.limit, total, totalPages: Math.ceil(total / query.data.limit) };
   });
 
   app.get("/api/production/my", {
@@ -765,7 +770,7 @@ payment_totals.paid_amount,
     return reply.code(201).send({ data: row });
   });
 
-  app.delete("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
+  app.delete("/api/production/:id",{preHandler:[authenticateRequest,requireAnyPermission(["production.edit","all"],["production.edit_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const parsed=z.object({password:z.string().min(1).max(200)}).safeParse(request.body);
     if(!parsed.success)throw new AppError("PASSWORD_REQUIRED","أدخل كلمة مرور حسابك لتأكيد حذف سجل الإنتاج",422);
@@ -774,6 +779,7 @@ payment_totals.paid_amount,
       if(!actor.rowCount || !verifyPassword(parsed.data.password,actor.rows[0].password_hash))throw new AppError("INVALID_PASSWORD","كلمة المرور غير صحيحة؛ لم يتم حذف سجل الإنتاج",401);
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(!(await hasPermission(client,request.user!.userId,"production.edit"))&&current.submitted_by!==request.user!.userId)throw new AppError("PRODUCTION_EDIT_OWN_ONLY","يمكنك حذف سجلات الإنتاج التي سجّلتها أنت فقط",403);
       await assertAccountingPeriodOpen(client,current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10));
       if(current.status!=="PENDING")throw new AppError("PRODUCTION_DELETE_LOCKED","يمكن حذف الإنتاج المعلّق فقط. الإنتاج المعتمد له أثر مخزني ومستحقات، ويحتاج إجراء عكس معتمد حتى لا تتلخبط الأرصدة.",409);
       const updated=await client.query("UPDATE production_entries SET status='CANCELLED',updated_at=now() WHERE id=$1 RETURNING id,code,status,employee_id,order_stage_id,quantity,work_date",[id]);
@@ -783,7 +789,7 @@ payment_totals.paid_amount,
     return {data:row};
   });
 
-  app.patch("/api/production/:id",{preHandler:[authenticateRequest,requirePermission("production.edit")]},async(request)=>{
+  app.patch("/api/production/:id",{preHandler:[authenticateRequest,requireAnyPermission(["production.edit","all"],["production.edit_own","own"])]},async(request)=>{
     const id=(request.params as {id:string}).id;
     const parsed=z.object({
       employeeId:z.string().uuid().optional(),
@@ -808,6 +814,7 @@ payment_totals.paid_amount,
     const row=await withTransaction(async client=>{
       const current=await getEntry(client,id,true);
       if(!current)throw new AppError("PRODUCTION_NOT_FOUND","سجل الإنتاج غير موجود",404);
+      if(!(await hasPermission(client,request.user!.userId,"production.edit"))&&current.submitted_by!==request.user!.userId)throw new AppError("PRODUCTION_EDIT_OWN_ONLY","يمكنك تعديل سجلات الإنتاج التي سجّلتها أنت فقط",403);
       const originalWorkDate=current.work_date instanceof Date?current.work_date.toISOString().slice(0,10):String(current.work_date).slice(0,10);
       await assertAccountingPeriodOpen(client,originalWorkDate);
       // APPROVED entries are editable only through the correcting-entry path: a dedicated
@@ -824,7 +831,7 @@ payment_totals.paid_amount,
       const data=parsed.data;
       const employeeId=data.employeeId??current.employee_id;
       const shiftId=data.shiftId??current.shift_id;
-      const workDate=data.workDate??String(current.work_date).slice(0,10);
+      const workDate=data.workDate??originalWorkDate;
       if(workDate!==originalWorkDate)await assertAccountingPeriodOpen(client,workDate);
       const quantity=data.quantity??Number(current.quantity);
       const baseAmount=data.baseAmount===undefined?(current.base_amount==null?null:Number(current.base_amount)):data.baseAmount;
@@ -927,7 +934,7 @@ payment_totals.paid_amount,
       const rate=rateResult.rows[0];
       const method=String(rate.method);
       const rateContextChanged=productId!==current.product_id||stageId!==current.stage_id||shiftId!==current.shift_id||
-        workDate!==String(current.work_date).slice(0,10)||productionTypeId!==current.production_type_id||orderStageId!==current.order_stage_id;
+        workDate!==originalWorkDate||productionTypeId!==current.production_type_id||orderStageId!==current.order_stage_id;
       const canUseOverride=!stagePrice&&data.rateOverride!=null;
       const submittedRate=Number(data.rateOverride);
       const preservesExistingRate=canUseOverride&&!rateContextChanged&&submittedRate===Number(current.rate_snapshot);
