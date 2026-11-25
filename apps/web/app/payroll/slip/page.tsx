@@ -220,11 +220,11 @@ export default function PayrollSlipPage() {
         .slip-section { margin-top: 24px; }
         .slip-section h3 { margin: 0 0 10px; font-size: 17px; font-weight: 700; color: #174a7e; border-right: 3px solid #27866c; padding-right: 10px; }
         .table-card { border: 1px solid #dbe4ee; border-radius: 10px; overflow: hidden; }
-        .slip-section table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        .slip-section table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 15px; }
         .slip-section th { text-align: right; background: #eaf1f8; color: #174a7e; font-weight: 700; font-size: 14px; }
-        .slip-section td, .slip-section th { padding: 11px 14px; border: 1px solid #dbe4ee; border-top: 0; }
+        .slip-section td, .slip-section th { padding: 11px 14px; border: 1px solid #dbe4ee; border-top: 0; white-space: normal; }
         .slip-section tr td:first-child, .slip-section tr th:first-child { border-right: 0; }
-        .slip-section td:last-child, .slip-section th:last-child { text-align: left; border-left: 0; width: 30%; font-variant-numeric: tabular-nums; font-weight: 600; color: #123f6b; }
+        .slip-section td:last-child, .slip-section th:last-child { text-align: left; border-left: 0; width: 30%; font-weight: 600; color: #123f6b; }
         .slip-section tbody tr:nth-child(even) td { background: #f8fbfd; }
         .subtotal td { font-weight: 800 !important; background: #edf4fa !important; color: #174a7e !important; border-top: 2px solid #c7d9e7 !important; }
         .slip-note { margin: 8px 2px 0; color: #5d7080; font-size: 12.5px; line-height: 1.7; }
@@ -254,7 +254,7 @@ export default function PayrollSlipPage() {
           body { background: white; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
           .slip-page { padding: 0; min-height: 0; }
           .no-print { display: none !important; }
-          .salary-slip { max-width: none; border: 0; border-radius: 0; box-shadow: none; padding: 0; }
+          .salary-slip { max-width: 186mm; width: 186mm; margin: 0 auto; border: 0; border-radius: 0; box-shadow: none; padding: 0; overflow: hidden; }
           .slip-section, .net-box, .employee-grid, .summary-strip, .slip-footer { break-inside: avoid; }
         }
       `}</style>
