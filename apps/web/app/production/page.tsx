@@ -140,8 +140,12 @@ export default function ProductionPage(){
   if(!productId||!stageId||!shiftId||!workDate){setResolvedMethod("");setResolvedRate(null);setRateOverride("");return}
   const q=new URLSearchParams({productId,stageId,shiftId,workDate});
   if(productionTypeId)q.set("productionTypeId",productionTypeId);
-  api<{data:{method:string;rate:number|null;rate_hidden?:boolean}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setRateHidden(r.data.rate_hidden===true);const rt=r.data.rate;setResolvedRate(rt==null?null:Number(rt));setRateOverride(rt==null?"":Number(rt).toString())}).catch(()=>{setResolvedMethod("");setResolvedRate(null);setRateOverride("");setRateHidden(false)});
- },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId]);
+  api<{data:{method:string;rate:number|null;rate_hidden?:boolean}}>("/api/rates/resolve?"+q.toString()).then(r=>{setResolvedMethod(r.data.method);setRateHidden(r.data.rate_hidden===true);const rt=r.data.rate;setResolvedRate(rt==null?null:Number(rt));setRateOverride(rt==null?"":Number(rt).toString())}).catch(()=>{
+   const cm=productionTypes.find(t=>t.id===productionTypeId)?.calculation_method;
+   setResolvedMethod(cm==="PER_DAY"?"PER_DAY":cm==="PER_HOUR"?"PER_HOUR":"");
+   setResolvedRate(null);setRateOverride("");setRateHidden(false)
+  });
+ },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId,productionTypes]);
 
  const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
  const isShiftWage=resolvedMethod==="PER_DAY";
