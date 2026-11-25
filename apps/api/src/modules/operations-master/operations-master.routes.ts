@@ -5,6 +5,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { hasPermission } from "../rbac/rbac.service.js";
 
 const name=z.string().trim().min(2).max(120);
 const createRate=z.object({productId:z.string().uuid().nullable().optional(),stageId:z.string().uuid(),productionTypeId:z.string().uuid().nullable().optional(),rateGroupId:z.string().uuid().nullable().optional(),wageTypeId:z.string().uuid(),unitId:z.string().uuid(),rate:z.number().nonnegative(),effectiveFrom:z.string().date(),effectiveTo:z.string().date().nullable().optional()});
@@ -224,7 +225,14 @@ await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return 
    [p.data.productId,p.data.stageId,groupId,p.data.workDate,p.data.productionTypeId ?? null]
   );
   if(!r.rowCount)throw new AppError("RATE_NOT_FOUND","لا يوجد سعر مُعد لهذا المنتج والمرحلة والوردية في هذا التاريخ",422);
-  return {data:r.rows[0]};
+  const row=r.rows[0];
+  const client=await pool.connect();
+  let canViewFinancials=false;
+  try{
+    canViewFinancials=(await hasPermission(client,req.user!.userId,"finance.profitability.view"))||(await hasPermission(client,req.user!.userId,"worker_payments.pay"));
+  }finally{client.release();}
+  if(!canViewFinancials)return {data:{...row,rate:null,rate_hidden:true}};
+  return {data:row};
  });
  app.post("/api/rates",{preHandler:[authenticateRequest,requirePermission("rates.create")]},async(req,reply)=>{const p=createRate.safeParse(req.body);if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات السعر غير صحيحة",422);if(p.data.effectiveTo&&p.data.effectiveTo<=p.data.effectiveFrom)throw new AppError("DATE_RANGE_INVALID","نطاق تاريخ السعر غير صحيح",422);const r=await withTransaction(async c=>{const range=`[${p.data.effectiveFrom},${p.data.effectiveTo??""})`;const conflict=await c.query("SELECT id FROM rates WHERE is_active=TRUE AND stage_id=$1 AND rate_group_id IS NOT DISTINCT FROM $2 AND product_id IS NOT DISTINCT FROM $3 AND production_type_id IS NOT DISTINCT FROM $4 AND effective_range && $5::daterange LIMIT 1",[p.data.stageId,p.data.rateGroupId,p.data.productId??null,p.data.productionTypeId??null,range]);if(conflict.rowCount)throw new AppError("RATE_OVERLAP","يوجد سعر آخر متداخل لنفس المنتج والمرحلة ومجموعة الأجر",409);const x=await c.query("INSERT INTO rates(product_id,stage_id,production_type_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8::daterange,$9) RETURNING id,code,product_id,stage_id,rate_group_id,wage_type_id,unit_id,rate,effective_range,is_active",[p.data.productId??null,p.data.stageId,p.data.productionTypeId??null,p.data.rateGroupId,p.data.wageTypeId,p.data.unitId,p.data.rate,range,req.user!.userId]);await audit(c,req,"create","rate",x.rows[0].id,x.rows[0]);return x.rows[0];});return reply.code(201).send({data:r});});
 }
