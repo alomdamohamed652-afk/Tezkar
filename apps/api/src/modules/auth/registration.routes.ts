@@ -6,6 +6,51 @@ import { writeAudit } from "../audit/audit.service.js";
 import { hashPassword } from "../auth/auth.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
+import { randomInt } from "node:crypto";
+import { isIP } from "node:net";
+import {
+  assertOtpRateAllowed,
+  hashCode,
+  safeEqualText,
+  sendOtpEmail
+} from "./email-otp.service.js";
+
+const SIGNUP_OTP_MAX_ATTEMPTS = 5;
+
+// Same normalization as the email-OTP fix (#380): never write an empty or
+// invalid IP string to inet columns.
+function getClientIp(ip: string | undefined): string | null {
+  const value = ip?.trim() ?? "";
+  return value && isIP(value) ? value : null;
+}
+const GENERIC_CODE_ERROR = "الكود غير صحيح أو منتهي الصلاحية. اطلب كودًا جديدًا وحاول مرة أخرى.";
+const signupEmailSchema = z.string().trim().email().max(320);
+
+async function verifySignupEmailCode(client: import("pg").PoolClient, email: string, code: string): Promise<boolean> {
+  const r = await client.query(
+    `SELECT id, code_hash, attempts FROM signup_email_otps
+     WHERE lower(email)=lower($1) AND consumed_at IS NULL AND expires_at > now()
+     ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+    [email]
+  );
+  const row = r.rows[0];
+  if (!row) return false;
+  if (row.attempts >= SIGNUP_OTP_MAX_ATTEMPTS) {
+    await client.query("UPDATE signup_email_otps SET consumed_at=now() WHERE id=$1", [row.id]);
+    return false;
+  }
+  const expected = hashCode(email.toLowerCase(), "EMAIL_VERIFY", code);
+  if (!safeEqualText(expected, row.code_hash)) {
+    const attempts = row.attempts + 1;
+    await client.query(
+      "UPDATE signup_email_otps SET attempts=$1, consumed_at=CASE WHEN $1 >= $2 THEN now() ELSE NULL END WHERE id=$3",
+      [attempts, SIGNUP_OTP_MAX_ATTEMPTS, row.id]
+    );
+    return false;
+  }
+  await client.query("UPDATE signup_email_otps SET consumed_at=now() WHERE id=$1", [row.id]);
+  return true;
+}
 
 const phoneSchema = z.string().trim().min(10).max(30).regex(/^[+()\d\s.-]+$/).refine(
   value => value.replace(/\D/g, "").length >= 10,
@@ -17,7 +62,9 @@ const publicRequestSchema = z.object({
   username: z.string().trim().min(3).max(100).regex(/^[a-zA-Z0-9._-]+$/),
   phone: phoneSchema,
   password: z.string().min(12).max(200),
-  confirmPassword: z.string().min(12).max(200)
+  confirmPassword: z.string().min(12).max(200),
+  email: signupEmailSchema.optional(),
+  emailCode: z.string().trim().min(4).max(10).optional()
 }).refine((data) => data.password === data.confirmPassword, {
   message: "كلمتا المرور غير متطابقتين",
   path: ["confirmPassword"]
@@ -40,12 +87,48 @@ async function assertManager(userId: string) {
 }
 
 export async function registrationRoutes(app: FastifyInstance) {
+  // Public: send an email verification code for a new signup (no account yet).
+  app.post("/api/auth/register/email/request", async request => {
+    const parsed = z.object({ email: signupEmailSchema }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "اكتب البريد الإلكتروني بشكل صحيح", 422);
+    const email = parsed.data.email;
+    await assertOtpRateAllowed("register-email", email, 3, 60, 60, "طلبات كثيرة. حاول مرة أخرى بعد ساعة.");
+    const taken = await pool.query("SELECT 1 FROM users WHERE lower(email)=lower($1) LIMIT 1", [email]);
+    if (taken.rowCount) throw new AppError("EMAIL_TAKEN", "هذا البريد مسجل على حساب آخر", 409);
+    const pending = await pool.query(
+      "SELECT 1 FROM registration_requests WHERE status='pending' AND email IS NOT NULL AND lower(email)=lower($1) LIMIT 1",
+      [email]
+    );
+    if (pending.rowCount) throw new AppError("REGISTRATION_EMAIL_PENDING", "يوجد طلب تسجيل معلّق بهذا البريد بالفعل", 409);
+    const code = await withTransaction(async client => {
+      await client.query("UPDATE signup_email_otps SET consumed_at=now() WHERE lower(email)=lower($1) AND consumed_at IS NULL", [email]);
+      const newCode = randomInt(0, 1000000).toString().padStart(6, "0");
+      await client.query(
+        `INSERT INTO signup_email_otps (email, code_hash, expires_at, created_ip, created_user_agent)
+         VALUES ($1,$2, now() + interval '10 minutes', $3, $4)`,
+        [email, hashCode(email.toLowerCase(), "EMAIL_VERIFY", newCode), getClientIp(request.ip), request.headers["user-agent"] ?? null]
+      );
+      return newCode;
+    });
+    const sent = await sendOtpEmail(email, code, "EMAIL_VERIFY");
+    if (!sent.ok) {
+      await withTransaction(client =>
+        client.query("UPDATE signup_email_otps SET consumed_at=now() WHERE lower(email)=lower($1) AND consumed_at IS NULL", [email])
+      );
+      throw new AppError("EMAIL_UNAVAILABLE", "خدمة البريد غير متاحة حاليًا. حاول مرة أخرى لاحقًا.", 503);
+    }
+    return { data: { sent: true }, message: "تم إرسال كود التحقق إلى بريدك. الكود صالح لمدة 10 دقائق." };
+  });
+
   app.post("/api/auth/register", async (request, reply) => {
     const parsed = publicRequestSchema.safeParse(request.body);
     if (!parsed.success) throw new AppError("VALIDATION_ERROR", "راجع الاسم واسم المستخدم ورقم الموبايل الإلزامي وكلمة المرور (12 حرفًا على الأقل)", 422);
 
-    const { fullName, username, phone, password } = parsed.data;
+    const { fullName, username, phone, password, email, emailCode } = parsed.data;
     const normalizedPhone = phone.replace(/\D/g, "").slice(-10);
+    // When an email is supplied it must be verified by the code we sent; the
+    // verified email is stored on the request and later on the new user.
+    if (email && !emailCode) throw new AppError("EMAIL_CODE_REQUIRED", "اكتب كود التحقق الذي وصل بريدك الإلكتروني", 422);
     const result = await withTransaction(async (client) => {
       const existingUser = await client.query("SELECT 1 FROM users WHERE lower(username)=lower($1)", [username]);
       if (existingUser.rowCount) throw new AppError("USERNAME_EXISTS", "اسم المستخدم مستخدم بالفعل", 409);
@@ -65,11 +148,20 @@ export async function registrationRoutes(app: FastifyInstance) {
       );
       if (phoneRequest.rowCount) throw new AppError("REGISTRATION_PHONE_PENDING", "رقم الموبايل ده موجود في طلب تسجيل معلّق بالفعل", 409);
 
+      let verifiedEmail: string | null = null;
+      if (email) {
+        const emailUser = await client.query("SELECT 1 FROM users WHERE lower(email)=lower($1)", [email]);
+        if (emailUser.rowCount) throw new AppError("EMAIL_TAKEN", "هذا البريد مسجل على حساب آخر", 409);
+        const ok = await verifySignupEmailCode(client, email, emailCode!);
+        if (!ok) throw new AppError("EMAIL_CODE_INVALID", GENERIC_CODE_ERROR, 422);
+        verifiedEmail = email;
+      }
+
       const inserted = await client.query(
-        `INSERT INTO registration_requests(full_name,username,phone,password_hash,request_ip,user_agent)
-         VALUES($1,$2,$3,$4,$5,$6)
+        `INSERT INTO registration_requests(full_name,username,phone,email,password_hash,request_ip,user_agent)
+         VALUES($1,$2,$3,$4,$5,$6,$7)
          RETURNING id,full_name,username,phone,created_at`,
-        [fullName, username, phone.trim(), hashPassword(password), request.ip, request.headers["user-agent"] ?? null]
+        [fullName, username, phone.trim(), verifiedEmail, hashPassword(password), getClientIp(request.ip), request.headers["user-agent"] ?? null]
       );
       await client.query(
         `INSERT INTO user_notifications(user_id,type,title,message,entity_type,entity_id)
@@ -172,6 +264,10 @@ export async function registrationRoutes(app: FastifyInstance) {
         [normalizedPhone, linkedUserId]
       );
       if (duplicatePhone.rowCount) throw new AppError("PHONE_EXISTS", "رقم الموبايل أصبح مرتبطًا بحساب آخر", 409);
+      if (reg.email) {
+        const duplicateEmail = await client.query("SELECT 1 FROM users WHERE lower(email)=lower($1)", [reg.email]);
+        if (duplicateEmail.rowCount) throw new AppError("EMAIL_TAKEN", "البريد الإلكتروني في طلب التسجيل أصبح مسجلًا على حساب آخر", 409);
+      }
 
       let user;
       if (linkedUserId) {
@@ -182,9 +278,9 @@ export async function registrationRoutes(app: FastifyInstance) {
         );
       } else {
         const userResult = await client.query(
-          `INSERT INTO users(username,full_name,phone,password_hash,employee_id,is_active)
-           VALUES($1,$2,$3,$4,$5,TRUE) RETURNING id,code,username,phone,employee_id,is_active`,
-          [reg.username, reg.full_name, reg.phone.trim(), reg.password_hash, parsed.data.accountType === "employee" ? employeeId : null]
+          `INSERT INTO users(username,full_name,phone,email,email_verified_at,password_hash,employee_id,is_active)
+           VALUES($1,$2,$3,$4,$5,$6,$7,TRUE) RETURNING id,code,username,phone,employee_id,is_active`,
+          [reg.username, reg.full_name, reg.phone.trim(), reg.email ?? null, reg.email ? new Date() : null, reg.password_hash, parsed.data.accountType === "employee" ? employeeId : null]
         );
         user = userResult.rows[0];
       }
@@ -209,7 +305,7 @@ export async function registrationRoutes(app: FastifyInstance) {
         entityType: "user",
         entityId: user.id,
         afterData: { username: user.username, roleCode: role.rows[0].code, employeeId: user.employee_id, createdEmployee: parsed.data.accountType === "employee" && parsed.data.createEmployee, accountType: parsed.data.accountType, registrationRequestId: id },
-        ipAddress: request.ip,
+        ipAddress: getClientIp(request.ip),
         userAgent: request.headers["user-agent"] ?? null
       });
       return { id: user.id, username: user.username, phone: user.phone, employeeId: user.employee_id, createdEmployee: parsed.data.accountType === "employee" && parsed.data.createEmployee, accountType: parsed.data.accountType, roleCode: role.rows[0].code };
@@ -241,7 +337,7 @@ export async function registrationRoutes(app: FastifyInstance) {
         entityType: "registration_request",
         entityId: id,
         metadata: { username: found.rows[0].username, reason: parsed.data.reason || null },
-        ipAddress: request.ip,
+        ipAddress: getClientIp(request.ip),
         userAgent: request.headers["user-agent"] ?? null
       });
     });
