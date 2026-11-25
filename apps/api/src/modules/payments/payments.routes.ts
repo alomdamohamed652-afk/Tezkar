@@ -41,6 +41,21 @@ async function ownEmployeeId(userId:string) {
   return (r.rows[0]?.employee_id as string|null|undefined) ?? null;
 }
 
+// COMPAT (rolling deploy before migration 2026112501 runs in production):
+// the legacy worker role still holds the broad payment_requests.view grant.
+// Until the migration swaps it to view_own, keep its historical own-only
+// filtering so pre-migration production never widens to all requests.
+// After the migration this check is inert (worker no longer holds view)
+// and can be removed in a later cleanup.
+async function hasLegacyWorkerRole(userId:string) {
+  const r=await pool.query(
+    `SELECT EXISTS(
+       SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+       WHERE ur.user_id=$1 AND r.code='worker' AND r.is_active=TRUE
+     ) AS legacy`,[userId]);
+  return Boolean(r.rows[0]?.legacy);
+}
+
 async function lockEmployee(client: import("pg").PoolClient, employeeId:string) {
   const r=await client.query(
     "SELECT id FROM employees WHERE id=$1 AND is_active=TRUE FOR UPDATE",
@@ -553,7 +568,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     // employee scoping applied by GET /api/payment-requests.
     const countClient=await pool.connect();
     let canViewAllCount=false;
-    try{canViewAllCount=await hasPermission(countClient,request.user!.userId,"payment_requests.view","all");}finally{countClient.release();}
+    try{canViewAllCount=await hasPermission(countClient,request.user!.userId,"payment_requests.view","all")&&!(await hasLegacyWorkerRole(request.user!.userId));}finally{countClient.release();}
     const params:unknown[]=[];
     let scope="";
     if(!canViewAllCount){
@@ -577,7 +592,7 @@ export async function paymentsRoutes(app:FastifyInstance){
     if(!q.success) throw new AppError("VALIDATION_ERROR","الفلاتر غير صحيحة",422);
     const listClient=await pool.connect();
     let canViewAllList=false;
-    try{canViewAllList=await hasPermission(listClient,request.user!.userId,"payment_requests.view","all");}finally{listClient.release();}
+    try{canViewAllList=await hasPermission(listClient,request.user!.userId,"payment_requests.view","all")&&!(await hasLegacyWorkerRole(request.user!.userId));}finally{listClient.release();}
     const params:unknown[]=[]; const where:string[]=[];
     if(!canViewAllList){
       const employeeId=await ownEmployeeId(request.user!.userId);

@@ -235,6 +235,33 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
     assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM tasks WHERE status NOT IN ('COMPLETED','CANCELLED')")).rows[0].count), 2);
     assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM payment_requests WHERE status IN ('PENDING','APPROVED')")).rows[0].count), 3);
     assert.equal(Number((await apiPool.query("SELECT COUNT(*)::int AS count FROM user_notifications WHERE user_id=$1 AND read_at IS NULL", [worker.id])).rows[0].count), 1);
+
+    // Rolling-deploy compat: simulate PRE-migration production, where the worker
+    // role still holds the broad payment_requests.view grant. The legacy-role
+    // compat layer must keep workers own-only until migration 2026112501 swaps
+    // the grant, while managers keep the broad view.
+    await apiPool.query(
+      `INSERT INTO role_permissions(role_id,permission_id)
+       SELECT r.id,p.id FROM roles r, permissions p
+       WHERE r.code='worker' AND p.code='payment_requests.view'
+       ON CONFLICT DO NOTHING`
+    );
+    const legacyWorkerCount = await app.inject({ method: "GET", url: "/api/payment-requests/pending-count", headers: { cookie: workerCookie } });
+    assert.equal(legacyWorkerCount.statusCode, 200, legacyWorkerCount.body);
+    assert.deepEqual(legacyWorkerCount.json(), { data: { count: 1 } },
+      "pre-migration worker with broad view grant still sees only their own count");
+    const legacyWorkerList = await app.inject({ method: "GET", url: "/api/payment-requests", headers: { cookie: workerCookie } });
+    assert.equal(legacyWorkerList.statusCode, 200, legacyWorkerList.body);
+    assert.ok(legacyWorkerList.json().data.length > 0);
+    assert.ok(legacyWorkerList.json().data.every((row: { employee_id: string }) => row.employee_id === workerEmployee.id),
+      "pre-migration worker with broad view grant still sees only their own requests");
+    const managerListAfterLegacyGrant = await app.inject({ method: "GET", url: "/api/payment-requests", headers: { cookie: managerCookie } });
+    assert.equal(managerListAfterLegacyGrant.statusCode, 200, managerListAfterLegacyGrant.body);
+    assert.ok(managerListAfterLegacyGrant.json().data.some((row: { employee_id: string }) => row.employee_id === otherEmployee.id),
+      "manager broad view is unaffected by the legacy-worker compat layer");
+    const managerCountAfterLegacyGrant = await app.inject({ method: "GET", url: "/api/payment-requests/pending-count", headers: { cookie: managerCookie } });
+    assert.deepEqual(managerCountAfterLegacyGrant.json(), { data: { count: 3 } },
+      "manager count unaffected by the legacy-worker compat layer");
   } finally {
     if (app) await app.close().catch(() => {});
     if (apiPool) await apiPool.end().catch(() => {});
