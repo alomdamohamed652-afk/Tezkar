@@ -2197,7 +2197,7 @@ textarea:hover:not(:disabled) {
 .print-sheet.delivery-note .sig-line{display:flex;align-items:flex-end;gap:2mm}
 .print-sheet.delivery-note .sig-line em{font-style:normal;font-size:8.5pt;color:#64748b;font-weight:600;flex:0 0 auto}
 .print-sheet.delivery-note .sig-line i{flex:1;border-bottom:1px dotted #94a3b8;height:4.5mm}
-.print-sheet.delivery-note .sig-line i.sig-filled{border-bottom-style:solid;font-family:"Aref Ruqaa","IBM Plex Sans Arabic",serif;font-style:normal;font-weight:700;color:#1e3a8a;text-align:center;font-size:15pt;line-height:1.15;height:auto;padding:0 2mm .5mm;transform:rotate(-1.6deg)}
+.print-sheet.delivery-note .sig-line i.sig-filled{border-bottom-style:solid;font-family:"Aref Ruqaa","IBM Plex Sans Arabic",serif;font-style:normal;font-weight:700;color:#1e3a8a;text-align:center;font-size:15pt;line-height:1.15;height:auto;padding:0 2mm .5mm}
 .print-sheet.delivery-note .print-note{border-top:1px solid #e6ecf4;margin-top:5mm;padding-top:2.2mm;font-size:8pt;color:#64748b;text-align:center}
 
 @media print{
