@@ -105,7 +105,7 @@ a{color:inherit;text-decoration:none}
 }
 .brand-mark img{width:44px;height:44px;display:block;object-fit:contain;padding:2px;border-radius:10px;background:#fff}
 .brand-name{font-size:21px;font-weight:800;line-height:1.15;color:#fff}
-.brand-sub{font-size:10px;color:#8190a5;margin-top:4px}
+.brand-sub{font-size:10px;color:#c3d4f2;margin-top:4px}
 .sidebar-user{
   min-height:52px;
   display:flex;
@@ -128,7 +128,7 @@ a{color:inherit;text-decoration:none}
 }
 .sidebar-user-copy{min-width:0;display:grid;gap:1px;flex:1}
 .sidebar-user-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#e2e8f0;font-size:11px}
-.sidebar-user-copy span{font-size:9px;color:#64748b}
+.sidebar-user-copy span{font-size:9px;color:#a9bce0}
 .sidebar-online{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px rgb(34 197 94 / 10%)}
 .sidebar-scroll{min-height:0;overflow:auto;padding:0 1px 4px;scrollbar-width:thin;scrollbar-color:#334155 transparent}
 .nav-group{margin-bottom:8px}
@@ -171,8 +171,8 @@ a{color:inherit;text-decoration:none}
   display:grid;
   place-items:center;
   border-radius:7px;
-  color:#728197;
-  background:rgb(255 255 255 / 3%);
+  color:#a9bce0;
+  background:rgb(255 255 255 / 6%);
   font-size:15px;
   line-height:1;
 }
@@ -808,7 +808,7 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
     border-bottom:1px solid #1e293b;
     padding:10px;
   }
-  .brand{justify-content:flex-start;padding:4px 8px 10px;margin-bottom:7px}
+  .brand{justify-content:flex-start;padding:4px 8px 10px;margin-bottom:7px;border-bottom-color:rgb(191 219 254 / 32%)}
   .brand-copy{display:block}
   .sidebar-scroll{overflow:visible}
   .nav-title{display:none}
@@ -824,8 +824,8 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
     gap:6px;
     margin-top:10px;
     padding:9px 0 max(8px,env(safe-area-inset-bottom));
-    border-top:1px solid rgb(148 163 184 / 20%);
-    background:linear-gradient(180deg,#0f172a,#0b1220);
+    border-top:1px solid rgb(191 219 254 / 32%);
+    background:transparent;
   }
   .sidebar-footer .nav-item{
     min-width:0;
@@ -2153,7 +2153,7 @@ textarea:hover:not(:disabled) {
 
 /* Delivery note design: shared between the on-screen preview and print so the
    PDF matches the preview exactly (scoped to .delivery-note) */
-.print-sheet.delivery-note{color:#0f172a;font-family:"IBM Plex Sans Arabic","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right}
+.print-sheet.delivery-note{color:#0f172a;font-family:"Tajawal","Noto Sans Arabic","Segoe UI",Tahoma,sans-serif;text-align:right}
 .print-sheet.delivery-note .dn-header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6mm;padding-bottom:4.5mm;border-bottom:1mm solid #2563eb;margin-bottom:5mm;break-inside:avoid}
 .print-sheet.delivery-note .dn-brand{display:flex;align-items:center;gap:4mm;text-align:right;justify-self:start}
 .print-sheet.delivery-note .dn-brand img{width:23mm;height:23mm;object-fit:contain;flex:0 0 23mm}
@@ -2202,3 +2202,172 @@ textarea:hover:not(:disabled) {
  .dn-preview-paper{width:auto;max-width:none;box-shadow:none;border-radius:0;padding:0}
  .print-sheet.delivery-note{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
+
+/* ===== Brand refresh preview: a touch of the new auth glass look ===== */
+body{
+  background:
+    radial-gradient(1100px 520px at 88% -8%, rgb(59 130 246 / 10%), transparent 62%),
+    radial-gradient(900px 520px at -12% 108%, rgb(37 99 235 / 8%), transparent 58%),
+    linear-gradient(168deg,#f8faff 0%,#edf2fb 100%);
+  background-attachment:fixed;
+}
+.app-shell{background:transparent}
+
+.sidebar{
+  background:
+    radial-gradient(420px 260px at 112% -4%, rgb(96 165 250 / 22%), transparent 60%),
+    radial-gradient(520px 360px at -22% 105%, rgb(59 130 246 / 16%), transparent 55%),
+    linear-gradient(180deg,#0b1e4b 0%,#0f2a63 52%,#123a7a 100%);
+  border-left:1px solid rgb(147 197 253 / 16%);
+  box-shadow:8px 0 30px rgb(11 30 75 / 18%);
+}
+.brand{border-bottom-color:rgb(191 219 254 / 14%)}
+.brand-mark{
+  background:linear-gradient(145deg,#3b82f6,#1d4ed8);
+  box-shadow:0 8px 22px rgb(37 99 235 / 38%),0 0 0 1px rgb(255 255 255 / 12%);
+}
+.nav-title{color:#b8ccf0}
+.nav-item{color:#eef3ff}
+.nav-item:hover{background:rgb(255 255 255 / 7%);border-color:rgb(191 219 254 / 14%);color:#fff}
+.nav-item.active{
+  background:rgb(255 255 255 / 10%);
+  border-color:rgb(147 197 253 / 34%);
+  color:#fff;
+  box-shadow:0 0 20px rgb(59 130 246 / 22%),inset 0 1px 0 rgb(255 255 255 / 10%);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+}
+.nav-item.active .nav-icon{
+  background:linear-gradient(145deg,#3b82f6,#2563eb);
+  color:#fff;
+  box-shadow:0 4px 12px rgb(37 99 235 / 40%);
+}
+.sidebar-user{background:rgb(255 255 255 / 6%);border-color:rgb(191 219 254 / 14%)}
+.sidebar-footer{border-top-color:rgb(191 219 254 / 14%)}
+
+.page-title{
+  background:linear-gradient(120deg,#16285c 15%,#2563eb 90%);
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}
+
+.card{
+  background:rgb(255 255 255 / 82%);
+  backdrop-filter:blur(10px) saturate(1.15);
+  -webkit-backdrop-filter:blur(10px) saturate(1.15);
+  border:1px solid rgb(255 255 255 / 70%);
+  box-shadow:0 10px 26px rgb(30 58 138 / 8%);
+}
+.user-chip{
+  background:rgb(255 255 255 / 78%);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  border-color:rgb(255 255 255 / 70%);
+  box-shadow:0 6px 16px rgb(30 58 138 / 8%);
+}
+
+.primary-button{
+  background:linear-gradient(135deg,#3b82f6,#2563eb);
+  border-color:transparent;
+  box-shadow:0 8px 18px rgb(37 99 235 / 26%);
+}
+.primary-button:hover{
+  background:linear-gradient(135deg,#2563eb,#1d4ed8);
+  border-color:transparent;
+  box-shadow:0 10px 22px rgb(37 99 235 / 32%);
+}
+
+.tab{background:rgb(255 255 255 / 80%)}
+.tab.active{
+  background:linear-gradient(135deg,#3b82f6,#2563eb);
+  border-color:transparent;
+  color:#fff;
+  box-shadow:0 6px 14px rgb(37 99 235 / 24%);
+}
+
+.table-wrap th{background:linear-gradient(180deg,#eef4ff,#e3edfd);color:#1e3a8a}
+
+/* Theme follow-ups: print safety, numerals, sidebar logo */
+@media print{
+  html,body{background:#fff!important}
+  .card,.user-chip{backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+.stat-value,.table-wrap td.money,.table-wrap td.numeric{font-variant-numeric:tabular-nums}
+.brand-mark img{padding:0}
+
+/* Tajawal self-hosted (OFL) - primary UI font */
+/* arabic */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/fonts/tajawal-400-arabic.woff2) format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC7, U+10EC9-10EEE, U+10EF0-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* latin */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/fonts/tajawal-400-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(/fonts/tajawal-500-arabic.woff2) format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC7, U+10EC9-10EEE, U+10EF0-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* latin */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(/fonts/tajawal-500-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(/fonts/tajawal-700-arabic.woff2) format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC7, U+10EC9-10EEE, U+10EF0-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* latin */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(/fonts/tajawal-700-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* arabic */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url(/fonts/tajawal-800-arabic.woff2) format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC7, U+10EC9-10EEE, U+10EF0-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+/* latin */
+@font-face {
+  font-family: 'Tajawal';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url(/fonts/tajawal-800-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",Tahoma,sans-serif}
