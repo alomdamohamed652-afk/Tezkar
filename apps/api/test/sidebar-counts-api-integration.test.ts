@@ -262,6 +262,44 @@ test("Sidebar count endpoints return scoped pending counts without leaking other
     const managerCountAfterLegacyGrant = await app.inject({ method: "GET", url: "/api/payment-requests/pending-count", headers: { cookie: managerCookie } });
     assert.deepEqual(managerCountAfterLegacyGrant.json(), { data: { count: 3 } },
       "manager count unaffected by the legacy-worker compat layer");
+
+    // Same legacy grant state: own-balance and account statement stay own-scoped,
+    // an unlinked worker fails closed, and a dual worker+manager user keeps the
+    // historical own-only restriction (the old role-code filter bound them too).
+    const legacyBalance = await app.inject({ method: "GET", url: "/api/payments/my-balance", headers: { cookie: workerCookie } });
+    assert.equal(legacyBalance.statusCode, 200, legacyBalance.body);
+    const legacyOwnStatement = await app.inject({ method: "GET", url: "/api/worker-payments/employee-statement", headers: { cookie: workerCookie } });
+    assert.equal(legacyOwnStatement.statusCode, 200, legacyOwnStatement.body);
+    const legacyOtherStatement = await app.inject({ method: "GET", url: "/api/worker-payments/employee-statement?employeeId=" + otherEmployee.id, headers: { cookie: workerCookie } });
+    assert.equal(legacyOtherStatement.statusCode, 403, "worker cannot read another employee's statement");
+
+    const unlinkedWorker = (await apiPool.query(
+      "INSERT INTO users(username,password_hash,is_active,is_bootstrap,must_complete_setup) VALUES($1,$2,TRUE,FALSE,FALSE) RETURNING id",
+      ["sidebar-unlinked-worker-" + randomBytes(4).toString("hex"), hashPassword("Test-Unlinked-Worker-2026!")]
+    )).rows[0];
+    await apiPool.query(
+      "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker'",
+      [unlinkedWorker.id]
+    );
+    const unlinkedWorkerCookie = await login((await apiPool.query("SELECT username FROM users WHERE id=$1", [unlinkedWorker.id])).rows[0].username, "Test-Unlinked-Worker-2026!");
+    const unlinkedBalance = await app.inject({ method: "GET", url: "/api/payments/my-balance", headers: { cookie: unlinkedWorkerCookie } });
+    assert.equal(unlinkedBalance.statusCode, 403, "unlinked worker balance fails closed");
+    const unlinkedStatement = await app.inject({ method: "GET", url: "/api/worker-payments/employee-statement", headers: { cookie: unlinkedWorkerCookie } });
+    assert.ok([403, 422].includes(unlinkedStatement.statusCode), "unlinked worker statement fails closed, got " + unlinkedStatement.statusCode);
+    const unlinkedList = await app.inject({ method: "GET", url: "/api/payment-requests", headers: { cookie: unlinkedWorkerCookie } });
+    assert.equal(unlinkedList.statusCode, 403, "unlinked worker list fails closed instead of widening to all");
+
+    await apiPool.query(
+      "INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='worker' ON CONFLICT DO NOTHING",
+      [manager.id]
+    );
+    const dualList = await app.inject({ method: "GET", url: "/api/payment-requests", headers: { cookie: managerCookie } });
+    assert.equal(dualList.statusCode, 200, dualList.body);
+    assert.ok(dualList.json().data.every((row: { employee_id: string }) => row.employee_id === managerEmployee.id),
+      "dual worker+manager user keeps historical own-only restriction");
+    const dualCount = await app.inject({ method: "GET", url: "/api/payment-requests/pending-count", headers: { cookie: managerCookie } });
+    assert.deepEqual(dualCount.json(), { data: { count: 0 } },
+      "dual user count scoped to their own employee (manager has no open requests)");
   } finally {
     if (app) await app.close().catch(() => {});
     if (apiPool) await apiPool.end().catch(() => {});
