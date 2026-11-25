@@ -6,7 +6,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
@@ -215,7 +215,7 @@ export async function canViewOrderFinancials(userId: string): Promise<boolean> {
 }
 
 export async function orderRoutes(app: FastifyInstance) {
-  app.get("/api/orders", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
+  app.get("/api/orders", { preHandler: [authenticateRequest, requireAnyPermission(["orders.view","all"],["deliveries.view","all"],["deliveries.create","all"])] }, async (request) => {
     const q = z.object({ status: z.enum(["DRAFT","PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]).optional() }).parse(request.query);
     const params: unknown[] = [];
     let where = "WHERE o.status <> 'CANCELLED'";

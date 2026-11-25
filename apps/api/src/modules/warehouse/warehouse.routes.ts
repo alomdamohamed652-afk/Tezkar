@@ -4,7 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { consumeInventoryLots, adjustStockValueAfterLotConsumption, createInventoryLot } from "./inventory-lots.service.js";
 import { assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
@@ -123,7 +123,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
   });
 
 
-  app.get("/api/warehouses",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async()=>{
+  app.get("/api/warehouses",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.view","all"],["warehouse.receipt.view","all"],["warehouse.receipt.create","all"],["deliveries.view","all"],["deliveries.create","all"])]},async()=>{
     const result=await pool.query("SELECT w.id,w.code,w.name,w.address,w.warehouse_type,w.is_active,COUNT(l.id)::int AS location_count FROM warehouses w LEFT JOIN warehouse_locations l ON l.warehouse_id=w.id AND l.is_active=TRUE WHERE w.is_active=TRUE GROUP BY w.id ORDER BY w.name");
     return {data:result.rows};
   });
@@ -171,7 +171,7 @@ export async function warehouseRoutes(app: FastifyInstance) {
     return {data:row};
   });
 
-  app.get("/api/warehouse/locations",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+  app.get("/api/warehouse/locations",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.view","all"],["warehouse.receipt.view","all"],["warehouse.receipt.create","all"],["deliveries.view","all"],["deliveries.create","all"])]},async(request)=>{
     const parsed=z.object({warehouseId:z.string().uuid().optional()}).safeParse(request.query);
     if(!parsed.success) throw new AppError("VALIDATION_ERROR","فلتر المخزن غير صحيح",422);
     const params:unknown[]=[]; const where=["l.is_active=TRUE"];
