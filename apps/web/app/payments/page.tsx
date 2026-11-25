@@ -28,12 +28,14 @@ export default function PaymentsPage(){
  const [settlementSource,setSettlementSource]=useState<"CURRENT_CUSTODY"|"PREVIOUS_CUSTODY">("CURRENT_CUSTODY"),[orders,setOrders]=useState<OrderOption[]>([]),[orderStages,setOrderStages]=useState<OrderStageOption[]>([]),[settlementOrderId,setSettlementOrderId]=useState(""),[settlementOrderStageId,setSettlementOrderStageId]=useState("");
  const [employees,setEmployees]=useState<Array<{id:string;code:string;full_name:string;is_active?:boolean}>>([]),[orderAccounts,setOrderAccounts]=useState<OrderAccountRow[]>([]),[orderAccountsLoading,setOrderAccountsLoading]=useState(false),[settlementEmployeeId,setSettlementEmployeeId]=useState(""),[settlementSummary,setSettlementSummary]=useState<{productionEarnings:number;bonuses:number;deductions:number;previouslySettled:number;outstandingAdvances:number;availableForSettlement:number;reconciliation?:SettlementReconciliation;availableBreakdown?:{calculationMode:"PRODUCTION"|"LEDGER_FALLBACK";approvedProductionCount:number;productionNet:number;standaloneAdjustmentsNet:number;ledgerOnlyAdjustmentsNet:number;ledgerOnlyAdjustmentEntries:Array<{id:string;code:string;createdAt:string;credit:number;debit:number;net:number;notes:string|null}>;previouslySettled:number;historicalPaid:number;ledgerBalance:number;outstandingAdvances:number;calculatedAvailable:number};orderAccount?:{orderId:string;orderStageId:string|null;earned:number;paid:number;remaining:number}|null}|null>(null),[settlementAmount,setSettlementAmount]=useState(""),[settlementMethod,setSettlementMethod]=useState("CASH"),[settlementReference,setSettlementReference]=useState(""),[settlementNotes,setSettlementNotes]=useState(""),[settlementSaving,setSettlementSaving]=useState(false),[unpaidProduction,setUnpaidProduction]=useState<UnpaidProduction[]>([]),[selectedProductionIds,setSelectedProductionIds]=useState<string[]>([]),[productionLoading,setProductionLoading]=useState(false),[settlementMode,setSettlementMode]=useState<"SELECTED_PRODUCTION"|"ALL_DUES">("ALL_DUES");const [allowOverpayment,setAllowOverpayment]=useState(false);const [employeeStatement,setEmployeeStatement]=useState<EmployeeStatement|null>(null),[statementLoading,setStatementLoading]=useState(false);const [reversingPaymentId,setReversingPaymentId]=useState<string|null>(null);
  const load=useCallback(async()=>{
-  const worker=session?.roleCodes?.includes("worker")??false;
+  // Own-dues view follows the permission scope, not a role code: any role with
+  // only payment_requests.view_own gets the isolated own-account view.
+  const worker=!has("payment_requests.view")&&has("payment_requests.view_own");
   setIsWorker(worker);
 
   // Request-review access is optional for payout-only finance roles. A forbidden
   // request list must never abort loading the separate settlement workflow.
-  if(has("payment_requests.view")){
+  if(has("payment_requests.view")||has("payment_requests.view_own")){
    try{const r=await api<{data:Request[]}>("/api/payment-requests");setRequests(r.data)}catch{setRequests([])}
    try{const m=await api<{data:{code:string;name:string}[]}>("/api/payment-methods");const map:Record<string,string>={};m.data.forEach(x=>map[x.code]=x.name);setMethods(map)}catch{setMethods(fallbackMethods)}
   }else{
@@ -48,7 +50,7 @@ export default function PaymentsPage(){
   }else{
    setEmployees([]);setSettlementEmployeeId("");setOrders([]);
   }
-  if(worker&&has("payment_requests.view")){
+  if(worker){
    try{const b=await api<{data:{balance:number;availableEarnings:number;outstandingAdvanceAmount:number;dueAdvanceRepaymentAmount:number}}>("/api/payments/my-balance");setBalance(b.data.availableEarnings);setAccountBalance(b.data.balance);setOutstandingAdvanceAmount(b.data.outstandingAdvanceAmount);setDueAdvanceRepaymentAmount(b.data.dueAdvanceRepaymentAmount)}catch{setBalance(0);setAccountBalance(0);setOutstandingAdvanceAmount(0);setDueAdvanceRepaymentAmount(0)}
   }else{
    setBalance(0);setAccountBalance(0);setOutstandingAdvanceAmount(0);setDueAdvanceRepaymentAmount(0);

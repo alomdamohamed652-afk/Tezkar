@@ -24,7 +24,7 @@ const groups:NavGroup[]=[
  ]},
  {label:"المخزون والتسليم",items:[
   {icon:"▥",label:"المخزن",href:"/warehouse",permissions:["warehouse.view"]},
-  {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view"]},
+  {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view","warehouse.receipt.view"]},
   {icon:"↓",label:"مسحوبات الوردية",href:"/shift-withdrawals",permissions:["warehouse.view"]},
   {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
   {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]},
@@ -33,7 +33,7 @@ const groups:NavGroup[]=[
  {label:"المالية",items:[
   {icon:"₤",label:"المالية",href:"/accounting",permissions:["finance.profitability.view","finance.expenses.view","finance.worker_settlement_differences.view"]},
   {icon:"⇄",label:"تصحيح مصروفات الطلبيات القديمة",href:"/finance/worker-settlements",permissions:["finance.expenses.create"]},
-  {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","worker_payments.view","worker_payments.pay"]},
+  {icon:"◍",label:"القبض ومستحقات العمال",href:"/payments",permissions:["payment_requests.view","payment_requests.view_own","worker_payments.view","worker_payments.pay"]},
   {icon:"₤",label:"مرتبات الموظفين",href:"/payroll",permissions:["payroll.view","payroll.view_own"]},
   {icon:"↔",label:"السلف",href:"/advances",permissions:["advances.view","advances.view_own"],conditional:"advance"},
   {icon:"◍",label:"العهدة النقدية",href:"/custody",permissions:["cash_custody.view","cash_custody.view_own","cash_custody.create","cash_custody.create_own","cash_custody.transfer","cash_custody.order_collection","cash_custody.order_collection_own","cash_custody.order_expense","cash_custody.order_expense_own"]},
@@ -113,7 +113,7 @@ export function Sidebar({active}:{active:string}){
      .then(r=>{if(alive)setPendingTaskCount(r.data.count)})
      .catch(()=>{if(alive)setPendingTaskCount(0)});
    }else setPendingTaskCount(0);
-   if(permissions.includes("payment_requests.view")){
+   if(permissions.includes("payment_requests.view")||permissions.includes("payment_requests.view_own")){
     api<{data:{count:number}}>("/api/payment-requests/pending-count")
      .then(r=>{if(alive)setPendingPaymentCount(r.data.count)})
      .catch(()=>{if(alive)setPendingPaymentCount(0)});
