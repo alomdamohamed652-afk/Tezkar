@@ -58,11 +58,12 @@ export async function getAdminHealth(db: HealthDb = pool) {
     database = "down";
   }
 
-  const safe = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+  type Diagnostic<T> = { value: T; available: boolean };
+  const safe = async <T>(fn: () => Promise<T>, fallback: T): Promise<Diagnostic<T>> => {
     try {
-      return await fn();
+      return { value: await fn(), available: true };
     } catch {
-      return fallback;
+      return { value: fallback, available: false };
     }
   };
 
@@ -115,10 +116,16 @@ export async function getAdminHealth(db: HealthDb = pool) {
     status: database === "ok" ? "ok" : "degraded",
     serverTime: new Date().toISOString(),
     database: { status: database, latencyMs: databaseLatencyMs },
-    migrations: { count: migrationCount, last: lastMigration },
-    lastBackupAt: lastBackup,
-    failedLogins24h,
-    recentFailedLogins,
+    diagnostics: {
+      migrations: { countAvailable: migrationCount.available, latestAvailable: lastMigration.available },
+      backupExportAudit: { available: lastBackup.available },
+      failedLoginCount: { available: failedLogins24h.available },
+      recentFailedLogins: { available: recentFailedLogins.available }
+    },
+    migrations: { count: migrationCount.value, last: lastMigration.value },
+    lastBackupAt: lastBackup.value,
+    failedLogins24h: failedLogins24h.value,
+    recentFailedLogins: recentFailedLogins.value,
     recentErrors: recentErrors.slice(0, 20)
   };
 }
