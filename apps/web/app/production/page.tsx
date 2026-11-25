@@ -137,6 +137,11 @@ export default function ProductionPage(){
     setRateOverride(Number(selectedOrderStage.stage_rate).toString());
     return;
   }
+  if(selectedOrderStage?.stage_rate_method&&!canViewProductionFinancials){
+    setResolvedMethod(selectedOrderStage.stage_rate_method);
+    setResolvedRate(null);setRateOverride("");setRateHidden(true);
+    return;
+  }
   if(!productId||!stageId||!shiftId||!workDate){setResolvedMethod("");setResolvedRate(null);setRateOverride("");return}
   const q=new URLSearchParams({productId,stageId,shiftId,workDate});
   if(productionTypeId)q.set("productionTypeId",productionTypeId);
@@ -145,7 +150,7 @@ export default function ProductionPage(){
    setResolvedMethod(cm==="PER_DAY"?"PER_DAY":cm==="PER_HOUR"?"PER_HOUR":"");
    setResolvedRate(null);setRateOverride("");setRateHidden(false)
   });
- },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId,productionTypes]);
+ },[selectedOrderStage,productId,stageId,shiftId,workDate,productionTypeId,productionTypes,canViewProductionFinancials]);
 
  const normalizeNumber=(v:string)=>v.replace(/[٠-٩]/g,d=>String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬،]/g,"").replace(/٫/g,".");
  const isShiftWage=resolvedMethod==="PER_DAY";

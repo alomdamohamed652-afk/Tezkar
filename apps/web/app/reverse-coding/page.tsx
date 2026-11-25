@@ -257,6 +257,7 @@ export default function ReverseCodingPage(){
   </>}
   {tier==="S"&&<>
    <header>{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo rl-logo-sm"/>}<div><strong>{s.company?.companyName||"TEZKAR"}</strong></div></header>
+   <div className="reverse-label-title">{s.productName||""}</div>
    <div className="reverse-label-code" dir="ltr">{s.code}</div>
    <div className="reverse-barcode"><Code128Barcode value={s.code} height={30}/></div>
    <div className="reverse-label-meta"><span><b>{number(s.quantity)}</b> قطعة</span><span>{weightLine}</span></div>
@@ -280,8 +281,13 @@ export default function ReverseCodingPage(){
   .reverse-label-code{text-align:center;font-family:Arial,sans-serif;font-weight:900;font-size:clamp(12px,4mm,18px);margin-top:.5mm;overflow-wrap:anywhere}
   .reverse-barcode{height:${Math.max(7,Math.min(18,labelSize.height*.25))}mm;overflow:hidden;text-align:center}.reverse-barcode svg{height:100%!important;max-width:100%}
   .reverse-label-meta{display:flex;justify-content:space-between;flex-wrap:wrap;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:.8mm;overflow:hidden}
-  .rl-S .reverse-label-meta{flex-direction:column;align-items:center;gap:.3mm;margin-top:.8mm}
-  .rl-S footer{margin-top:auto}
+  .rl-S header{min-height:4.5mm;gap:1mm;padding-bottom:.5mm}
+  .rl-S .reverse-logo,.rl-S .rl-logo-sm{width:7mm;height:5mm}
+  .rl-S .reverse-label-title{font-size:clamp(6px,1.9mm,9px);margin-top:.5mm}
+  .rl-S .reverse-label-code{font-size:clamp(10px,3.4mm,15px);margin-top:.3mm}
+  .rl-S .reverse-barcode{height:8.5mm!important;margin-top:.3mm}
+  .rl-S .reverse-label-meta{flex-direction:row;justify-content:space-between;gap:.6mm;margin-top:.5mm}
+  .rl-S footer{margin-top:auto;font-size:clamp(5px,1.4mm,7px);padding-top:.4mm}
   .rl-L .rl-rows{margin-top:1.2mm;gap:.8mm}
   .rl-L .reverse-barcode{margin-top:1mm}
   .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:auto;padding-top:.6mm}
