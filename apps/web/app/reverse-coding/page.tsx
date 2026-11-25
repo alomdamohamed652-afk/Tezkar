@@ -9,7 +9,7 @@ type Item={id:string;code:string;name:string};
 type Group={id:string;name:string;packaging_type:string;total_quantity:number;pieces_per_code:number;code_count:number;generated_codes:number;printed_codes:number;product_name?:string|null;order_code?:string|null;created_at:string;notes?:string|null;codes?:Code[]};
 type Code={id:string;code:string;quantity:number;weight_grams:string|number|null;status:string;first_printed_at:string|null;notes?:string|null;employees?:{id:string;name:string;code:string}[];print_snapshot?:any};
 type Account={id:string;username:string;name:string};
-type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null};
+type Company={companyName?:string;address?:string|null;phone?:string|null;logoUrl?:string|null;complaintsPhone?:string|null};
 type LabelLayout={width:number;height:number;margin:number};
 type ScanResult={value:string;result:string;code:(Code&{id:string;product_id?:string;name?:string;packaging_type?:string;product_name?:string;display_product_name?:string|null;order_code?:string;weight_min_kg?:string|null;weight_max_kg?:string|null})|null;carton?:any};
 type ScanLog={id:string;scanned_value:string;result:string;scanned_at:string;code?:string|null;group_name?:string|null;username?:string|null};
@@ -39,7 +39,7 @@ export default function ReverseCodingPage(){
  const [scanValue,setScanValue]=useState(""),[scanResults,setScanResults]=useState<ScanResult[]>([]),[scanning,setScanning]=useState(false),[cameraError,setCameraError]=useState(""),[scannedCode,setScannedCode]=useState<ScanResult|null>(null),[cartonProductId,setCartonProductId]=useState(""),[cartonDisplayProductName,setCartonDisplayProductName]=useState(""),[productionOwnerId,setProductionOwnerId]=useState(""),[productionPartnerId,setProductionPartnerId]=useState(""),[packerId,setPackerId]=useState(""),[packerPartnerId,setPackerPartnerId]=useState(""),[codedById,setCodedById]=useState(""),[receivedById,setReceivedById]=useState(""),[actualWeightKg,setActualWeightKg]=useState(""),[cartonNotes,setCartonNotes]=useState("");
  const [scanSession,setScanSession]=useState(createScanSession),[recentScans,setRecentScans]=useState<ScanLog[]>([]);
  const [cartonSearch,setCartonSearch]=useState(""),[cartonLookupResults,setCartonLookupResults]=useState<any[]>([]),[cartonLookupBusy,setCartonLookupBusy]=useState(false);
- const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState("");
+ const [companyName,setCompanyName]=useState(""),[address,setAddress]=useState(""),[phone,setPhone]=useState(""),[logoUrl,setLogoUrl]=useState(""),[complaintsPhone,setComplaintsPhone]=useState("");
  const [printRows,setPrintRows]=useState<any[]>([]);
  const [labelSize,setLabelSize]=useState({width:80,height:50,margin:2});
  const [labelPreset,setLabelPreset]=useState("80x50");
@@ -48,7 +48,7 @@ export default function ReverseCodingPage(){
  async function load(){
   try{const [g,b,logs]=await Promise.all([api<{data:Group[]}>("/api/reverse-coding/groups"),api<{data:{products:Item[];employees:Item[];users:Account[];currentUserId:string;company:Company;labelSettings:LabelLayout}}>("/api/reverse-coding/bootstrap"),api<{data:ScanLog[]}>("/api/reverse-coding/scans")]);
    setGroups(g.data);setRecentScans(logs.data);setProducts(b.data.products);setEmployees(b.data.employees);setAccounts(b.data.users??[]);setCurrentUserId(b.data.currentUserId);setCodedById(b.data.currentUserId);setReceivedById(b.data.currentUserId);setCompany(b.data.company??{});
-   setCompanyName(b.data.company?.companyName??"");setAddress(b.data.company?.address??"");setPhone(b.data.company?.phone??"");setLogoUrl(b.data.company?.logoUrl??"");
+   setCompanyName(b.data.company?.companyName??"");setAddress(b.data.company?.address??"");setPhone(b.data.company?.phone??"");setLogoUrl(b.data.company?.logoUrl??"");setComplaintsPhone(b.data.company?.complaintsPhone??"");
    const layout=b.data.labelSettings??{width:80,height:50,margin:2};setLabelSize(layout);setLabelPreset(["80x50","100x150","100x100","60x40","50x30","40x30"].includes(`${layout.width}x${layout.height}`)?`${layout.width}x${layout.height}`:"custom");
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل نظام التكويد العكسي");}
  }
@@ -72,7 +72,7 @@ export default function ReverseCodingPage(){
   if(!editingCode)return;setBusy(true);try{await api("/api/reverse-coding/codes/"+editingCode.id+"/metadata",{method:"PATCH",body:JSON.stringify({notes:editNotes||null,...(!editingCode.first_printed_at?{weightGrams:editWeight===""?null:Number(editWeight)}:{}),employeeIds:editEmployees})});if(selected)await openGroup(selected);setEditingCode(null);}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بيانات الكود");}finally{setBusy(false);}
  }
  async function saveCompany(){
-  setBusy(true);try{const r=await api<{data:Company}>("/api/reverse-coding/company-settings",{method:"PUT",body:JSON.stringify({companyName,address:address||null,phone:phone||null,logoUrl:logoUrl||null})});setCompany(r.data);setError("");}
+  setBusy(true);try{const r=await api<{data:Company}>("/api/reverse-coding/company-settings",{method:"PUT",body:JSON.stringify({companyName,address:address||null,phone:phone||null,logoUrl:logoUrl||null,complaintsPhone:complaintsPhone||null})});setCompany(r.data);setError("");}
   catch(e){setError(e instanceof Error?e.message:"تعذر حفظ بيانات الشركة");}finally{setBusy(false);}
  }
  async function saveLabelLayout(){
@@ -227,16 +227,41 @@ export default function ReverseCodingPage(){
      <label style={field}>اسم الشركة<input style={input} value={companyName} onChange={e=>setCompanyName(e.target.value)} placeholder="اسم الشركة"/></label>
      <label style={field}>العنوان<input style={input} value={address} onChange={e=>setAddress(e.target.value)} placeholder="عنوان الشركة"/></label>
      <label style={field}>رقم التواصل<input style={input} value={phone} onChange={e=>setPhone(e.target.value)} placeholder="رقم التواصل"/></label>
+     <label style={field}>رقم الشكاوى<input style={input} dir="ltr" value={complaintsPhone} onChange={e=>setComplaintsPhone(e.target.value)} placeholder="اختياري"/></label>
      <label style={field}>رابط الشعار<input style={input} value={logoUrl} onChange={e=>setLogoUrl(e.target.value)} placeholder="رابط صورة الشعار"/></label>
     </div><div style={{display:"flex",justifyContent:"flex-end",marginTop:12}}><button style={btn} onClick={()=>void saveCompany()} disabled={busy}>حفظ بيانات الشركة</button></div>
    </section>}
   </section>
  </main></div>
- <div className="reverse-print-area">{printRows.map((r,i)=>{const s=r.snapshot;return <article className="reverse-label" key={r.id??i}>
-  <header>{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo"/>}<div><strong>{s.company?.companyName||"TEZKAR"}</strong><small>{s.company?.address||""}</small><small>{s.company?.phone||""}</small></div></header>
-  <div className="reverse-label-title">{s.productName||""}</div><div className="reverse-label-code">{s.code}</div><div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div>
-  <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: <b>{s.weightMinKg??"—"} – {s.weightMaxKg??"—"} كجم</b></span></div>
-  <footer>TEZKAR · {s.createdAt?new Date(s.createdAt).toLocaleDateString("en-GB"):""}</footer>
+ <div className="reverse-print-area">{printRows.map((r,i)=>{const s=r.snapshot;const tier=labelSize.width>=90||labelSize.height>=90?"L":labelSize.width>=65?"M":"S";
+  const complaints=(s.company?.complaintsPhone||"").trim();
+  const complaintsNode=complaints?<> · شكاوى: <b dir="ltr">{complaints}</b></>:null;
+  const dateStr=s.createdAt?new Date(s.createdAt).toLocaleDateString("en-GB"):"";
+  const weightLine=<><b>{s.weightMinKg??"—"} – {s.weightMaxKg??"—"}</b> كجم</>;
+  return <article className={"reverse-label rl-"+tier} key={r.id??i}>
+  {tier==="L"&&<>
+   <header className="rl-brand">{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo"/>}<div className="rl-brand-text"><strong>{s.company?.companyName||"TEZKAR"}</strong><small>{s.company?.address||""}</small><small>{complaints?<>شكاوى: <b dir="ltr">{complaints}</b></>:null}</small></div></header>
+   <div className="reverse-label-title">{s.productName||""}</div>
+   <div className="reverse-label-code" dir="ltr">{s.code}</div>
+   <div className="reverse-barcode"><Code128Barcode value={s.code} height={60}/></div><div className="rl-cap">{s.code}</div>
+   <div className="rl-rows"><span>الكمية <b>{number(s.quantity)} قطعة</b></span><span>الوزن {weightLine}</span><span>الطلبية <b dir="ltr">{s.orderCode||"—"}</b></span></div>
+   <footer>{s.company?.address||""}{complaintsNode} · TEZKAR · {dateStr}</footer>
+  </>}
+  {tier==="M"&&<>
+   <header>{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo"/>}<div><strong>{s.company?.companyName||"TEZKAR"}</strong><small>{s.company?.address||""}{complaintsNode}</small></div></header>
+   <div className="reverse-label-title">{s.productName||""}</div>
+   <div className="reverse-label-code" dir="ltr">{s.code}</div>
+   <div className="reverse-barcode"><Code128Barcode value={s.code} height={48}/></div><div className="rl-cap">{s.code}</div>
+   <div className="reverse-label-meta"><span>الكمية: <b>{number(s.quantity)} قطعة</b></span><span>الوزن: {weightLine}</span></div>
+   <footer>{s.company?.address||""}{complaintsNode} · {dateStr}</footer>
+  </>}
+  {tier==="S"&&<>
+   <header>{s.company?.logoUrl&&<img src={s.company.logoUrl} alt="" className="reverse-logo rl-logo-sm"/>}<div><strong>{s.company?.companyName||"TEZKAR"}</strong></div></header>
+   <div className="reverse-label-code" dir="ltr">{s.code}</div>
+   <div className="reverse-barcode"><Code128Barcode value={s.code} height={30}/></div>
+   <div className="reverse-label-meta"><span><b>{number(s.quantity)}</b> قطعة</span><span>{weightLine}</span></div>
+   <footer>{s.company?.address||""} · {complaints?<b dir="ltr">{complaints}</b>:""} · {dateStr}</footer>
+  </>}
  </article>})}</div>
  <style jsx global>{`
  .reverse-print-area{display:none}
@@ -256,6 +281,15 @@ export default function ReverseCodingPage(){
   .reverse-barcode{height:${Math.max(7,Math.min(18,labelSize.height*.25))}mm;overflow:hidden;text-align:center}.reverse-barcode svg{height:100%!important;max-width:100%}
   .reverse-label-meta{display:flex;justify-content:space-between;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:1mm;overflow:hidden}
   .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:1mm;padding-top:.6mm}
+  .rl-cap{text-align:center;direction:ltr;font-family:ui-monospace,Consolas,monospace;font-size:clamp(6px,1.9mm,9px);margin-top:.4mm}
+  .rl-rows{display:grid;gap:.6mm;font-size:clamp(7px,2.2mm,10px);margin-top:.8mm}
+  .rl-rows span{display:flex;justify-content:space-between;gap:1.5mm;border-bottom:1px dotted #ccc;padding-bottom:.4mm}
+  .reverse-label.rl-L .rl-brand{background:#f4f4f5;border-radius:1mm;padding:1.2mm 2mm}
+  .reverse-label.rl-L .reverse-barcode{width:72%;margin:0 auto}
+  .reverse-label.rl-M .reverse-barcode{width:85%;margin:0 auto}
+  .reverse-label.rl-M,.reverse-label.rl-S{justify-content:flex-start}
+  .reverse-label.rl-M footer,.reverse-label.rl-S footer{margin-top:auto}
+  .rl-logo-sm{width:7mm;height:5mm}
  }
  `}</style>
  </>;

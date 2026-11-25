@@ -30,9 +30,11 @@ function encodeCode128B(value:string){
   return codes.map(c=>PATTERNS[c]);
 }
 
+// Bars only: the human-readable caption is rendered by callers as HTML, because SVG text
+// anchoring misplaces the caption in RTL pages. Quiet zones are 11 modules each side (spec >= 10).
 export function Code128Barcode({value,height=54}:{value:string;height?:number}){
   const patterns=useMemo(()=>encodeCode128B(value),[value]);
-  let x=4;
+  let x=11;
   const bars:{x:number;width:number}[]=[];
   for(const pattern of patterns){
     for(let i=0;i<pattern.length;i++){
@@ -41,9 +43,8 @@ export function Code128Barcode({value,height=54}:{value:string;height?:number}){
       x+=width;
     }
   }
-  return <svg role="img" aria-label={"Code 128 "+value} viewBox={`0 0 ${x+4} ${height+20}`} width="100%" height={height+20} preserveAspectRatio="none">
+  return <svg role="img" aria-label={"Code 128 "+value} viewBox={`0 0 ${x+11} ${height}`} width="100%" height={height} preserveAspectRatio="none">
     <rect width="100%" height="100%" fill="#fff"/>
-    {bars.map((bar,i)=><rect key={i} x={bar.x} y="2" width={bar.width} height={height} fill="#000"/>)}
-    <text x="50%" y={height+16} textAnchor="middle" fontFamily="monospace" fontSize="10" fill="#111827">{value}</text>
+    {bars.map((bar,i)=><rect key={i} x={bar.x} y="0" width={bar.width} height={height} fill="#000"/>)}
   </svg>;
 }
