@@ -251,35 +251,39 @@ export default function PayrollSlipPage() {
         @media (max-width: 700px) { .slip-page { padding: 8px; } .salary-slip { padding: 20px 16px; } .employee-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .summary-strip { grid-template-columns: 1fr; } .slip-header { flex-wrap: wrap; } .slip-title { width: 100%; text-align: right; } .slip-footer { gap: 15px; } .net-sub { flex-wrap: wrap; } }
         @page { size: A4; margin: 12mm; }
         @media print {
+          @page { size: A4; margin: 10mm; }
           body { background: white; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
           .slip-page { padding: 0; min-height: 0; }
           .no-print { display: none !important; }
           .salary-slip { max-width: 186mm; width: 186mm; margin: 0 auto; border: 0; border-radius: 0; box-shadow: none; padding: 0; overflow: hidden; }
           .slip-section, .net-box, .employee-grid, .summary-strip, .slip-footer { break-inside: avoid; }
-          .slip-logo { width: 56px; height: 56px; flex-basis: 56px; }
+          .slip-logo { width: 50px; height: 50px; flex-basis: 50px; }
           .slip-header { gap: 12px; }
           .brand-copy p { margin-top: 2px; }
-          .slip-rule { margin: 10px 0 12px; }
+          .slip-rule { margin: 6px 0 8px; }
           .month-pill { margin-top: 4px !important; padding: 2px 12px; }
-          .employee-grid div { padding: 8px 12px; }
-          .employee-grid small { margin-bottom: 3px; }
+          .employee-grid div { padding: 5px 12px; }
+          .employee-grid small { margin-bottom: 2px; }
           .summary-strip { margin-top: 10px; gap: 10px; }
-          .summary-cell { padding: 8px 12px; }
+          .summary-cell { padding: 5px 12px; }
           .summary-cell small { margin-bottom: 2px; }
-          .slip-section { margin-top: 12px; }
-          .slip-section h3 { margin-bottom: 6px; }
-          .slip-section td, .slip-section th { padding: 7px 12px; }
+          .slip-section { margin-top: 6px; }
+          .slip-section h3 { margin-bottom: 5px; }
+          .slip-section td, .slip-section th { padding: 6px 12px; }
           .slip-note { margin-top: 4px; line-height: 1.5; }
           .line-note { margin-top: 2px; line-height: 1.5; }
-          .settlement-box { padding: 10px 14px; }
+          .settlement-box { padding: 8px 14px; }
           .settlement-box p { margin-top: 6px; line-height: 1.55; }
-          .net-box { margin-top: 14px; padding: 12px 16px; }
-          .net-sub { margin-top: 8px; padding-top: 8px; }
-          .net-box p { margin-top: 6px; }
-          .slip-footer { margin-top: 16px; gap: 20px; }
-          .sign-box { padding: 10px 14px 12px; min-height: 84px; }
-          .sign-line { padding-top: 10px; }
-          .slip-bottom { margin-top: 12px; padding-top: 8px; }
+          .net-box { margin-top: 8px; padding: 8px 16px; }
+          .net-sub { margin-top: 6px; padding-top: 6px; }
+          .net-box p { margin-top: 4px; }
+          .slip-footer { margin-top: 6px; gap: 16px; }
+          .sign-box { padding: 6px 14px 8px; min-height: 0; }
+          .sign-box p { line-height: 1.5; margin-top: 4px; }
+          .sign-line { padding-top: 4px; }
+          .brand-copy h1 { font-size: 22px; }
+          .slip-title h2 { font-size: 19px; }
+          .slip-bottom { margin-top: 4px; padding-top: 4px; }
         }
       `}</style>
     </main>
