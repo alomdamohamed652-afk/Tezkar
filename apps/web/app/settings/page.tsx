@@ -6,6 +6,7 @@ import {Sidebar,usePermissions} from "../../components/sidebar";
 import {SearchableSelect} from "../../components/searchable-select";
 import {useToast} from "../../components/toast-provider";
 import {RegistrationRequestsTab,PasswordResetRequestsTab,DataTransferTab,AdminSecurityTab} from "./settings-extra-tabs";
+import {SystemHealthTab} from "./system-health-tab";
 
 type Item={id:string;code:string;name:string};
 type Employee={id:string;code:string;full_name:string;is_active:boolean};
@@ -72,7 +73,7 @@ export default function SettingsPage(){
  const canSeeRequestTabs=has("users.create");
  const canSeeDataTransfer=has("system.backup.export");
  const canSeeSecurity=has("users.view")&&Boolean(session?.roleCodes?.some(role=>["admin","manager","owner"].includes(role.toLowerCase())));
- const tabAllowed=(t:string)=>t==="permissions"||t==="users"||t==="employees"||t==="structure"||(t==="backup"&&(has("system.backup.export")||has("system.backup.restore")))||(t==="registration-requests"&&canSeeRequestTabs)||(t==="password-reset-requests"&&canSeeRequestTabs)||(t==="data-transfer"&&canSeeDataTransfer)||(t==="security"&&canSeeSecurity)||(t==="reset"&&resetVisible);
+ const tabAllowed=(t:string)=>t==="permissions"||t==="users"||t==="employees"||t==="structure"||(t==="backup"&&(has("system.backup.export")||has("system.backup.restore")))||(t==="registration-requests"&&canSeeRequestTabs)||(t==="password-reset-requests"&&canSeeRequestTabs)||(t==="data-transfer"&&canSeeDataTransfer)||(t==="security"&&canSeeSecurity)||(t==="health"&&canSeeSecurity)||(t==="reset"&&resetVisible);
  const activeTab=tabAllowed(tab)?tab:"permissions";
  function selectTab(t:string){setTab(t);if(typeof window!=="undefined")window.history.replaceState(null,"","/settings?tab="+t);}
  useEffect(()=>{const t=new URLSearchParams(window.location.search).get("tab");if(t)setTab(t);},[]);
@@ -196,6 +197,7 @@ export default function SettingsPage(){
     {canSeeRequestTabs&&<button className={"tab "+(activeTab==="password-reset-requests"?"active":"")} onClick={()=>selectTab("password-reset-requests")}>طلبات إعادة تعيين كلمة المرور</button>}
     {canSeeDataTransfer&&<button className={"tab "+(activeTab==="data-transfer"?"active":"")} onClick={()=>selectTab("data-transfer")}>فحص وترحيل قاعدة البيانات</button>}
     {canSeeSecurity&&<button className={"tab "+(activeTab==="security"?"active":"")} onClick={()=>selectTab("security")}>أمان الحسابات وسجل النشاط</button>}
+    {canSeeSecurity&&<button className={"tab "+(activeTab==="health"?"active":"")} onClick={()=>selectTab("health")}>صحة النظام</button>}
     {(has("system.backup.export")||has("system.backup.restore"))&&<button className={"tab "+(activeTab==="backup"?"active":"")} onClick={()=>selectTab("backup")}>النسخ الاحتياطي والاستعادة</button>}
     {resetVisible&&<button className={"tab "+(activeTab==="reset"?"active":"")} onClick={()=>selectTab("reset")}>مسح بيانات التجربة</button>}
    </div>
@@ -226,6 +228,7 @@ export default function SettingsPage(){
    {activeTab==="password-reset-requests"&&canSeeRequestTabs&&<PasswordResetRequestsTab/>}
    {activeTab==="data-transfer"&&canSeeDataTransfer&&<DataTransferTab/>}
    {activeTab==="security"&&canSeeSecurity&&<AdminSecurityTab/>}
+   {activeTab==="health"&&canSeeSecurity&&<SystemHealthTab/>}
    {activeTab==="backup"&&(has("system.backup.export")||has("system.backup.restore"))&&<section className="card settings-wide">
     <div className="card-header"><div><h2 className="card-title">نسخة كاملة من النظام</h2><div className="settings-help">نسخة مشفرة تشمل بيانات النظام التشغيلية والمالية. لن يتم تضمين جلسات الدخول أو رموز إعادة تعيين كلمة المرور.</div></div><span className="status">نسخة مشفرة</span></div>
     <div className="form-grid">
