@@ -199,7 +199,7 @@ return <div className="app-shell"><Sidebar active="/payroll"/><main className="m
     <div className="form-grid">
      <label>أيام العمل في الشهر<input type="number" min="1" max="31" step="1" value={policyWorkDays} onChange={e=>setPolicyWorkDays(e.target.value)} required/></label>
      <label>ساعات العمل في اليوم<input type="number" min="1" max="24" step="0.25" value={policyDailyHours} onChange={e=>setPolicyDailyHours(e.target.value)} required/></label>
-     <label>أجر يوم الراحة الكامل (ج.م)<input type="number" min="0" step="0.01" value={policyDayOffPay} onChange={e=>setPolicyDayOffPay(e.target.value)} required/><span className="form-hint">يُصرف بنسبة دقائق العمل الفعلية إلى دقائق الوردية اليومية.</span></label>
+     <label>أجر اليوم الزيادة/الراحة الكامل (ج.م)<input type="number" min="0" step="0.01" value={policyDayOffPay} onChange={e=>setPolicyDayOffPay(e.target.value)} required/><span className="form-hint">يُصرف عن العمل في يوم الراحة بنسبة دقائق العمل الفعلية إلى دقائق الوردية اليومية.</span></label>
      <label>معامل أجر الوقت الإضافي<input type="number" min="0" max="5" step="0.05" value={policyOvertimeMultiplier} onChange={e=>setPolicyOvertimeMultiplier(e.target.value)} required/></label>
     </div>
     <div className="form-actions"><button type="button" className="secondary-btn" onClick={()=>void showAttendancePolicy()} disabled={policyLoading||!employeeId}>{policyLoading?"جارٍ التحميل...":"تحميل قواعد الموظف"}</button><button className="primary-button" disabled={busy||policyLoading||!employeeId||policyLoadedEmployeeId!==employeeId}>حفظ قواعد الحساب</button><span className="form-hint">حمّل قواعد الموظف أولًا قبل تعديلها؛ تُحفظ لكل موظف بصورة مستقلة.</span></div>
