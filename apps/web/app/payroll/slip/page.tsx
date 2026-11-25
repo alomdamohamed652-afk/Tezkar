@@ -102,7 +102,7 @@ export default function PayrollSlipPage() {
         <header className="slip-header">
           <img className="slip-logo" src="/tezkar-logo.png" alt="شعار تذكار" />
           <div className="brand-copy"><h1>تذكار <span>TEZKAR</span></h1><p>الإدارة المالية والشؤون الإدارية</p></div>
-          <div className="slip-title"><h2>مفردات مرتب شهرية</h2><p>شهر {month}</p></div>
+          <div className="slip-title"><h2>مفردات مرتب شهرية</h2><p className="month-pill">شهر {month}</p></div>
         </header>
         <div className="slip-rule" />
         <section className="employee-grid">
@@ -114,8 +114,15 @@ export default function PayrollSlipPage() {
           <div><small>حالة المسير</small><strong>{labels[periodStatus] || periodStatus}</strong></div>
         </section>
 
+        <section className="summary-strip">
+          <div className="summary-cell earn"><small>إجمالي الاستحقاقات</small><strong>{money(totalEarnings)} ج.م</strong></div>
+          <div className="summary-cell deduct"><small>إجمالي الاستقطاعات</small><strong>{money(totalDeductions)} ج.م</strong></div>
+          <div className="summary-cell net"><small>صافي المرتب المستحق</small><strong>{money(item.net_amount)} ج.م</strong></div>
+        </section>
+
         <section className="slip-section">
           <h3>أولًا: الاستحقاقات</h3>
+          <div className="table-card">
           <table><thead><tr><th>البيان</th><th>المبلغ (جنيه مصري)</th></tr></thead>
             <tbody>
               <tr><td>الراتب الأساسي</td><td>{money(item.base_salary)}</td></tr>
@@ -124,11 +131,13 @@ export default function PayrollSlipPage() {
               <tr className="subtotal"><td>إجمالي الاستحقاقات</td><td>{money(totalEarnings)}</td></tr>
             </tbody>
           </table>
+          </div>
           <p className="slip-note">تفاصيل أنواع المكافآت تظهر في الملاحظات إذا كانت مسجلة. لا يُفترض توزيع مبلغ البونص على أنواع غير مسجلة بالنظام.</p>
         </section>
 
         <section className="slip-section">
           <h3>ثانيًا: الاستقطاعات</h3>
+          <div className="table-card">
           <table><thead><tr><th>البيان</th><th>المبلغ (جنيه مصري)</th></tr></thead>
             <tbody>
               {deductionLines.map(line=><tr key={line.id}><td>{line.description}{line.notes?<small className="line-note">{line.notes}</small>:null}</td><td>{money(line.amount)}</td></tr>)}
@@ -137,6 +146,7 @@ export default function PayrollSlipPage() {
               <tr className="subtotal"><td>إجمالي الاستقطاعات</td><td>{money(totalDeductions)}</td></tr>
             </tbody>
           </table>
+          </div>
         </section>
 
         <section className="slip-section">
@@ -149,6 +159,7 @@ export default function PayrollSlipPage() {
 
         {calculation && <section className="slip-section">
           <h3>كيف يُحسب مرتبك؟</h3>
+          <div className="table-card">
           <table><tbody>
             <tr><td>الراتب الأساسي الشهري{calculation.policy?.workDaysPerMonth?<small className="line-note">{"على أساس "+calculation.policy.workDaysPerMonth+" يوم عمل في الشهر × "+(calculation.policy.dailyWorkMinutes??"—")+" دقيقة عمل في اليوم"}</small>:null}</td><td>{money(item.base_salary)}</td></tr>
             {calculation.minuteRate!=null && <tr><td>سعر الدقيقة المحتسبة<small className="line-note">الراتب الأساسي ÷ إجمالي دقائق العمل المقررة في الشهر</small></td><td>{Number(calculation.minuteRate).toLocaleString("ar-EG",{maximumFractionDigits:4})} ج.م</td></tr>}
@@ -156,6 +167,7 @@ export default function PayrollSlipPage() {
             <tr><td>مقابل الوقت الإضافي<small className="line-note">{`${calculation.overtimeMinutes??0} دقيقة × سعر الدقيقة × معامل ${calculation.policy?.overtimeMultiplier??"—"}`}</small></td><td>{money(calculation.overtimeBonus??0)}</td></tr>
             <tr><td>مقابل العمل في أيام الراحة والإجازات<small className="line-note">{`${calculation.dayOffWorkedMinutes??0} دقيقة عمل؛ أجر اليوم الكامل ${calculation.policy?.dayOffPayAmount??"—"} ج.م على أساس ${calculation.policy?.dailyWorkMinutes??"—"} دقيقة`}</small></td><td>{money(calculation.dayOffBonus??0)}</td></tr>
           </tbody></table>
+          </div>
           <p className="slip-note">هذه الأرقام مجمدة وقت اعتماد المسير{calculation.capturedAt?" ("+new Date(calculation.capturedAt).toLocaleString("ar-EG")+")":""} ولا تتغير بأي تعديل لاحق في الحضور. تظهر قيمتها ضمن بنود الاستحقاقات والاستقطاعات أعلاه.</p>
         </section>}
 
@@ -168,67 +180,110 @@ export default function PayrollSlipPage() {
         {item.notes && <section className="slip-section"><h3>ملاحظات الإدارة</h3><p className="notes-box">{item.notes}</p></section>}
 
         <footer className="slip-footer">
-          <div><strong>إقرار الموظف</strong><p>أقر باستلام نسخة من مفردات المرتب الموضحة أعلاه.</p><span>الاسم والتوقيع: __________________</span></div>
-          <div><strong>اعتماد الإدارة المالية</strong><p>مستند داخلي صادر من نظام تذكار.</p><span>التوقيع والختم: __________________</span></div>
+          <div className="sign-box"><strong>إقرار الموظف</strong><p>أقر باستلام نسخة من مفردات المرتب الموضحة أعلاه.</p><span className="sign-line">الاسم والتوقيع</span></div>
+          <div className="sign-box"><strong>اعتماد الإدارة المالية</strong><p>مستند داخلي صادر من نظام تذكار.</p><span className="sign-line">التوقيع والختم</span></div>
         </footer>
         <div className="slip-bottom">شركة تذكار · مستند مالي داخلي · رقم المستند {documentNo}</div>
       </article>
       <style jsx global>{`
         * { box-sizing: border-box; }
-        body { margin: 0; background: #eef2f6; color: #172b45; font-family: Arial, Tahoma, sans-serif; }
-        .slip-page { padding: 24px; min-height: 100vh; }
-        .slip-toolbar { max-width: 900px; margin: 0 auto 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; color: #46566b; font-size: 14px; }
-        .slip-toolbar button, .slip-state button { background: #174a7e; color: white; border: 0; border-radius: 7px; padding: 11px 18px; font-weight: 700; cursor: pointer; }
+        body { margin: 0; background: #e9eef4; color: #172b45; font-family: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, Arial, sans-serif; }
+        .slip-page { padding: 28px 20px 40px; min-height: 100vh; }
+        .slip-toolbar { max-width: 880px; margin: 0 auto 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; color: #46566b; font-size: 14px; }
+        .slip-toolbar button, .slip-state button { background: #174a7e; color: white; border: 0; border-radius: 8px; padding: 11px 20px; font-weight: 700; cursor: pointer; font-family: inherit; }
         .slip-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
-        .slip-warning { max-width: 900px; margin: 0 auto 12px; background: #fff4d7; border: 1px solid #e9c96d; padding: 12px; border-radius: 8px; }
-        .salary-slip { max-width: 900px; margin: 0 auto; background: white; padding: 34px 38px; border: 1px solid #dce3eb; box-shadow: 0 8px 28px #193b5b12; }
-        .slip-header { display: flex; align-items: center; gap: 14px; }
-        .slip-logo { width: 72px; height: 72px; object-fit: contain; flex: 0 0 72px; }
-        .brand-copy { flex: 1; }
-        .brand-copy h1 { margin: 0; font-size: 25px; color: #123f6b; }
-        .brand-copy h1 span { font-size: 13px; letter-spacing: 2px; margin-right: 7px; color: #27866c; }
-        .brand-copy p, .slip-title p { margin: 6px 0 0; color: #65758a; font-size: 12px; }
-        .slip-title { text-align: left; }
-        .slip-title h2 { margin: 0; color: #174a7e; font-size: 21px; }
-        .slip-rule { height: 4px; margin: 22px 0; background: linear-gradient(90deg,#27866c 0 18%,#174a7e 18% 100%); }
-        .employee-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border: 1px solid #dce5ee; border-radius: 8px; overflow: hidden; }
-        .employee-grid div { padding: 12px 14px; border-left: 1px solid #e4eaf0; border-bottom: 1px solid #e4eaf0; min-width: 0; }
-        .employee-grid small { display: block; color: #6b7b8d; margin-bottom: 7px; font-size: 11px; }
-        .employee-grid strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
-        .slip-section { margin-top: 23px; }
-        .slip-section h3 { margin: 0 0 10px; font-size: 15px; color: #174a7e; border-right: 3px solid #27866c; padding-right: 9px; }
-        .slip-section table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .slip-section th { text-align: right; background: #f0f5f9; color: #26425f; font-weight: 700; }
-        .slip-section td, .slip-section th { padding: 10px 12px; border: 1px solid #dce5ee; }
-        .slip-section td:last-child, .slip-section th:last-child { text-align: left; width: 34%; font-variant-numeric: tabular-nums; }
-        .subtotal td { font-weight: 800; background: #f7fafc; }
-        .slip-note { margin: 7px 0 0; color: #718096; font-size: 11px; }
-        .line-note { display:block; color:#718096; margin-top:4px; font-size:10px; }
-        .settlement-box { border: 1px solid #dce5ee; border-radius: 7px; padding: 13px; background: #fbfcfd; }
-        .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
-        .settlement-box p { margin: 10px 0 0; color: #65758a; font-size: 11px; line-height: 1.7; }
-        .net-box { margin-top: 24px; padding: 18px; background: #edf5fa; border: 1px solid #c7d9e7; border-right: 5px solid #174a7e; border-radius: 8px; }
+        .slip-warning { max-width: 880px; margin: 0 auto 12px; background: #fff4d7; border: 1px solid #e9c96d; padding: 12px 14px; border-radius: 8px; }
+        .salary-slip { max-width: 880px; margin: 0 auto; background: white; padding: 40px 44px 30px; border: 1px solid #d7e0ea; border-radius: 12px; box-shadow: 0 10px 32px #193b5b14; }
+        .slip-header { display: flex; align-items: center; gap: 18px; }
+        .slip-logo { width: 78px; height: 78px; object-fit: contain; flex: 0 0 78px; }
+        .brand-copy { flex: 1; min-width: 0; }
+        .brand-copy h1 { margin: 0; font-size: 27px; font-weight: 700; color: #123f6b; }
+        .brand-copy h1 span { font-size: 13px; font-weight: 600; letter-spacing: 2.5px; margin-right: 8px; color: #27866c; }
+        .brand-copy p { margin: 6px 0 0; color: #55677c; font-size: 14px; }
+        .slip-title { text-align: left; flex: 0 0 auto; }
+        .slip-title h2 { margin: 0; color: #174a7e; font-size: 21px; font-weight: 700; }
+        .slip-title p { margin: 6px 0 0; color: #55677c; font-size: 13.5px; }
+        .month-pill { display: inline-block; background: #eef4fa; border: 1px solid #d4e2ef; color: #174a7e !important; font-weight: 600; border-radius: 999px; padding: 4px 14px; margin-top: 8px !important; }
+        .slip-rule { height: 4px; margin: 20px 0 24px; border-radius: 2px; background: linear-gradient(90deg,#27866c 0 18%,#174a7e 18% 100%); }
+        .employee-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border: 1px solid #dbe4ee; border-radius: 10px; overflow: hidden; background: #fbfdfe; }
+        .employee-grid div { padding: 13px 16px; border-left: 1px solid #e4eaf0; border-bottom: 1px solid #e4eaf0; min-width: 0; }
+        .employee-grid small { display: block; color: #5f7186; margin-bottom: 6px; font-size: 12px; font-weight: 600; letter-spacing: .2px; }
+        .employee-grid strong { display: block; font-size: 15px; color: #172b45; overflow-wrap: anywhere; }
+        .summary-strip { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 18px; }
+        .summary-cell { border: 1px solid #dbe4ee; border-radius: 10px; padding: 12px 16px; background: #fff; }
+        .summary-cell small { display: block; color: #5f7186; font-size: 12.5px; font-weight: 600; margin-bottom: 5px; }
+        .summary-cell strong { display: block; font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .summary-cell.earn strong { color: #1c6e4a; }
+        .summary-cell.deduct strong { color: #b23c3c; }
+        .summary-cell.net { background: #edf5fa; border-color: #c7d9e7; }
+        .summary-cell.net strong { color: #174a7e; }
+        .slip-section { margin-top: 24px; }
+        .slip-section h3 { margin: 0 0 10px; font-size: 17px; font-weight: 700; color: #174a7e; border-right: 3px solid #27866c; padding-right: 10px; }
+        .table-card { border: 1px solid #dbe4ee; border-radius: 10px; overflow: hidden; }
+        .slip-section table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 15px; }
+        .slip-section th { text-align: right; background: #eaf1f8; color: #174a7e; font-weight: 700; font-size: 14px; }
+        .slip-section td, .slip-section th { padding: 11px 14px; border: 1px solid #dbe4ee; border-top: 0; white-space: normal; }
+        .slip-section tr td:first-child, .slip-section tr th:first-child { border-right: 0; }
+        .slip-section td:last-child, .slip-section th:last-child { text-align: left; border-left: 0; width: 30%; font-weight: 600; color: #123f6b; }
+        .slip-section tbody tr:nth-child(even) td { background: #f8fbfd; }
+        .subtotal td { font-weight: 800 !important; background: #edf4fa !important; color: #174a7e !important; border-top: 2px solid #c7d9e7 !important; }
+        .slip-note { margin: 8px 2px 0; color: #5d7080; font-size: 12.5px; line-height: 1.7; }
+        .line-note { display: block; color: #5d7080; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.6; }
+        .settlement-box { border: 1px solid #dbe4ee; border-radius: 10px; padding: 14px 16px; background: #fbfcfd; }
+        .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 14.5px; }
+        .settlement-box p { margin: 10px 0 0; color: #55677c; font-size: 12.5px; line-height: 1.8; }
+        .net-box { margin-top: 26px; padding: 20px 22px; background: #edf5fa; border: 1px solid #c7d9e7; border-right: 5px solid #174a7e; border-radius: 10px; }
         .net-box > div:first-child { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-        .net-box > div:first-child span { font-weight: 700; }
-        .net-box > div:first-child strong { color: #174a7e; font-size: 25px; }
-        .net-sub { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #d2e0ea; font-size: 12px; }
-        .net-sub strong { margin-left: 12px; }
-        .net-box p { margin: 9px 0 0; color: #5d7184; font-size: 11px; }
-        .notes-box { white-space: pre-wrap; border: 1px solid #e1e8ef; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.7; }
-        .slip-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; margin-top: 34px; }
-        .slip-footer > div { min-height: 95px; }
-        .slip-footer strong { font-size: 13px; }
-        .slip-footer p, .slip-footer span { font-size: 11px; color: #65758a; line-height: 1.8; }
-        .slip-bottom { border-top: 1px solid #dce5ee; margin-top: 22px; padding-top: 10px; text-align: center; color: #8190a1; font-size: 10px; }
-        .slip-state { padding: 40px; text-align: center; font-family: Arial,Tahoma,sans-serif; }
-        @media (max-width: 700px) { .slip-page { padding: 8px; } .salary-slip { padding: 18px 14px; } .employee-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .slip-header { flex-wrap: wrap; } .slip-title { width: 100%; text-align: right; } .slip-footer { gap: 15px; } .net-sub { flex-wrap: wrap; } }
+        .net-box > div:first-child span { font-weight: 700; font-size: 16.5px; color: #123f6b; }
+        .net-box > div:first-child strong { color: #174a7e; font-size: 27px; font-weight: 800; font-variant-numeric: tabular-nums; }
+        .net-sub { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #d2e0ea; font-size: 14px; color: #3d5064; }
+        .net-sub strong { margin-left: 14px; font-variant-numeric: tabular-nums; color: #123f6b; }
+        .net-box p { margin: 10px 0 0; color: #4d6175; font-size: 13px; }
+        .notes-box { white-space: pre-wrap; border: 1px solid #e1e8ef; padding: 13px 15px; border-radius: 8px; font-size: 14px; line-height: 1.8; background: #fbfdfe; }
+        .slip-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 36px; }
+        .sign-box { border: 1px dashed #c3cfdb; border-radius: 10px; padding: 14px 16px 18px; min-height: 110px; display: flex; flex-direction: column; }
+        .sign-box strong { font-size: 15px; color: #123f6b; }
+        .sign-box p { font-size: 12.5px; color: #55677c; line-height: 1.8; margin: 6px 0 0; }
+        .sign-line { margin-top: auto; padding-top: 18px; font-size: 12.5px; color: #67788c; border-top: 0; position: relative; }
+        .sign-line::after { content: ""; position: absolute; right: 0; top: 8px; width: 170px; border-top: 1.5px dotted #9fb0c2; }
+        .slip-bottom { border-top: 1px solid #dbe4ee; margin-top: 24px; padding-top: 12px; text-align: center; color: #67788c; font-size: 12px; }
+        .slip-state { padding: 40px; text-align: center; font-family: "IBM Plex Sans Arabic", Arial, Tahoma, sans-serif; }
+        @media (max-width: 700px) { .slip-page { padding: 8px; } .salary-slip { padding: 20px 16px; } .employee-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .summary-strip { grid-template-columns: 1fr; } .slip-header { flex-wrap: wrap; } .slip-title { width: 100%; text-align: right; } .slip-footer { gap: 15px; } .net-sub { flex-wrap: wrap; } }
         @page { size: A4; margin: 12mm; }
         @media print {
+          @page { size: A4; margin: 10mm; }
           body { background: white; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
           .slip-page { padding: 0; min-height: 0; }
           .no-print { display: none !important; }
-          .salary-slip { max-width: none; border: 0; box-shadow: none; padding: 0; }
-          .slip-section, .net-box, .employee-grid, .slip-footer { break-inside: avoid; }
+          .salary-slip { max-width: 186mm; width: 186mm; margin: 0 auto; border: 0; border-radius: 0; box-shadow: none; padding: 0; overflow: hidden; }
+          .slip-section, .net-box, .employee-grid, .summary-strip, .slip-footer { break-inside: avoid; }
+          .slip-logo { width: 50px; height: 50px; flex-basis: 50px; }
+          .slip-header { gap: 12px; }
+          .brand-copy p { margin-top: 2px; }
+          .slip-rule { margin: 6px 0 8px; }
+          .month-pill { margin-top: 4px !important; padding: 2px 12px; }
+          .employee-grid div { padding: 5px 12px; }
+          .employee-grid small { margin-bottom: 2px; }
+          .summary-strip { margin-top: 10px; gap: 10px; }
+          .summary-cell { padding: 5px 12px; }
+          .summary-cell small { margin-bottom: 2px; }
+          .slip-section { margin-top: 6px; }
+          .slip-section h3 { margin-bottom: 5px; }
+          .slip-section td, .slip-section th { padding: 6px 12px; }
+          .slip-note { margin-top: 4px; line-height: 1.5; }
+          .line-note { margin-top: 2px; line-height: 1.5; }
+          .settlement-box { padding: 8px 14px; }
+          .settlement-box p { margin-top: 6px; line-height: 1.55; }
+          .net-box { margin-top: 8px; padding: 8px 16px; }
+          .net-sub { margin-top: 6px; padding-top: 6px; }
+          .net-box p { margin-top: 4px; }
+          .slip-footer { margin-top: 6px; gap: 16px; }
+          .sign-box { padding: 6px 14px 8px; min-height: 0; }
+          .sign-box p { line-height: 1.5; margin-top: 4px; }
+          .sign-line { padding-top: 4px; }
+          .brand-copy h1 { font-size: 22px; }
+          .slip-title h2 { font-size: 19px; }
+          .slip-bottom { margin-top: 4px; padding-top: 4px; }
         }
       `}</style>
     </main>
