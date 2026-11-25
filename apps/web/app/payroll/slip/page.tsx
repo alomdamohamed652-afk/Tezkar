@@ -199,54 +199,54 @@ export default function PayrollSlipPage() {
         .brand-copy { flex: 1; min-width: 0; }
         .brand-copy h1 { margin: 0; font-size: 27px; font-weight: 700; color: #123f6b; }
         .brand-copy h1 span { font-size: 13px; font-weight: 600; letter-spacing: 2.5px; margin-right: 8px; color: #27866c; }
-        .brand-copy p { margin: 6px 0 0; color: #65758a; font-size: 12.5px; }
+        .brand-copy p { margin: 6px 0 0; color: #55677c; font-size: 14px; }
         .slip-title { text-align: left; flex: 0 0 auto; }
         .slip-title h2 { margin: 0; color: #174a7e; font-size: 21px; font-weight: 700; }
-        .slip-title p { margin: 6px 0 0; color: #65758a; font-size: 12px; }
+        .slip-title p { margin: 6px 0 0; color: #55677c; font-size: 13.5px; }
         .month-pill { display: inline-block; background: #eef4fa; border: 1px solid #d4e2ef; color: #174a7e !important; font-weight: 600; border-radius: 999px; padding: 4px 14px; margin-top: 8px !important; }
         .slip-rule { height: 4px; margin: 20px 0 24px; border-radius: 2px; background: linear-gradient(90deg,#27866c 0 18%,#174a7e 18% 100%); }
         .employee-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border: 1px solid #dbe4ee; border-radius: 10px; overflow: hidden; background: #fbfdfe; }
         .employee-grid div { padding: 13px 16px; border-left: 1px solid #e4eaf0; border-bottom: 1px solid #e4eaf0; min-width: 0; }
-        .employee-grid small { display: block; color: #7c8aa0; margin-bottom: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .2px; }
-        .employee-grid strong { display: block; font-size: 13.5px; color: #172b45; overflow-wrap: anywhere; }
+        .employee-grid small { display: block; color: #5f7186; margin-bottom: 6px; font-size: 12px; font-weight: 600; letter-spacing: .2px; }
+        .employee-grid strong { display: block; font-size: 15px; color: #172b45; overflow-wrap: anywhere; }
         .summary-strip { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 18px; }
         .summary-cell { border: 1px solid #dbe4ee; border-radius: 10px; padding: 12px 16px; background: #fff; }
-        .summary-cell small { display: block; color: #7c8aa0; font-size: 11px; font-weight: 600; margin-bottom: 5px; }
-        .summary-cell strong { display: block; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .summary-cell small { display: block; color: #5f7186; font-size: 12.5px; font-weight: 600; margin-bottom: 5px; }
+        .summary-cell strong { display: block; font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
         .summary-cell.earn strong { color: #1c6e4a; }
         .summary-cell.deduct strong { color: #b23c3c; }
         .summary-cell.net { background: #edf5fa; border-color: #c7d9e7; }
         .summary-cell.net strong { color: #174a7e; }
         .slip-section { margin-top: 24px; }
-        .slip-section h3 { margin: 0 0 10px; font-size: 15.5px; font-weight: 700; color: #174a7e; border-right: 3px solid #27866c; padding-right: 10px; }
+        .slip-section h3 { margin: 0 0 10px; font-size: 17px; font-weight: 700; color: #174a7e; border-right: 3px solid #27866c; padding-right: 10px; }
         .table-card { border: 1px solid #dbe4ee; border-radius: 10px; overflow: hidden; }
-        .slip-section table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-        .slip-section th { text-align: right; background: #eaf1f8; color: #174a7e; font-weight: 700; font-size: 12.5px; }
+        .slip-section table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        .slip-section th { text-align: right; background: #eaf1f8; color: #174a7e; font-weight: 700; font-size: 14px; }
         .slip-section td, .slip-section th { padding: 11px 14px; border: 1px solid #dbe4ee; border-top: 0; }
         .slip-section tr td:first-child, .slip-section tr th:first-child { border-right: 0; }
         .slip-section td:last-child, .slip-section th:last-child { text-align: left; border-left: 0; width: 30%; font-variant-numeric: tabular-nums; font-weight: 600; color: #123f6b; }
         .slip-section tbody tr:nth-child(even) td { background: #f8fbfd; }
         .subtotal td { font-weight: 800 !important; background: #edf4fa !important; color: #174a7e !important; border-top: 2px solid #c7d9e7 !important; }
-        .slip-note { margin: 8px 2px 0; color: #718096; font-size: 11px; line-height: 1.7; }
-        .line-note { display: block; color: #718096; margin-top: 4px; font-size: 10.5px; font-weight: 400; line-height: 1.6; }
+        .slip-note { margin: 8px 2px 0; color: #5d7080; font-size: 12.5px; line-height: 1.7; }
+        .line-note { display: block; color: #5d7080; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.6; }
         .settlement-box { border: 1px solid #dbe4ee; border-radius: 10px; padding: 14px 16px; background: #fbfcfd; }
-        .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
-        .settlement-box p { margin: 10px 0 0; color: #65758a; font-size: 11px; line-height: 1.8; }
+        .settlement-box div { display: flex; justify-content: space-between; gap: 12px; font-size: 14.5px; }
+        .settlement-box p { margin: 10px 0 0; color: #55677c; font-size: 12.5px; line-height: 1.8; }
         .net-box { margin-top: 26px; padding: 20px 22px; background: #edf5fa; border: 1px solid #c7d9e7; border-right: 5px solid #174a7e; border-radius: 10px; }
         .net-box > div:first-child { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-        .net-box > div:first-child span { font-weight: 700; font-size: 15px; color: #123f6b; }
+        .net-box > div:first-child span { font-weight: 700; font-size: 16.5px; color: #123f6b; }
         .net-box > div:first-child strong { color: #174a7e; font-size: 27px; font-weight: 800; font-variant-numeric: tabular-nums; }
-        .net-sub { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #d2e0ea; font-size: 12.5px; color: #46566b; }
+        .net-sub { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #d2e0ea; font-size: 14px; color: #3d5064; }
         .net-sub strong { margin-left: 14px; font-variant-numeric: tabular-nums; color: #123f6b; }
-        .net-box p { margin: 10px 0 0; color: #5d7184; font-size: 11.5px; }
-        .notes-box { white-space: pre-wrap; border: 1px solid #e1e8ef; padding: 13px 15px; border-radius: 8px; font-size: 12.5px; line-height: 1.8; background: #fbfdfe; }
+        .net-box p { margin: 10px 0 0; color: #4d6175; font-size: 13px; }
+        .notes-box { white-space: pre-wrap; border: 1px solid #e1e8ef; padding: 13px 15px; border-radius: 8px; font-size: 14px; line-height: 1.8; background: #fbfdfe; }
         .slip-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 36px; }
         .sign-box { border: 1px dashed #c3cfdb; border-radius: 10px; padding: 14px 16px 18px; min-height: 110px; display: flex; flex-direction: column; }
-        .sign-box strong { font-size: 13.5px; color: #123f6b; }
-        .sign-box p { font-size: 11px; color: #65758a; line-height: 1.8; margin: 6px 0 0; }
-        .sign-line { margin-top: auto; padding-top: 18px; font-size: 11px; color: #8190a1; border-top: 0; position: relative; }
+        .sign-box strong { font-size: 15px; color: #123f6b; }
+        .sign-box p { font-size: 12.5px; color: #55677c; line-height: 1.8; margin: 6px 0 0; }
+        .sign-line { margin-top: auto; padding-top: 18px; font-size: 12.5px; color: #67788c; border-top: 0; position: relative; }
         .sign-line::after { content: ""; position: absolute; right: 0; top: 8px; width: 170px; border-top: 1.5px dotted #9fb0c2; }
-        .slip-bottom { border-top: 1px solid #dbe4ee; margin-top: 24px; padding-top: 12px; text-align: center; color: #8190a1; font-size: 10.5px; }
+        .slip-bottom { border-top: 1px solid #dbe4ee; margin-top: 24px; padding-top: 12px; text-align: center; color: #67788c; font-size: 12px; }
         .slip-state { padding: 40px; text-align: center; font-family: "IBM Plex Sans Arabic", Arial, Tahoma, sans-serif; }
         @media (max-width: 700px) { .slip-page { padding: 8px; } .salary-slip { padding: 20px 16px; } .employee-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .summary-strip { grid-template-columns: 1fr; } .slip-header { flex-wrap: wrap; } .slip-title { width: 100%; text-align: right; } .slip-footer { gap: 15px; } .net-sub { flex-wrap: wrap; } }
         @page { size: A4; margin: 12mm; }
