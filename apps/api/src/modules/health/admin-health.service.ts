@@ -76,7 +76,7 @@ export async function getAdminHealth(db: HealthDb = pool) {
     const columnCheck = await db.query(
       "SELECT 1 FROM information_schema.columns WHERE table_name = 'schema_migrations' AND column_name = 'applied_at'"
     );
-    const hasAppliedAt = (columnCheck.rowCount ?? columnCheck.rows.length) > 0;
+    const hasAppliedAt = columnCheck.rows.length > 0;
     const result = await db.query(
       `SELECT version${hasAppliedAt ? ", applied_at" : ""} FROM schema_migrations
        WHERE version ~ '^[0-9]{10}_'
