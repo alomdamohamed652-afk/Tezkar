@@ -64,7 +64,7 @@ export function Sidebar({active}:{active:string}){
  const [preferencesReady,setPreferencesReady]=useState(false);
  const [isMobile,setIsMobile]=useState(false);
  useEffect(()=>{
-  const media=window.matchMedia("(max-width: 820px)");
+  const media=window.matchMedia("(max-width: 1100px)");
   const sync=()=>setIsMobile(media.matches);
   sync();
   media.addEventListener("change",sync);

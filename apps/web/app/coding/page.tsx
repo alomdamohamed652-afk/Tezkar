@@ -36,17 +36,17 @@ function renderCodingLabel(unit:Unit,template:Template|undefined,width:number,he
   <div className="cl-grid"><span>المنتج <b>{unit.product_name}</b></span><span>التشغيل <b>{unit.batch_code||"—"}</b></span><span>الكمية <b>{qty}</b></span><span>الوزن <b>{wgt}</b></span></div>
   <div className="cl-code" dir="ltr">{unit.code}</div>
   <div className="cl-bc">{barcode}<div className="cl-cap">{unit.code}</div></div>
-  <div className="cl-foot"><span>التقفيل: {packDate} {packTime}</span><span>التكويد: {codedDate}</span><span>{cfg?.companyAddress||"عنوان الشركة"}{complaintsNode}</span></div>
+  <div className="cl-foot"><div className="cl-foot-row"><span>التقفيل: <b dir="ltr">{packDate} {packTime}</b></span><span>التكويد: <b dir="ltr">{codedDate}</b></span></div><div className="cl-foot-row"><span>{cfg?.companyAddress||"عنوان الشركة"}{complaintsNode}</span></div></div>
  </>;
  if(tier==="M")return <>
-  <div className="cm-top"><span className="cm-company">{cfg?.companyName||"تذكار"}</span><span className="cm-chip">بطاقة إنتاج</span></div>
+  <div className="cm-top"><span className="cm-brand"><img className="cm-logo" src={cfg?.logoUrl||"/tezkar-logo.png"} alt="الشعار"/><span className="cm-company">{cfg?.companyName||"تذكار"}</span></span><span className="cm-chip">بطاقة إنتاج</span></div>
   <div className="cm-data"><b>{unit.product_name}</b><span>تشغيل: {unit.batch_code||"—"}</span><span>كمية: {qty}</span><span>وزن: {wgt}</span></div>
   <div className="cm-code" dir="ltr">{unit.code}</div>
   <div className="cm-bc">{barcode}<div className="cm-cap">{unit.code}</div></div>
   <div className="cm-foot">{cfg?.companyAddress||"عنوان الشركة"}{complaintsNode} · {packDate}</div>
  </>;
  return <>
-  <div className="cs-top"><span>{cfg?.companyName||"تذكار"}</span><span>{unit.batch_code||"—"}</span></div>
+  <div className="cs-top"><span className="cs-brand"><img className="cs-logo" src={cfg?.logoUrl||"/tezkar-logo.png"} alt="الشعار"/><span>{cfg?.companyName||"تذكار"}</span></span><span>{unit.batch_code||"—"}</span></div>
   <div className="cs-code" dir="ltr">{unit.code}</div>
   <div className="cs-bc">{barcode}</div>
   <div className="cs-foot"><span>{cfg?.companyAddress||"عنوان الشركة"}</span><span>{complaints?<b dir="ltr">{complaints}</b>:""} {packDate}</span></div>

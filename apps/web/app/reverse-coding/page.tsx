@@ -271,7 +271,7 @@ export default function ReverseCodingPage(){
   body *{visibility:hidden!important}
   .reverse-print-area,.reverse-print-area *{visibility:visible!important}
   .reverse-print-area{display:block!important;position:absolute!important;top:0!important;left:0!important;width:${labelSize.width}mm;margin:0!important;padding:0!important}
-  .reverse-label{display:flex;flex-direction:column;justify-content:space-between;width:${labelSize.width}mm;height:${labelSize.height}mm;min-height:${labelSize.height}mm;max-height:${labelSize.height}mm;margin:0;padding:${labelSize.margin}mm;overflow:hidden;border:0;box-sizing:border-box;page-break-after:always;break-after:page;page-break-inside:avoid;break-inside:avoid;color:#111;background:#fff;font-family:Arial,sans-serif}
+  .reverse-label{display:flex;flex-direction:column;justify-content:flex-start;width:${labelSize.width}mm;height:${labelSize.height}mm;min-height:${labelSize.height}mm;max-height:${labelSize.height}mm;margin:0;padding:${labelSize.margin}mm;overflow:hidden;border:0;box-sizing:border-box;page-break-after:always;break-after:page;page-break-inside:avoid;break-inside:avoid;color:#111;background:#fff;font-family:Arial,sans-serif}
   .reverse-label:last-child{page-break-after:auto;break-after:auto}
   .reverse-label header{display:flex;align-items:center;gap:1.5mm;border-bottom:.2mm solid #aaa;padding-bottom:1mm;min-height:7mm;overflow:hidden}
   .reverse-label header div{display:grid;gap:.3mm;min-width:0}.reverse-label header strong{font-size:clamp(8px,2.8mm,12px)}.reverse-label header small{font-size:clamp(6px,1.7mm,8px);overflow-wrap:anywhere}
@@ -279,8 +279,12 @@ export default function ReverseCodingPage(){
   .reverse-label-title{text-align:center;font-size:clamp(7px,2.2mm,10px);font-weight:bold;margin-top:1mm;overflow:hidden}
   .reverse-label-code{text-align:center;font-family:Arial,sans-serif;font-weight:900;font-size:clamp(12px,4mm,18px);margin-top:.5mm;overflow-wrap:anywhere}
   .reverse-barcode{height:${Math.max(7,Math.min(18,labelSize.height*.25))}mm;overflow:hidden;text-align:center}.reverse-barcode svg{height:100%!important;max-width:100%}
-  .reverse-label-meta{display:flex;justify-content:space-between;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:1mm;overflow:hidden}
-  .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:1mm;padding-top:.6mm}
+  .reverse-label-meta{display:flex;justify-content:space-between;flex-wrap:wrap;font-size:clamp(6px,1.9mm,9px);margin-top:.6mm;gap:.8mm;overflow:hidden}
+  .rl-S .reverse-label-meta{flex-direction:column;align-items:center;gap:.3mm;margin-top:.8mm}
+  .rl-S footer{margin-top:auto}
+  .rl-L .rl-rows{margin-top:1.2mm;gap:.8mm}
+  .rl-L .reverse-barcode{margin-top:1mm}
+  .reverse-label footer{text-align:center;font-size:clamp(6px,1.6mm,8px);border-top:.2mm solid #aaa;margin-top:auto;padding-top:.6mm}
   .rl-cap{text-align:center;direction:ltr;font-family:ui-monospace,Consolas,monospace;font-size:clamp(6px,1.9mm,9px);margin-top:.4mm}
   .rl-rows{display:grid;gap:.6mm;font-size:clamp(7px,2.2mm,10px);margin-top:.8mm}
   .rl-rows span{display:flex;justify-content:space-between;gap:1.5mm;border-bottom:1px dotted #ccc;padding-bottom:.4mm}

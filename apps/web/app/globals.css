@@ -788,11 +788,17 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 }
 
 @media(max-width:1100px){
-  .sidebar{width:82px;flex-basis:82px;padding:16px 9px}
-  .brand{justify-content:center;padding:5px 0 18px}
-  .brand-copy,.nav-title,.nav-item span:not(.nav-icon){display:none}
-  .nav-item{justify-content:center;padding:10px 5px}
-  .sidebar-footer .nav-item{justify-content:center}
+  .app-shell{display:block}
+  .sidebar{position:relative;width:100%;height:auto;min-height:0;border-left:0;border-bottom:1px solid #1e293b;padding:10px}
+  .brand{justify-content:flex-start;padding:4px 8px 10px;margin-bottom:7px}
+  .brand-copy{display:block}
+  .sidebar-scroll{overflow:visible;max-height:none}
+  .nav-title{display:none}
+  .nav{display:flex;overflow-x:auto;gap:4px}
+  .nav-item{width:auto;flex:0 0 auto;justify-content:flex-start;padding:9px 11px}
+  .nav-item span:not(.nav-icon){display:block}
+  .sidebar-footer{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .sidebar-footer .nav-item{justify-content:flex-start}
   .grid{grid-template-columns:1fr}
   .settings-grid{grid-template-columns:1fr}
   .settings-grid .settings-wide{grid-column:auto}
@@ -914,8 +920,13 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 .cl-code{text-align:center;direction:ltr;font-family:ui-monospace,Consolas,monospace;font-weight:900;font-size:4.4mm;letter-spacing:.4px}
 .cl-bc{width:72%;margin:0 auto}
 .cl-cap{text-align:center;direction:ltr;font-family:ui-monospace,Consolas,monospace;font-size:2.5mm;margin-top:.3mm}
-.cl-foot{margin-top:auto;display:flex;justify-content:space-between;gap:2mm;font-size:2.2mm;color:#374151;border-top:.3mm solid #111827;padding-top:.7mm}
-.cm-top{display:flex;justify-content:space-between;font-size:2.6mm;border-bottom:1px solid #d1d5db;padding-bottom:.5mm}
+.cl-foot{margin-top:auto;display:grid;gap:.5mm;font-size:2.5mm;color:#374151;border-top:.3mm solid #111827;padding-top:.7mm}
+.cl-foot-row{display:flex;justify-content:space-between;gap:2mm}
+.cm-top{display:flex;justify-content:space-between;align-items:center;font-size:2.6mm;border-bottom:1px solid #d1d5db;padding-bottom:.5mm}
+.cm-brand{display:flex;align-items:center;gap:1.2mm}
+.cm-logo{width:6mm;height:6mm;object-fit:contain}
+.cs-brand{display:flex;align-items:center;gap:1mm}
+.cs-logo{width:4.5mm;height:4.5mm;object-fit:contain}
 .cm-company{font-weight:800}
 .cm-chip{color:#4b5563}
 .cm-data{font-size:2.5mm;display:flex;gap:2mm;flex-wrap:wrap}
@@ -1715,10 +1726,10 @@ tbody td:nth-child(n){font-variant-numeric:tabular-nums}
 
 /* Production history: compact, responsive filter grid */
 .card-header:has(> .production-history-filters){display:grid;grid-template-columns:minmax(130px,auto) minmax(0,1fr);align-items:start;gap:14px}
-.production-history-filters{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px 16px;align-items:stretch;min-width:0;width:100%}
+.production-history-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 14px;align-items:start;min-width:0;width:100%}
 .production-history-filters>label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;font-weight:700;color:var(--ink-2);line-height:1.6}
 .production-history-filters .filter-select,.production-history-filters input{width:100%;min-width:0;max-width:100%;box-sizing:border-box}
-.production-history-filters .form-hint{font-size:10px;line-height:1.5;font-weight:400}
+.production-history-filters .form-hint{font-size:10px;line-height:1.4;font-weight:400}
 @media(max-width:1100px){.production-history-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.card-header:has(> .production-history-filters){grid-template-columns:1fr}}
 @media(max-width:560px){.production-history-filters{grid-template-columns:1fr}}
 
