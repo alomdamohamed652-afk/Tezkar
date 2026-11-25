@@ -68,11 +68,23 @@ export async function getAdminHealth(db: HealthDb = pool) {
   };
 
   const lastMigration = await safe(async () => {
+    // Production schema_migrations predates the runner's applied_at column, and
+    // CREATE TABLE IF NOT EXISTS never upgrades an existing ledger, so detect
+    // the column instead of assuming it. Order by the numeric date prefix and
+    // skip housekeeping versions (e.g. 999_coding_system): plain text order
+    // would report those as "latest".
+    const columnCheck = await db.query(
+      "SELECT 1 FROM information_schema.columns WHERE table_name = 'schema_migrations' AND column_name = 'applied_at'"
+    );
+    const hasAppliedAt = (columnCheck.rowCount ?? columnCheck.rows.length) > 0;
     const result = await db.query(
-      "SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1"
+      `SELECT version${hasAppliedAt ? ", applied_at" : ""} FROM schema_migrations
+       WHERE version ~ '^[0-9]{10}_'
+       ORDER BY substring(version from '^[0-9]+')::bigint DESC, version DESC
+       LIMIT 1`
     );
     return result.rows[0]
-      ? { version: String(result.rows[0].version), appliedAt: result.rows[0].applied_at }
+      ? { version: String(result.rows[0].version), appliedAt: hasAppliedAt ? result.rows[0].applied_at : null }
       : null;
   }, null);
 
