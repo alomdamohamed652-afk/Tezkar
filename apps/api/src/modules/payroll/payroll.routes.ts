@@ -7,7 +7,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requirePermission } from "../rbac/permission.guard.js";
 import { assertAccountingMonthOpen, assertAccountingPeriodOpen } from "../accounting/period-lock.service.js";
 import { calculatePayrollDeduction, calculatePayrollExpenseAmount } from "./payroll-calculation.js";
-import { calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
+import { assertLeaveAllowanceFinalizable, calculatePayrollAttendance, type PayrollAttendanceDay } from "./payroll-attendance-calculation.js";
 import { buildAttendanceReport } from "../attendance/attendance-report.service.js";
 import { applySalaryComponentsToDraft } from "./salary-components.service.js";
 
@@ -79,7 +79,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       COALESCE(p.work_days_per_month,26)::int AS work_days_per_month,
       COALESCE(p.daily_work_minutes,480)::int AS daily_work_minutes,
       COALESCE(p.day_off_pay_amount,0)::numeric AS day_off_pay_amount,
-      COALESCE(p.overtime_multiplier,1.5)::numeric AS overtime_multiplier
+      COALESCE(p.overtime_multiplier,1.5)::numeric AS overtime_multiplier,
+      p.allowed_leave_days_per_month::float AS allowed_leave_days_per_month
       FROM employees e LEFT JOIN employee_payroll_attendance_policies p ON p.employee_id=e.id
       WHERE e.id=$1`,[employeeId]);
     if(!result.rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
@@ -92,18 +93,24 @@ export async function payrollRoutes(app: FastifyInstance) {
       workDaysPerMonth:z.number().int().min(1).max(31),
       dailyWorkMinutes:z.number().int().min(1).max(1440),
       dayOffPayAmount:z.number().min(0).max(100000000),
-      overtimeMultiplier:z.number().min(0).max(5)
+      overtimeMultiplier:z.number().min(0).max(5),
+      // Monthly allowed-leave allowance is configuration for follow-up only; it never
+      // feeds the attendance pay calculation. Omitting it keeps the saved value.
+      allowedLeaveDaysPerMonth:z.number().min(0).max(31).nullable().optional()
     }).safeParse(request.body);
     if(!z.string().uuid().safeParse(employeeId).success||!parsed.success)throw new AppError("VALIDATION_ERROR","إعدادات احتساب الأجر غير صحيحة",422);
     const saved=await withTransaction(async client=>{
       if(!(await client.query("SELECT id FROM employees WHERE id=$1",[employeeId])).rowCount)throw new AppError("EMPLOYEE_NOT_FOUND","الموظف غير موجود",404);
-      const result=await client.query(`INSERT INTO employee_payroll_attendance_policies(employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,updated_by)
-        VALUES($1,$2,$3,$4,$5,$6)
+      const leaveProvided=parsed.data.allowedLeaveDaysPerMonth!==undefined;
+      const result=await client.query(`INSERT INTO employee_payroll_attendance_policies(employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,allowed_leave_days_per_month,updated_by)
+        VALUES($1,$2,$3,$4,$5,$6,$7)
         ON CONFLICT(employee_id) DO UPDATE SET work_days_per_month=EXCLUDED.work_days_per_month,
           daily_work_minutes=EXCLUDED.daily_work_minutes,day_off_pay_amount=EXCLUDED.day_off_pay_amount,
-          overtime_multiplier=EXCLUDED.overtime_multiplier,updated_by=EXCLUDED.updated_by,updated_at=now()
-        RETURNING employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier`,
-        [employeeId,parsed.data.workDaysPerMonth,parsed.data.dailyWorkMinutes,parsed.data.dayOffPayAmount,parsed.data.overtimeMultiplier,request.user!.userId]);
+          overtime_multiplier=EXCLUDED.overtime_multiplier,
+          allowed_leave_days_per_month=CASE WHEN $8 THEN EXCLUDED.allowed_leave_days_per_month ELSE employee_payroll_attendance_policies.allowed_leave_days_per_month END,
+          updated_by=EXCLUDED.updated_by,updated_at=now()
+        RETURNING employee_id,work_days_per_month,daily_work_minutes,day_off_pay_amount,overtime_multiplier,allowed_leave_days_per_month`,
+        [employeeId,parsed.data.workDaysPerMonth,parsed.data.dailyWorkMinutes,parsed.data.dayOffPayAmount,parsed.data.overtimeMultiplier,parsed.data.allowedLeaveDaysPerMonth??null,request.user!.userId,leaveProvided]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update_attendance_pay_policy",module:"payroll",entityType:"employee_payroll_attendance_policy",entityId:employeeId,afterData:result.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return result.rows[0];
     });
@@ -476,7 +483,7 @@ export async function payrollRoutes(app: FastifyInstance) {
           earlyMinutes:Number(row.earlyMinutes??0),overtimeMinutes:Number(row.overtimeMinutes??0),
           paidPermissionMinutes:Number(row.paidPermissionMinutes??0),
           unpaidPermissionMinutes:Number(row.unpaidPermissionMinutes??0),
-          isDayOff:Boolean(row.isDayOff),needsReview:Boolean(row.needsReview)
+          isDayOff:Boolean(row.isDayOff),needsReview:Boolean(row.needsReview),manualOverride:Boolean(row.manualOverride)
         }));
 
       const expectedKeys=new Set<string>();
@@ -514,7 +521,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         client.query(`SELECT employee_id,COALESCE(work_days_per_month,26)::int AS work_days_per_month,
             COALESCE(daily_work_minutes,480)::int AS daily_work_minutes,
             COALESCE(day_off_pay_amount,0)::numeric AS day_off_pay_amount,
-            COALESCE(overtime_multiplier,1.5)::numeric AS overtime_multiplier
+            COALESCE(overtime_multiplier,1.5)::numeric AS overtime_multiplier,
+            allowed_leave_days_per_month
           FROM employee_payroll_attendance_policies WHERE employee_id=ANY($1::uuid[])`,[employeeIds]),
         client.query(`SELECT employee_id,effective_from::text AS effective_from,effective_to::text AS effective_to
           FROM employee_salary_profiles
@@ -534,7 +542,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       // Convert reviewed attendance minutes into auditable payroll lines. Policy defaults
       // are 26 workdays x 8 hours; each employee can override the work pattern and rest-day rate.
       for (const item of salaryItems.rows) {
-        const rawPolicy=policiesByEmployee.get(String(item.employee_id))??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5};
+        const rawPolicy=policiesByEmployee.get(String(item.employee_id))??{work_days_per_month:26,daily_work_minutes:480,day_off_pay_amount:0,overtime_multiplier:1.5,allowed_leave_days_per_month:null};
         const rawEmployeeDays=(daysByEmployee.get(String(item.employee_id))??[]) as unknown as PayrollAttendanceDay[];
         const activeProfiles=profilesByEmployee.get(String(item.employee_id))??[];
         const salaryActiveDays=rawEmployeeDays.filter(day=>activeProfiles.some(profile=>
@@ -552,28 +560,38 @@ export async function payrollRoutes(app: FastifyInstance) {
             throw new AppError("PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE","يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
           return {...day,status:"NOT_STARTED",needsReview:false,workedMinutes:0,lateMinutes:0,earlyMinutes:0,overtimeMinutes:0,paidPermissionMinutes:0,unpaidPermissionMinutes:0,isDayOff:false};
         });
+        // Provisional guard: with the shared allowance configured, the month must be fully past
+        // before approval, so rest consumption and payout reflect actual reviewed nonattendance only.
+        const cairoToday=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+        try {
+          assertLeaveAllowanceFinalizable({allowedLeaveDaysPerMonth:rawPolicy.allowed_leave_days_per_month===null||rawPolicy.allowed_leave_days_per_month===undefined?null:Number(rawPolicy.allowed_leave_days_per_month),monthEnd,today:cairoToday});
+        } catch {
+          throw new AppError("LEAVE_PAYOUT_EARLY_FINALIZATION","لا يمكن اعتماد مسير لموظف له رصيد راحة مشترك قبل اكتمال الشهر؛ اعتمد بعد نهايته حتى لا تتجمد مستحقات غير محسومة.",409);
+        }
         let calculation;
         try {
           calculation=calculatePayrollAttendance({
             baseSalary:Number(item.base_salary),
             existingBonus:Number(item.bonus_amount),
-            policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),scheduledMinutes:effectiveScheduledMinutes},
+            policy:{workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),allowedLeaveDaysPerMonth:rawPolicy.allowed_leave_days_per_month===null||rawPolicy.allowed_leave_days_per_month===undefined?null:Number(rawPolicy.allowed_leave_days_per_month),scheduledMinutes:effectiveScheduledMinutes},
             days:employeeDays
           });
         } catch(error) {
           const code=error instanceof Error?error.message:"ATTENDANCE_CALCULATION_INVALID";
           if(code==="ATTENDANCE_REVIEW_REQUIRED")throw new AppError(code,"لا يمكن احتساب المرتب قبل مراجعة أيام الحضور التي عليها ملاحظات.",409);
+          if(code==="ATTENDANCE_ABSENCE_UNCONFIRMED")throw new AppError(code,"يوجد أيام عمل بلا بصمات لم تُسوَّ؛ سوِّها من مراجعة الحضور (إجازة مدفوعة أو غياب مؤكد) قبل اعتماد المسير.",409);
+          if(code==="LEAVE_PAYOUT_PERIOD_UNRESOLVED")throw new AppError(code,"لا يمكن صرف بدل الرصيد غير المستخدم لفترة مرتب جزئية قبل اعتماد قاعدة واضحة لها.",409);
           if(code==="ATTENDANCE_MISSING_PUNCH")throw new AppError(code,"يوجد يوم ببصمة ناقصة؛ صحح البصمة أو سوِّ اليوم يدويًا قبل اعتماد المسير.",409);
           if(code==="ATTENDANCE_SCHEDULE_REQUIRED")throw new AppError(code,"يوجد يوم في الشهر بلا جدول وردية مضبوط؛ حدّد أيام العمل والراحة لكل موظف قبل اعتماد المسير.",409);
           if(code==="PAYROLL_ATTENDANCE_OUTSIDE_SALARY_PROFILE")throw new AppError(code,"يوجد حضور أو بصمة خارج فترة سريان الراتب؛ راجع تاريخ سريان الراتب أو سوِّ الحركة قبل الاعتماد.",409);
-          if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر يوم الراحة لهذا الموظف.",409);
+          if(code==="DAY_OFF_RATE_REQUIRED")throw new AppError(code,"يوجد عمل مسجل في يوم راحة، لكن لم يتم تحديد أجر اليوم الزيادة/الراحة لهذا الموظف.",409);
           throw new AppError("ATTENDANCE_CALCULATION_INVALID","تعذر احتساب مستحقات الحضور؛ راجع إعدادات الموظف وسجل الشهر.",422);
         }
-        const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
+        const policySnapshot={workDaysPerMonth:Number(rawPolicy.work_days_per_month),dailyWorkMinutes:Number(rawPolicy.daily_work_minutes),dayOffPayAmount:Number(rawPolicy.day_off_pay_amount),overtimeMultiplier:Number(rawPolicy.overtime_multiplier),allowedLeaveDaysPerMonth:rawPolicy.allowed_leave_days_per_month===null||rawPolicy.allowed_leave_days_per_month===undefined?null:Number(rawPolicy.allowed_leave_days_per_month),salaryActiveDays,scheduledMinutes:effectiveScheduledMinutes};
         if(calculation.deductionAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
-          VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب',$2,$3,$4,'attendance:deduction')
+          VALUES($1,'DEDUCTION','خصم دقائق التأخير والانصراف المبكر والإذن غير المدفوع والغياب والإجازة غير المدفوعة',$2,$3,$4,'attendance:deduction')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
-          [item.id,calculation.deductionAmount,`سعر الدقيقة ${calculation.minuteRate.toFixed(4)} ج.م؛ التأخير ${calculation.lateMinutes} د، الانصراف المبكر ${calculation.earlyMinutes} د، الإذن غير المدفوع ${calculation.unpaidPermissionMinutes} د، الغياب ${calculation.absenceMinutes} د.`,request.user!.userId]);
+          [item.id,calculation.deductionAmount,`سعر الدقيقة ${calculation.minuteRate.toFixed(4)} ج.م؛ التأخير ${calculation.lateMinutes} د، الانصراف المبكر ${calculation.earlyMinutes} د، الإذن غير المدفوع ${calculation.unpaidPermissionMinutes} د، الغياب ${calculation.absenceMinutes} د، الإجازة غير المدفوعة ${calculation.unpaidLeaveMinutes} د.`,request.user!.userId]);
         if(calculation.overtimeBonus>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
           VALUES($1,'BONUS','مقابل الوقت الإضافي',$2,$3,$4,'attendance:overtime')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
@@ -582,6 +600,10 @@ export async function payrollRoutes(app: FastifyInstance) {
           VALUES($1,'BONUS','مقابل العمل في أيام الراحة والإجازات',$2,$3,$4,'attendance:day-off')
           ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
           [item.id,calculation.dayOffBonus,`${calculation.dayOffWorkedMinutes} دقيقة عمل؛ أجر اليوم الكامل ${policySnapshot.dayOffPayAmount} ج.م على أساس ${policySnapshot.dailyWorkMinutes} دقيقة.`,request.user!.userId]);
+        if(calculation.leavePayoutAmount>0)await client.query(`INSERT INTO payroll_adjustment_lines(payroll_item_id,line_type,description,amount,notes,created_by,source_key)
+          VALUES($1,'BONUS','بدل أيام الراحة والإجازة غير المستخدمة وأيام العمل الزيادة',$2,$3,$4,'attendance:leave-payout')
+          ON CONFLICT(payroll_item_id,source_key) WHERE source_key IS NOT NULL DO NOTHING`,
+          [item.id,calculation.leavePayoutAmount,`${calculation.leavePayoutDays} يوم × ${policySnapshot.dayOffPayAmount} ج.م؛ الحضور ${calculation.attendedDays} يوم، الراحة والإجازة المستخدمة من الرصيد ${calculation.restDaysUsed} يوم، الرصيد المشترك المحدد ${policySnapshot.allowedLeaveDaysPerMonth} يوم.`,request.user!.userId]);
         const totals=await client.query(`SELECT COALESCE(SUM(amount) FILTER(WHERE line_type='BONUS'),0) AS bonus,
           COALESCE(SUM(amount) FILTER(WHERE line_type='DEDUCTION'),0) AS deduction
           FROM payroll_adjustment_lines WHERE payroll_item_id=$1 AND status='ACTIVE'`,[item.id]);

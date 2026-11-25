@@ -187,7 +187,7 @@ export async function attendanceRoutes(app:FastifyInstance){
 
  const manualDaySchema=z.object({
   employeeId:z.string().uuid(),date:z.string().date(),
-  status:z.enum(["PRESENT","ABSENT","DAY_OFF","MISSING_PUNCH","MANUAL"]),
+  status:z.enum(["PRESENT","ABSENT","DAY_OFF","MISSING_PUNCH","MANUAL","UNPAID_LEAVE"]),
   firstIn:z.string().regex(timePattern).nullable().optional(),
   lastOut:z.string().regex(timePattern).nullable().optional(),
   workedMinutes:z.number().int().min(0).max(1440),
