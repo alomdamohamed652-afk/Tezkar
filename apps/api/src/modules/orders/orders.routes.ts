@@ -230,7 +230,14 @@ export async function orderRoutes(app: FastifyInstance) {
         ORDER BY o.created_at DESC
         LIMIT 300`, params);
     const canViewFinancials=await canViewOrderFinancials(request.user!.userId);
-    const data=canViewFinancials?r.rows:r.rows.map(({contract_value:_contractValue,...row})=>row);
+    const client=await pool.connect();
+    let canViewOrders=false;
+    try{canViewOrders=await hasPermission(client,request.user!.userId,"orders.view","all");}finally{client.release();}
+    // Callers admitted only for delivery workflows (no orders.view) get a minimal
+    // nonfinancial lookup — never the full order row.
+    const data=!canViewOrders
+      ?r.rows.map(row=>({id:row.id,code:row.code,order_name:row.order_name,status:row.status}))
+      :canViewFinancials?r.rows:r.rows.map(({contract_value:_contractValue,...row})=>row);
     return { data };
   });
 
@@ -245,7 +252,7 @@ export async function orderRoutes(app: FastifyInstance) {
     return {data};
   });
 
-  app.get("/api/orders/:id", { preHandler: [authenticateRequest, requirePermission("orders.view")] }, async (request) => {
+  app.get("/api/orders/:id", { preHandler: [authenticateRequest, requireAnyPermission(["orders.view","all"],["deliveries.view","all"],["deliveries.create","all"])] }, async (request) => {
     const id = (request.params as { id: string }).id;
     const order = await pool.query(
       `SELECT o.id,o.code,o.order_name,o.customer_name,o.order_date,o.delivery_start_date,o.due_date,o.last_delivery_date,o.status,o.notes,o.contract_value,o.created_at,o.updated_at,
