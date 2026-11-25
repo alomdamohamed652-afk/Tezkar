@@ -13,7 +13,8 @@ type ShiftLeader={id:string;shift_id:string;shift_name:string;employee_id:string
 type Order={id:string;code:string;order_name:string};
 type OrderStage={id:string;order_id:string;order_code:string;order_name:string;stage_id:string;stage_name:string;output_product_id:string|null;output_product_name:string|null;sequence_no:number;stage_rate:number|null;stage_rate_method:string|null;stage_rate_unit_id:string|null;production_type_id:string|null};
 type ProductionType=Item & {calculation_method:string};
-type LookupData={employees:Employee[];orders:Order[];products:Item[];shifts:Shift[];shiftLeaders:ShiftLeader[]};
+type LookupOrderStage=Omit<OrderStage,"stage_rate"|"stage_rate_unit_id">&{stage_rate?:null;stage_rate_unit_id?:null};
+type LookupData={employees:Employee[];orders:Order[];products:Item[];shifts:Shift[];shiftLeaders:ShiftLeader[];orderStages:LookupOrderStage[]};
 type Entry={id:string;code:string;work_date:string;employee_id:string;shift_id:string;shift_leader_employee_id:string|null;order_stage_id:string|null;product_id:string;stage_id:string;production_type_id:string|null;base_amount:number|null;hours_worked:number|null;shift_leader_name:string|null;quantity:number;rate_snapshot:number;rate_method?:string;earning_amount:number;bonus_amount:number;deduction_amount:number;bonus_reason:string|null;deduction_reason:string|null;total_earning_amount:number;paid_amount:number;remaining_amount:number;payment_status:"PAID"|"PARTIAL"|"UNPAID"|"UNALLOCATED";status:string;submitted_by:string|null;can_edit?:boolean;employee_name:string;product_name:string;stage_name:string;production_type_name:string|null;shift_name:string;unit_name:string};
 type Adjustment={id:string;code:string;adjustment_date:string;adjustment_type:"BONUS"|"DEDUCTION";amount:number;reason:string;employee_name:string;shift_name:string|null;production_code:string|null};
 
@@ -74,7 +75,7 @@ export default function ProductionPage(){
    ]);
    setShifts(h.data);setShiftLeaders(leaders.data);
    const [os,pt]=await Promise.all([
-    api<{data:OrderStage[]}>("/api/order-stages"),api<{data:ProductionType[]}>("/api/production-types"),
+    canOrders?api<{data:OrderStage[]}>("/api/order-stages"):Promise.resolve({data:(lookup?.orderStages??[]) as OrderStage[]}),api<{data:ProductionType[]}>("/api/production-types"),
    ]);
    setOrderStages(os.data);setProductionTypes(pt.data);
    const pref=await api<{data:Record<string,string>}>("/api/account/preferences/production").catch(()=>({data:{}}));
