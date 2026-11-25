@@ -26,7 +26,7 @@ export async function reverseCodingRoutes(app:FastifyInstance){
   return {data:{products:products.rows,orders:orders.rows,employees:employees.rows,users:users.rows,currentUserId:request.user!.userId,company:settings.rows[0]?.setting_value??{},labelSettings:labelSettings.rows[0]?.setting_value??{width:80,height:50,margin:2}}};
  });
  app.put("/api/reverse-coding/company-settings",{preHandler:[authenticateRequest,requirePermission("reverse_coding.manage")]},async request=>{
-  const p=z.object({companyName:z.string().trim().min(2).max(160),address:z.string().trim().max(300).nullable().optional(),phone:z.string().trim().max(60).nullable().optional(),logoUrl:z.string().trim().max(1000).nullable().optional()}).safeParse(request.body);
+  const p=z.object({companyName:z.string().trim().min(2).max(160),address:z.string().trim().max(300).nullable().optional(),phone:z.string().trim().max(60).nullable().optional(),logoUrl:z.string().trim().max(1000).nullable().optional(),complaintsPhone:z.string().trim().max(60).nullable().optional()}).safeParse(request.body);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات الشركة غير صحيحة",422);
   const saved=await withTransaction(async c=>{
    const r=await c.query("INSERT INTO reverse_code_settings(setting_key,setting_value,updated_by) VALUES('company',$1::jsonb,$2) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING setting_value",[JSON.stringify(p.data),request.user!.userId]);

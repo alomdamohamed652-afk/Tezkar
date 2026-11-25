@@ -61,7 +61,7 @@ export async function codingRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/coding/templates",{preHandler:[authenticateRequest,requirePermission("cartons.manage")]},async(request,reply)=>{
-    const parsed=z.object({name:z.string().trim().min(2).max(120),packagingTypeId:z.string().uuid().nullable().optional(),widthMm:z.number().positive().max(500),heightMm:z.number().positive().max(500),orientation:z.enum(["LANDSCAPE","PORTRAIT"]),companyName:z.string().trim().max(120).optional(),companyAddress:z.string().trim().max(250).optional(),logoUrl:z.string().trim().max(500).nullable().optional()}).safeParse(request.body);
+    const parsed=z.object({name:z.string().trim().min(2).max(120),packagingTypeId:z.string().uuid().nullable().optional(),widthMm:z.number().positive().max(500),heightMm:z.number().positive().max(500),orientation:z.enum(["LANDSCAPE","PORTRAIT"]),companyName:z.string().trim().max(120).optional(),companyAddress:z.string().trim().max(250).optional(),logoUrl:z.string().trim().max(500).nullable().optional(),complaintsPhone:z.string().trim().max(60).nullable().optional()}).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات مقاس التكويد غير صحيحة",422);
     const p=parsed.data;
     if(p.packagingTypeId){
@@ -69,7 +69,7 @@ export async function codingRoutes(app: FastifyInstance) {
       if(!pt.rowCount)throw new AppError("PACKAGING_TYPE_NOT_FOUND","نوع العبوة غير موجود",422);
     }
     const row=await withTransaction(async client=>{
-      const x=await client.query("INSERT INTO coding_templates(name,packaging_type_id,width_mm,height_mm,orientation,config,is_default) VALUES($1,$2,$3,$4,$5,$6,false) RETURNING *",[p.name,p.packagingTypeId??null,p.widthMm,p.heightMm,p.orientation,JSON.stringify({companyName:p.companyName??"تذكار",companyAddress:p.companyAddress??"عنوان الشركة",logoUrl:p.logoUrl??null})]);
+      const x=await client.query("INSERT INTO coding_templates(name,packaging_type_id,width_mm,height_mm,orientation,config,is_default) VALUES($1,$2,$3,$4,$5,$6,false) RETURNING *",[p.name,p.packagingTypeId??null,p.widthMm,p.heightMm,p.orientation,JSON.stringify({companyName:p.companyName??"تذكار",companyAddress:p.companyAddress??"عنوان الشركة",logoUrl:p.logoUrl??null,complaintsPhone:p.complaintsPhone??null})]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"create",module:"coding",entityType:"coding_template",entityId:x.rows[0].id,afterData:x.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return x.rows[0];
     });
@@ -84,7 +84,8 @@ export async function codingRoutes(app: FastifyInstance) {
       orientation:z.enum(["LANDSCAPE","PORTRAIT"]),
       companyName:z.string().trim().max(120).optional(),
       companyAddress:z.string().trim().max(250).optional(),
-      logoUrl:z.string().trim().max(500).nullable().optional()
+      logoUrl:z.string().trim().max(500).nullable().optional(),
+      complaintsPhone:z.string().trim().max(60).nullable().optional()
     }).safeParse(request.body);
     if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات قالب الطباعة غير صحيحة",422);
     const updated=await withTransaction(async(client)=>{
@@ -92,7 +93,7 @@ export async function codingRoutes(app: FastifyInstance) {
       if(!current.rowCount)throw new AppError("TEMPLATE_NOT_FOUND","قالب الطباعة غير موجود",404);
       const p=parsed.data;
       const oldConfig=current.rows[0].config||{};
-      const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة",logoUrl:p.logoUrl??oldConfig.logoUrl??null};
+      const config={...oldConfig,companyName:p.companyName??oldConfig.companyName??"تذكار",companyAddress:p.companyAddress??oldConfig.companyAddress??"عنوان الشركة",logoUrl:p.logoUrl??oldConfig.logoUrl??null,complaintsPhone:p.complaintsPhone??oldConfig.complaintsPhone??null};
       const row=await client.query("UPDATE coding_templates SET width_mm=$1,height_mm=$2,orientation=$3,config=$4 WHERE id=$5 RETURNING *",[p.widthMm,p.heightMm,p.orientation,JSON.stringify(config),id]);
       await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"coding",entityType:"coding_template",entityId:id,beforeData:current.rows[0],afterData:row.rows[0],ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
       return row.rows[0];
