@@ -112,10 +112,14 @@ export async function productionRoutes(app: FastifyInstance) {
   // Minimal lookup bundle for production entry/recording roles that lack the
   // master-data view permissions (orders.view, products.view, shifts.view, employees.lookup).
   // Returns identifiers and display names only — no rates, costs, or financial fields.
+  // orderStages mirrors the non-financial /api/order-stages shape: stage_rate and
+  // stage_rate_unit_id are never included; stage_rate_method stays because the
+  // non-financial order-stages response already exposes it and the production form
+  // needs it to resolve the wage calculation method.
   app.get("/api/production/lookup-data", {
-    preHandler: [authenticateRequest, requireAnyPermission(["production.create","all"],["production.view","all"])]
+    preHandler: [authenticateRequest, requireAnyPermission(["production.create","all"],["production.view","all"],["machine_production.create","all"],["machine_production.view","all"])]
   }, async () => {
-    const [employees, orders, products, shifts, shiftLeaders] = await Promise.all([
+    const [employees, orders, products, shifts, shiftLeaders, orderStages] = await Promise.all([
       pool.query("SELECT id,code,full_name,is_active FROM employees WHERE is_active=TRUE ORDER BY code"),
       pool.query("SELECT id,code,order_name,status FROM production_orders WHERE status <> 'CANCELLED' ORDER BY created_at DESC LIMIT 500"),
       pool.query("SELECT id,code,name FROM products WHERE is_active=TRUE ORDER BY code"),
@@ -124,14 +128,19 @@ export async function productionRoutes(app: FastifyInstance) {
         WHERE s.is_active=TRUE ORDER BY s.code`),
       pool.query(`SELECT sl.id,sl.shift_id,s.name AS shift_name,sl.employee_id,e.full_name AS employee_name,sl.assignment_type
         FROM shift_leaders sl JOIN shifts s ON s.id=sl.shift_id JOIN employees e ON e.id=sl.employee_id
-        WHERE sl.is_active=TRUE ORDER BY s.code,e.code`)
+        WHERE sl.is_active=TRUE ORDER BY s.code,e.code`),
+      pool.query(`SELECT os.id,os.order_id,o.code AS order_code,o.order_name,s.id AS stage_id,s.name AS stage_name,p.id AS output_product_id,p.name AS output_product_name,os.sequence_no,os.status,os.planned_quantity,os.completed_quantity,os.stage_rate_method,os.production_type_id,os.is_final_product
+        FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id LEFT JOIN products p ON p.id=os.output_product_id
+        WHERE os.status <> 'CANCELLED' AND o.status NOT IN ('COMPLETED','CANCELLED')
+        ORDER BY o.created_at DESC,os.sequence_no LIMIT 2000`)
     ]);
     return { data: {
       employees: employees.rows,
       orders: orders.rows,
       products: products.rows,
       shifts: shifts.rows,
-      shiftLeaders: shiftLeaders.rows
+      shiftLeaders: shiftLeaders.rows,
+      orderStages: orderStages.rows
     } };
   });
 
