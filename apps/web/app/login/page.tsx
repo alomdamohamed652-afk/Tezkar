@@ -56,7 +56,7 @@ export default function LoginPage() {
       <div className="auth-shell">
         <section className="auth-showcase" aria-label="نظام تذكار">
           <div className="auth-showcase-top">
-            <div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
+            <div className="auth-logo-mark"><img src="/tezkar-logo.png" alt="شعار تذكار" /></div>
             <div>
               <strong>تذكار</strong>
               <span>إدارة المصنع</span>
@@ -79,7 +79,7 @@ export default function LoginPage() {
 
         <section className="auth-card" aria-labelledby="login-title">
           <div className="auth-mobile-brand">
-            <div className="auth-logo-mark"><img src="https://raw.githubusercontent.com/alomdamohamed652-afk/Tezkar/main/tezkar%20logo.png" alt="شعار تذكار" /></div>
+            <div className="auth-logo-mark"><img src="/tezkar-logo.png" alt="شعار تذكار" /></div>
             <div><strong>تذكار</strong><span>إدارة المصنع</span></div>
           </div>
 
@@ -93,7 +93,7 @@ export default function LoginPage() {
             <label className="auth-field">
               <span>اسم المستخدم أو رقم الموبايل</span>
               <div className="auth-input-wrap">
-                <span className="auth-input-icon" aria-hidden="true">⌁</span>
+                <span className="auth-input-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5"/></svg></span>
                 <input
                   value={username}
                   onChange={e=>setUsername(e.target.value)}
@@ -108,7 +108,7 @@ export default function LoginPage() {
             <label className="auth-field">
               <span>كلمة المرور</span>
               <div className="auth-input-wrap">
-                <span className="auth-input-icon" aria-hidden="true">⌑</span>
+                <span className="auth-input-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
                 <input
                   value={password}
                   onChange={e=>setPassword(e.target.value)}
@@ -141,7 +141,7 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div style={{display:"flex",justifyContent:"center",gap:16,flexWrap:"wrap",marginTop:20}}><Link href="/forgot-password">نسيت كلمة المرور؟</Link><span>محتاج حساب جديد؟ <Link href="/register" style={{fontWeight:800,color:"#16835d"}}>إنشاء حساب جديد</Link></span></div>
+          <div className="auth-links"><Link href="/forgot-password">نسيت كلمة المرور؟</Link><span>محتاج حساب جديد؟ <Link href="/register" style={{fontWeight:800}}>إنشاء حساب جديد</Link></span></div>
 
           <div className="auth-security">
             <span className="auth-lock">●</span>

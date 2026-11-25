@@ -3,6 +3,7 @@ import {FormEvent,useEffect,useState} from "react";
 import {useRouter} from "next/navigation";
 import {api} from "../../lib/api";
 import {Sidebar} from "../../components/sidebar";
+import { OtpInput } from "../../components/otp-input";
 
 type Profile={username:string;code:string;full_name:string|null;employee_code:string|null;roles:string[];must_change_password:boolean;email:string|null;email_verified_at:string|null};
 type Session={id:string;device_id:string|null;device_name:string|null;device_type:string|null;browser_name:string|null;os_name:string|null;ip_address:string|null;last_seen_at:string|null;expires_at:string;is_current:boolean};
@@ -63,13 +64,19 @@ function EmailCard({profile,onChanged}:{profile:Profile|null;onChanged:()=>Promi
   try{const r=await api<{message?:string}>("/api/me/email/confirm",{method:"POST",body:JSON.stringify({code:code.trim()})});setMsg(r.message??"تم تأكيد بريدك الإلكتروني.");setStage("idle");setCode("");setEmailInput("");await onChanged();}
   catch(e2){setErr(e2 instanceof Error?e2.message:"تعذر تأكيد الكود")}finally{setBusy(false)}
  }
- return <section className="card" id="email"><div className="card-header"><h2 className="card-title">البريد الإلكتروني لاستعادة كلمة المرور</h2>
-  {email&&(verified?<span className="badge">مؤكد</span>:<span className="badge">بانتظار التأكيد</span>)}</div>
-  <p className="form-hint">بريدك يُستخدم فقط لإرسال كود استعادة كلمة المرور. لازم تأكيده بكود أول مرة.</p>
-  {email&&<div className="form-grid"><label>البريد الحالي<input readOnly dir="ltr" value={email}/></label></div>}
-  {stage==="idle"&&<form className="form-grid" onSubmit={requestCode}><label>{email?"تغيير البريد":"البريد الإلكتروني"}<input type="email" dir="ltr" placeholder="name@example.com" value={emailInput} onChange={e=>setEmailInput(e.target.value)} required/></label><div className="form-actions"><button className="primary-button" disabled={busy}>{busy?"جارٍ الإرسال...":"إرسال كود التأكيد"}</button></div></form>}
-  {stage==="code"&&<form className="form-grid" onSubmit={confirmCode}><label>كود التأكيد (6 أرقام)<input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr" placeholder="••••••" value={code} onChange={e=>setCode(e.target.value)} required/></label><div className="form-actions"><button className="primary-button" disabled={busy}>{busy?"جارٍ التأكيد...":"تأكيد البريد"}</button><button type="button" className="secondary-btn" disabled={busy} onClick={()=>{setStage("idle");setErr("");}}>تراجع</button></div></form>}
+ return <section className="card email-recovery" id="email"><div className="card-header"><h2 className="card-title">البريد الإلكتروني لاستعادة كلمة المرور</h2>
+  {email&&(verified?<span className="email-badge email-badge-verified">مؤكد</span>:<span className="email-badge email-badge-pending">بانتظار التأكيد</span>)}</div>
+  <div className="email-recovery-body">
+  <p className="email-recovery-hint">بريدك يُستخدم فقط لإرسال كود استعادة كلمة المرور. لازم تأكيده بكود أول مرة.</p>
+  {email&&<label className="email-recovery-field"><span>البريد الحالي</span><input readOnly dir="ltr" value={email}/></label>}
+  {stage==="idle"&&<form onSubmit={requestCode}><label className="email-recovery-field"><span>{email?"تغيير البريد":"البريد الإلكتروني"}</span><input type="email" dir="ltr" placeholder="name@example.com" value={emailInput} onChange={e=>setEmailInput(e.target.value)} required/></label><div className="email-recovery-actions"><button className="primary-button" disabled={busy}>{busy?"جارٍ الإرسال...":"إرسال كود التأكيد"}</button></div></form>}
+  {stage==="code"&&<form onSubmit={confirmCode}>
+   <label className="email-recovery-field"><span>كود التأكيد (6 أرقام)</span><OtpInput value={code} onChange={setCode} autoFocus/></label>
+   <div className="email-recovery-note" role="note">لو الرسالة مش ظاهرة في الوارد، بص في السبام / الرسائل غير الهامة.</div>
+   <div className="email-recovery-actions"><button className="primary-button" disabled={busy}>{busy?"جارٍ التأكيد...":"تأكيد البريد"}</button><button type="button" className="secondary-btn" disabled={busy} onClick={()=>{setStage("idle");setErr("");}}>تراجع</button></div>
+  </form>}
   {err&&<div className="alert error">{err}</div>}
-  {msg&&<div role="status" style={{padding:12,borderRadius:12,background:"#e8f7ef",color:"#176b48"}}>{msg}</div>}
+  {msg&&<div className="email-recovery-success" role="status">{msg}</div>}
+  </div>
  </section>;
 }
