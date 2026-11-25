@@ -7,6 +7,12 @@ type Health={
  status:string;
  serverTime:string;
  database:{status:string;latencyMs:number|null};
+ diagnostics:{
+  migrations:{countAvailable:boolean;latestAvailable:boolean};
+  backupExportAudit:{available:boolean};
+  failedLoginCount:{available:boolean};
+  recentFailedLogins:{available:boolean};
+ };
  migrations:{count:number;last:{version:string;appliedAt:string}|null};
  lastBackupAt:string|null;
  failedLogins24h:number;
@@ -24,10 +30,11 @@ export default function AdminHealthPage(){
  {error&&<div className="alert error">{error}</div>}
  {loading&&<div className="card">جارٍ تحميل صحة النظام...</div>}
  {health&&<>
+  {Object.values(health.diagnostics).some(group=>Object.values(group).some(available=>!available))&&<div className="alert error">بعض بيانات التشخيص غير متاحة بسبب فشل استعلام أو اختلاف في المخطط؛ القيم الافتراضية لا تعني عدم وجود سجلات.</div>}
   <div className="stats">
    <div className={"card stat"+(health.database.status==="ok"?"":" warning")}><div className="stat-label">قاعدة البيانات</div><div className="stat-value">{health.database.status==="ok"?"تعمل":"متوقفة"}</div><div className="stat-note">{health.database.latencyMs!==null?"زمن الاستجابة "+Math.round(health.database.latencyMs)+" مللي ثانية":"لا يمكن الوصول إليها"}</div></div>
-   <div className="card stat"><div className="stat-label">آخر نسخة احتياطية</div><div className="stat-value" style={{fontSize:18}}>{fmt(health.lastBackupAt)}</div><div className="stat-note">{health.lastBackupAt?"آخر عملية تصدير مسجلة في سجل العمليات، وليست إثبات نسخة كاملة قابلة للاسترجاع":"لم يتم تسجيل أي نسخة بعد"}</div></div>
-   <div className="card stat"><div className="stat-label">آخر migration</div><div className="stat-value" dir="ltr" style={{fontSize:14,wordBreak:"break-all",textAlign:"right"}}>{health.migrations.last?health.migrations.last.version:"—"}</div><div className="stat-note">{health.migrations.last?"طُبقت "+fmt(health.migrations.last.appliedAt):""} · الإجمالي {health.migrations.count}</div></div>
+   <div className="card stat"><div className="stat-label">آخر نسخة احتياطية</div><div className="stat-value" style={{fontSize:18}}>{fmt(health.lastBackupAt)}</div><div className="stat-note">{!health.diagnostics.backupExportAudit.available?"تعذر قراءة سجل التصدير":health.lastBackupAt?"آخر عملية تصدير مسجلة في سجل العمليات، وليست إثبات نسخة كاملة قابلة للاسترجاع":"لا يوجد سجل تصدير"}</div></div>
+   <div className="card stat"><div className="stat-label">آخر migration</div><div className="stat-value" dir="ltr" style={{fontSize:14,wordBreak:"break-all",textAlign:"right"}}>{health.migrations.last?health.migrations.last.version:"—"}</div><div className="stat-note">{!health.diagnostics.migrations.latestAvailable||!health.diagnostics.migrations.countAvailable?"تعذر قراءة سجل migrations":health.migrations.last?"طُبقت "+fmt(health.migrations.last.appliedAt):"لا يوجد سجل"} · الإجمالي {health.diagnostics.migrations.countAvailable?health.migrations.count:"غير متاح"}</div></div>
    <div className={"card stat"+(health.failedLogins24h>0?" warning":"")}><div className="stat-label">محاولات دخول فاشلة (24 ساعة)</div><div className="stat-value">{health.failedLogins24h.toLocaleString("ar-EG")}</div></div>
   </div>
   <section className="card"><div className="card-header"><h2 className="card-title">أخطاء الخادم الأخيرة</h2><span>{health.recentErrors.length} خطأ منذ آخر تشغيل للخادم</span></div>
