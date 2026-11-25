@@ -4,7 +4,7 @@ import { pool, withTransaction } from "../../db/pool.js";
 import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
-import { requirePermission } from "../rbac/permission.guard.js";
+import { requirePermission, requireAnyPermission } from "../rbac/permission.guard.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 
 const name=z.string().trim().min(2).max(120);
@@ -214,7 +214,7 @@ await audit(c,req,"assign_leader","shift_leader",x.rows[0].id,x.rows[0]);return 
   return {data:r.rows};
  });
 
- app.get("/api/rates/resolve",{preHandler:[authenticateRequest,requirePermission("rates.view")]},async(req)=>{
+ app.get("/api/rates/resolve",{preHandler:[authenticateRequest,requireAnyPermission(["rates.view","all"],["production.create","all"])]},async(req)=>{
   const p=z.object({productId:z.string().uuid(),stageId:z.string().uuid(),shiftId:z.string().uuid(),productionTypeId:z.string().uuid().optional(),workDate:z.string().date()}).safeParse(req.query);
   if(!p.success)throw new AppError("VALIDATION_ERROR","بيانات تحديد السعر غير صحيحة",422);
   const shift=await pool.query("SELECT rate_group_id FROM shifts WHERE id=$1 AND is_active=TRUE",[p.data.shiftId]);
