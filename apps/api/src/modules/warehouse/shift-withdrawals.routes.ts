@@ -95,7 +95,7 @@ async function consumeWarehouseStock(client: import("pg").PoolClient, input:{
 }
 
 export async function shiftWithdrawalRoutes(app:FastifyInstance){
- app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+ app.get("/api/shift-withdrawals",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.view","all"],["warehouse.shift_withdrawal.view","all"])]},async(request)=>{
   const parsed=z.object({limit:z.coerce.number().int().min(1).max(300).default(300),offset:z.coerce.number().int().nonnegative().default(0)}).safeParse(request.query);
   if(!parsed.success)throw new AppError("VALIDATION_ERROR","بيانات ترقيم صفحات مسحوبات الورديات غير صحيحة",422);
   const {limit,offset}=parsed.data;
@@ -124,7 +124,7 @@ export async function shiftWithdrawalRoutes(app:FastifyInstance){
   return {data:r.rows,pagination:{limit,offset,total,hasMore:offset+r.rows.length<total}};
  });
 
- app.get("/api/shift-withdrawals/:id",{preHandler:[authenticateRequest,requirePermission("warehouse.view")]},async(request)=>{
+ app.get("/api/shift-withdrawals/:id",{preHandler:[authenticateRequest,requireAnyPermission(["warehouse.view","all"],["warehouse.shift_withdrawal.view","all"])]},async(request)=>{
   const id=(request.params as {id:string}).id;
   const header=await pool.query(`
     SELECT sw.*,s.code AS shift_code,s.name AS shift_name,e.full_name AS employee_name,
