@@ -2840,3 +2840,26 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 .q-amber .quick-icon{background:#fffbeb;color:#d97706}
 .q-purple .quick-icon{background:#f5f3ff;color:#7c3aed}
 @media(max-width:900px){.dashboard-bottom .dashboard-detail{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Attention strip icon chips (additive polish) */
+.dashboard-attention-icon.ai-blue{background:#e8efff;color:#2459bd}
+.dashboard-attention-icon.ai-green{background:#e8f8f0;color:#0f766e}
+.dashboard-attention-icon.ai-amber{background:#fdf3e3;color:#b45309}
+.dashboard-attention-icon.ai-red{background:#fdeaea;color:#b91c1c}
+.dashboard-attention-icon.ai-purple{background:#f1ecfd;color:#6d28d9}
+
+/* Dashboard section headers (additive) */
+.dashboard-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:26px 0 12px;padding-top:18px;border-top:1px dashed var(--border)}
+.dashboard-section-head.first{margin-top:4px;padding-top:0;border-top:none}
+.dashboard-section-head h2{margin:0;font-size:15px;font-weight:800;color:var(--ink)}
+.dashboard-section-head span{font-size:11px;color:var(--muted)}
+
+/* Dashboard extras row (additive) */
+.dashboard-extras{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:0 0 16px}
+.dashboard-extra-value{font-size:24px;font-weight:800;margin:6px 0 2px;color:var(--ink)}
+.dashboard-extra-note{font-size:11px;color:var(--muted);margin-bottom:10px}
+.dashboard-extra-bar{height:8px;border-radius:6px;background:var(--surface-3);overflow:hidden}
+.dashboard-extra-bar i{display:block;height:100%;border-radius:6px;background:var(--primary)}
+.dashboard-extra.green .dashboard-extra-bar i{background:var(--accent)}
+.dashboard-extra.amber .dashboard-extra-bar i{background:var(--warning)}
+@media(max-width:900px){.dashboard-extras{grid-template-columns:1fr}}
