@@ -1,5 +1,6 @@
 "use client";
 
+import { ThemeToggle } from "./theme-toggle";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api, notifyApiSessionChanged } from "../lib/api";
@@ -165,6 +166,7 @@ export function Sidebar({active}:{active:string}){
    </div>
    <div className="sidebar-footer">
     <Link className={"nav-item"+(active==="/notifications"?" active":"")} href="/notifications" prefetch><span className="nav-icon">♧</span><span className="nav-label">الإشعارات</span>{unreadNotificationCount>0&&<span className="nav-count-badge" aria-label={`${unreadNotificationCount} إشعارات غير مقروءة`}>{unreadNotificationCount>99?"99+":unreadNotificationCount}</span>}</Link>
+    <ThemeToggle/>
     <Link className={"nav-item"+(active==="/account"?" active":"")} href="/account" prefetch><span className="nav-icon">◉</span><span className="nav-label">حسابي</span></Link>
     <button className="nav-item logout-item" onClick={logout}><span className="nav-icon">↪</span><span className="nav-label">تسجيل الخروج</span></button>
    </div>

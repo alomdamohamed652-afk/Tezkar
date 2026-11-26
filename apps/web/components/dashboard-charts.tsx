@@ -26,7 +26,7 @@ export function LineTrend({data,color}:{data:TrendPoint[];color:string}){
  return <svg viewBox={`0 0 ${W} ${H}`} className="dashboard-svg" role="img">
   <path d={area} fill={color} opacity={0.12} className="dashboard-chart-fade"/>
   <path d={line} fill="none" stroke={color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" className="dashboard-chart-line"/>
-  {pts.map((p,i)=><circle key={i} cx={p[0]} cy={p[1]} r={3.2} fill="#fff" stroke={color} strokeWidth={2} className="dashboard-chart-fade"/>)}
+  {pts.map((p,i)=><circle key={i} cx={p[0]} cy={p[1]} r={3.2} fill="var(--surface,#fff)" stroke={color} strokeWidth={2} className="dashboard-chart-fade"/>)}
   {pts.map((p,i)=><text key={"v"+i} x={p[0]} y={Math.max(10,p[1]-7)} textAnchor="middle" className="dashboard-svg-value">{data[i].value.toLocaleString("ar-EG")}</text>)}
   {data.map((x,i)=><text key={i} x={pts[i][0]} y={H-8} textAnchor="middle" className="dashboard-svg-label">{x.label}</text>)}
  </svg>;
@@ -40,9 +40,9 @@ export function DualLineTrend({data,colorA,colorB,legendA,legendB}:{data:DualTre
   <svg viewBox={`0 0 ${W} ${H}`} className="dashboard-svg" role="img">
    <path d={pathFrom(ptsA)} fill="none" stroke={colorA} strokeWidth={2.5} strokeLinejoin="round" className="dashboard-chart-line"/>
    <path d={pathFrom(ptsB)} fill="none" stroke={colorB} strokeWidth={2.5} strokeLinejoin="round" className="dashboard-chart-line"/>
-   {ptsA.map((p,i)=><circle key={"a"+i} cx={p[0]} cy={p[1]} r={3} fill="#fff" stroke={colorA} strokeWidth={2} className="dashboard-chart-fade"/>)}
+   {ptsA.map((p,i)=><circle key={"a"+i} cx={p[0]} cy={p[1]} r={3} fill="var(--surface,#fff)" stroke={colorA} strokeWidth={2} className="dashboard-chart-fade"/>)}
    {ptsA.map((p,i)=><text key={"va"+i} x={p[0]} y={Math.max(10,p[1]-7)} textAnchor="middle" className="dashboard-svg-value">{data[i].a.toLocaleString("ar-EG")}</text>)}
-   {ptsB.map((p,i)=><circle key={"b"+i} cx={p[0]} cy={p[1]} r={3} fill="#fff" stroke={colorB} strokeWidth={2} className="dashboard-chart-fade"/>)}
+   {ptsB.map((p,i)=><circle key={"b"+i} cx={p[0]} cy={p[1]} r={3} fill="var(--surface,#fff)" stroke={colorB} strokeWidth={2} className="dashboard-chart-fade"/>)}
    {data.map((x,i)=><text key={i} x={ptsA[i][0]} y={H-8} textAnchor="middle" className="dashboard-svg-label">{x.label}</text>)}
   </svg>
   <div className="dashboard-legend"><span><i style={{background:colorA}}/>{legendA}</span><span><i style={{background:colorB}}/>{legendB}</span></div>
@@ -58,7 +58,7 @@ export function MultiLineTrend({labels,series,colors}:{labels:string[];series:{n
     const pts=points(sr.values,max);const color=colors[si%colors.length];
     return <g key={sr.name}>
      <path d={pathFrom(pts)} fill="none" stroke={color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" className="dashboard-chart-line"/>
-     {pts.map((p,i)=><circle key={i} cx={p[0]} cy={p[1]} r={3} fill="#fff" stroke={color} strokeWidth={2} className="dashboard-chart-fade"/>)}
+     {pts.map((p,i)=><circle key={i} cx={p[0]} cy={p[1]} r={3} fill="var(--surface,#fff)" stroke={color} strokeWidth={2} className="dashboard-chart-fade"/>)}
     </g>;
    })}
    {labels.map((l,i)=><text key={i} x={points(labels.map(()=>0),1)[i][0]} y={H-8} textAnchor="middle" className="dashboard-svg-label">{l}</text>)}
@@ -74,7 +74,7 @@ export function DonutChart({slices,centerLabel}:{slices:Slice[];centerLabel:stri
  let acc=0;
  return <div className="dashboard-donut-wrap">
   <svg viewBox="0 0 140 140" className="dashboard-donut" role="img">
-   <circle cx={70} cy={70} r={R} fill="none" stroke="#e8edf4" strokeWidth={18}/>
+   <circle cx={70} cy={70} r={R} fill="none" stroke="var(--border,#e8edf4)" strokeWidth={18}/>
    {slices.filter(x=>x.value>0).map(x=>{
     const frac=x.value/total,start=acc;acc+=frac;
     return <circle key={x.label} cx={70} cy={70} r={R} fill="none" stroke={x.color} strokeWidth={18}
@@ -103,7 +103,7 @@ export function Gauge({ratio}:{ratio:number}){
  const color=pct>0.1?"#dc2626":pct>0.05?"#d97706":"#059669";
  return <div className="dashboard-donut-wrap">
   <svg viewBox="0 0 140 140" className="dashboard-donut" role="img">
-   <circle cx={70} cy={70} r={R} fill="none" stroke="#e8edf4" strokeWidth={18}/>
+   <circle cx={70} cy={70} r={R} fill="none" stroke="var(--border,#e8edf4)" strokeWidth={18}/>
    <circle cx={70} cy={70} r={R} fill="none" stroke={color} strokeWidth={18}
     strokeDasharray={`${(pct*CIRC).toFixed(1)} ${CIRC.toFixed(1)}`} transform="rotate(-90 70 70)" className="dashboard-chart-donut-slice"/>
    <text x={70} y={70} textAnchor="middle" className="dashboard-donut-value">{(pct*100).toFixed(1)}%</text>
