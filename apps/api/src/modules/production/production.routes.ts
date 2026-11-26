@@ -15,6 +15,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
+import { parseBulkMessage } from "./bulk-entry.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
@@ -116,6 +117,31 @@ export async function productionRoutes(app: FastifyInstance) {
   // stage_rate_unit_id are never included; stage_rate_method stays because the
   // non-financial order-stages response already exposes it and the production form
   // needs it to resolve the wage calculation method.
+  // Bulk entry step 1: turn a pasted message into draft rows. Read-only, writes nothing.
+  // Rows are registered afterwards one by one through the normal POST /api/production,
+  // so every business rule, period lock and duplicate check still applies per row.
+  app.post("/api/production/bulk-parse", {
+    preHandler: [authenticateRequest, requirePermission("production.create")]
+  }, async (request) => {
+    const parsed = z.object({ message: z.string().trim().min(5).max(20000) }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR", "الصق رسالة الإنتاج", 422);
+    const [employees, orders, shifts, shiftLeaders, orderStages] = await Promise.all([
+      pool.query("SELECT id,code,full_name FROM employees WHERE is_active=TRUE"),
+      pool.query("SELECT id,code,order_name FROM production_orders WHERE status NOT IN ('CANCELLED','COMPLETED') ORDER BY created_at DESC LIMIT 500"),
+      pool.query("SELECT id,name FROM shifts WHERE is_active=TRUE"),
+      pool.query(`SELECT sl.shift_id,sl.employee_id,e.full_name AS employee_name
+        FROM shift_leaders sl JOIN employees e ON e.id=sl.employee_id WHERE sl.is_active=TRUE`),
+      pool.query(`SELECT os.id,os.order_id,s.id AS stage_id,s.name AS stage_name,os.output_product_id
+        FROM order_stages os JOIN production_orders o ON o.id=os.order_id JOIN stages s ON s.id=os.stage_id
+        WHERE os.status <> 'CANCELLED' AND o.status NOT IN ('COMPLETED','CANCELLED')
+        ORDER BY o.created_at DESC,os.sequence_no LIMIT 3000`)
+    ]);
+    return { data: parseBulkMessage(parsed.data.message, {
+      employees: employees.rows, orders: orders.rows, shifts: shifts.rows,
+      shiftLeaders: shiftLeaders.rows, orderStages: orderStages.rows
+    }) };
+  });
+
   app.get("/api/production/lookup-data", {
     preHandler: [authenticateRequest, requireAnyPermission(["production.create","all"],["production.view","all"],["machine_production.create","all"],["machine_production.view","all"])]
   }, async () => {
