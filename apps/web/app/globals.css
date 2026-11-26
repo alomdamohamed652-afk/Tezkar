@@ -2900,4 +2900,13 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 .dashboard-extra-bar i{display:block;height:100%;border-radius:6px;background:var(--primary)}
 .dashboard-extra.green .dashboard-extra-bar i{background:var(--accent)}
 .dashboard-extra.amber .dashboard-extra-bar i{background:var(--warning)}
+.dashboard-extra.blue .stat-label{color:var(--primary)}
+.dashboard-extra.violet .stat-label{color:#7c3aed}
+.dashboard-extra.slate .stat-label{color:#475569}
+.dashboard-extra.blue{border-top:3px solid var(--primary)}
+.dashboard-extra.violet{border-top:3px solid #7c3aed}
+.dashboard-extra.slate{border-top:3px solid #94a3b8}
+.dashboard-extra-value.txt{font-size:15px;line-height:1.5;min-height:44px;display:flex;align-items:center}
+@media(max-width:900px){.dashboard-extras{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.dashboard-extras{grid-template-columns:1fr}}
 @media(max-width:900px){.dashboard-extras{grid-template-columns:1fr}}
