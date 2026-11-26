@@ -184,7 +184,7 @@ export default function ProductionPage(){
  function selectResponsible(value:string){setShiftLeaderTouched(true);setShiftLeaderEmployeeId(value)}
  const orderOptions=useMemo(()=>orders.map(x=>({value:x.id,label:x.order_name,meta:x.code})),[orders]);
  const filteredOrderStages=useMemo(()=>orderId?orderStages.filter(x=>x.order_id===orderId):[],[orderStages,orderId]);
- const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+formatMoney(x.stage_rate)):"بدون سعر"})),[filteredOrderStages]);
+ const orderStageOptions=useMemo(()=>filteredOrderStages.map(x=>({value:x.id,label:x.stage_name,meta:x.stage_rate!=null?((x.stage_rate_method==="PER_1000"?"لكل ألف":"بالقطعة")+" · "+formatMoney(x.stage_rate)):(x.stage_rate_method&&!canViewProductionFinancials?"":"بدون سعر")})),[filteredOrderStages,canViewProductionFinancials]);
  const typeOptions=useMemo(()=>productionTypes.map(x=>({value:x.id,label:x.name})),[productionTypes]);
  const productionToday=useMemo(()=>entries.filter(x=>x.work_date===localDateKey()),[entries]);
  const approvedCount=useMemo(()=>entries.filter(x=>x.status==="APPROVED").length,[entries]);
