@@ -331,7 +331,7 @@ export default function ProductionPage(){
     <div className="form-hint" style={{gridColumn:"1/-1"}}>وجهة التخزين تُحدد تلقائيًا حسب مرحلة الطلب؛ لا يتم اختيار مخزن يدويًا عند تسجيل الإنتاج.</div>
     {resolvedMethod==="PERCENTAGE"&&<label>قيمة الأساس <span className="optional">(لأجر النسبة)</span><input inputMode="decimal" value={baseAmount} onChange={e=>setBaseAmount(e.target.value)} required/></label>}
     {resolvedMethod==="PER_HOUR"&&<label>عدد الساعات <span className="optional">(لأجر الساعة)</span><input inputMode="decimal" value={hoursWorked} onChange={e=>setHoursWorked(e.target.value)} required/></label>}
-    {has("production.adjustments.create")&&<div className="production-adjustment-box">
+    {(has("production.adjustments.create")||has("production.entry_adjust"))&&<div className="production-adjustment-box">
       <div className="production-adjustment-title">تعديل مستحق الإنتاج <span>اختياري</span></div>
       <div className="production-adjustment-grid">
         <label>بونص<input inputMode="decimal" value={bonusAmount} onChange={e=>setBonusAmount(e.target.value)} placeholder="٠"/></label>
