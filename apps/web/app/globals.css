@@ -2796,6 +2796,28 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 .df-field select:focus,.df-field input:focus{border-color:#2563eb;background:#fff}
 .df-reset{font-size:12px;font-weight:700;color:#dc2626;background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.25);border-radius:9px;padding:9px 14px;cursor:pointer}
 .df-now{font-style:normal;font-size:10px;font-weight:700;color:#64748b;background:rgba(148,163,184,.18);border-radius:99px;padding:1px 8px;vertical-align:middle}
+
+/* Dashboard motion (2026-11-26 request): pure CSS, no libs, reduced-motion safe */
+.card.stat,.dashboard-extra,.quick{transition:transform .18s ease,box-shadow .18s ease}
+.card.stat:hover,.dashboard-extra:hover,.quick:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(23,32,51,.10)}
+@media (prefers-reduced-motion: no-preference){
+ .content .card{animation:dash-card-in .45s ease both}
+ .content .stats .card:nth-child(2){animation-delay:.05s}
+ .content .stats .card:nth-child(3){animation-delay:.1s}
+ .content .stats .card:nth-child(4){animation-delay:.15s}
+ .dashboard-chart-grid .card:nth-child(2),.dashboard-bottom-grid .card:nth-child(2),.content .grid .card:nth-child(2){animation-delay:.08s}
+ .dashboard-extras .card:nth-child(2){animation-delay:.07s}
+ .dashboard-extras .card:nth-child(3){animation-delay:.14s}
+ .dashboard-bar-fill{animation:dash-vbar .7s ease-out both;transform-origin:bottom}
+ .dashboard-status-row{animation:dash-row-in .4s ease both}
+ .dashboard-status-row:nth-child(2){animation-delay:.05s}
+ .dashboard-status-row:nth-child(3){animation-delay:.1s}
+ .dashboard-status-row:nth-child(4){animation-delay:.15s}
+ .dashboard-status-row:nth-child(5){animation-delay:.2s}
+}
+@keyframes dash-card-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes dash-vbar{from{transform:scaleY(0)}}
+@keyframes dash-row-in{from{opacity:0;transform:translateX(6px)}to{opacity:1;transform:none}}
 @media(max-width:900px){
  .df-toggle{display:flex}
  .dashboard-filterbar .df-row{display:none;margin-top:8px}
