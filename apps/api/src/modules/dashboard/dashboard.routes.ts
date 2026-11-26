@@ -95,11 +95,11 @@ export async function dashboardRoutes(app:FastifyInstance){
   if(f.employeeId){params.push(f.employeeId);w.push("pe.employee_id=$"+params.length)}
   if(f.stageId){params.push(f.stageId);w.push("pe.stage_id=$"+params.length)}
   if(f.orderId){params.push(f.orderId);w.push("pe.order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$"+params.length+")")}
-  const sql="WITH buckets AS ("+rangeSql+"), x AS (SELECT pe.product_id,date_trunc('"+trunc+"',pe.work_date)::date AS bucket,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe WHERE "+w.join(" AND ")+" GROUP BY pe.product_id,bucket) SELECT b.bucket,p.id AS product_id,p.name AS product_name,COALESCE(x.quantity,0) AS quantity FROM buckets b CROSS JOIN products p LEFT JOIN x ON x.bucket=b.bucket AND x.product_id=p.id WHERE p.id IN "+idList+" ORDER BY b.bucket,p.name";
+  const sql="WITH buckets AS ("+rangeSql+"), x AS (SELECT pe.product_id,date_trunc('"+trunc+"',pe.work_date)::date AS bucket,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe WHERE "+w.join(" AND ")+" GROUP BY pe.product_id,bucket) SELECT to_char(b.bucket,'YYYY-MM-DD') AS bucket,p.id AS product_id,p.name AS product_name,COALESCE(x.quantity,0) AS quantity FROM buckets b CROSS JOIN products p LEFT JOIN x ON x.bucket=b.bucket AND x.product_id=p.id WHERE p.id IN "+idList+" ORDER BY b.bucket,p.name";
   const r=await pool.query(sql,params);
   const labels:string[]=[];const byProduct=new Map<string,{name:string;values:number[]}>();
   for(const row of r.rows){
-   const b=String(row.bucket).slice(0,10);
+   const b=String(row.bucket);
    if(!labels.includes(b))labels.push(b);
    if(!byProduct.has(row.product_id))byProduct.set(row.product_id,{name:row.product_name,values:[]});
    byProduct.get(row.product_id)!.values.push(Number(row.quantity));
