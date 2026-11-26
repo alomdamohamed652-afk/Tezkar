@@ -80,14 +80,14 @@ export default function BulkProductionPage(){
      <label>مسؤول الوردية<input readOnly value={parsed.shiftLeaderName||parsed.supervisorText||"غير محدد"}/></label>
     </div>
     <div className="master-list">
-     {rows.map(r=><div key={r.key} className="master-row" style={{flexWrap:"wrap",gap:8,alignItems:"flex-end",opacity:r.status==="done"?0.6:1}}>
-      <div style={{minWidth:200,flex:"1 1 200px"}}><SearchableSelect value={r.employeeId} onChange={v=>patch(r.key,{employeeId:v})} options={employeeOptions} placeholder="العامل"/></div>
-      <div style={{minWidth:200,flex:"1 1 200px"}}><SearchableSelect value={r.orderId} onChange={v=>patch(r.key,{orderId:v,orderStageId:""})} options={orderOptions} placeholder="الطلبية"/></div>
-      <div style={{minWidth:180,flex:"1 1 180px"}}><SearchableSelect value={r.orderStageId} onChange={v=>patch(r.key,{orderStageId:v})} options={stageOptionsFor(r.orderId)} placeholder="المرحلة"/></div>
-      <input style={{width:110}} inputMode="decimal" value={r.quantity} onChange={e=>patch(r.key,{quantity:e.target.value})} placeholder="العدد"/>
+     {rows.map(r=><div key={r.key} className="master-row" style={{display:"grid",gridTemplateColumns:"minmax(180px,1.2fr) minmax(180px,1.2fr) minmax(160px,1fr) 100px 110px auto",gap:8,alignItems:"start",opacity:r.status==="done"?0.6:1}}>
+      <div ><SearchableSelect value={r.employeeId} onChange={v=>patch(r.key,{employeeId:v})} options={employeeOptions} placeholder="العامل"/></div>
+      <div ><SearchableSelect value={r.orderId} onChange={v=>patch(r.key,{orderId:v,orderStageId:""})} options={orderOptions} placeholder="الطلبية"/></div>
+      <div ><SearchableSelect value={r.orderStageId} onChange={v=>patch(r.key,{orderStageId:v})} options={stageOptionsFor(r.orderId)} placeholder="المرحلة"/></div>
+      <input inputMode="decimal" value={r.quantity} onChange={e=>patch(r.key,{quantity:e.target.value})} placeholder="العدد"/>
       <span className={"status "+(r.status==="done"?"success":r.status==="failed"?"danger":invalid(r)?"warning":"muted")}>{r.status==="done"?"اتسجل":r.status==="saving"?"جارٍ...":r.status==="failed"?"فشل":invalid(r)?"محتاج مراجعة":"جاهز"}</span>
-      {r.status==="draft"&&invalid(r)&&r.problems.map((p,i)=><div className="form-hint" key={i} style={{width:"100%"}}>سطر {r.line}: {p}</div>)}
-      {r.status==="failed"&&<div className="form-hint" style={{width:"100%",color:"#b42318"}}>سطر {r.line}: {r.error}</div>}
+      {r.status==="draft"&&invalid(r)&&r.problems.map((p,i)=><div className="form-hint" key={i} style={{gridColumn:"1 / -1"}}>سطر {r.line}: {p}</div>)}
+      {r.status==="failed"&&<div className="form-hint" style={{gridColumn:"1 / -1",color:"#b42318"}}>سطر {r.line}: {r.error}</div>}
       {r.status==="draft"&&<button type="button" className="danger-button" onClick={()=>setRows(rs=>rs.filter(x=>x.key!==r.key))}>حذف السطر</button>}
      </div>)}
     </div>
