@@ -5,7 +5,7 @@ import { requirePermission } from "../rbac/permission.guard.js";
 
 export async function dashboardRoutes(app:FastifyInstance){
  app.get("/api/dashboard/summary",{preHandler:[authenticateRequest,requirePermission("dashboard.view")]},async()=>{
-  const [production,earnings,stock,payments,advances,revenue,expenses,receiptsToday,deliveriesToday,pendingProduction,orders,productionTrend,financeTrend,orderStatus,topProducts]=await Promise.all([
+  const [production,earnings,stock,payments,advances,revenue,expenses,receiptsToday,deliveriesToday,pendingProduction,orders,productionTrend,financeTrend,orderStatus,topProducts,overdueOrders,overdueOrdersList,lowStock,withdrawalsToday,scrap7d,topWorkers]=await Promise.all([
    pool.query("SELECT COALESCE(SUM(quantity),0) AS quantity,COUNT(*)::int AS entries FROM production_entries WHERE work_date=CURRENT_DATE AND status='APPROVED'"),
    pool.query("SELECT COALESCE(SUM(credit_amount-debit_amount),0) AS balance,COALESCE(SUM(credit_amount),0) AS earned,COALESCE(SUM(debit_amount),0) AS paid FROM employee_earnings_ledger"),
    pool.query("SELECT COUNT(*)::int AS lines,COALESCE(SUM(quantity),0) AS quantity,COALESCE(SUM(inventory_value),0) AS value FROM stock_balances WHERE quantity>0"),
@@ -20,15 +20,29 @@ export async function dashboardRoutes(app:FastifyInstance){
    pool.query(`WITH days AS (SELECT generate_series(CURRENT_DATE-INTERVAL '6 days',CURRENT_DATE,INTERVAL '1 day')::date AS day), x AS (SELECT work_date AS day,COALESCE(SUM(quantity),0) AS quantity,COUNT(*)::int AS entries FROM production_entries WHERE work_date>=CURRENT_DATE-6 AND status='APPROVED' GROUP BY work_date) SELECT d.day,COALESCE(x.quantity,0) AS quantity,COALESCE(x.entries,0) AS entries FROM days d LEFT JOIN x USING(day) ORDER BY d.day`),
    pool.query(`WITH days AS (SELECT generate_series(CURRENT_DATE-INTERVAL '6 days',CURRENT_DATE,INTERVAL '1 day')::date AS day), r AS (SELECT created_at::date AS day,COALESCE(SUM(amount),0) AS value FROM order_revenues WHERE created_at>=CURRENT_DATE-6 GROUP BY 1), e AS (SELECT expense_date AS day,COALESCE(SUM(ae.amount-COALESCE((SELECT SUM(er.amount) FROM accounting_expense_reversals er WHERE er.expense_id=ae.id),0)),0) AS value FROM accounting_expenses ae WHERE expense_date>=CURRENT_DATE-6 GROUP BY 1) SELECT d.day,COALESCE(r.value,0) AS revenue,COALESCE(e.value,0) AS expenses FROM days d LEFT JOIN r USING(day) LEFT JOIN e USING(day) ORDER BY d.day`),
    pool.query("SELECT status,COUNT(*)::int AS count FROM production_orders GROUP BY status ORDER BY status"),
-   pool.query("SELECT p.name AS product_name,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN products p ON p.id=pe.product_id WHERE pe.work_date>=CURRENT_DATE-6 AND pe.status='APPROVED' GROUP BY p.id,p.name ORDER BY quantity DESC LIMIT 5")
+   pool.query("SELECT p.name AS product_name,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe JOIN products p ON p.id=pe.product_id WHERE pe.work_date>=CURRENT_DATE-6 AND pe.status='APPROVED' GROUP BY p.id,p.name ORDER BY quantity DESC LIMIT 5"),
+   // Read-only operational analytics (2026-11-26 request): overdue orders,
+   // low-stock items, today's shift withdrawals, 7-day scrap ratio, top workers.
+   pool.query("SELECT COUNT(*)::int AS count FROM production_orders WHERE due_date<CURRENT_DATE AND status NOT IN ('COMPLETED','CANCELLED')"),
+   pool.query("SELECT code,order_name,customer_name,due_date FROM production_orders WHERE due_date<CURRENT_DATE AND status NOT IN ('COMPLETED','CANCELLED') ORDER BY due_date ASC LIMIT 5"),
+   pool.query("SELECT code,name,minimum_stock AS minimum,COALESCE((SELECT SUM(b.quantity) FROM stock_balances b JOIN warehouses w ON w.id=b.warehouse_id WHERE b.product_id=p.id AND w.is_active=TRUE AND w.warehouse_type<>'SCRAP'),0) AS quantity FROM products p WHERE p.is_active=TRUE AND p.track_inventory=TRUE AND p.minimum_stock>0 AND COALESCE((SELECT SUM(b.quantity) FROM stock_balances b JOIN warehouses w ON w.id=b.warehouse_id WHERE b.product_id=p.id AND w.is_active=TRUE AND w.warehouse_type<>'SCRAP'),0)<=p.minimum_stock ORDER BY quantity ASC LIMIT 5"),
+   pool.query("SELECT COUNT(DISTINCT sm.reference_id)::int AS count,COALESCE(SUM(sm.quantity),0) AS quantity,COALESCE(SUM(sm.total_cost),0) AS value FROM stock_movements sm WHERE sm.movement_type='OUT' AND sm.reference_type='SHIFT_WITHDRAWAL' AND sm.created_at::date=CURRENT_DATE"),
+   pool.query("SELECT (SELECT COALESCE(SUM(psr.quantity),0) FROM production_scrap_records psr JOIN production_entries pe2 ON pe2.id=psr.production_entry_id WHERE pe2.work_date>=CURRENT_DATE-6 AND pe2.status='APPROVED') AS scrap,(SELECT COALESCE(SUM(quantity),0) FROM production_entries WHERE work_date>=CURRENT_DATE-6 AND status='APPROVED') AS gross"),
+   pool.query("SELECT e.full_name AS employee_name,COALESCE(SUM(pe.quantity),0) AS quantity,COUNT(*)::int AS entries FROM production_entries pe JOIN employees e ON e.id=pe.employee_id WHERE pe.work_date>=CURRENT_DATE-6 AND pe.status='APPROVED' GROUP BY e.id,e.full_name ORDER BY quantity DESC LIMIT 5")
   ]);
+  const scrapGross=Number(scrap7d.rows[0].gross||0),scrapQty=Number(scrap7d.rows[0].scrap||0);
   const revenueValue=Number(revenue.rows[0].value||0),expenseValue=Number(expenses.rows[0].value||0);
   return {data:{
     production:production.rows[0],earnings:earnings.rows[0],stock:stock.rows[0],
     finance:{revenue:revenueValue,expenses:expenseValue,net:revenueValue-expenseValue},
     warehouse:{receiptsToday:receiptsToday.rows[0].quantity,deliveriesToday:deliveriesToday.rows[0].quantity},
     pendingProduction:pendingProduction.rows[0].count,pendingPayments:payments.rows[0].count,pendingAdvances:advances.rows[0].count,
-    orders:orders.rows[0],productionTrend:productionTrend.rows,financeTrend:financeTrend.rows,orderStatus:orderStatus.rows,topProducts:topProducts.rows
+    orders:orders.rows[0],productionTrend:productionTrend.rows,financeTrend:financeTrend.rows,orderStatus:orderStatus.rows,topProducts:topProducts.rows,
+    overdueOrders:{count:overdueOrders.rows[0].count,items:overdueOrdersList.rows},
+    lowStock:{count:lowStock.rows.length,items:lowStock.rows},
+    withdrawalsToday:{count:withdrawalsToday.rows[0].count,quantity:withdrawalsToday.rows[0].quantity,value:withdrawalsToday.rows[0].value},
+    scrap7d:{scrap:scrapQty,gross:scrapGross,ratio:scrapGross>0?scrapQty/scrapGross:0},
+    topWorkers:topWorkers.rows
   }};
  });
 }
