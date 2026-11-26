@@ -376,6 +376,7 @@ a{color:inherit;text-decoration:none}
 .stack-form input,.stack-form select,
 .stage-editor-row input,.stage-editor-row select,
 .withdrawal-line input,.withdrawal-line select,
+.minimum-stock-editor input,
 .settings-toolbar input,.settings-toolbar select{
   width:100%;
   min-height:42px;
@@ -391,11 +392,12 @@ a{color:inherit;text-decoration:none}
 .form-grid textarea{min-height:90px;resize:vertical}
 .form-grid input::placeholder,.form-grid textarea::placeholder,
 .production-grid input::placeholder,.settings-toolbar input::placeholder,
-.stage-editor-row input::placeholder,.withdrawal-line input::placeholder{color:#a1adbd}
+.stage-editor-row input::placeholder,.withdrawal-line input::placeholder,.minimum-stock-editor input::placeholder{color:#a1adbd}
 .form-grid input:hover,.form-grid select:hover,.form-grid textarea:hover,
 .production-grid input:hover,.production-grid select:hover,
 .stage-editor-row input:hover,.stage-editor-row select:hover,
 .withdrawal-line input:hover,.withdrawal-line select:hover,
+.minimum-stock-editor input:hover,
 .payment-grid input:hover,.payment-grid select:hover{border-color:#94a3b8}
 .form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus,
 .production-grid input:focus,.production-grid select:focus,
@@ -404,6 +406,7 @@ a{color:inherit;text-decoration:none}
 .stack-form input:focus,.stack-form select:focus,
 .stage-editor-row input:focus,.stage-editor-row select:focus,
 .withdrawal-line input:focus,.withdrawal-line select:focus,
+.minimum-stock-editor input:focus,
 .settings-toolbar input:focus,.settings-toolbar select:focus{
   border-color:var(--primary);
   box-shadow:var(--focus);
