@@ -3020,3 +3020,89 @@ html[data-theme="dark"] .dashboard-svg-value{fill:#93a1b6}
 html[data-theme="dark"] .dashboard-bar-col>span{color:#728197}
 html[data-theme="dark"] .dashboard-bar-track{background:rgba(148,163,184,.16)}
 html[data-theme="dark"] .dashboard-bar-value{color:#e9eef7}
+
+/* Dark theme fix: pin always-navy chrome (sidebar, auth showcase) to its designed colors */
+html[data-theme="dark"] .sidebar{
+  background:
+    radial-gradient(420px 260px at 112% -4%, rgb(96 165 250 / 22%), transparent 60%),
+    radial-gradient(520px 360px at -22% 105%, rgb(59 130 246 / 16%), transparent 55%),
+    linear-gradient(180deg,#0b1e4b 0%,#0f2a63 52%,#123a7a 100%);
+  border-left:1px solid rgb(147 197 253 / 16%);
+  color:#fff;
+}
+html[data-theme="dark"] .brand-name{color:#fff}
+html[data-theme="dark"] .brand-sub{color:#c3d4f2}
+html[data-theme="dark"] .sidebar-avatar{background:#1e3a8a;color:#dbeafe}
+html[data-theme="dark"] .sidebar-user-copy strong{color:#e2e8f0}
+html[data-theme="dark"] .sidebar-user-copy span{color:#a9bce0}
+html[data-theme="dark"] .sidebar-scroll{scrollbar-color:#334155 transparent}
+html[data-theme="dark"] .nav-title{color:#b8ccf0}
+html[data-theme="dark"] .nav-item{color:#eef3ff}
+html[data-theme="dark"] .nav-item:hover{background:rgb(255 255 255 / 7%);border-color:rgb(191 219 254 / 14%);color:#fff}
+html[data-theme="dark"] .nav-item.active{color:#fff}
+html[data-theme="dark"] .nav-icon{color:#a9bce0;background:rgb(255 255 255 / 6%)}
+html[data-theme="dark"] .nav-item:hover .nav-icon{color:#cbd5e1}
+html[data-theme="dark"] .nav-item.active .nav-icon{
+  background:linear-gradient(145deg,#3b82f6,#2563eb);
+  color:#fff;
+}
+html[data-theme="dark"] .primary-button{color:#fff}
+html[data-theme="dark"] .tab.active{color:#fff}
+
+html[data-theme="dark"] .auth-showcase{
+  color:#fff;
+  background:
+    radial-gradient(circle at 76% 18%,rgba(96,165,250,.22),transparent 24%),
+    radial-gradient(circle at 18% 78%,rgba(45,212,191,.13),transparent 24%),
+    linear-gradient(145deg,#0b1730 0%,#10264a 55%,#0c1b35 100%);
+}
+html[data-theme="dark"] .auth-showcase-top strong,html[data-theme="dark"] .auth-mobile-brand strong{color:#fff}
+html[data-theme="dark"] .auth-showcase-top span,html[data-theme="dark"] .auth-mobile-brand span{color:#c3d4f2}
+html[data-theme="dark"] .auth-kicker{color:#bfdbfe}
+html[data-theme="dark"] .auth-showcase-content h2{color:#fff}
+html[data-theme="dark"] .auth-showcase-content h2 em{color:#60a5fa}
+html[data-theme="dark"] .auth-showcase-content p{color:#b7c4d8}
+html[data-theme="dark"] .auth-feature-list div{color:#dbeafe}
+html[data-theme="dark"] .auth-feature-list b{color:#60a5fa}
+html[data-theme="dark"] .auth-showcase-footer{color:#7183a0}
+html[data-theme="dark"] .auth-logo-mark{color:#fff}
+html[data-theme="dark"] .auth-shell{background:#131f36;border-color:#253654}
+html[data-theme="dark"] .auth-input-wrap input::placeholder,html[data-theme="dark"] .auth-field>input::placeholder{color:#728197}
+
+/* Dark theme fix: auth glass look is navy by design — pin its colors in dark */
+html[data-theme="dark"] .auth-page{
+  background:
+    linear-gradient(115deg, transparent 40%, rgb(147 197 253 / 5%) 50%, transparent 60%),
+    linear-gradient(115deg, transparent 60%, rgb(147 197 253 / 4%) 71%, transparent 80%),
+    radial-gradient(1000px 520px at 82% -10%, rgb(96 165 250 / 26%), transparent 60%),
+    radial-gradient(860px 500px at 6% 112%, rgb(59 130 246 / 20%), transparent 55%),
+    linear-gradient(160deg,#0a1c44 0%,#0f2a63 48%,#123a7a 100%);
+}
+html[data-theme="dark"] .auth-shell{background:transparent;border:0;box-shadow:none}
+html[data-theme="dark"] .auth-card{background:rgb(255 255 255 / 8%);border:1px solid rgb(255 255 255 / 20%)}
+html[data-theme="dark"] .auth-mobile-brand strong{color:#fff}
+html[data-theme="dark"] .auth-mobile-brand span{color:#c3d4f2}
+html[data-theme="dark"] .auth-mobile-brand .auth-logo-mark{background:#fff}
+html[data-theme="dark"] .auth-small-label{color:#7dd3fc}
+html[data-theme="dark"] .auth-heading h1{color:#fff}
+html[data-theme="dark"] .auth-heading p{color:rgb(226 232 240 / 82%)}
+html[data-theme="dark"] .auth-field>span{color:rgb(226 232 240 / 92%)}
+html[data-theme="dark"] .auth-input-wrap input,html[data-theme="dark"] .auth-field>input{background:rgb(255 255 255 / 9%);border-color:rgb(255 255 255 / 20%);color:#fff}
+html[data-theme="dark"] .auth-input-wrap input:focus,html[data-theme="dark"] .auth-field>input:focus{background:rgb(255 255 255 / 12%)}
+html[data-theme="dark"] .auth-input-wrap input::placeholder,html[data-theme="dark"] .auth-field>input::placeholder{color:rgb(226 232 240 / 48%)}
+html[data-theme="dark"] .auth-input-wrap,html[data-theme="dark"] .auth-input-icon{color:#93c5fd}
+html[data-theme="dark"] .auth-password-toggle{color:#7dd3fc}
+html[data-theme="dark"] .auth-masked b{color:#fff}
+html[data-theme="dark"] .auth-note b{color:#e2e8f0}
+html[data-theme="dark"] .auth-links a{color:#93c5fd}
+html[data-theme="dark"] .auth-links a:hover{color:#bfdbfe}
+html[data-theme="dark"] .auth-tabs .secondary-btn{color:#e2e8f0}
+html[data-theme="dark"] .auth-tabs .primary-button{color:#fff}
+html[data-theme="dark"] .auth-secondary-wide{color:#e2e8f0}
+html[data-theme="dark"] .auth-page .otp-box{color:#fff}
+html[data-theme="dark"] .auth-step.current .auth-step-dot{color:#fff}
+html[data-theme="dark"] .auth-step.current .auth-step-label{color:#fff}
+html[data-theme="dark"] .auth-step.done .auth-step-dot{color:#86efac}
+html[data-theme="dark"] .auth-step.done .auth-step-label{color:#86efac}
+html[data-theme="dark"] .auth-chip{color:#86efac}
+html[data-theme="dark"] .auth-submit{color:#fff}
