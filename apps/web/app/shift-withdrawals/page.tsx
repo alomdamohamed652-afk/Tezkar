@@ -22,15 +22,39 @@ export default function ShiftWithdrawalsPage(){
  const [lines,setLines]=useState<Line[]>([{productId:"",warehouseId:"",quantity:"",notes:""}]),[error,setError]=useState(""),[saving,setSaving]=useState(false),[loadingEmployees,setLoadingEmployees]=useState(false);
  const [filterFrom,setFilterFrom]=useState(""),[filterTo,setFilterTo]=useState(""),[filterTimeFrom,setFilterTimeFrom]=useState(""),[filterTimeTo,setFilterTimeTo]=useState(""),[filterShift,setFilterShift]=useState("ALL"),[filterEmployee,setFilterEmployee]=useState("ALL"),[filterOrder,setFilterOrder]=useState("ALL"),[filterProduct,setFilterProduct]=useState(""),[filterDescription,setFilterDescription]=useState("");
 
+ const canCreate=has("warehouse.shift_withdrawal.create")||has("warehouse.move");
+ const canSeeStock=has("warehouse.view");
+ const canUseMasterEndpoints=has("shifts.view")&&has("orders.view")&&(has("employees.view")||has("employees.lookup"));
+ const canUseLookupData=has("production.create")||has("production.view")||has("machine_production.create")||has("machine_production.view");
+
  async function load(){
+  setError("");
+  // The withdrawals log is the page's core: it must load even when the
+  // supporting masters (orders/stages/stock) are not permitted for this account.
   try{
-   const [s,e,p,w,st,o,os,r]=await Promise.all([
-    api<{data:Item[]}>("/api/shifts"),api<{data:Employee[]}>("/api/employees"),api<{data:Product[]}>("/api/products"),
-    api<{data:Warehouse[]}>("/api/warehouses"),api<{data:Stock[]}>("/api/warehouse/stock"),api<{data:Order[]}>("/api/orders"),api<{data:OrderStage[]}>("/api/order-stages"),
-    api<{data:Row[];pagination?:{total:number}}>("/api/shift-withdrawals?limit=300&offset=0")
-   ]);
-   setShifts(s.data);setEmployees(e.data);setProducts(p.data);setWarehouses(w.data);setStock(st.data);setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));setOrderStages(os.data);setRows(r.data);setTotalRows(r.pagination?.total??r.data.length);
-  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مسحوبات الورديات")}
+   const r=await api<{data:Row[];pagination?:{total:number}}>("/api/shift-withdrawals?limit=300&offset=0");
+   setRows(r.data);setTotalRows(r.pagination?.total??r.data.length);
+  }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل مسحوبات الورديات");return}
+  const safe=<T,>(p:Promise<T>)=>p.catch(()=>null);
+  const jobs:Promise<void>[]=[];
+  jobs.push(safe(api<{data:Warehouse[]}>("/api/warehouses")).then(w=>{if(w)setWarehouses(w.data)}));
+  jobs.push(safe(api<{data:Product[]}>("/api/products")).then(p=>{if(p)setProducts(p.data)}));
+  if(canSeeStock)jobs.push(safe(api<{data:Stock[]}>("/api/warehouse/stock")).then(st=>{if(st)setStock(st.data)}));
+  if(canUseMasterEndpoints){
+   jobs.push(safe(api<{data:Item[]}>("/api/shifts")).then(s=>{if(s)setShifts(s.data)}));
+   jobs.push(safe(api<{data:Employee[]}>("/api/employees")).then(e=>{if(e)setEmployees(e.data)}));
+   jobs.push(safe(api<{data:Order[]}>("/api/orders")).then(o=>{if(o)setOrders(o.data.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"))}));
+   jobs.push(safe(api<{data:OrderStage[]}>("/api/order-stages")).then(os=>{if(os)setOrderStages(os.data)}));
+  }else if(canUseLookupData){
+   jobs.push(safe(api<{data:{employees:Array<{id:string;code:string;full_name:string}>;orders:Order[];shifts:Item[];orderStages:OrderStage[]}}>("/api/production/lookup-data")).then(l=>{
+    if(!l)return;
+    setShifts(l.data.shifts);
+    setEmployees(l.data.employees.map(x=>({id:x.id,code:x.code,name:x.full_name,full_name:x.full_name})));
+    setOrders(l.data.orders.filter(x=>x.status!=="COMPLETED"&&x.status!=="CANCELLED"));
+    setOrderStages(l.data.orderStages);
+   }));
+  }
+  await Promise.all(jobs);
  }
  async function loadMore(){
   if(loadingMore||rows.length>=totalRows)return;
@@ -47,17 +71,22 @@ export default function ShiftWithdrawalsPage(){
  useEffect(()=>{
   setEmployeeId("");
   if(!shiftId){setAssignedEmployees([]);return}
+  // Accounts without shifts.view (e.g. the shift leader) cannot read the shift
+  // roster endpoint; offer the full active-employee list instead.
+  if(!canUseMasterEndpoints){setAssignedEmployees(employees);return}
   setLoadingEmployees(true);
   api<{data:ArrayItem[]}>("/api/shifts/"+shiftId+"/employees")
     .then(x=>setAssignedEmployees(x.data.map(a=>({id:a.employee_id,code:a.employee_code,name:a.employee_name,full_name:a.employee_name}))))
     .catch(e=>setError(e instanceof Error?e.message:"تعذر تحميل موظفي الوردية"))
     .finally(()=>setLoadingEmployees(false));
- },[shiftId]);
+ },[shiftId,canUseMasterEndpoints,employees]);
 
  type ArrayItem={employee_id:string;employee_code:string;employee_name:string};
 
- const productOptionsFor=(line:Line)=>products.filter(p=>p.name&&stock.some(s=>s.product_id===p.id&&(!line.warehouseId||s.warehouse_id===line.warehouseId))).map(p=>({value:p.id,label:p.name,meta:p.code}));
- const warehouseOptionsFor=(line:Line)=>warehouses.filter(w=>stock.some(s=>s.warehouse_id===w.id&&(!line.productId||s.product_id===line.productId))).map(w=>({value:w.id,label:w.name,meta:w.code}));
+ // Stock-aware filtering only applies when stock is readable; otherwise offer
+ // every product/warehouse and let the server validate available quantity.
+ const productOptionsFor=(line:Line)=>products.filter(p=>p.name&&(!canSeeStock||stock.some(s=>s.product_id===p.id&&(!line.warehouseId||s.warehouse_id===line.warehouseId)))).map(p=>({value:p.id,label:p.name,meta:p.code}));
+ const warehouseOptionsFor=(line:Line)=>warehouses.filter(w=>(!canSeeStock||stock.some(s=>s.warehouse_id===w.id&&(!line.productId||s.product_id===line.productId)))).map(w=>({value:w.id,label:w.name,meta:w.code}));
  const stockQuantity=(line:Line)=>stock.filter(s=>s.product_id===line.productId&&s.warehouse_id===line.warehouseId).reduce((sum,s)=>sum+Number(s.quantity||0),0);
  const employeeOptions=useMemo(()=>assignedEmployees.map(x=>({value:x.id,label:x.full_name||x.name,meta:x.code})),[assignedEmployees]);
  const activeStageOptions=useMemo(()=>orderStages.filter(x=>x.order_id===orderId&&x.status!=="COMPLETED"&&x.status!=="CANCELLED").map(x=>({value:x.id,label:x.stage_name,meta:x.output_product_name||""})),[orderStages,orderId]);
@@ -113,13 +142,13 @@ export default function ShiftWithdrawalsPage(){
      <label style={{gridColumn:"1/-1"}}>الملاحظات<input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="بيان المسحوب أو سبب الصرف"/></label>
     </div>
     <div className="withdrawal-lines">{lines.map((x,i)=><div className="withdrawal-line" key={i}>
-      <div><SearchableSelect value={x.productId} onChange={v=>update(i,"productId",v)} options={productOptionsFor(x)} placeholder="اختر صنفًا متاحًا" searchPlaceholder="ابحث باسم الصنف أو الكود"/>{x.productId&&x.warehouseId&&<small className="form-hint">المتاح: {formatQuantity(stockQuantity(x),0)}</small>}</div>
+      <div><SearchableSelect value={x.productId} onChange={v=>update(i,"productId",v)} options={productOptionsFor(x)} placeholder="اختر صنفًا متاحًا" searchPlaceholder="ابحث باسم الصنف أو الكود"/>{x.productId&&x.warehouseId&&canSeeStock&&<small className="form-hint">المتاح: {formatQuantity(stockQuantity(x),0)}</small>}</div>
       <SearchableSelect value={x.warehouseId} onChange={v=>update(i,"warehouseId",v)} options={warehouseOptionsFor(x)} placeholder={x.productId?"مخازن بها الصنف":"اختر المخزن لعرض أصنافه"}/>
       <input type="number" min="0.001" step="0.001" value={x.quantity} onChange={e=>update(i,"quantity",e.target.value)} placeholder="العدد"/>
       <input value={x.notes} onChange={e=>update(i,"notes",e.target.value)} placeholder="بيان الصنف (اختياري)"/>
       <button type="button" className="danger-button" onClick={()=>remove(i)} disabled={lines.length===1}>حذف</button>
     </div>)}</div>
-    <div className="form-actions"><button type="button" className="secondary-btn" onClick={add}>إضافة صنف</button><button className="primary-button" disabled={saving||!shiftId||!employeeId||!orderId||lines.some(x=>!x.productId||!x.warehouseId||!x.quantity||Number(x.quantity)>stockQuantity(x))}>{saving?"جارٍ الحفظ...":"تسجيل المسحوبات"}</button></div>
+    <div className="form-actions"><button type="button" className="secondary-btn" onClick={add}>إضافة صنف</button><button className="primary-button" disabled={saving||!shiftId||!employeeId||!orderId||lines.some(x=>!x.productId||!x.warehouseId||!x.quantity||(canSeeStock&&Number(x.quantity)>stockQuantity(x)))}>{saving?"جارٍ الحفظ...":"تسجيل المسحوبات"}</button></div>
    </form>}
 
    <section className="card"><div className="card-header"><h2 className="card-title">سجل مسحوبات الورديات</h2><span className="count-badge">{filteredRows.length} / {rows.length}</span></div>

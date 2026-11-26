@@ -25,7 +25,7 @@ const groups:NavGroup[]=[
  {label:"المخزون والتسليم",items:[
   {icon:"▥",label:"المخزن",href:"/warehouse",permissions:["warehouse.view"]},
   {icon:"⇤",label:"الاستلامات",href:"/receipts",permissions:["warehouse.view","warehouse.receipt.view"]},
-  {icon:"↓",label:"مسحوبات الوردية",href:"/shift-withdrawals",permissions:["warehouse.view"]},
+  {icon:"↓",label:"مسحوبات الوردية",href:"/shift-withdrawals",permissions:["warehouse.view","warehouse.shift_withdrawal.view","warehouse.shift_withdrawal.create"]},
   {icon:"⇥",label:"التسليمات",href:"/deliveries",permissions:["deliveries.view"]},
   {icon:"▰",label:"نظام التكويد",href:"/coding",permissions:["cartons.view"]},
   {icon:"▣",label:"التكويد العكسي",href:"/reverse-coding",permissions:["reverse_coding.view"]}
