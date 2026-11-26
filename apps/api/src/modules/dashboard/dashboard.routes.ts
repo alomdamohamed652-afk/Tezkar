@@ -64,6 +64,49 @@ export async function dashboardRoutes(app:FastifyInstance){
   return {data:{products:products.rows,orders:orders.rows,employees:employees.rows,stages:stages.rows}};
  });
 
+ // Per-product production trends + multi-product comparison (2026-11-26 request).
+ // Read-only; grouped by day (default last 7d), week (last 8w) or month (last 12m);
+ // honors the global dashboard filters (from/to/employee/order/stage).
+ app.get("/api/dashboard/product-trends",{preHandler:[authenticateRequest,requirePermission("dashboard.view")]},async(req)=>{
+  const q=(req.query||{}) as Record<string,unknown>;
+  const f=parseFilters(q);
+  const groupRaw=typeof q.group==="string"?q.group:"day";
+  const group=(["day","week","month"] as const).includes(groupRaw as "day"|"week"|"month")?groupRaw as "day"|"week"|"month":"day";
+  const idsRaw=typeof q.product_ids==="string"?q.product_ids.split(","):[]; 
+  const ids=idsRaw.map(x=>x.trim()).filter(x=>ID_RE.test(x)).slice(0,5);
+  if(!ids.length)return {data:{group,labels:[],series:[]}};
+
+  const trunc=group==="day"?"day":group==="week"?"week":"month";
+  const step=group==="day"?"1 day":group==="week"?"1 week":"1 month";
+  const back=group==="day"?"6 days":group==="week"?"7 weeks":"11 months";
+
+  const params:unknown[]=[];
+  params.push(...ids);
+  const idList="("+ids.map((_,i)=>"$"+(i+1)).join(",")+")";
+  let rangeSql:string;
+  if(f.from||f.to){
+   const lo=f.from||f.to!;const hi=f.to||f.from!;
+   params.push(lo,hi);
+   rangeSql="SELECT generate_series(date_trunc('"+trunc+"',$"+(params.length-1)+"::date)::date,date_trunc('"+trunc+"',$"+params.length+"::date)::date,INTERVAL '"+step+"')::date AS bucket";
+  }else{
+   rangeSql="SELECT generate_series(date_trunc('"+trunc+"',CURRENT_DATE-INTERVAL '"+back+"')::date,date_trunc('"+trunc+"',CURRENT_DATE)::date,INTERVAL '"+step+"')::date AS bucket";
+  }
+  const w=["pe.status='APPROVED'","pe.product_id IN "+idList];
+  if(f.employeeId){params.push(f.employeeId);w.push("pe.employee_id=$"+params.length)}
+  if(f.stageId){params.push(f.stageId);w.push("pe.stage_id=$"+params.length)}
+  if(f.orderId){params.push(f.orderId);w.push("pe.order_stage_id IN (SELECT id FROM order_stages WHERE order_id=$"+params.length+")")}
+  const sql="WITH buckets AS ("+rangeSql+"), x AS (SELECT pe.product_id,date_trunc('"+trunc+"',pe.work_date)::date AS bucket,COALESCE(SUM(pe.quantity),0) AS quantity FROM production_entries pe WHERE "+w.join(" AND ")+" GROUP BY pe.product_id,bucket) SELECT b.bucket,p.id AS product_id,p.name AS product_name,COALESCE(x.quantity,0) AS quantity FROM buckets b CROSS JOIN products p LEFT JOIN x ON x.bucket=b.bucket AND x.product_id=p.id WHERE p.id IN "+idList+" ORDER BY b.bucket,p.name";
+  const r=await pool.query(sql,params);
+  const labels:string[]=[];const byProduct=new Map<string,{name:string;values:number[]}>();
+  for(const row of r.rows){
+   const b=String(row.bucket).slice(0,10);
+   if(!labels.includes(b))labels.push(b);
+   if(!byProduct.has(row.product_id))byProduct.set(row.product_id,{name:row.product_name,values:[]});
+   byProduct.get(row.product_id)!.values.push(Number(row.quantity));
+  }
+  return {data:{group,labels,series:[...byProduct.entries()].map(([id,v])=>({product_id:id,name:v.name,values:v.values}))}};
+ });
+
  app.get("/api/dashboard/summary",{preHandler:[authenticateRequest,requirePermission("dashboard.view")]},async(req)=>{
   const f=parseFilters((req.query||{}) as Record<string,unknown>);
   const hasPeriod=Boolean(f.from||f.to);
