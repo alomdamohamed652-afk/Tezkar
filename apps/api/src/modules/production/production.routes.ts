@@ -680,6 +680,18 @@ payment_totals.paid_amount,
         throw new AppError("DEDUCTION_EXCEEDS_EARNING", "الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب", 422);
       }
 
+      // Bonus/deduction on registration changes the worker's earnings, so it needs its
+      // own permission: production.entry_adjust (granted to shift_leader) or the
+      // broader production.adjustments.create. The statement (reason) stays mandatory
+      // below for any non-zero amount.
+      if (Number(parsed.data.bonusAmount ?? 0) > 0 || Number(parsed.data.deductionAmount ?? 0) > 0) {
+        const canEntryAdjust = (await hasPermission(client, request.user!.userId, "production.entry_adjust"))
+          || (await hasPermission(client, request.user!.userId, "production.adjustments.create"));
+        if (!canEntryAdjust) {
+          throw new AppError("PRODUCTION_ENTRY_ADJUST_FORBIDDEN", "إضافة بونص أو خصم مع تسجيل الإنتاج تحتاج صلاحية تعديل مستحق الإنتاج", 403);
+        }
+      }
+
       const unitId = rate.unit_id ?? product.rows[0].unit_id;
 
       // Serialize matching production submissions across accounts so simultaneous
