@@ -2786,6 +2786,21 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 .dashboard-svg{width:100%;height:auto;display:block}
 .dashboard-svg-label{font-size:11px;fill:#7b8794}
 .dashboard-svg-value{font-size:10px;fill:#64748b;font-weight:600}
+.dashboard-filterbar{margin:2px 0 14px}
+.df-toggle{display:none;width:100%;align-items:center;justify-content:space-between;background:var(--card,#fff);border:1px solid rgba(148,163,184,.25);border-radius:12px;padding:11px 16px;font-size:14px;font-weight:700;color:var(--text,#172033);cursor:pointer}
+.df-caret{font-size:12px;color:#64748b}
+.df-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;background:var(--card,#fff);border:1px solid rgba(148,163,184,.25);border-radius:12px;padding:12px 14px}
+.df-field{display:flex;flex-direction:column;gap:4px;min-width:130px;flex:1 1 130px}
+.df-field>span{font-size:11px;font-weight:700;color:#64748b}
+.df-field select,.df-field input{font-size:13px;font-weight:600;color:var(--text,#172033);background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.25);border-radius:9px;padding:8px 10px;outline:none;font-family:inherit}
+.df-field select:focus,.df-field input:focus{border-color:#2563eb;background:#fff}
+.df-reset{font-size:12px;font-weight:700;color:#dc2626;background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.25);border-radius:9px;padding:9px 14px;cursor:pointer}
+.df-now{font-style:normal;font-size:10px;font-weight:700;color:#64748b;background:rgba(148,163,184,.18);border-radius:99px;padding:1px 8px;vertical-align:middle}
+@media(max-width:900px){
+ .df-toggle{display:flex}
+ .dashboard-filterbar .df-row{display:none;margin-top:8px}
+ .dashboard-filterbar.open .df-row{display:flex}
+}
 .dashboard-legend{display:flex;gap:16px;justify-content:center;margin-top:6px}
 .dashboard-legend span,.dashboard-legend-col span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#5b6774}
 .dashboard-legend i,.dashboard-legend-col i{width:10px;height:10px;border-radius:3px;display:inline-block}
