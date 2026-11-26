@@ -2818,6 +2818,17 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 @keyframes dash-card-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes dash-vbar{from{transform:scaleY(0)}}
 @keyframes dash-row-in{from{opacity:0;transform:translateX(6px)}to{opacity:1;transform:none}}
+
+/* Product analytics section */
+.dp-tabs{display:flex;gap:6px}
+.dp-tab{font-size:12px;font-weight:700;padding:5px 13px;border-radius:99px;background:rgba(148,163,184,.15);color:#64748b;border:0;cursor:pointer;font-family:inherit}
+.dp-tab.on{background:#2563eb;color:#fff}
+.dp-toolbar{padding:10px 18px 0}
+.dp-select{font-size:13px;font-weight:700;color:var(--text,#172033);background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.25);border-radius:9px;padding:8px 10px;outline:none;font-family:inherit;max-width:100%}
+.dp-chips{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px 4px}
+.dp-chip{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:5px 11px;border-radius:99px;border:1.5px solid rgba(148,163,184,.35);color:#94a3b8;background:transparent;cursor:pointer;font-family:inherit}
+.dp-chip.on{color:var(--text,#172033);border-color:rgba(100,116,139,.5)}
+.dp-chip i{width:9px;height:9px;border-radius:50%;display:inline-block}
 @media(max-width:900px){
  .df-toggle{display:flex}
  .dashboard-filterbar .df-row{display:none;margin-top:8px}

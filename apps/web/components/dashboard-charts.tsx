@@ -49,6 +49,24 @@ export function DualLineTrend({data,colorA,colorB,legendA,legendB}:{data:DualTre
  </div>;
 }
 
+export function MultiLineTrend({labels,series,colors}:{labels:string[];series:{name:string;values:number[]}[];colors:string[]}){
+ if(!labels.length||!series.length)return <div className="empty">لا توجد بيانات.</div>;
+ const max=Math.max(1,...series.flatMap(x=>x.values));
+ return <div>
+  <svg viewBox={`0 0 ${W} ${H}`} className="dashboard-svg" role="img">
+   {series.map((sr,si)=>{
+    const pts=points(sr.values,max);const color=colors[si%colors.length];
+    return <g key={sr.name}>
+     <path d={pathFrom(pts)} fill="none" stroke={color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" className="dashboard-chart-line"/>
+     {pts.map((p,i)=><circle key={i} cx={p[0]} cy={p[1]} r={3} fill="#fff" stroke={color} strokeWidth={2} className="dashboard-chart-fade"/>)}
+    </g>;
+   })}
+   {labels.map((l,i)=><text key={i} x={points(labels.map(()=>0),1)[i][0]} y={H-8} textAnchor="middle" className="dashboard-svg-label">{l}</text>)}
+  </svg>
+  <div className="dashboard-legend">{series.map((sr,si)=><span key={sr.name}><i style={{background:colors[si%colors.length]}}/>{sr.name}</span>)}</div>
+ </div>;
+}
+
 export function DonutChart({slices,centerLabel}:{slices:Slice[];centerLabel:string}){
  const total=slices.reduce((s,x)=>s+x.value,0);
  if(!slices.length||total<=0)return <div className="empty">لا توجد بيانات.</div>;
