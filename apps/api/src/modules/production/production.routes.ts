@@ -15,6 +15,7 @@ import { AppError } from "../../http/errors.js";
 import { writeAudit } from "../audit/audit.service.js";
 import { authenticateRequest } from "../auth/auth.middleware.js";
 import { requireAnyPermission, requirePermission } from "../rbac/permission.guard.js";
+import { AUTO_BONUS_REASON_PREFIX, resolveAutoStageBonus } from "./stage-bonus.js";
 import { verifyPassword } from "../auth/auth.service.js";
 import { hasPermission } from "../rbac/rbac.service.js";
 import { createInventoryLot } from "../warehouse/inventory-lots.service.js";
@@ -676,15 +677,27 @@ payment_totals.paid_amount,
       if (!Number.isFinite(earning) || earning < 0) {
         throw new AppError("EARNING_CALCULATION_ERROR", "تعذر حساب مستحق الإنتاج بشكل صحيح", 422);
       }
-      if (earning + Number(parsed.data.bonusAmount ?? 0) < Number(parsed.data.deductionAmount ?? 0)) {
+      // Auto tiered stage bonus: the single record's quantity picks the highest
+      // reached tier configured for the stage. A manually entered bonus always wins;
+      // the auto bonus is system-applied config, so it does not need the
+      // entry-adjust permission that a manual bonus needs.
+      let autoBonus: { amount: number; reason: string } | null = null;
+      if (Number(parsed.data.bonusAmount ?? 0) === 0) {
+        autoBonus = await resolveAutoStageBonus(client, parsed.data.stageId, Number(parsed.data.quantity));
+      }
+      const manualBonusAmount = Number(parsed.data.bonusAmount ?? 0);
+      const effectiveBonusAmount = manualBonusAmount > 0 ? manualBonusAmount : (autoBonus?.amount ?? 0);
+      const effectiveBonusReason = manualBonusAmount > 0 ? parsed.data.bonusReason : (autoBonus?.reason ?? parsed.data.bonusReason);
+
+      if (earning + effectiveBonusAmount < Number(parsed.data.deductionAmount ?? 0)) {
         throw new AppError("DEDUCTION_EXCEEDS_EARNING", "الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب", 422);
       }
 
       // Bonus/deduction on registration changes the worker's earnings, so it needs its
       // own permission: production.entry_adjust (granted to shift_leader) or the
       // broader production.adjustments.create. The statement (reason) stays mandatory
-      // below for any non-zero amount.
-      if (Number(parsed.data.bonusAmount ?? 0) > 0 || Number(parsed.data.deductionAmount ?? 0) > 0) {
+      // below for any non-zero amount. The auto tiered bonus above is exempt.
+      if (manualBonusAmount > 0 || Number(parsed.data.deductionAmount ?? 0) > 0) {
         const canEntryAdjust = (await hasPermission(client, request.user!.userId, "production.entry_adjust"))
           || (await hasPermission(client, request.user!.userId, "production.adjustments.create"));
         if (!canEntryAdjust) {
@@ -745,22 +758,23 @@ payment_totals.paid_amount,
           employeeId, parsed.data.orderStageId ?? null, parsed.data.productionTypeId ?? rate.production_type_id ?? null, parsed.data.productId, parsed.data.stageId, parsed.data.shiftId,
           parsed.data.workDate, parsed.data.quantity, unitId, parsed.data.hoursWorked ?? null, resolvedWarehouseId, resolvedLocationId, null, rate.id, effectiveRate,
           rate.wage_type_id, rate.wage_type_code, rate.method, rate.percentage_base ?? null,
-          parsed.data.baseAmount ?? null, earning, Number(parsed.data.bonusAmount ?? 0),
+          parsed.data.baseAmount ?? null, earning, effectiveBonusAmount,
            Number(parsed.data.deductionAmount ?? 0), request.user!.userId, parsed.data.shiftLeaderEmployeeId ?? null
         ]
       );
 
       const created = inserted.rows[0];
 
-      const bonusAmount = Number(parsed.data.bonusAmount ?? 0);
+      const bonusAmount = effectiveBonusAmount;
+      const bonusReason = effectiveBonusReason;
       const deductionAmount = Number(parsed.data.deductionAmount ?? 0);
       if (bonusAmount > 0) {
-        if (!parsed.data.bonusReason?.trim()) throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
+        if (!bonusReason?.trim()) throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
         await client.query(
           `INSERT INTO employee_earnings_adjustments(
              employee_id,shift_id,production_entry_id,adjustment_type,amount,reason,adjustment_date,created_by
            ) VALUES($1,$2,$3,'BONUS',$4,$5,$6,$7)`,
-          [employeeId,parsed.data.shiftId,created.id,bonusAmount,parsed.data.bonusReason.trim(),parsed.data.workDate,request.user!.userId]
+          [employeeId,parsed.data.shiftId,created.id,bonusAmount,bonusReason.trim(),parsed.data.workDate,request.user!.userId]
         );
       }
       if (deductionAmount > 0) {
@@ -857,7 +871,7 @@ payment_totals.paid_amount,
       const quantity=data.quantity??Number(current.quantity);
       const baseAmount=data.baseAmount===undefined?(current.base_amount==null?null:Number(current.base_amount)):data.baseAmount;
       const hoursWorked=data.hoursWorked===undefined?(current.hours_worked==null?null:Number(current.hours_worked)):data.hoursWorked;
-      const bonusAmount=data.bonusAmount??Number(current.bonus_amount??0);
+      let bonusAmount=data.bonusAmount??Number(current.bonus_amount??0);
       const deductionAmount=data.deductionAmount??Number(current.deduction_amount??0);
       const orderStageId=data.orderStageId===undefined?current.order_stage_id:data.orderStageId;
       let productId=data.productId??current.product_id;
@@ -868,7 +882,7 @@ payment_totals.paid_amount,
       const oldAdjustments=await client.query("SELECT adjustment_type,reason FROM employee_earnings_adjustments WHERE production_entry_id=$1 AND ledger_id IS NULL ORDER BY created_at DESC",[id]);
       const oldBonusReason=oldAdjustments.rows.find((a:any)=>a.adjustment_type==="BONUS")?.reason as string|undefined;
       const oldDeductionReason=oldAdjustments.rows.find((a:any)=>a.adjustment_type==="DEDUCTION")?.reason as string|undefined;
-      const finalBonusReason=data.bonusReason===undefined?oldBonusReason:bonusReason??undefined;
+      let finalBonusReason=data.bonusReason===undefined?oldBonusReason:bonusReason??undefined;
       const finalDeductionReason=data.deductionReason===undefined?oldDeductionReason:deductionReason??undefined;
       if(bonusAmount>0&&!finalBonusReason)throw new AppError("BONUS_REASON_REQUIRED","بيان البونص مطلوب",422);
       if(deductionAmount>0&&!finalDeductionReason)throw new AppError("DEDUCTION_REASON_REQUIRED","بيان الخصم مطلوب",422);
@@ -975,6 +989,16 @@ payment_totals.paid_amount,
         earning=baseAmount*Number(rate.rate)/100;
       }else throw new AppError("WAGE_METHOD_UNSUPPORTED","طريقة حساب الأجر غير مدعومة",422);
       if(!Number.isFinite(earning)||earning<0)throw new AppError("EARNING_CALCULATION_ERROR","تعذر حساب مستحق الإنتاج بشكل صحيح",422);
+      // Re-evaluate the auto tiered stage bonus when the quantity or stage changed
+      // and the existing bonus was auto-applied (or absent). A manually entered
+      // bonus (or a bonus/reason sent with this edit) is never overwritten.
+      if(data.bonusAmount===undefined&&data.bonusReason===undefined
+        &&(data.quantity!==undefined||data.stageId!==undefined||data.orderStageId!==undefined)
+        &&(!oldBonusReason||oldBonusReason.startsWith(AUTO_BONUS_REASON_PREFIX))){
+        const reAuto=await resolveAutoStageBonus(client,stageId,quantity);
+        bonusAmount=reAuto?.amount??0;
+        finalBonusReason=reAuto?.reason??undefined;
+      }
       if(earning+bonusAmount<deductionAmount)throw new AppError("DEDUCTION_EXCEEDS_EARNING","الخصم لا يمكن أن يجعل إجمالي مستحق الإنتاج بالسالب",422);
       const unitId=rate.unit_id??product.rows[0].unit_id;
       await client.query(
@@ -1022,6 +1046,52 @@ payment_totals.paid_amount,
       return updated;
     });
     return {data:row};
+  });
+
+  // Tiered fixed bonus configuration per stage (target qty -> bonus amount).
+  // The single record's quantity picks the highest reached tier; see stage-bonus.ts.
+  app.get("/api/stages/:stageId/bonus-rules", {
+    preHandler: [authenticateRequest, requireAnyPermission(["rates.view","all"],["production.create","all"])]
+  }, async (request) => {
+    const stageId = (request.params as { stageId: string }).stageId;
+    const result = await pool.query(
+      `SELECT id,target_qty,bonus_amount,is_active
+         FROM stage_bonus_rules WHERE stage_id=$1 ORDER BY target_qty`,
+      [stageId]
+    );
+    return { data: result.rows.map((r: {id:string;target_qty:string;bonus_amount:string;is_active:boolean}) => ({ id: r.id, targetQty: Number(r.target_qty), bonusAmount: Number(r.bonus_amount), isActive: r.is_active })) };
+  });
+
+  app.put("/api/stages/:stageId/bonus-rules", {
+    preHandler: [authenticateRequest, requirePermission("production.adjustments.create")]
+  }, async (request) => {
+    const stageId = (request.params as { stageId: string }).stageId;
+    const parsed = z.object({
+      rules: z.array(z.object({
+        targetQty: z.number().positive(),
+        bonusAmount: z.number().positive()
+      })).max(50)
+    }).safeParse(request.body);
+    if (!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات قواعد البونص غير صحيحة",422);
+    const targets = parsed.data.rules.map(r => r.targetQty);
+    if (new Set(targets).size !== targets.length) throw new AppError("VALIDATION_ERROR","لا يمكن تكرار نفس الهدف لمرحلة واحدة",422);
+    const rows = await withTransaction(async (client) => {
+      const stage = await client.query("SELECT id FROM stages WHERE id=$1 AND is_active=TRUE",[stageId]);
+      if (!stage.rowCount) throw new AppError("STAGE_NOT_FOUND","المرحلة غير موجودة أو غير نشطة",422);
+      await client.query("DELETE FROM stage_bonus_rules WHERE stage_id=$1",[stageId]);
+      const inserted = [] as {id:string;target_qty:string;bonus_amount:string;is_active:boolean}[];
+      for (const rule of parsed.data.rules) {
+        const r = await client.query(
+          `INSERT INTO stage_bonus_rules(stage_id,target_qty,bonus_amount,created_by)
+           VALUES($1,$2,$3,$4) RETURNING id,target_qty,bonus_amount,is_active`,
+          [stageId, rule.targetQty, rule.bonusAmount, request.user!.userId]
+        );
+        inserted.push(r.rows[0]);
+      }
+      await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"update",module:"production",entityType:"stage_bonus_rules",entityId:stageId,afterData:{rules:inserted},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      return inserted;
+    });
+    return { data: rows.map(r => ({ id: r.id, targetQty: Number(r.target_qty), bonusAmount: Number(r.bonus_amount), isActive: r.is_active })) };
   });
 
   app.post("/api/production/:id/approve", {
