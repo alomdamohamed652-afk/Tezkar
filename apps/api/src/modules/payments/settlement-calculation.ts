@@ -69,6 +69,8 @@ export function orderAccountSql():string {
 /** Bridge source entitlements to anonymous historical ledger adjustments without notes matching.
  * Cancelled-source original credits offset their reversal debits. Price deltas already
  * included in current approved entitlement and advance-principal payouts are not wages.
+ * Edits of approved records post a mirror ledger entry for their net delta (production_entry_corrections.earning_delta),
+ * but the edited record value already carries that delta, so the mirror entry must not be added again.
  */
 export function projectionAdjustmentBridgeSql(employee:string,cutoff?:string):string {
   const after=(column:string)=>cutoff?` AND ${column}>${cutoff}`:"";
@@ -84,6 +86,10 @@ export function projectionAdjustmentBridgeSql(employee:string,cutoff?:string):st
       JOIN production_entries p ON p.id=pci.production_entry_id
       WHERE pci.employee_id=${employee} AND pci.ledger_adjustment=TRUE
         ${after("pci.created_at")}),0)
+    -COALESCE((SELECT SUM(c.earning_delta) FROM production_entry_corrections c
+      JOIN production_entries p ON p.id=c.production_entry_id
+      WHERE p.employee_id=${employee} AND p.status='APPROVED'
+        ${after("c.created_at")}),0)
     +COALESCE((SELECT SUM(l.debit_amount-l.credit_amount) FROM advance_requests a
       JOIN employee_earnings_ledger l ON l.id=a.ledger_entry_id
       WHERE a.employee_id=${employee} ${after("l.created_at")}),0)`;

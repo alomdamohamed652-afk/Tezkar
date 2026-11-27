@@ -1178,6 +1178,25 @@ test("approving a worker payout atomically marks it paid and debits the availabl
       assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.ledgerOnlyAdjustmentsNet),0);
       assert.equal(Number(bonusSettlementSummary.json().data.availableBreakdown.calculatedAvailable),130,
         "the diagnostic total must not double-count production-linked bonus or deduction");
+      // Editing an approved record posts a mirror ledger entry for the delta; the edited record value
+      // already carries it, so the available balance must count it once (not record + standalone entry).
+      await apiPool.query("UPDATE production_entries SET bonus_amount=bonus_amount+500 WHERE id=$1",[bonusProduction.id]);
+      await apiPool.query(
+        "INSERT INTO production_entry_corrections(production_entry_id,before_data,after_data,earning_delta,reason,created_by) VALUES($1,'{}'::jsonb,'{}'::jsonb,500,'test correction',$2)",
+        [bonusProduction.id,manager.id]);
+      await apiPool.query(
+        "INSERT INTO employee_earnings_ledger(employee_id,entry_type,credit_amount,debit_amount,created_by,notes) VALUES($1,'ADJUSTMENT',500,0,$2,'تسوية فرق تعديل إنتاج معتمد test')",
+        [bonusWorkerEmployee.id,manager.id]);
+      const editedSummary=await app.inject({
+        method:"GET",url:`/api/worker-payments/settlement-summary?employeeId=${bonusWorkerEmployee.id}`,headers:{cookie:managerCookie}
+      });
+      assert.equal(editedSummary.statusCode,200,editedSummary.body);
+      assert.equal(Number(editedSummary.json().data.availableForSettlement),630,
+        "an approved-record edit must be counted once: in the record value, not again as a standalone ledger entry");
+      assert.equal(Number(editedSummary.json().data.availableBreakdown.ledgerOnlyAdjustmentsNet),0);
+      await apiPool.query("DELETE FROM employee_earnings_ledger WHERE employee_id=$1 AND notes LIKE 'تسوية فرق تعديل إنتاج معتمد test%'",[bonusWorkerEmployee.id]);
+      await apiPool.query("DELETE FROM production_entry_corrections WHERE production_entry_id=$1",[bonusProduction.id]);
+      await apiPool.query("UPDATE production_entries SET bonus_amount=bonus_amount-500 WHERE id=$1",[bonusProduction.id]);
       // Production-percentage advance repayment must use production actually allocated
       // by an earlier settlement, not the full gross payout when it included an adjustment.
       const productionAdvanceWorker=(await apiPool.query(
