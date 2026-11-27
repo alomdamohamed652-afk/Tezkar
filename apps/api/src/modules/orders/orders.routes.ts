@@ -520,6 +520,41 @@ export async function orderRoutes(app: FastifyInstance) {
     return {data:r.rows};
   });
 
+  // Reorder the stages of one order. Takes the full list of the order's stage ids in the new order.
+  // order_stages has UNIQUE(order_id, sequence_no), so numbers are first moved out of the way, then assigned 1..n.
+  app.post("/api/orders/:id/stages/reorder", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request) => {
+    const orderId=(request.params as {id:string}).id;
+    const parsed=z.object({stageIds:z.array(z.string().uuid()).min(1).max(200)}).safeParse(request.body);
+    if(!parsed.success) throw new AppError("VALIDATION_ERROR","بيانات ترتيب المراحل غير صحيحة",422);
+    const ids=parsed.data.stageIds;
+    if(new Set(ids).size!==ids.length) throw new AppError("VALIDATION_ERROR","مرحلة مكررة في الترتيب",422);
+    const result=await withTransaction(async client=>{
+      const order=await client.query("SELECT status FROM production_orders WHERE id=$1 FOR UPDATE",[orderId]);
+      if(!order.rowCount)throw new AppError("ORDER_NOT_FOUND","الطلب غير موجود",404);
+      if(order.rows[0].status==="CANCELLED")throw new AppError("ORDER_CANCELLED_LOCKED","لا يمكن تعديل مراحل طلبية ملغاة",409);
+      if(order.rows[0].status==="COMPLETED")throw new AppError("ORDER_COMPLETED_LOCKED","أعد فتح الطلبية قبل تعديل ترتيب مراحلها",409);
+      const current=await client.query("SELECT id,sequence_no,status,is_final_product FROM order_stages WHERE order_id=$1 ORDER BY sequence_no,id FOR UPDATE",[orderId]);
+      const currentIds=current.rows.map(r=>String(r.id));
+      if(currentIds.length!==ids.length||!ids.every(x=>currentIds.includes(x)))
+        throw new AppError("STAGE_LIST_MISMATCH","قائمة المراحل لا تطابق مراحل الطلبية. حدّث الصفحة وحاول مرة أخرى",409);
+      const implicitFinal=(rows:{id:string;status:string;is_final_product:boolean}[])=>{
+        const live=rows.filter(r=>r.status!=="CANCELLED");
+        return live.some(r=>r.is_final_product)?null:(live[live.length-1]?.id??null);
+      };
+      const before=implicitFinal(current.rows);
+      const byId=new Map(current.rows.map(r=>[String(r.id),r]));
+      const after=implicitFinal(ids.map(i=>byId.get(i)!));
+      const unchanged=currentIds.every((x,i)=>x===ids[i]);
+      if(!unchanged){
+        await client.query("UPDATE order_stages SET sequence_no=sequence_no+100000 WHERE order_id=$1",[orderId]);
+        await client.query("UPDATE order_stages os SET sequence_no=v.n FROM (SELECT x.id,x.n FROM unnest($2::uuid[]) WITH ORDINALITY AS x(id,n)) v WHERE os.id=v.id AND os.order_id=$1",[orderId,ids]);
+        await writeAudit(client,{actorUserId:request.user!.userId,actorEmployeeId:request.user!.employeeId,action:"edit",module:"orders",entityType:"production_order",entityId:orderId,beforeData:{stage_order:currentIds},afterData:{stage_order:ids},ipAddress:request.ip,userAgent:request.headers["user-agent"]??null});
+      }
+      return {changed:!unchanged,implicit_final_changed:before!==after};
+    });
+    return {data:result};
+  });
+
   app.patch("/api/order-stages/:id", { preHandler: [authenticateRequest, requirePermission("orders.manage_stages")] }, async (request) => {
     const id=(request.params as {id:string}).id;
     const parsed=z.object({stageId:z.string().uuid().optional(),stageName:z.string().trim().min(2).max(200).optional(),outputProductId:z.string().uuid().nullable().optional(),outputProductName:z.string().trim().min(2).max(200).optional(),sequenceNo:z.number().int().positive().optional(),plannedQuantity:z.number().nonnegative().nullable().optional(),status:z.enum(["PENDING","READY","IN_PROGRESS","COMPLETED","CANCELLED"]).optional(),notes:z.string().trim().max(500).nullable().optional(),stageRate:z.number().nonnegative().nullable().optional(),stageRateMethod:z.enum(["PER_PIECE","PER_1000","PER_HOUR","PER_DAY","PERCENTAGE"]).nullable().optional(),productionTypeId:z.string().uuid().nullable().optional(),isFinalProduct:z.boolean().optional(),reason:z.string().trim().min(2).max(500).optional()}).safeParse(request.body);
