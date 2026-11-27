@@ -68,27 +68,27 @@ export default function BulkProductionPage(){
    {error&&<div className="alert error">{error}</div>}
    <section className="card">
     <div className="card-header"><div><h2 className="card-title">رسالة الإنتاج</h2><div className="form-hint">أول سطر التاريخ، التاني مسؤول الوردية، وبعدها سطر لكل عامل: الاسم - المرحلة - العدد - الطلبية. الأسماء بتتطابق 80% على الأقل.</div></div></div>
-    <textarea rows={9} value={text} onChange={e=>setText(e.target.value)} placeholder={SAMPLE} style={{width:"100%"}}/>
+    <div className="form-grid" style={{gridTemplateColumns:"minmax(0,1fr)",paddingBottom:8}}><textarea rows={9} value={text} onChange={e=>setText(e.target.value)} placeholder={SAMPLE} style={{minHeight:180,lineHeight:1.9}}/></div>
     <div className="form-actions"><button type="button" className="primary-button" disabled={busy||text.trim().length<5} onClick={()=>void prepare()}>{busy?"جارٍ التجهيز...":"جهّز السطور"}</button></div>
    </section>
    {parsed&&<section className="card">
     <div className="card-header"><h2 className="card-title">مراجعة السطور</h2><span className="count-badge">{rows.length}</span></div>
     {parsed.problems.map((p,i)=><div className="alert error" key={i}>{p}</div>)}
-    <div className="form-grid">
+    <div className="form-grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>
      <label>التاريخ<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)}/></label>
      <label>الوردية<SearchableSelect value={shiftId} onChange={setShiftId} options={shiftOptions} placeholder="اختر الوردية"/></label>
      <label>مسؤول الوردية<input readOnly value={parsed.shiftLeaderName||parsed.supervisorText||"غير محدد"}/></label>
     </div>
     <div className="master-list">
-     {rows.map(r=><div key={r.key} className="master-row" style={{display:"grid",gridTemplateColumns:"minmax(180px,1.2fr) minmax(180px,1.2fr) minmax(160px,1fr) 100px 110px auto",gap:8,alignItems:"start",opacity:r.status==="done"?0.6:1}}>
+     {rows.map(r=><div key={r.key} className="form-grid" style={{gridTemplateColumns:"minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr) 96px 104px 96px",gap:10,alignItems:"center",padding:"12px 18px",borderBottom:"1px solid #edf1f5",opacity:r.status==="done"?0.6:1}}>
       <div ><SearchableSelect value={r.employeeId} onChange={v=>patch(r.key,{employeeId:v})} options={employeeOptions} placeholder="العامل"/></div>
       <div ><SearchableSelect value={r.orderId} onChange={v=>patch(r.key,{orderId:v,orderStageId:""})} options={orderOptions} placeholder="الطلبية"/></div>
       <div ><SearchableSelect value={r.orderStageId} onChange={v=>patch(r.key,{orderStageId:v})} options={stageOptionsFor(r.orderId)} placeholder="المرحلة"/></div>
       <input inputMode="decimal" value={r.quantity} onChange={e=>patch(r.key,{quantity:e.target.value})} placeholder="العدد"/>
       <span className={"status "+(r.status==="done"?"success":r.status==="failed"?"danger":invalid(r)?"warning":"muted")}>{r.status==="done"?"اتسجل":r.status==="saving"?"جارٍ...":r.status==="failed"?"فشل":invalid(r)?"محتاج مراجعة":"جاهز"}</span>
+      {r.status==="draft"?<button type="button" className="danger-button" style={{minHeight:42}} onClick={()=>setRows(rs=>rs.filter(x=>x.key!==r.key))}>حذف</button>:<span/>}
       {r.status==="draft"&&invalid(r)&&r.problems.map((p,i)=><div className="form-hint" key={i} style={{gridColumn:"1 / -1"}}>سطر {r.line}: {p}</div>)}
       {r.status==="failed"&&<div className="form-hint" style={{gridColumn:"1 / -1",color:"#b42318"}}>سطر {r.line}: {r.error}</div>}
-      {r.status==="draft"&&<button type="button" className="danger-button" onClick={()=>setRows(rs=>rs.filter(x=>x.key!==r.key))}>حذف السطر</button>}
      </div>)}
     </div>
     <div className="form-actions">
