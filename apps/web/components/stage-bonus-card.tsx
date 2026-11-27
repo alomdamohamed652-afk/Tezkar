@@ -40,14 +40,14 @@ export function StageBonusCard({stages}:{stages:{value:string;label:string;meta?
   {msg&&<div className="alert success">{msg}</div>}
   {stageId&&<>
    <div className="master-list">
-    {rules.map((r,i)=><div className="master-row" key={i}>
-     <input inputMode="decimal" placeholder="الهدف (مثال 1500)" value={r.targetQty} onChange={e=>setRule(i,{targetQty:e.target.value})}/>
-     <input inputMode="decimal" placeholder="البونص بالجنيه (مثال 50)" value={r.bonusAmount} onChange={e=>setRule(i,{bonusAmount:e.target.value})}/>
-     <button type="button" className="danger-button" onClick={()=>setRules(rs=>rs.filter((_,j)=>j!==i))}>حذف</button>
+    {rules.map((r,i)=><div className="form-grid" key={i} style={{gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) auto",alignItems:"end",padding:"12px 18px",borderBottom:"1px solid #edf1f5"}}>
+     <label>الهدف (العدد)<input inputMode="decimal" placeholder="مثال 1500" value={r.targetQty} onChange={e=>setRule(i,{targetQty:e.target.value})}/></label>
+     <label>البونص (جنيه)<input inputMode="decimal" placeholder="مثال 50" value={r.bonusAmount} onChange={e=>setRule(i,{bonusAmount:e.target.value})}/></label>
+     <button type="button" className="danger-button" style={{minHeight:42}} onClick={()=>setRules(rs=>rs.filter((_,j)=>j!==i))}>حذف</button>
     </div>)}
     {!rules.length&&<div className="empty small-empty">مفيش بونص تارجت على المرحلة دي.</div>}
    </div>
-   <div className="form-actions">
+   <div className="form-actions" style={{paddingTop:14}}>
     <button type="button" className="secondary-btn" onClick={()=>setRules(rs=>[...rs,{targetQty:"",bonusAmount:""}])}>إضافة هدف</button>
     <button type="button" className="primary-button" disabled={saving} onClick={()=>void save()}>{saving?"جارٍ الحفظ...":"حفظ"}</button>
    </div>
