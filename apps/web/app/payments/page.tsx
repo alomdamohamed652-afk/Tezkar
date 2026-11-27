@@ -7,6 +7,7 @@ import { Sidebar, usePermissions } from "../../components/sidebar";
 import {formatMoney} from "../../lib/format";
 import {SearchableSelect} from "../../components/searchable-select";
 import {SettlementReceiptDialog,type SettlementReceipt} from "./settlement-receipt";
+import {AdministrativeSettlement} from "./administrative-settlement";
 
 type Request={id:string;code:string;employee_name:string;amount:number;method:string;transfer_reference:string|null;status:string;requested_at:string;rejection_reason:string|null;outstanding_advance_amount?:number;net_paid_amount?:number|null;gross_paid_amount?:number|null;advance_repayment_amount?:number|null;due_advance_repayment_amount?:number};
 type SettlementReconciliation={orders:Array<{orderId:string;orderCode:string;orderName:string;earned:number;paid:number;remaining:number}>;orderTotal:number;generalAccount:number;total:number;allocationPolicy:string};
@@ -61,6 +62,8 @@ export default function PaymentsPage(){
  useEffect(()=>{if(permissions!==null)void load()},[permissions,load]);
  async function loadUnpaidProduction(employeeId:string){if(!employeeId){setUnpaidProduction([]);setSelectedProductionIds([]);return}setProductionLoading(true);try{const r=await api<{data:UnpaidProduction[]}>("/api/worker-payments/unpaid-production?employeeId="+encodeURIComponent(employeeId));setUnpaidProduction(r.data);setSelectedProductionIds(current=>current.filter(id=>r.data.some(row=>row.id===id&&row.payment_status!=="NEEDS_REVIEW"&&Number(row.remaining_amount)>0.009)))}catch(e){setUnpaidProduction([]);setSelectedProductionIds([]);setError(e instanceof Error?e.message:"تعذر تحميل سجلات الإنتاج غير المدفوعة")}finally{setProductionLoading(false)}}
  useEffect(()=>{if(has("worker_payments.pay")&&settlementEmployeeId)void loadUnpaidProduction(settlementEmployeeId)},[settlementEmployeeId,has]);
+ const [showAdminSettlement,setShowAdminSettlement]=useState(false);
+ useEffect(()=>{setShowAdminSettlement(false)},[settlementEmployeeId]);
  async function loadEmployeeStatement(employeeId:string){
   if(!employeeId&&!isWorker){setEmployeeStatement(null);return}
   setStatementLoading(true);
@@ -173,6 +176,10 @@ export default function PaymentsPage(){
 
     </>}
    </section>}
+   {has("earnings.administrative_settlement.create")&&settlementEmployeeId&&employeeStatement&&employeeStatement.employee.id===settlementEmployeeId&&Math.abs(employeeStatement.totals.ledgerBalance)>=0.005&&<div style={{marginTop:16}}>
+    {!showAdminSettlement?<button type="button" className="secondary-btn" onClick={()=>setShowAdminSettlement(true)}>تسوية إدارية غير نقدية لرصيد هذا العامل ({formatMoney(employeeStatement.totals.ledgerBalance)})</button>
+    :<AdministrativeSettlement key={settlementEmployeeId} employeeId={settlementEmployeeId} onDone={()=>{void loadEmployeeStatement(settlementEmployeeId);void loadSettlementSummary(settlementEmployeeId)}}/>}
+   </div>}
    <section className="card"><div className="card-header"><h2 className="card-title">طلبات القبض</h2></div>{!requests.length?<div className="empty">لا توجد طلبات.</div>:<div className="table-wrap"><table><thead><tr><th>الكود</th><th>الموظف</th><th>إجمالي المستحق</th><th>السلف المفتوحة</th><th>خصم السلف</th><th>صافي المدفوع</th><th>الطريقة</th><th>التاريخ</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{requests.map(r=><tr key={r.id}><td className="mono">{r.code}</td><td className="strong">{r.employee_name}</td><td className="money">{formatMoney(r.amount)}</td><td className="money">{formatMoney(r.outstanding_advance_amount??0)}</td><td className="money">{r.advance_repayment_amount!=null?formatMoney(r.advance_repayment_amount):r.due_advance_repayment_amount!=null?formatMoney(r.due_advance_repayment_amount):"—"}</td><td className="money">{r.net_paid_amount!=null?formatMoney(r.net_paid_amount):"—"}</td><td>{methods[r.method]||fallbackMethods[r.method]||r.method}</td><td>{new Date(r.requested_at).toLocaleString("ar-EG")}</td><td><span className={"status "+r.status.toLowerCase()}>{statuses[r.status]||r.status}</span></td><td>{r.status==="PENDING"&&<div className="row-actions">{has("payment_requests.approve")&&<button className="approve-button" disabled={!cashCustodyEmployeeId} onClick={()=>action(r.id,"approve")}>اعتماد وصرف وخصم العهدة</button>}{has("payment_requests.reject")&&<button className="reject-button" onClick={()=>action(r.id,"reject")}>رفض</button>}</div>}{r.status==="APPROVED"&&has("worker_payments.pay")&&<button className="approve-button" disabled={!cashCustodyEmployeeId} onClick={()=>action(r.id,"pay")}>تسجيل الدفع وخصم العهدة</button>}{r.transfer_reference&&<div className="form-hint">مرجع التحويل: {r.transfer_reference}</div>}</td></tr>)}</tbody></table></div>}</section>
   </section></main></div>
 }
