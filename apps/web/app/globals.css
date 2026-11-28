@@ -2781,3 +2781,15 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 /* ===== settings embedded tabs ===== */
 .settings-embed-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 @media (min-width:641px){.settings-tabs{flex-wrap:wrap;overflow:visible}}
+
+.stage-order-cell{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.stage-drag-handle{cursor:grab;color:var(--muted,#8a94a6);font-size:18px;line-height:1;padding:2px 4px;border-radius:6px;user-select:none}
+.stage-drag-handle:hover{background:rgba(37,99,235,.08);color:#2563eb}
+.stage-drag-handle:active{cursor:grabbing}
+.stage-order-num{min-width:18px;text-align:center}
+.stage-order-arrows{display:inline-flex;flex-direction:column;gap:1px}
+.stage-arrow{border:1px solid var(--border,#d5dbe6);background:#fff;color:#334155;border-radius:4px;font-size:9px;line-height:1;padding:2px 5px;cursor:pointer}
+.stage-arrow:hover:not(:disabled){background:#eff6ff;color:#2563eb}
+.stage-arrow:disabled{opacity:.35;cursor:not-allowed}
+tr.stage-row-dragging{opacity:.45}
+tr.stage-row-dropover td{box-shadow:inset 0 3px 0 #2563eb}
