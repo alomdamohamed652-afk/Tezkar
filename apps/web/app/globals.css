@@ -2793,3 +2793,7 @@ body{font-family:"Tajawal","IBM Plex Sans Arabic","Segoe UI","Noto Sans Arabic",
 .stage-arrow:disabled{opacity:.35;cursor:not-allowed}
 tr.stage-row-dragging{opacity:.45}
 tr.stage-row-dropover td{box-shadow:inset 0 3px 0 #2563eb}
+
+.production-history-title{display:flex;flex-direction:column;align-items:flex-start;gap:10px;min-width:0}
+.production-bulk-approve-btn{white-space:nowrap;flex:none;max-width:100%}
+@media (max-width:900px){.card-header:has(> .production-history-filters){grid-template-columns:minmax(0,1fr)}.production-history-title{flex-direction:row;flex-wrap:wrap;align-items:center}}
