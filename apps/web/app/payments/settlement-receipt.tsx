@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { api } from "../../lib/api";
 import { formatMoney } from "../../lib/format";
 import { ReceiptDocument, printReceipt, type ReceiptVariant } from "./receipt-document";
+import { stageTotals } from "../../lib/stage-totals.mjs";
 
 export function whatsappNumber(raw: string | null | undefined): string | null {
   let digits = String(raw ?? "").replace(/\D/g, "");
@@ -101,6 +102,22 @@ export function SettlementReceiptDialog({ receipt, methodLabel, onClose }: { rec
             </div>
           </section>
         ))}
+        {receipt.orders.length > 0 && (
+          <section className="card" style={{ marginBottom: 12 }}>
+            <div className="card-header"><h3 className="card-title">إجمالي كل مرحلة</h3></div>
+            {receipt.orders.map((order) => (
+              <div key={"st-" + (order.orderId ?? "none")} className="table-wrap">
+                <table>
+                  <thead><tr><th colSpan={2}>{order.orderCode ? `${order.orderCode} — ${order.orderName ?? ""}` : "إنتاج غير مرتبط بطلبية"}</th></tr></thead>
+                  <tbody>
+                    {stageTotals(order.lines).map((st) => <tr key={st.key}><td>{st.label}</td><td className="money">{formatMoney(st.total)}</td></tr>)}
+                    <tr><th>إجمالي الطلبية</th><th className="money">{formatMoney(order.total)}</th></tr>
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </section>
+        )}
         {receipt.unallocatedAmount > 0.009 && (
           <p className="form-hint">مبلغ غير موزع على إنتاج (حساب عام / فروق): {formatMoney(receipt.unallocatedAmount)} ج.م</p>
         )}

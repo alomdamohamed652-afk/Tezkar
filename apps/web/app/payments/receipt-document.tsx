@@ -1,6 +1,7 @@
 "use client";
 
 import type { SettlementReceipt } from "./settlement-receipt";
+import { stageTotals } from "../../lib/stage-totals.mjs";
 
 export type ReceiptVariant = "a4" | "thermal";
 
@@ -40,6 +41,16 @@ export function ReceiptDocument({ receipt, variant, methodLabel }: { receipt: Se
             <div className="rt-row rt-bold"><span>إجمالي الطلبية</span><span><bdi>{fmtNum(order.total)}</bdi></span></div>
           </div>
         ))}
+        {receipt.orders.length > 0 && <>
+          <div className="rt-line" />
+          <div className="rt-bold">إجمالي كل مرحلة</div>
+          {receipt.orders.map((order) => (
+            <div key={"st-" + (order.orderId ?? "none")} className="rt-block">
+              <div>{order.orderCode ? <bdi>{order.orderCode}</bdi> : "إنتاج غير مرتبط بطلبية"}</div>
+              {stageTotals(order.lines).map((st) => <div key={st.key} className="rt-row"><span>{st.label}</span><span><bdi>{fmtNum(st.total)}</bdi></span></div>)}
+            </div>
+          ))}
+        </>}
         {receipt.unallocatedAmount > 0.009 && <div className="rt-row"><span>حساب عام / فروق</span><span><bdi>{fmtNum(receipt.unallocatedAmount)}</bdi></span></div>}
         <div className="rt-line" />
         <div className="rt-row rt-bold rt-total"><span>الإجمالي</span><span><bdi>{fmtNum(receipt.payment.amount)}</bdi> ج.م</span></div>
@@ -87,6 +98,18 @@ export function ReceiptDocument({ receipt, variant, methodLabel }: { receipt: Se
           </table>
         </section>
       ))}
+      {receipt.orders.length > 0 && (
+        <section className="ra-order">
+          <h2>إجمالي كل مرحلة</h2>
+          {receipt.orders.map((order) => (
+            <table key={"st-" + (order.orderId ?? "none")} className="ra-table">
+              <thead><tr><th colSpan={2}>{order.orderCode ? <><bdi>{order.orderCode}</bdi> — {order.orderName ?? ""}</> : "إنتاج غير مرتبط بطلبية"}</th></tr></thead>
+              <tbody>{stageTotals(order.lines).map((st) => <tr key={st.key}><td>{st.label}</td><td><bdi>{fmtNum(st.total)}</bdi></td></tr>)}</tbody>
+              <tfoot><tr><th>إجمالي الطلبية</th><th><bdi>{fmtNum(order.total)}</bdi></th></tr></tfoot>
+            </table>
+          ))}
+        </section>
+      )}
       {receipt.unallocatedAmount > 0.009 && <p>مبلغ غير موزع على إنتاج (حساب عام / فروق): <bdi>{fmtNum(receipt.unallocatedAmount)}</bdi> ج.م</p>}
       <div className="ra-total">إجمالي التسوية: <bdi>{fmtNum(receipt.payment.amount)}</bdi> ج.م</div>
       <footer className="ra-sign"><div>توقيع المستلم: ______________________</div><div>توقيع المحاسب: ______________________</div></footer>
