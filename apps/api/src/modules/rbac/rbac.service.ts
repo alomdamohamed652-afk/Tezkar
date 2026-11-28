@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { AppError } from "../../http/errors.js";
 
 export async function hasPermission(
   client: pg.PoolClient,

@@ -1,7 +1,7 @@
 {
   "name": "tezkar",
   "private": true,
-  "packageManager": "pnpm@10.12.4",
+  "packageManager": "pnpm@10.34.6",
   "engines": { "node": ">=24 <25" },
   "scripts": {
     "dev": "pnpm --parallel --filter @tezkar/api --filter @tezkar/web dev",
@@ -9,5 +9,11 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "eslint": "9.39.1",
+    "typescript-eslint": "8.46.4",
+    "@eslint/js": "9.39.1",
+    "globals": "16.5.0"
   }
 }

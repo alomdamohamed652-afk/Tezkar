@@ -17,6 +17,10 @@ export default function CartonsPage(){
  const [products,setProducts]=useState<Item[]>([]),[warehouses,setWarehouses]=useState<Item[]>([]),[locations,setLocations]=useState<Location[]>([]),[items,setItems]=useState<Carton[]>([]);
  const [productId,setProductId]=useState(""),[warehouseId,setWarehouseId]=useState(""),[locationId,setLocationId]=useState(""),[quantity,setQuantity]=useState(""),[weight,setWeight]=useState(""),[barcode,setBarcode]=useState(""),[status,setStatus]=useState("OPEN"),[error,setError]=useState(""),[saving,setSaving]=useState(false);
 
+ async function loadCartons(){
+  try{const c=await api<{data:Carton[]}>("/api/warehouse/cartons");setItems(c.data)}
+  catch(e){setError(e instanceof Error?e.message:"تعذر تحديث سجل الكرتونات")}
+ }
  async function load(){
   try{
    const [p,w,l,c]=await Promise.all([
@@ -34,7 +38,7 @@ export default function CartonsPage(){
     productId,warehouseId,locationId,quantity:Number(quantity),weight:weight?Number(weight):null,
     barcode:barcode.trim()||null,status
    })});
-   setProductId("");setQuantity("");setWeight("");setBarcode("");setStatus("OPEN");await load();
+   setProductId("");setQuantity("");setWeight("");setBarcode("");setStatus("OPEN");await loadCartons();
   }catch(e){setError(e instanceof Error?e.message:"تعذر إنشاء الكرتونة")}finally{setSaving(false)}
  }
  const currentLocations=locations.filter(x=>x.warehouse_id===warehouseId);
@@ -44,7 +48,7 @@ export default function CartonsPage(){
    <header className="topbar"><div><h1 className="page-title">الكرتونات</h1><p className="page-subtitle">تعبئة وتتبع الكرتونات وأكوادها وحالتها</p></div></header>
    <section className="content">
     {error&&<div className="alert error">{error}</div>}
-    {has("cartons.manage")&&<form className="card form-card" onSubmit={create}>
+    {(has("cartons.manage")||has("cartons.create"))&&<form className="card form-card" onSubmit={create}>
      <div className="card-header"><h2 className="card-title">تعبئة كرتونة</h2><span className="form-hint">الكمية يجب أن تكون متاحة في رصيد المكان</span></div>
      <div className="form-grid">
       <label>المنتج<select value={productId} onChange={e=>setProductId(e.target.value)} required><option value="">اختر المنتج</option>{products.map(x=><option key={x.id} value={x.id}>{x.name} — {x.code}</option>)}</select></label>

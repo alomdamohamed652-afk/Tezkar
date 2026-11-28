@@ -1,0 +1,323 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import pg from "pg";
+import { assertDisposableDatabaseUrl } from "./helpers/disposable-database-url.js";
+import type { BackupPayload } from "../src/modules/backup/backup-archive.js";
+import { restoreBackupIntoCurrentDatabase } from "../src/modules/backup/backup-restore.service.js";
+
+const adminUrl = process.env.TEST_DATABASE_URL;
+
+test("backup restore is additive, idempotent, FK ordered, transactional and sequence-monotonic", {
+  skip: !adminUrl && "TEST_DATABASE_URL not set"
+}, async () => {
+  assert.ok(adminUrl);
+  assertDisposableDatabaseUrl(adminUrl);
+
+  const databaseName = "tezkar_backup_restore_" + randomBytes(6).toString("hex");
+  const admin = new pg.Client({ connectionString: adminUrl });
+  await admin.connect();
+  try {
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+  } finally {
+    await admin.end();
+  }
+
+  const targetUrl = new URL(adminUrl);
+  targetUrl.pathname = "/" + databaseName;
+  const pool = new pg.Pool({ connectionString: targetUrl.toString() });
+  const parentId = "11111111-1111-4111-8111-111111111111";
+  const childId = "22222222-2222-4222-8222-222222222222";
+  const extraId = "33333333-3333-4333-8333-333333333333";
+  const additionalChildRows = Array.from({ length: 100 }, (_, index) => ({
+    id: `44444444-4444-4444-8444-${String(index + 1).padStart(12, "0")}`,
+    parent_id: parentId,
+    label: `child-${index + 1}`
+  }));
+  const payload: BackupPayload = {
+    format: "tezkar-full-backup",
+    version: 1,
+    createdAt: "2026-11-17T00:00:00.000Z",
+    sourceSchemaVersion: "integration-test",
+    tables: [
+      {
+        name: "backup_it_children",
+        primaryKey: ["id"],
+        columns: [{ name: "id", pgType: "uuid" }, { name: "parent_id", pgType: "uuid" }, { name: "label", pgType: "text" }],
+        rows: [{ id: childId, parent_id: parentId, label: "child" }, ...additionalChildRows]
+      },
+      {
+        name: "backup_it_parents",
+        primaryKey: ["id"],
+        columns: [{ name: "id", pgType: "uuid" }, { name: "child_id", pgType: "uuid" }, { name: "label", pgType: "text" }],
+        rows: [{ id: parentId, child_id: childId, label: "parent" }]
+      }
+    ],
+    sequences: [{ name: "backup_it_seq", lastValue: "20", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+  };
+
+  try {
+    await pool.query("CREATE TABLE backup_it_parents(id uuid PRIMARY KEY, child_id uuid, label text NOT NULL)");
+    await pool.query("CREATE TABLE backup_it_children(id uuid PRIMARY KEY, parent_id uuid NOT NULL REFERENCES backup_it_parents(id), label text NOT NULL)");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) DEFERRABLE INITIALLY DEFERRED");
+    await pool.query("CREATE SEQUENCE backup_it_seq START 1 INCREMENT 1");
+    await pool.query("SELECT setval('backup_it_seq', 50, true)");
+
+    // Version 1 does not model PostgreSQL inheritance/partition topology.
+    // Reject such targets rather than risk duplicated or misrouted records.
+    await pool.query("CREATE TABLE backup_it_inherited_parent(id integer PRIMARY KEY)");
+    await pool.query("CREATE TABLE backup_it_inherited_child() INHERITS (backup_it_inherited_parent)");
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, true),
+      /وراثة أو تقسيم جداول/,
+      "restore must fail closed when the target schema uses inheritance or partitioning"
+    );
+    await pool.query("DROP TABLE backup_it_inherited_child");
+    await pool.query("DROP TABLE backup_it_inherited_parent");
+
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, tables: payload.tables.slice(1) }, true),
+      /النسخة لا تحتوي جميع جداول النظام المطلوبة/,
+      "restore must reject an archive missing a required table before importing any rows"
+    );
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, sequences: [] }, true),
+      /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
+      "restore must reject an archive missing a required sequence"
+    );
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, sequences: [...payload.sequences!, { ...payload.sequences![0]!, name: "unexpected_sequence" }] }, true),
+      /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
+      "restore must reject unexpected sequences"
+    );
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, { ...payload, sequences: [...payload.sequences!, { ...payload.sequences![0]! }] }, true),
+      /النسخة لا تحتوي جميع تسلسلات الترقيم المطلوبة/,
+      "restore must reject duplicate sequence entries"
+    );
+
+    await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_child_fk");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) NOT DEFERRABLE");
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, true),
+      /توجد علاقات دائرية بين الجداول/,
+      "restore must reject cycles that include non-deferrable foreign keys"
+    );
+    await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_child_fk");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_self_fk FOREIGN KEY(child_id) REFERENCES backup_it_parents(id) NOT DEFERRABLE");
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, true),
+      /توجد علاقات دائرية بين الجداول/,
+      "restore must reject non-deferrable self-referencing foreign keys before relying on archive row order"
+    );
+    await pool.query("ALTER TABLE backup_it_parents DROP CONSTRAINT backup_it_parents_self_fk");
+    await pool.query("ALTER TABLE backup_it_parents ADD CONSTRAINT backup_it_parents_child_fk FOREIGN KEY(child_id) REFERENCES backup_it_children(id) DEFERRABLE INITIALLY DEFERRED");
+
+    const preview = await restoreBackupIntoCurrentDatabase(pool, payload, true);
+    assert.equal(preview.added, 102, "preview must count records across multiple lookup batches");
+    assert.equal(preview.conflicts.length, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_parents")).rows[0].count, 0,
+      "preview must roll back all inserted rows");
+
+    const first = await restoreBackupIntoCurrentDatabase(pool, payload);
+    assert.equal(first.added, 102, "restore must insert all records across multiple lookup batches");
+    assert.equal(first.exactDuplicates, 0);
+    assert.equal(first.conflicts.length, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_children")).rows[0].count, 101);
+
+    const second = await restoreBackupIntoCurrentDatabase(pool, payload);
+    assert.equal(second.added, 0);
+    assert.equal(second.exactDuplicates, 102, "restore must recognize exact duplicates across lookup batches");
+    assert.equal(second.conflicts.length, 0);
+
+    const conflictPayload: BackupPayload = {
+      ...payload,
+      tables: [
+        {
+          ...payload.tables[1]!,
+          rows: [
+            { id: parentId, child_id: childId, label: "changed-content" },
+            { id: extraId, child_id: childId, label: "must-rollback" }
+          ]
+        },
+        payload.tables[0]!
+      ]
+    };
+    const conflict = await restoreBackupIntoCurrentDatabase(pool, conflictPayload);
+    assert.equal(conflict.added, 0, "reported conflicts must roll back every row inserted by this restore");
+    assert.equal(conflict.conflicts.length, 1);
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_parents")).rows[0].count, 1);
+    assert.equal((await pool.query("SELECT label FROM backup_it_parents WHERE id=$1", [parentId])).rows[0].label, "parent");
+
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, payload, false, async () => {
+        throw new Error("audit write failed");
+      }),
+      /audit write failed/
+    );
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM backup_it_parents")).rows[0].count, 1,
+      "audit failure must roll back the restore transaction");
+
+    const auditFailureForwardPayload: BackupPayload = {
+      ...payload,
+      sequences: [{ name: "backup_it_seq", lastValue: "80", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+    };
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, auditFailureForwardPayload, false, async () => {
+        throw new Error("audit write failed before sequence advancement");
+      }),
+      /audit write failed before sequence advancement/
+    );
+    const sequenceAfterAuditFailure = await pool.query<{ last_value: string }>(
+      "SELECT last_value::text FROM backup_it_seq"
+    );
+    assert.equal(sequenceAfterAuditFailure.rows[0]?.last_value, "50",
+      "a failed audit must not leave a non-transactional sequence advance behind");
+
+    const sequence = await pool.query<{ last_value: string; is_called: boolean }>(
+      "SELECT last_value::text, is_called FROM backup_it_seq"
+    );
+    assert.equal(sequence.rows[0]?.last_value, "50",
+      "restoring an older archive must never move a sequence backwards");
+    assert.equal(sequence.rows[0]?.is_called, true);
+    const forwardPayload: BackupPayload = {
+      ...payload,
+      sequences: [{ name: "backup_it_seq", lastValue: "75", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+    };
+    const forward = await restoreBackupIntoCurrentDatabase(pool, forwardPayload);
+    assert.equal(forward.conflicts.length, 0);
+    const nextAfterRestore = await pool.query<{ value: string }>("SELECT nextval('backup_it_seq')::text AS value");
+    assert.equal(nextAfterRestore.rows[0]?.value, "76",
+      "transactional RESTART must preserve the archived next-value semantics");
+
+    // Simulate application traffic advancing a sequence after pre-validation
+    // but before restore applies the archived state. Restore must re-read and
+    // preserve the newer live value rather than moving the sequence backwards.
+    const staleSequencePayload: BackupPayload = {
+      ...payload,
+      sequences: [{ name: "backup_it_seq", lastValue: "90", isCalled: true, incrementBy: "1", minValue: "1", maxValue: "9223372036854775807", startValue: "1", cacheSize: "1", cycle: false }]
+    };
+    const concurrentAdvance = await restoreBackupIntoCurrentDatabase(pool, staleSequencePayload, false, async client => {
+      await client.query("SELECT setval('backup_it_seq', 100, true)");
+    });
+    assert.equal(concurrentAdvance.conflicts.length, 0);
+    const afterConcurrentAdvance = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterConcurrentAdvance.rows[0]?.last_value, "100",
+      "restore must preserve a sequence advanced after validation");
+
+    const deferredFailurePayload: BackupPayload = {
+      ...payload,
+      tables: [
+        payload.tables[0]!,
+        {
+          ...payload.tables[1]!,
+          rows: [
+            ...payload.tables[1]!.rows,
+            { id: "77777777-7777-4777-8777-777777777777", child_id: "88888888-8888-4888-8888-888888888888", label: "deferred-fk-failure" }
+          ]
+        }
+      ],
+      sequences: [{ ...payload.sequences![0]!, lastValue: "120", isCalled: true }]
+    };
+    const deferredPreview = await restoreBackupIntoCurrentDatabase(pool, deferredFailurePayload, true);
+    assert.equal(deferredPreview.added, 0,
+      "preview must not report rows as restorable when a deferred FK would fail at commit");
+    assert.equal(deferredPreview.conflicts.length, 1,
+      "preview must surface deferred FK violations before confirmation");
+    assert.equal((await pool.query("SELECT 1 FROM backup_it_parents WHERE id=$1", ["77777777-7777-4777-8777-777777777777"])).rowCount, 0,
+      "deferred-constraint preview validation must roll back all inserted rows");
+    const afterDeferredPreview = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterDeferredPreview.rows[0]?.last_value, "100",
+      "deferred-constraint preview must not mutate sequence state");
+
+    await assert.rejects(
+      () => restoreBackupIntoCurrentDatabase(pool, deferredFailurePayload),
+      /violates foreign key constraint|foreign key constraint/i,
+      "a deferred FK failure at COMMIT must abort the restore"
+    );
+    const afterDeferredFailure = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterDeferredFailure.rows[0]?.last_value, "100",
+      "transactional sequence RESTART must roll back when the restore transaction cannot commit");
+    assert.equal((await pool.query("SELECT 1 FROM backup_it_children WHERE id=$1", ["77777777-7777-4777-8777-777777777777"])).rowCount, 0,
+      "rows from a failed deferred-constraint restore must roll back");
+
+    const mismatchPayload: BackupPayload = {
+      ...forwardPayload,
+      sequences: [{ ...forwardPayload.sequences![0]!, incrementBy: "2" }]
+    };
+    const mismatchPreview = await restoreBackupIntoCurrentDatabase(pool, mismatchPayload, true);
+    assert.equal(mismatchPreview.conflicts.length, 1,
+      "preview must report sequence configuration conflicts before confirmation");
+    const afterPreview = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(afterPreview.rows[0]?.last_value, "100",
+      "preview must not mutate sequence state");
+    const mismatch = await restoreBackupIntoCurrentDatabase(pool, mismatchPayload);
+    assert.equal(mismatch.conflicts.length, 1);
+    const unchanged = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(unchanged.rows[0]?.last_value, "100");
+
+    // A sequence with preallocated values in other sessions cannot be safely
+    // advanced by this restore; the operation must report a conflict.
+    await pool.query("ALTER SEQUENCE backup_it_seq CACHE 5");
+    const cachedSequencePayload: BackupPayload = {
+      ...payload,
+      sequences: [{ ...payload.sequences![0]!, lastValue: "200", isCalled: true, cacheSize: "5" }]
+    };
+    const cachedSequencePreview = await restoreBackupIntoCurrentDatabase(pool, cachedSequencePayload, true);
+    assert.equal(cachedSequencePreview.conflicts.length, 1,
+      "preview must report unsafe cached-sequence advancement before confirmation");
+    const cachedSequenceRestore = await restoreBackupIntoCurrentDatabase(pool, cachedSequencePayload);
+    assert.equal(cachedSequenceRestore.added, 0);
+    assert.equal(cachedSequenceRestore.conflicts.length, 1);
+    const cachedSequenceState = await pool.query<{ last_value: string }>("SELECT last_value::text FROM backup_it_seq");
+    assert.equal(cachedSequenceState.rows[0]?.last_value, "100",
+      "restore must not advance a sequence configured with CACHE greater than one");
+
+    // ALTER SEQUENCE CACHE 1 must retain a relation lock until the restore
+    // transaction ends, so a concurrent nextval cannot slip between the
+    // live-state read and transactional RESTART.
+    await pool.query("CREATE SEQUENCE backup_it_lock_seq START 1 INCREMENT 1 CACHE 1");
+    const lockOwner = await pool.connect();
+    const nextvalClient = await pool.connect();
+    try {
+      await lockOwner.query("BEGIN");
+      await lockOwner.query("ALTER SEQUENCE backup_it_lock_seq CACHE 1");
+      const contenderPid = (await nextvalClient.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+      const pendingNextval = nextvalClient.query<{ value: string }>(
+        "SELECT nextval('backup_it_lock_seq')::text AS value"
+      );
+      let blockedByLock = false;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const activity = await lockOwner.query<{ wait_event_type: string | null }>(
+          "SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1",
+          [contenderPid]
+        );
+        if (activity.rows[0]?.wait_event_type === "Lock") {
+          blockedByLock = true;
+          break;
+        }
+        await lockOwner.query("SELECT pg_sleep(0.025)");
+      }
+      assert.equal(blockedByLock, true,
+        "a concurrent nextval must wait while the restore transaction holds the sequence DDL lock");
+      await lockOwner.query("COMMIT");
+      const resumed = await pendingNextval;
+      assert.equal(resumed.rows[0]?.value, "1",
+        "the blocked nextval must continue after the restore transaction releases the sequence lock");
+    } finally {
+      await lockOwner.query("ROLLBACK").catch(() => undefined);
+      lockOwner.release();
+      nextvalClient.release();
+      await pool.query("DROP SEQUENCE IF EXISTS backup_it_lock_seq");
+    }
+  } finally {
+    await pool.end();
+    const cleanup = new pg.Client({ connectionString: adminUrl });
+    await cleanup.connect();
+    try {
+      await cleanup.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+    } finally {
+      await cleanup.end();
+    }
+  }
+});
